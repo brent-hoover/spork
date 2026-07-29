@@ -1,0 +1,42 @@
+# AVSpec CI gate. Place at .github/workflows/verify.yml in the target repo.
+name: avspec-verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  spec-gates:
+    # Gates 1–3 + spec-level architecture check. Runs with no application code.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm ci || npm install ajv js-yaml
+      - name: Validate & trace the spec
+        run: node tools/verify.mjs
+
+  contract-gate:
+    # Gate 3 detail: lint every contract against its own standard.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Lint OpenAPI/AsyncAPI/JSON Schema contracts
+        run: |
+          echo "Wire your contract linters here, e.g.:"
+          echo "  npx @redocly/cli lint contracts/*.openapi.yaml"
+          echo "  npx @stoplight/spectral-cli lint contracts/**/*.yaml"
+
+  conformance-gate:
+    # Gate 4: code-vs-spec. Enable once implementation exists.
+    if: false # flip to true when there is code to check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Architecture fitness function
+        run: echo "e.g. npx depcruise --config .dependency-cruiser.js src (generated from architecture-rules.yaml)"
+      - name: Acceptance tests
+        run: echo "Run the tests mapped from each AC-* (cucumber/jest/pytest/…)."

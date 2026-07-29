@@ -1,0 +1,187 @@
+# AVSpec Manifest schema (JSON Schema draft 2020-12, authored in YAML).
+# The verifier loads this with a YAML parser and validates avspec.yaml against it.
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://avspec.dev/avspec.schema.yaml"
+title: AVSpec Manifest
+description: >-
+  Machine-readable spine of an Agent-Verifiable Architecture Spec. The manifest
+  is the authoritative index of IDs and cross-references; the Markdown artifacts
+  are the human-readable expansion of the same IDs.
+type: object
+# Schema enforces WELL-FORMEDNESS only (shapes, ID patterns, no stray keys).
+# COMPLETENESS (min counts, every AC has a test, etc.) is enforced by the
+# verifier's ready-gate, so a partial draft stays schema-valid during authoring.
+required: [avspec, metadata, mode, artifacts]
+additionalProperties: false
+properties:
+
+  avspec:
+    description: Format version this manifest conforms to.
+    type: string
+    pattern: '^\d+\.\d+$'
+
+  metadata:
+    type: object
+    required: [name, status]
+    additionalProperties: false
+    properties:
+      name: { type: string, minLength: 1 }
+      description: { type: string }
+      status:
+        description: >-
+          draft = still has NEEDS CLARIFICATION; ready = spec gates pass, safe to
+          build; built = code exists and the conformance gate applies.
+        enum: [draft, ready, built]
+
+  mode:
+    description: This version of the format targets greenfield only.
+    const: greenfield
+
+  stack:
+    type: object
+    additionalProperties: false
+    properties:
+      languages:
+        type: array
+        items: { type: string }
+        minItems: 1
+      fitness_function:
+        description: Tool used for the conformance (dependency) gate; chosen per stack.
+        enum: [dependency-cruiser, import-linter, archunit, deptrac, ts-arch, other]
+
+  artifacts:
+    description: Paths to the four human-readable layers, relative to the manifest.
+    type: object
+    required: [constitution, requirements, design, tasks]
+    additionalProperties: false
+    properties:
+      constitution: { type: string }
+      requirements: { type: string }
+      design: { type: string }
+      tasks: { type: string }
+
+  principles:
+    type: array
+    items:
+      type: object
+      required: [id, statement]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^PR-[0-9]{3,}$' }
+        statement: { type: string, minLength: 1 }
+
+  constraints:
+    type: array
+    items:
+      type: object
+      required: [id, statement]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^CON-[0-9]{3,}$' }
+        statement: { type: string, minLength: 1 }
+        gate:
+          description: >-
+            If true, this constraint is mechanically enforced (schema/contract/
+            fitness fn), not advisory.
+          type: boolean
+          default: true
+
+  requirements:
+    type: array
+    items:
+      type: object
+      required: [id, title]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^REQ-[0-9]{3,}$' }
+        title: { type: string, minLength: 1 }
+        rationale: { type: string }
+        acceptance:
+          type: array
+          items:
+            type: object
+            required: [id, ears]
+            additionalProperties: false
+            properties:
+              id: { type: string, pattern: '^AC-[0-9]{3,}$' }
+              ears:
+                description: >-
+                  Acceptance criterion in EARS notation (When/While/Where/If
+                  <trigger>, the <system> shall <response>).
+                type: string
+                minLength: 1
+              test:
+                description: >-
+                  Executable check that proves this AC: a .feature scenario ref or
+                  a test file/id path. Required for status=ready.
+                type: string
+                minLength: 1
+
+  contracts:
+    type: array
+    items:
+      type: object
+      required: [id, type, path]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^CTR-[0-9]{3,}$' }
+        type: { enum: [openapi, jsonschema, asyncapi] }
+        path: { type: string, minLength: 1 }
+
+  components:
+    type: array
+    items:
+      type: object
+      required: [id, responsibility]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^CMP-[0-9]{3,}$' }
+        responsibility: { type: string, minLength: 1 }
+        depends_on:
+          type: array
+          items: { type: string, pattern: '^CMP-[0-9]{3,}$' }
+        interfaces:
+          type: array
+          items:
+            type: object
+            required: [name, contract]
+            additionalProperties: false
+            properties:
+              name: { type: string, minLength: 1 }
+              contract: { type: string, pattern: '^CTR-[0-9]{3,}$' }
+
+  decisions:
+    type: array
+    items:
+      type: object
+      required: [id, title, status, path]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^ADR-[0-9]{3,}$' }
+        title: { type: string, minLength: 1 }
+        status: { enum: [proposed, accepted, superseded, deprecated] }
+        path: { type: string, minLength: 1 }
+
+  tasks:
+    type: array
+    items:
+      type: object
+      required: [id, title, satisfies]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: '^TSK-[0-9]{3,}$' }
+        title: { type: string, minLength: 1 }
+        satisfies:
+          description: >-
+            Acceptance criteria this task delivers. Every AC must be satisfied by
+            at least one task.
+          type: array
+          minItems: 1
+          items: { type: string, pattern: '^AC-[0-9]{3,}$' }
+        touches:
+          type: array
+          items: { type: string, pattern: '^(CMP|CTR)-[0-9]{3,}$' }
+        depends_on:
+          type: array
+          items: { type: string, pattern: '^TSK-[0-9]{3,}$' }
+        parallelizable: { type: boolean, default: false }

@@ -1,0 +1,17 @@
+# Architecture rules — allowed dependency directions between layers.
+# Spec-level: the verifier checks component `depends_on` edges against this.
+# Code-level (gate 4): the same intent is enforced against real source by a
+# fitness function (dependency-cruiser / import-linter / ArchUnit / deptrac),
+# generated from these layers. Anything not explicitly allowed is denied.
+
+layers:
+  presentation: []   # e.g. [CMP-001]  — API/UI edge
+  domain: []         # e.g. [CMP-002]  — business logic
+  data: []           # e.g. [CMP-003]  — persistence/integration
+
+allow:
+  - from: presentation
+    to: [domain]
+  - from: domain
+    to: [data]
+  # same-layer dependencies are always allowed; add cross-layer edges explicitly.
