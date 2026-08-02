@@ -214,9 +214,10 @@ tests/
 
 - `avspec verify [dir] [--json]` — the CI gate. Exit 0/1.
 - `avspec next [dir] --json` — the same findings ordered by authoring order
-  (constitution → requirements → acceptance → modules → boundaries → contracts →
-  ui → tests → stack; stack is an implementation detail and is asked last), each
-  carrying a human-readable `question`. This is the interview's brain.
+  (constitution → requirements → modules → data → apps → boundaries → contracts →
+  acceptance → ui → tests → stack; stories and acceptance come after the shape is
+  known, and stack — an implementation detail — is asked last), each carrying a
+  human-readable `question`. This is the interview's brain.
 
 ### Initial rule set (draft — final list fixed during planning)
 

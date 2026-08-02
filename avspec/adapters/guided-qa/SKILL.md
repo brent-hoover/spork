@@ -31,22 +31,41 @@ propose sensible defaults. You never decide completeness; `avspec verify` does.
 3. Run `avspec next <dir> --json` to read the current gap queue.
    (In this repo: `uv run avspec next <dir> --json`.)
 
-## Seed pass (before the loop, on a near-empty spec)
+## The authoring flow
 
-The queue's first todos (constitution, requirements) are seeded
-conversationally, not asked verbatim:
+The queue enforces this order; conduct the conversation to match it:
 
-1. **Constitution** — apply the user's standing defaults (test-first,
-   one-way dependency flow, no secrets in source) with a one-line
-   confirmation, not a question each. Spend the actual question on
-   project-specific principles: "what are THIS system's non-negotiables?"
-2. **Functionality inventory** — always, for every project. Collect the
-   full capability list as light bullets. For a well-known app type (issue
-   tracker, shop, CMS), PROPOSE the genre's baseline as a bullet list for
-   the user to prune and extend rather than asking open-ended. Write each
-   surviving capability as a `REQ-*` with a title (rationale optional at
-   this stage) and let the gap loop (`REQ_NO_AC` …) turn them into full
-   requirements later.
+1. **Vision + non-negotiables** — 1–3 sentences into `project.description`.
+   Apply the user's standing constitution defaults (test-first, one-way
+   dependency flow, no secrets in source) with a one-line confirmation, not
+   a question each; spend the actual question on THIS system's
+   project-specific principles.
+2. **Functionality inventory** — always, for every project. Broad
+   capability bullets, not user stories yet. For a well-known app type
+   (issue tracker, shop, CMS), PROPOSE the genre's baseline for the user to
+   prune and extend rather than asking open-ended. Each survivor becomes a
+   `REQ-*` with a title (rationale optional for now).
+3. **Modules** — if the inventory is long, group like functionality.
+   Heuristics: capabilities sharing the same core nouns (data ownership)
+   live together; things that change together live together; a capability
+   that merely *calls* another belongs behind a contract. Propose a
+   grouping; the user reshapes it.
+4. **Data** — the entities, their fields (neutral types), relations, and
+   which module owns each. Entity ownership is also the strongest check on
+   the module grouping from step 3.
+5. **Apps** — one deployable or several. A critical, deliberate decision:
+   crossing a process boundary changes failure semantics, transactionality,
+   and enforcement. One app is a valid answer; split for forcing reasons
+   (runtime shape, deploy cadence, isolation, scaling, language). Imports
+   never cross apps — only contracts do.
+6. **Boundaries and contracts** — what each module may import; how modules
+   (and apps) communicate.
+7. **User stories / acceptance criteria** — turn every REQ into testable
+   ACs, then UI views/actions where a surface exists.
+8. **Tests** — a Gherkin scenario reference per AC.
+9. **Stack** — asked last; implementation details follow shape.
+10. **Validate** — `avspec verify` green at `ready`. Building the app is
+    out of scope for the interview (that is the harness's job).
 
 ## The loop
 
