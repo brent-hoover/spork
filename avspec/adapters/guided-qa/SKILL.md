@@ -31,6 +31,23 @@ propose sensible defaults. You never decide completeness; `avspec verify` does.
 3. Run `avspec next <dir> --json` to read the current gap queue.
    (In this repo: `uv run avspec next <dir> --json`.)
 
+## Seed pass (before the loop, on a near-empty spec)
+
+The queue's first todos (constitution, requirements) are seeded
+conversationally, not asked verbatim:
+
+1. **Constitution** — apply the user's standing defaults (test-first,
+   one-way dependency flow, no secrets in source) with a one-line
+   confirmation, not a question each. Spend the actual question on
+   project-specific principles: "what are THIS system's non-negotiables?"
+2. **Functionality inventory** — if the app is a well-known type (issue
+   tracker, shop, CMS), first ask **"what makes yours different?"** — the
+   differentiators lead the inventory. If it's a novel type, go straight to
+   the inventory. Either way: collect a light bullet list of capabilities,
+   write each as a `REQ-*` with a title (rationale optional at this stage),
+   and let the gap loop (`REQ_NO_AC` …) turn them into full requirements
+   later.
+
 ## The loop
 
 Repeat until `avspec next` returns zero findings:
