@@ -61,16 +61,19 @@ skipped ones at the end rather than spinning on them.
 - `NO_REQUIREMENTS` → loop "what must it do?" until the user is out;
   one REQ per answer with title and rationale.
 - `REQ_NO_AC` → elicit testable statements (EARS or given/when/then prose).
-- `AC_NO_TEST` → propose a scenario name; set
-  `test: verification/<REQ>.feature#<scenario>` and create the file with
+- `AC_NO_TEST` → propose a scenario name; set the ref in the required
+  `path/to/file.feature#scenario name` format and create the file with
   that scenario sketched in Gherkin.
+- `TEST_REF_INVALID` / `TEST_SCENARIO_MISSING` → the ref is malformed
+  (missing `#scenario name`, or the path isn't a `.feature` file) or the
+  named scenario isn't in the file; fix the ref or add the scenario.
 - `NO_MODULES` → ask for the units of the system, one responsibility each.
 - `MOD_NO_BOUNDARIES` → ask which modules each may import. An empty list is
   a valid, explicit answer.
-- UI findings (`UI_NO_ENTRY`, `VIEW_NO_AC`, `VIEW_UNREACHABLE`,
-  `ACTION_ORPHAN`) → the UI spec is functionality only: screens, what each
-  shows, what each can do, where each navigates. Never ask about layout or
-  styling.
+- UI findings (`UI_NO_VIEWS`, `UI_NO_ENTRY`, `VIEW_NO_AC`,
+  `VIEW_UNREACHABLE`, `ACTION_ORPHAN`) → the UI spec is functionality only:
+  screens, what each shows, what each can do, where each navigates. Never
+  ask about layout or styling.
 
 ## Done
 
