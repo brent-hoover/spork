@@ -65,6 +65,20 @@ def test_full_module_round_trip() -> None:
     assert m.modules[0].ui.views[0].satisfies == ["AC-ok"]
 
 
+def test_blank_title_is_rejected() -> None:
+    data = {
+        **MINIMAL,
+        "requirements": [{"id": "REQ-a", "title": "   "}],
+    }
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(data)
+
+
+def test_blank_project_name_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Manifest.model_validate({**MINIMAL, "project": {"name": ""}})
+
+
 def test_stack_accepts_bare_and_versioned_languages() -> None:
     m = Manifest.model_validate(
         {

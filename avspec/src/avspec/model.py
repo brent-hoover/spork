@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+
+
+def _reject_blank(v: str) -> str:
+    if not v.strip():
+        raise ValueError("must not be blank")
+    return v
+
+
+NonBlankStr = Annotated[str, AfterValidator(_reject_blank)]
 
 
 class StrictModel(BaseModel):
@@ -20,7 +29,7 @@ class Commands(StrictModel):
 
 
 class Language(StrictModel):
-    name: str
+    name: NonBlankStr
     version: str | None = None
 
 
@@ -33,34 +42,34 @@ class Stack(StrictModel):
 
 
 class Project(StrictModel):
-    name: str
+    name: NonBlankStr
     description: str | None = None
     status: Literal["draft", "ready", "built"] = "draft"
     stack: Stack | None = None
 
 
 class ConstitutionEntry(StrictModel):
-    id: str
-    statement: str
+    id: NonBlankStr
+    statement: NonBlankStr
 
 
 class AcceptanceCriterion(StrictModel):
-    id: str
-    statement: str
+    id: NonBlankStr
+    statement: NonBlankStr
     test: str | None = None  # "relative/path.feature#scenario name"
 
 
 class Requirement(StrictModel):
-    id: str
-    title: str
+    id: NonBlankStr
+    title: NonBlankStr
     rationale: str | None = None
     acceptance: list[AcceptanceCriterion] = Field(default_factory=list)
 
 
 class Contract(StrictModel):
-    id: str
+    id: NonBlankStr
     type: str  # openapi | asyncapi | jsonschema — free-form, never an enum
-    path: str
+    path: NonBlankStr
 
 
 class Boundaries(StrictModel):
@@ -68,8 +77,8 @@ class Boundaries(StrictModel):
 
 
 class View(StrictModel):
-    id: str
-    name: str
+    id: NonBlankStr
+    name: NonBlankStr
     route: str | None = None  # web
     invocation: str | None = None  # cli / tui
     purpose: str | None = None
@@ -80,8 +89,8 @@ class View(StrictModel):
 
 
 class Action(StrictModel):
-    id: str
-    name: str
+    id: NonBlankStr
+    name: NonBlankStr
     invokes: str | None = None  # "CTR-<id>#<operation>"
 
 
@@ -93,8 +102,8 @@ class UI(StrictModel):
 
 
 class Module(StrictModel):
-    id: str
-    name: str
+    id: NonBlankStr
+    name: NonBlankStr
     responsibility: str | None = None
     stack: Stack | None = None
     boundaries: Boundaries | None = None

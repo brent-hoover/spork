@@ -25,6 +25,12 @@ def test_prefix_mismatch(tmp_path: Path) -> None:
     assert codes(wellformed.prefix_mismatch(make_spec(tmp_path, data))) == ["PREFIX_MISMATCH"]
 
 
+def test_prefix_mismatch_bare_prefix(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-", "name": "x"}]
+    assert codes(wellformed.prefix_mismatch(make_spec(tmp_path, data))) == ["PREFIX_MISMATCH"]
+
+
 def test_dangling_may_import(tmp_path: Path) -> None:
     data = base()
     data["modules"] = [{"id": "MOD-a", "name": "a", "boundaries": {"may_import": ["MOD-ghost"]}}]

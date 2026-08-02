@@ -60,6 +60,15 @@ def prefix_mismatch(spec: Spec) -> Iterable[Finding]:
                 ref=obj_id,
                 message=f"A {kind} id must start with {prefix!r}; got {obj_id!r}.",
             )
+        elif obj_id == prefix or len(obj_id) <= len(prefix):
+            yield Finding(
+                code="PREFIX_MISMATCH",
+                severity=Severity.ERROR,
+                ref=obj_id,
+                message=(
+                    f"A {kind} id must have a non-empty suffix after {prefix!r}; got {obj_id!r}."
+                ),
+            )
 
 
 def _dangling(ref: str, owner: str, field: str) -> Finding:
