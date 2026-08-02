@@ -18,3 +18,7 @@ def rule(fn: Rule) -> Rule:
     """Register a rule. A rule module not imported below silently does nothing."""
     RULES.append(fn)
     return fn
+
+
+# Imported for registration side effects — a rule module missing here does nothing.
+from avspec.rules import wellformed  # noqa: E402, F401
