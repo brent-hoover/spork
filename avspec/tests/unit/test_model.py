@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from avspec.model import Language, Manifest
+from avspec.model import Data, Entity, EntityField, Language, Manifest, Relation
 
 MINIMAL = {"avspec": "0.3", "project": {"name": "demo"}}
 
@@ -102,6 +102,68 @@ def test_blank_contract_type_is_rejected() -> None:
     }
     with pytest.raises(ValidationError):
         Manifest.model_validate(data)
+
+
+def test_data_section_round_trips() -> None:
+    data = {
+        **MINIMAL,
+        "data": {
+            "entities": [
+                {
+                    "id": "ENT-link",
+                    "name": "Link",
+                    "fields": [
+                        {"name": "code", "type": "string", "required": True, "unique": True},
+                        {"name": "owner", "type": "ref", "ref": "ENT-user"},
+                    ],
+                    "relations": [{"to": "ENT-user", "kind": "one_to_many"}],
+                },
+                {"id": "ENT-user", "name": "User"},
+            ]
+        },
+        "modules": [{"id": "MOD-data", "name": "data", "owns": ["ENT-link", "ENT-user"]}],
+    }
+    m = Manifest.model_validate(data)
+    assert isinstance(m.data, Data)
+    assert m.data.entities[0].fields[0].name == "code"
+    assert m.data.entities[0].relations[0].to == "ENT-user"
+    assert m.modules[0].owns == ["ENT-link", "ENT-user"]
+
+
+def test_data_defaults_to_none() -> None:
+    m = Manifest.model_validate(MINIMAL)
+    assert m.data is None
+
+
+def test_empty_data_entities_is_valid() -> None:
+    m = Manifest.model_validate({**MINIMAL, "data": {"entities": []}})
+    assert m.data is not None
+    assert m.data.entities == []
+
+
+def test_entity_field_bad_type_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        EntityField.model_validate({"name": "x", "type": "float"})
+
+
+def test_entity_field_blank_name_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        EntityField.model_validate({"name": "   ", "type": "string"})
+
+
+def test_relation_bad_kind_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Relation.model_validate({"to": "ENT-x", "kind": "many_to_many_to_many"})
+
+
+def test_entity_extra_field_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Entity.model_validate({"id": "ENT-x", "name": "X", "bogus": "nope"})
+
+
+def test_module_owns_defaults_to_empty() -> None:
+    m = Manifest.model_validate({**MINIMAL, "modules": [{"id": "MOD-a", "name": "a"}]})
+    assert m.modules[0].owns == []
 
 
 def test_stack_accepts_bare_and_versioned_languages() -> None:

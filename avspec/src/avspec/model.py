@@ -39,6 +39,7 @@ class Stack(StrictModel):
     frameworks: list[str] = Field(default_factory=list)
     bdd: str | None = None
     commands: Commands | None = None
+    store: str | None = None  # free-form (postgres, sqlite, none, ...) — implementation detail
 
 
 class Project(StrictModel):
@@ -109,6 +110,36 @@ class Module(StrictModel):
     boundaries: Boundaries | None = None
     contracts: list[Contract] = Field(default_factory=list)
     ui: UI | None = None
+    owns: list[str] = Field(default_factory=list)  # ENT-* this module owns
+
+
+class EntityField(StrictModel):
+    name: NonBlankStr
+    type: Literal[
+        "string", "integer", "decimal", "boolean", "datetime", "date", "uuid", "json", "enum", "ref"
+    ]
+    required: bool = False
+    unique: bool = False
+    values: list[str] = Field(default_factory=list)  # enum only
+    ref: str | None = None  # ENT-* target, ref type only
+
+
+class Relation(StrictModel):
+    to: NonBlankStr  # ENT-*
+    kind: Literal["one_to_one", "one_to_many", "many_to_many"]
+    name: str | None = None
+
+
+class Entity(StrictModel):
+    id: NonBlankStr
+    name: NonBlankStr
+    description: str | None = None
+    fields: list[EntityField] = Field(default_factory=list)
+    relations: list[Relation] = Field(default_factory=list)
+
+
+class Data(StrictModel):
+    entities: list[Entity] = Field(default_factory=list)
 
 
 class Manifest(StrictModel):
@@ -117,3 +148,4 @@ class Manifest(StrictModel):
     constitution: list[ConstitutionEntry] = Field(default_factory=list)
     requirements: list[Requirement] = Field(default_factory=list)
     modules: list[Module] = Field(default_factory=list)
+    data: Data | None = None

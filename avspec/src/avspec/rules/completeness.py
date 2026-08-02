@@ -134,6 +134,35 @@ def modules_present(spec: Spec) -> Iterable[Finding]:
 
 
 @rule
+def data_present(spec: Spec) -> Iterable[Finding]:
+    if spec.manifest.data is None:
+        yield _todo(
+            "NO_DATA",
+            "No data section is declared.",
+            "What are the core entities, their fields and relations — "
+            "or confirm the system has no persistent data.",
+        )
+        return
+    owned = {e for m in spec.manifest.modules for e in m.owns}
+    for entity in spec.manifest.data.entities:
+        if not entity.fields:
+            yield _todo(
+                "ENT_NO_FIELDS",
+                f"{entity.id} has no fields.",
+                f"What fields does {entity.id} ({entity.name}) have?",
+                ref=entity.id,
+            )
+        if entity.id not in owned:
+            yield _todo(
+                "ENT_UNOWNED",
+                f"{entity.id} is owned by no module.",
+                f"Which module owns {entity.id} ({entity.name}) — "
+                "reads and writes its persisted state?",
+                ref=entity.id,
+            )
+
+
+@rule
 def test_files_exist(spec: Spec) -> Iterable[Finding]:
     for req in spec.manifest.requirements:
         for ac in req.acceptance:

@@ -83,6 +83,11 @@ skipped ones at the end rather than spinning on them.
   (missing `#scenario name`, or the path isn't a `.feature` file) or the
   named scenario isn't in the file; fix the ref or add the scenario.
 - `NO_MODULES` → ask for the units of the system, one responsibility each.
+- `NO_DATA` → elicit the core entities, their fields, and their relations;
+  an explicit "no persistent data" (`data: {entities: []}`) is valid.
+- `ENT_NO_FIELDS` → ask what fields the entity has.
+- `ENT_UNOWNED` / `ENT_MULTI_OWNER` → ask which single module reads and
+  writes this entity's state; ownership must be exactly one module.
 - `MOD_NO_BOUNDARIES` → ask which modules each may import. An empty list is
   a valid, explicit answer.
 - UI findings (`UI_NO_VIEWS`, `UI_NO_ENTRY`, `VIEW_NO_AC`,

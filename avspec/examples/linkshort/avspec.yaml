@@ -13,6 +13,7 @@ project:
       install: pnpm install
       test: pnpm test
       lint: pnpm lint
+    store: sqlite
 
 constitution:
   - id: CON-layering
@@ -42,6 +43,21 @@ requirements:
         statement: If a request targets an unknown short code, then the system shall respond 404.
         test: verification/REQ-resolve-link.feature#unknown code is not found
 
+data:
+  entities:
+    - id: ENT-link
+      name: Link
+      fields:
+        - name: code
+          type: string
+          required: true
+          unique: true
+        - name: target_url
+          type: string
+          required: true
+        - name: created_at
+          type: datetime
+
 modules:
   - id: MOD-api
     name: api
@@ -59,6 +75,7 @@ modules:
     name: data
     responsibility: Persists and looks up code-to-URL mappings.
     boundaries: { may_import: [] }
+    owns: [ENT-link]
   - id: MOD-web
     name: web-ui
     responsibility: Browser front end for creating links.
@@ -71,7 +88,7 @@ modules:
           name: Create link
           route: /
           purpose: Paste a URL, get a short code.
-          shows: [target_url, short_code]
+          shows: [ENT-link.target_url, ENT-link.code]
           actions: [ACT-create]
           satisfies: [AC-valid-url, AC-bad-url]
       actions:

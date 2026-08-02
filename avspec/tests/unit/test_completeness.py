@@ -22,8 +22,9 @@ def test_empty_spec_fires_all_absence_todos(tmp_path: Path) -> None:
         + codes(completeness.constitution_present(spec))
         + codes(completeness.requirements_present(spec))
         + codes(completeness.modules_present(spec))
+        + codes(completeness.data_present(spec))
     )
-    assert found == ["NO_CONSTITUTION", "NO_MODULES", "NO_REQUIREMENTS", "NO_STACK"]
+    assert found == ["NO_CONSTITUTION", "NO_DATA", "NO_MODULES", "NO_REQUIREMENTS", "NO_STACK"]
 
 
 def test_every_todo_has_a_question(tmp_path: Path) -> None:
@@ -33,6 +34,7 @@ def test_every_todo_has_a_question(tmp_path: Path) -> None:
         completeness.constitution_present,
         completeness.requirements_present,
         completeness.modules_present,
+        completeness.data_present,
     ):
         for finding in run(spec):
             assert finding.question, f"{finding.code} has no question"
@@ -176,6 +178,38 @@ def test_empty_may_import_is_a_valid_answer(tmp_path: Path) -> None:
         {"id": "MOD-leaf", "name": "leaf", "responsibility": "r", "boundaries": {"may_import": []}}
     ]
     assert codes(completeness.modules_present(make_spec(tmp_path, data))) == []
+
+
+def test_explicit_empty_entities_is_not_no_data(tmp_path: Path) -> None:
+    data = base()
+    data["data"] = {"entities": []}
+    assert codes(completeness.data_present(make_spec(tmp_path, data))) == []
+
+
+def test_entity_no_fields(tmp_path: Path) -> None:
+    data = base()
+    data["data"] = {"entities": [{"id": "ENT-a", "name": "A"}]}
+    assert codes(completeness.data_present(make_spec(tmp_path, data))) == [
+        "ENT_NO_FIELDS",
+        "ENT_UNOWNED",
+    ]
+
+
+def test_entity_with_fields_is_clean(tmp_path: Path) -> None:
+    data = base()
+    data["data"] = {
+        "entities": [{"id": "ENT-a", "name": "A", "fields": [{"name": "x", "type": "string"}]}]
+    }
+    data["modules"] = [{"id": "MOD-a", "name": "a", "owns": ["ENT-a"]}]
+    assert codes(completeness.data_present(make_spec(tmp_path, data))) == []
+
+
+def test_entity_unowned(tmp_path: Path) -> None:
+    data = base()
+    data["data"] = {
+        "entities": [{"id": "ENT-a", "name": "A", "fields": [{"name": "x", "type": "string"}]}]
+    }
+    assert codes(completeness.data_present(make_spec(tmp_path, data))) == ["ENT_UNOWNED"]
 
 
 def test_contract_file_missing_unparseable_and_ok(tmp_path: Path) -> None:
