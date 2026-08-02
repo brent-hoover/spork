@@ -1,0 +1,20 @@
+name: verify
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: avspec
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ty check
+      - run: uv run pytest
+      - run: uv run avspec verify examples/linkshort

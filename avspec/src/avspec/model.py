@@ -1,25 +1,23 @@
-"""Pydantic models for the AVSpec manifest."""
+"""Pydantic models for the AVSpec 0.3 manifest — the canonical format definition."""
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+
+
+def _reject_blank(v: str) -> str:
+    if not v.strip():
+        raise ValueError("must not be blank")
+    return v
+
+
+NonBlankStr = Annotated[str, AfterValidator(_reject_blank)]
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class Metadata(StrictModel):
-    name: str
-    status: Literal["draft", "ready", "built"]
-    description: str | None = None
-
-
-class LanguageSpec(StrictModel):
-    name: str
-    version: str | None = None
 
 
 class Commands(StrictModel):
@@ -30,134 +28,71 @@ class Commands(StrictModel):
     arch: str | None = None
 
 
+class Language(StrictModel):
+    name: NonBlankStr
+    version: str | None = None
+
+
 class Stack(StrictModel):
-    languages: list[str | LanguageSpec] = Field(default_factory=list)
+    languages: list[NonBlankStr | Language] = Field(default_factory=list)
     package_manager: str | None = None
     frameworks: list[str] = Field(default_factory=list)
     bdd: str | None = None
     commands: Commands | None = None
-    fitness_function: str | None = None
+    store: str | None = None  # free-form (postgres, sqlite, none, ...) — implementation detail
 
 
-class Artifacts(StrictModel):
-    constitution: str
-    requirements: str
-    design: str
-    tasks: str
+class Project(StrictModel):
+    name: NonBlankStr
+    description: str | None = None
+    status: Literal["draft", "ready", "built"] = "draft"
+    stack: Stack | None = None
 
 
-class Principle(StrictModel):
-    id: str
-    statement: str
-
-
-class Constraint(StrictModel):
-    id: str
-    statement: str
-    gate: bool = True
+class ConstitutionEntry(StrictModel):
+    id: NonBlankStr
+    statement: NonBlankStr
 
 
 class AcceptanceCriterion(StrictModel):
-    id: str
-    ears: str
-    test: str | None = None
+    id: NonBlankStr
+    statement: NonBlankStr
+    test: str | None = None  # "relative/path.feature#scenario name"
 
 
 class Requirement(StrictModel):
-    id: str
-    title: str
+    id: NonBlankStr
+    title: NonBlankStr
     rationale: str | None = None
     acceptance: list[AcceptanceCriterion] = Field(default_factory=list)
 
 
 class Contract(StrictModel):
-    id: str
-    type: Literal["openapi", "jsonschema", "asyncapi"]
-    path: str
+    id: NonBlankStr
+    type: NonBlankStr  # openapi | asyncapi | jsonschema — free-form, never an enum
+    path: NonBlankStr
 
 
-class Interface(StrictModel):
-    name: str
-    contract: str
-
-
-class Component(StrictModel):
-    id: str
-    responsibility: str
-    depends_on: list[str] = Field(default_factory=list)
-    interfaces: list[Interface] = Field(default_factory=list)
-    owns: list[str] = Field(default_factory=list)
-    stack: Stack | None = None
-
-
-class Decision(StrictModel):
-    id: str
-    title: str
-    status: Literal["proposed", "accepted", "superseded", "deprecated"]
-    path: str
-
-
-class Task(StrictModel):
-    id: str
-    title: str
-    satisfies: list[str]
-    touches: list[str] = Field(default_factory=list)
-    depends_on: list[str] = Field(default_factory=list)
-    parallelizable: bool = False
-
-
-class FieldDef(StrictModel):
-    name: str
-    type: str
-    required: bool = True
-    unique: bool = False
-
-
-class Relation(StrictModel):
-    to: str
-    kind: str
-    name: str | None = None
-
-
-class Entity(StrictModel):
-    id: str
-    name: str
-    description: str | None = None
-    fields: list[FieldDef] = Field(default_factory=list)
-    relations: list[Relation] = Field(default_factory=list)
-
-
-class DataModel(StrictModel):
-    store: str
-    entities: list[Entity] = Field(default_factory=list)
-
-
-class ConfigEntry(StrictModel):
-    id: str
-    name: str
-    type: str
-    required: bool = True
-    secret: bool = False
-    description: str | None = None
+class Boundaries(StrictModel):
+    may_import: list[str] = Field(default_factory=list)
 
 
 class View(StrictModel):
-    id: str
-    name: str
-    purpose: str
-    route: str | None = None
-    invocation: str | None = None
-    displays: list[str] = Field(default_factory=list)
+    id: NonBlankStr
+    name: NonBlankStr
+    route: str | None = None  # web
+    invocation: str | None = None  # cli / tui
+    purpose: str | None = None
+    shows: list[str] = Field(default_factory=list)
     actions: list[str] = Field(default_factory=list)
     navigates_to: list[str] = Field(default_factory=list)
     satisfies: list[str] = Field(default_factory=list)
 
 
 class Action(StrictModel):
-    id: str
-    name: str
-    invokes: str | None = None
-    writes: list[str] = Field(default_factory=list)
+    id: NonBlankStr
+    name: NonBlankStr
+    invokes: str | None = None  # "CTR-<id>#<operation>"
 
 
 class UI(StrictModel):
@@ -167,22 +102,67 @@ class UI(StrictModel):
     actions: list[Action] = Field(default_factory=list)
 
 
-class Manifest(StrictModel):
-    avspec: str
-    metadata: Metadata
-    mode: Literal["greenfield"]
-    artifacts: Artifacts
+class Module(StrictModel):
+    id: NonBlankStr
+    name: NonBlankStr
+    responsibility: str | None = None
     stack: Stack | None = None
-    principles: list[Principle] = Field(default_factory=list)
-    constraints: list[Constraint] = Field(default_factory=list)
-    requirements: list[Requirement] = Field(default_factory=list)
+    boundaries: Boundaries | None = None
     contracts: list[Contract] = Field(default_factory=list)
-    components: list[Component] = Field(default_factory=list)
-    decisions: list[Decision] = Field(default_factory=list)
-    tasks: list[Task] = Field(default_factory=list)
-    data: DataModel | None = None
-    config: list[ConfigEntry] = Field(default_factory=list)
     ui: UI | None = None
+    owns: list[str] = Field(default_factory=list)  # ENT-* this module owns
 
-    def model_dump_yaml(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+
+class EntityField(StrictModel):
+    name: NonBlankStr
+    type: Literal[
+        "string", "integer", "decimal", "boolean", "datetime", "date", "uuid", "json", "enum", "ref"
+    ]
+    required: bool = False
+    unique: bool = False
+    values: list[str] = Field(default_factory=list)  # enum only
+    ref: str | None = None  # ENT-* target, ref type only
+
+    @model_validator(mode="after")
+    def _check_ref_integrity(self) -> EntityField:
+        if self.type == "ref" and not (self.ref and self.ref.strip()):
+            raise ValueError("EntityField.type == 'ref' requires a non-blank 'ref' target.")
+        if self.type != "ref" and self.ref is not None:
+            raise ValueError(
+                f"EntityField.ref is only valid when type == 'ref'; got {self.type!r}."
+            )
+        return self
+
+
+class Relation(StrictModel):
+    to: NonBlankStr  # ENT-*
+    kind: Literal["one_to_one", "one_to_many", "many_to_many"]
+    name: str | None = None
+
+
+class Entity(StrictModel):
+    id: NonBlankStr
+    name: NonBlankStr
+    description: str | None = None
+    fields: list[EntityField] = Field(default_factory=list)
+    relations: list[Relation] = Field(default_factory=list)
+
+
+class Data(StrictModel):
+    entities: list[Entity] = Field(default_factory=list)
+
+
+class App(StrictModel):
+    id: NonBlankStr
+    name: NonBlankStr
+    modules: list[str] = Field(default_factory=list)  # MOD-*
+
+
+class Manifest(StrictModel):
+    avspec: Literal["0.3"]
+    project: Project
+    constitution: list[ConstitutionEntry] = Field(default_factory=list)
+    requirements: list[Requirement] = Field(default_factory=list)
+    modules: list[Module] = Field(default_factory=list)
+    data: Data | None = None
+    apps: list[App] = Field(default_factory=list)

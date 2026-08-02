@@ -139,6 +139,55 @@ returns later they upgrade to checked `ENT-*.field` references. Per-module
 declaration means multiple surfaces (admin panel, public web, CLI) are just multiple
 modules.
 
+## data and apps — added after the sutra dry run
+
+Slice 1 shipped without a `data:` section and without app-level deployment
+topology. Running a real spec through the guided interview showed both gaps
+immediately: "what does this store?" and "how many things get deployed?" are
+questions every non-trivial system needs answered, and neither one was
+representable.
+
+**`data:`** models the entity layer: `data.entities[]`, each an `ENT-*` with
+`fields[]` (a fixed, neutral vocabulary — string, integer, decimal, boolean,
+datetime, date, uuid, json, enum, ref — never the storage engine's types) and
+`relations[]` (`to` an `ENT-*`, a `kind` of one_to_one / one_to_many /
+many_to_many). A module declares which entities it owns via `owns: [ENT-*]`.
+Two rules keep this coherent: `ENT_UNOWNED` (nothing reads or writes this
+entity's persisted state — a todo) and `ENT_MULTI_OWNER` (two modules both
+claim it, which breaks the single-writer invariant boundaries already assume
+— an error). `NO_DATA` mirrors the boundaries pattern: an explicit
+`data: {entities: []}` is a complete, valid answer meaning "no persistent
+state," so the todo only fires when `data` is entirely absent. Once entities
+exist, `shows:` entries of the form `ENT-<id>.<field>` are checked against
+the entity and its field list — the free-form-string era from the UI section
+above ends the moment `data` exists, exactly as anticipated.
+
+Entities are also the strongest module-grouping signal available: two
+modules that both need to touch the same row are coupled whether or not
+their `boundaries` say so. Making ownership explicit and single-writer
+surfaces that coupling before it becomes a runtime bug.
+
+**`apps:`** models deployment topology: each `APP-*` bundles a list of
+`MOD-*` ids that ship and run together as one process/deployable unit. This
+is a first-class, verifiable decision rather than an implementation detail,
+because process topology changes failure semantics (a crash in one module
+now takes down or spares its neighbors depending on which app it's in),
+transactionality (in-process calls can share a transaction; cross-process
+calls cannot), and enforcement (an import is a compile-time guarantee; a
+cross-process call is a runtime contract). `MOD_MULTI_APP` (a module shipped
+in two apps — which one actually runs it?) and `BOUNDARY_CROSS_APP` (a
+module's `may_import` names a module living in a different app — imports
+cannot cross a process boundary; that communication has to go through a
+`contracts` entry instead) are errors. `NO_APPS` only fires once modules
+exist, and — like `data` — a single declared app is a complete, valid
+answer; the todo's question pushes back only when nothing has been said,
+not when the answer is "we deploy as one thing." `MOD_NO_APP` catches a
+module left out of every app once `apps:` exists at all.
+
+`store` (postgres, sqlite, none, ...) deliberately lives on `Stack`, not on
+`Data` or `App` — it's an implementation choice about how persistence is
+realized, made last, same as languages and package managers.
+
 ## The verifier core
 
 ```
@@ -165,9 +214,10 @@ tests/
 
 - `avspec verify [dir] [--json]` — the CI gate. Exit 0/1.
 - `avspec next [dir] --json` — the same findings ordered by authoring order
-  (constitution → requirements → acceptance → modules → boundaries → contracts →
-  ui → tests), each carrying a human-readable `question`. This is the interview's
-  brain.
+  (constitution → requirements → modules → data → apps → boundaries → contracts →
+  acceptance → ui → tests → stack; stories and acceptance come after the shape is
+  known, and stack — an implementation detail — is asked last), each carrying a
+  human-readable `question`. This is the interview's brain.
 
 ### Initial rule set (draft — final list fixed during planning)
 

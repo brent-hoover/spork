@@ -1,60 +1,66 @@
-"""Finding primitives and stable ordering."""
+"""Finding, Severity, and ordering. Imports nothing else from avspec."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
+from enum import StrEnum
 
-Severity = Literal["error", "todo", "warn"]
+
+class Severity(StrEnum):
+    ERROR = "error"
+    TODO = "todo"
+    WARN = "warn"
 
 
 @dataclass(frozen=True)
 class Finding:
-    severity: Severity
     code: str
+    severity: Severity
     message: str
-    ids: tuple[str, ...] = field(default_factory=tuple)
+    ref: str | None = None
     question: str | None = None
-    fix: str | None = None
 
 
+# Authoring order: you cannot answer later questions before earlier ones exist.
+# Stack comes last — it is an implementation detail, chosen only once what the
+# system must do and what shape it takes are already pinned down.
 CODE_ORDER: tuple[str, ...] = (
-    "SCHEMA",
-    "DUP_ID",
-    "DANGLING",
-    "CYCLE",
-    "ARCH_VIOLATION",
-    "NO_COMPONENTS",
-    "NO_BOUNDARIES",
-    "NO_CONTRACTS",
-    "CMP_NO_CONTRACT",
     "NO_CONSTITUTION",
     "NO_REQUIREMENTS",
+    "NO_MODULES",
+    "MOD_NO_RESPONSIBILITY",
+    "NO_DATA",
+    "ENT_NO_FIELDS",
+    "ENT_UNOWNED",
+    "NO_APPS",
+    "MOD_NO_APP",
+    "MOD_NO_BOUNDARIES",
+    "CONTRACT_FILE_MISSING",
     "REQ_NO_AC",
-    "AC_UNSATISFIED",
+    "UI_NO_VIEWS",
+    "UI_NO_ENTRY",
+    "VIEW_NO_AC",
+    "VIEW_UNREACHABLE",
+    "ACTION_ORPHAN",
     "AC_NO_TEST",
-    "LAYER_UNPLACED",
-    "NO_TASKS",
-    "ARTIFACT_MISSING",
-    "CONTRACT_MISSING",
-    "TEST_MISSING",
-    "ADR_MISSING",
+    "TEST_REF_INVALID",
+    "TEST_FILE_MISSING",
+    "TEST_SCENARIO_MISSING",
     "NO_STACK",
-    "STACK_INCOMPLETE",
-    "CMP_NO_STACK",
-    "MIRROR",
-    "NO_ARCH_RULES",
 )
-SEVERITY_RANK: dict[Severity, int] = {"error": 0, "todo": 1, "warn": 2}
+
+_SEVERITY_RANK = {Severity.ERROR: 0, Severity.TODO: 1, Severity.WARN: 2}
 
 
 def ordered(findings: Iterable[Finding]) -> list[Finding]:
-    return sorted(findings, key=lambda item: (SEVERITY_RANK[item.severity], code_rank(item.code)))
+    """Errors first, then todos in authoring order, then warns; ties break on ref."""
 
+    def key(finding: Finding) -> tuple[int, int, str]:
+        try:
+            position = CODE_ORDER.index(finding.code)
+        except ValueError:
+            position = len(CODE_ORDER)
+        return (_SEVERITY_RANK[finding.severity], position, finding.ref or "")
 
-def code_rank(code: str) -> int:
-    try:
-        return CODE_ORDER.index(code)
-    except ValueError:
-        return len(CODE_ORDER)
+    return sorted(findings, key=key)

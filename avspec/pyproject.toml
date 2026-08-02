@@ -1,13 +1,12 @@
 [project]
 name = "avspec"
-version = "0.2.0"
-description = "Agent-Verifiable Architecture Spec format, verifier, and interview CLI"
+version = "0.3.0"
+description = "Agent-Verifiable Architecture Spec format, verifier, and interview brain"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "gherkin-official>=29.0.0",
     "pydantic>=2.11",
-    "questionary>=2.1",
-    "rich>=14.0",
     "ruamel.yaml>=0.18",
     "typer>=0.16",
 ]
@@ -18,6 +17,7 @@ avspec = "avspec.cli:app"
 [dependency-groups]
 dev = [
     "pytest>=8.4",
+    "pytest-bdd>=8.1",
     "ruff>=0.12",
     "ty>=0.0.1a16",
 ]
@@ -33,7 +33,7 @@ packages = ["src/avspec"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
-extend-exclude = ["feature-work"]
+extend-exclude = ["feature-work", "examples", "templates"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
