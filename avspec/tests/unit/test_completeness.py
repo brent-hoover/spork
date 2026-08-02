@@ -1,6 +1,7 @@
 import copy
 from pathlib import Path
 
+from avspec.analysis import Spec
 from avspec.findings import Severity
 from avspec.rules import completeness
 from tests.conftest import MINIMAL, make_spec
@@ -59,8 +60,86 @@ def test_test_file_missing_and_present(tmp_path: Path) -> None:
     spec = make_spec(tmp_path, data)
     assert codes(completeness.test_files_exist(spec)) == ["TEST_FILE_MISSING"]
     (tmp_path / "verification").mkdir(parents=True)
-    (tmp_path / "verification" / "x.feature").write_text("Feature: x", encoding="utf-8")
+    (tmp_path / "verification" / "x.feature").write_text(
+        "Feature: x\n\n  Scenario: ok\n", encoding="utf-8"
+    )
     assert codes(completeness.test_files_exist(spec)) == []
+
+
+def _spec_with_test(tmp_path: Path, test_ref: str) -> Spec:
+    data = base()
+    data["requirements"] = [
+        {
+            "id": "REQ-x",
+            "title": "x",
+            "acceptance": [{"id": "AC-x", "statement": "s", "test": test_ref}],
+        }
+    ]
+    return make_spec(tmp_path, data)
+
+
+def test_test_ref_without_scenario_is_invalid(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature")
+    assert codes(completeness.test_files_exist(spec)) == ["TEST_REF_INVALID"]
+
+
+def test_test_ref_with_blank_scenario_is_invalid(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#   ")
+    assert codes(completeness.test_files_exist(spec)) == ["TEST_REF_INVALID"]
+
+
+def test_test_ref_non_feature_path_is_invalid(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.txt#ok")
+    assert codes(completeness.test_files_exist(spec)) == ["TEST_REF_INVALID"]
+
+
+def test_test_scenario_missing(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#nope")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "Feature: x\n\n  Scenario: ok\n", encoding="utf-8"
+    )
+    assert codes(completeness.test_files_exist(spec)) == ["TEST_SCENARIO_MISSING"]
+
+
+def test_test_scenario_outline_matches(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#ok")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "Feature: x\n\n  Scenario Outline: ok\n", encoding="utf-8"
+    )
+    assert codes(completeness.test_files_exist(spec)) == []
+
+
+def test_test_ref_absolute_path_escapes(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "/etc/passwd#x")
+    found = list(completeness.test_files_exist(spec))
+    assert codes(found) == ["PATH_ESCAPE"]
+    assert found[0].severity is Severity.ERROR
+
+
+def test_test_ref_traversal_escapes(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "../outside.feature#x")
+    found = list(completeness.test_files_exist(spec))
+    assert codes(found) == ["PATH_ESCAPE"]
+    assert found[0].severity is Severity.ERROR
+
+
+def test_contract_path_escapes(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-api",
+            "name": "api",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-x", "type": "openapi", "path": "../outside.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    found = list(completeness.contract_files(spec))
+    assert codes(found) == ["PATH_ESCAPE"]
+    assert found[0].severity is Severity.ERROR
 
 
 def test_module_todos(tmp_path: Path) -> None:

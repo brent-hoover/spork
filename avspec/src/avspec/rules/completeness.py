@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
+from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
@@ -14,6 +16,34 @@ from avspec.rules import rule
 
 def _todo(code: str, message: str, question: str, ref: str | None = None) -> Finding:
     return Finding(code=code, severity=Severity.TODO, message=message, question=question, ref=ref)
+
+
+def _path_escapes(spec_dir: Path, rel_path: str) -> bool:
+    """True if rel_path is absolute or resolves outside spec_dir (e.g. via ..)."""
+    if Path(rel_path).is_absolute():
+        return True
+    resolved = (spec_dir / rel_path).resolve()
+    return not resolved.is_relative_to(spec_dir.resolve())
+
+
+def _path_escape(owner: str, rel_path: str) -> Finding:
+    return Finding(
+        code="PATH_ESCAPE",
+        severity=Severity.ERROR,
+        ref=owner,
+        message=f"{owner} references {rel_path!r}, which escapes the spec directory.",
+    )
+
+
+_SCENARIO_RE = re.compile(r"^\s*Scenario(?: Outline)?:\s*(.*?)\s*$")
+
+
+def _scenario_exists(feature_path: Path, scenario: str) -> bool:
+    for line in feature_path.read_text(encoding="utf-8").splitlines():
+        match = _SCENARIO_RE.match(line)
+        if match and match.group(1) == scenario:
+            return True
+    return False
 
 
 @rule
@@ -101,12 +131,38 @@ def test_files_exist(spec: Spec) -> Iterable[Finding]:
         for ac in req.acceptance:
             if ac.test is None:
                 continue
-            rel_path = ac.test.split("#", 1)[0]
-            if not (spec.dir / rel_path).is_file():
+            has_hash = "#" in ac.test
+            rel_path, _, scenario = ac.test.partition("#")
+            if _path_escapes(spec.dir, rel_path):
+                yield _path_escape(ac.id, ac.test)
+                continue
+            scenario = scenario.strip()
+            if not has_hash or not scenario or not rel_path.endswith(".feature"):
+                yield _todo(
+                    "TEST_REF_INVALID",
+                    f"{ac.id} test ref {ac.test!r} is not "
+                    "'path/to/file.feature#scenario name'.",
+                    f"Which Gherkin scenario verifies {ac.id}? "
+                    "Answer as 'path/to/file.feature#scenario name'.",
+                    ref=ac.id,
+                )
+                continue
+            full_path = spec.dir / rel_path
+            if not full_path.is_file():
                 yield _todo(
                     "TEST_FILE_MISSING",
                     f"{ac.id} references {rel_path}, which does not exist.",
                     f"Create {rel_path} with the scenario that verifies {ac.id}.",
+                    ref=ac.id,
+                )
+                continue
+            if not _scenario_exists(full_path, scenario):
+                yield _todo(
+                    "TEST_SCENARIO_MISSING",
+                    f"{ac.id} references scenario {scenario!r} in {rel_path}, "
+                    "which does not exist.",
+                    f"Add the scenario {scenario!r} to {rel_path} for {ac.id}, "
+                    "or fix the reference.",
                     ref=ac.id,
                 )
 
@@ -119,6 +175,9 @@ def contract_files(spec: Spec) -> Iterable[Finding]:
     yaml = YAML(typ="safe")
     for module in spec.manifest.modules:
         for contract in module.contracts:
+            if _path_escapes(spec.dir, contract.path):
+                yield _path_escape(contract.id, contract.path)
+                continue
             path = spec.dir / contract.path
             if not path.is_file():
                 yield _todo(
