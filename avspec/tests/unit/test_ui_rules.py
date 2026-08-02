@@ -29,6 +29,11 @@ def view(view_id: str, **overrides) -> dict:
     return base
 
 
+def test_no_views(tmp_path: Path) -> None:
+    data = web_module({"kind": "web"})
+    assert "UI_NO_VIEWS" in codes(ui_rules.ui_shape(make_spec(tmp_path, data)))
+
+
 def test_no_entry(tmp_path: Path) -> None:
     data = web_module({"kind": "web", "views": [view("VIEW-a")]})
     assert "UI_NO_ENTRY" in codes(ui_rules.ui_shape(make_spec(tmp_path, data)))

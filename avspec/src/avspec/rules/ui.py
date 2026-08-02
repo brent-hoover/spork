@@ -20,6 +20,13 @@ def ui_shape(spec: Spec) -> Iterable[Finding]:
         if ui is None or ui.kind == "none":
             continue
         view_ids = {v.id for v in ui.views}
+        if not ui.views:
+            yield _todo(
+                "UI_NO_VIEWS",
+                f"{module.id} declares a {ui.kind} UI but no views.",
+                f"What screens or commands does {module.id}'s {ui.kind} surface have?",
+                ref=module.id,
+            )
         if ui.views and ui.entry is None:
             yield _todo(
                 "UI_NO_ENTRY",

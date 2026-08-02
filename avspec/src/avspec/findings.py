@@ -33,11 +33,14 @@ CODE_ORDER: tuple[str, ...] = (
     "MOD_NO_RESPONSIBILITY",
     "MOD_NO_BOUNDARIES",
     "CONTRACT_FILE_MISSING",
+    "UI_NO_VIEWS",
     "UI_NO_ENTRY",
     "VIEW_NO_AC",
     "VIEW_UNREACHABLE",
     "ACTION_ORPHAN",
+    "TEST_REF_INVALID",
     "TEST_FILE_MISSING",
+    "TEST_SCENARIO_MISSING",
 )
 
 _SEVERITY_RANK = {Severity.ERROR: 0, Severity.TODO: 1, Severity.WARN: 2}
