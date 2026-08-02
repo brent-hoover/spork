@@ -25,6 +25,7 @@ name = "avspec"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
+    { name = "gherkin-official" },
     { name = "pydantic" },
     { name = "ruamel-yaml" },
     { name = "typer" },
@@ -40,6 +41,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "gherkin-official", specifier = ">=29.0.0" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "typer", specifier = ">=0.16" },

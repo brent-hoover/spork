@@ -133,6 +133,41 @@ def test_test_scenario_template_alias_matches(tmp_path: Path) -> None:
     assert codes(completeness.test_files_exist(spec)) == []
 
 
+def test_test_scenario_localized_matches(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#ok")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "# language: de\nFunktionalität: x\n\n  Szenario: ok\n", encoding="utf-8"
+    )
+    assert codes(completeness.test_files_exist(spec)) == []
+
+
+def test_test_scenario_in_docstring_does_not_count(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#phantom")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "Feature: x\n\n"
+        "  Scenario: real\n"
+        "    Given a thing\n"
+        '      """\n'
+        "      Scenario: phantom\n"
+        '      """\n',
+        encoding="utf-8",
+    )
+    assert codes(completeness.test_files_exist(spec)) == ["TEST_SCENARIO_MISSING"]
+
+
+def test_test_scenario_unparseable_feature_file(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#ok")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "this is not gherkin @@@ :::\n", encoding="utf-8"
+    )
+    found = list(completeness.test_files_exist(spec))
+    assert codes(found) == ["TEST_SCENARIO_MISSING"]
+    assert "could not be parsed as Gherkin" in found[0].message
+
+
 def test_test_ref_absolute_path_escapes(tmp_path: Path) -> None:
     spec = _spec_with_test(tmp_path, "/etc/passwd#x")
     found = list(completeness.test_files_exist(spec))

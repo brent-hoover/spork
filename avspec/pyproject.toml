@@ -5,6 +5,7 @@ description = "Agent-Verifiable Architecture Spec format, verifier, and intervie
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "gherkin-official>=29.0.0",
     "pydantic>=2.11",
     "ruamel.yaml>=0.18",
     "typer>=0.16",

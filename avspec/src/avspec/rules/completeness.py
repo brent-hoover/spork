@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from gherkin.errors import CompositeParserException
+from gherkin.parser import Parser
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
@@ -35,23 +36,37 @@ def _path_escape(owner: str, rel_path: str) -> Finding:
     )
 
 
-# Matches Gherkin's "Scenario" keyword and its aliases (Example, Scenario Outline,
-# Scenario Template — Outline and Template are synonyms in the Gherkin grammar).
-# This is a line-based matcher, not a Gherkin-AST parser: it only recognizes the
-# English keyword set, and a matching line inside a docstring/comment/data table
-# would false-positive. Full Gherkin-AST parsing is deliberately deferred — it
-# would pull in a new runtime dependency for a check that's advisory, not load-bearing.
-_SCENARIO_RE = re.compile(
-    r"^\s*(?:Scenario(?: Outline)?|Example|Scenario Template):\s*(.*?)\s*$"
-)
+# Scenario matching is AST-based, via the gherkin-official parser (an owner-approved
+# runtime dependency). This correctly handles localized Gherkin (e.g. "# language: de"
+# and "Szenario:") and never mistakes text inside a docstring, comment, or data table
+# for a scenario heading, since it walks the parsed feature tree rather than lines.
 
 
-def _scenario_exists(feature_path: Path, scenario: str) -> bool:
-    for line in feature_path.read_text(encoding="utf-8").splitlines():
-        match = _SCENARIO_RE.match(line)
-        if match and match.group(1) == scenario:
-            return True
-    return False
+def _scenario_names(children: list[dict]) -> Iterable[str]:
+    """Yield scenario names from Feature/Rule children, recursing into Rule blocks."""
+    for child in children:
+        if "scenario" in child:
+            yield child["scenario"]["name"].strip()
+        elif "rule" in child:
+            yield from _scenario_names(child["rule"].get("children", []))
+
+
+def _scenario_exists(feature_path: Path, scenario: str) -> tuple[bool, str | None]:
+    """Check whether scenario is defined in feature_path.
+
+    Returns (found, parse_error): parse_error is a one-line summary if the file
+    could not be parsed as Gherkin, else None.
+    """
+    text = feature_path.read_text(encoding="utf-8")
+    try:
+        document = Parser().parse(text)
+    except CompositeParserException as exc:
+        return False, str(exc).splitlines()[0]
+    feature = document.get("feature")
+    if feature is None:
+        return False, None
+    names = set(_scenario_names(feature.get("children", [])))
+    return scenario in names, None
 
 
 @rule
@@ -218,7 +233,17 @@ def test_files_exist(spec: Spec) -> Iterable[Finding]:
                     ref=ac.id,
                 )
                 continue
-            if not _scenario_exists(full_path, scenario):
+            found, parse_error = _scenario_exists(full_path, scenario)
+            if not found and parse_error is not None:
+                yield _todo(
+                    "TEST_SCENARIO_MISSING",
+                    f"{ac.id} references scenario {scenario!r} in {rel_path}, "
+                    f"which could not be parsed as Gherkin: {parse_error}",
+                    f"Fix the Gherkin syntax in {rel_path}, then confirm "
+                    f"the scenario {scenario!r} exists for {ac.id}.",
+                    ref=ac.id,
+                )
+            elif not found:
                 yield _todo(
                     "TEST_SCENARIO_MISSING",
                     f"{ac.id} references scenario {scenario!r} in {rel_path}, "
