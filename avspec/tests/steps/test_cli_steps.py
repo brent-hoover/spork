@@ -60,6 +60,11 @@ def check_first(cli_result: dict, code: str) -> None:
     assert cli_result["payload"]["findings"][0]["code"] == code
 
 
+@then(parsers.parse('the last finding code is "{code}"'))
+def check_last(cli_result: dict, code: str) -> None:
+    assert cli_result["payload"]["findings"][-1]["code"] == code
+
+
 @then("every finding has a question")
 def check_questions(cli_result: dict) -> None:
     assert all(f["question"] for f in cli_result["payload"]["findings"])

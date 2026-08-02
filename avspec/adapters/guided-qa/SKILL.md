@@ -54,8 +54,6 @@ skipped ones at the end rather than spinning on them.
 
 ## Writing answers
 
-- `NO_STACK` → fill `project.stack`: languages, package_manager, frameworks,
-  bdd, and the install/test/lint commands. Free-form strings.
 - `NO_CONSTITUTION` → offer defaults and confirm: dependency direction
   between the modules they expect, test-first, no secrets in source.
 - `NO_REQUIREMENTS` → loop "what must it do?" until the user is out;
@@ -74,6 +72,10 @@ skipped ones at the end rather than spinning on them.
   `VIEW_UNREACHABLE`, `ACTION_ORPHAN`) → the UI spec is functionality only:
   screens, what each shows, what each can do, where each navigates. Never
   ask about layout or styling.
+- `NO_STACK` → asked last: stack is an implementation detail, chosen once
+  requirements and modules are known. Fill `project.stack`: languages,
+  package_manager, frameworks, bdd, and the install/test/lint commands.
+  Free-form strings.
 
 ## Done
 

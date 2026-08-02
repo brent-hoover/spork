@@ -23,8 +23,9 @@ class Finding:
 
 
 # Authoring order: you cannot answer later questions before earlier ones exist.
+# Stack comes last — it is an implementation detail, chosen only once what the
+# system must do and what shape it takes are already pinned down.
 CODE_ORDER: tuple[str, ...] = (
-    "NO_STACK",
     "NO_CONSTITUTION",
     "NO_REQUIREMENTS",
     "REQ_NO_AC",
@@ -41,6 +42,7 @@ CODE_ORDER: tuple[str, ...] = (
     "TEST_REF_INVALID",
     "TEST_FILE_MISSING",
     "TEST_SCENARIO_MISSING",
+    "NO_STACK",
 )
 
 _SEVERITY_RANK = {Severity.ERROR: 0, Severity.TODO: 1, Severity.WARN: 2}
