@@ -111,6 +111,24 @@ def test_test_scenario_outline_matches(tmp_path: Path) -> None:
     assert codes(completeness.test_files_exist(spec)) == []
 
 
+def test_test_scenario_example_alias_matches(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#ok")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "Feature: x\n\n  Example: ok\n", encoding="utf-8"
+    )
+    assert codes(completeness.test_files_exist(spec)) == []
+
+
+def test_test_scenario_template_alias_matches(tmp_path: Path) -> None:
+    spec = _spec_with_test(tmp_path, "verification/x.feature#ok")
+    (tmp_path / "verification").mkdir(parents=True)
+    (tmp_path / "verification" / "x.feature").write_text(
+        "Feature: x\n\n  Scenario Template: ok\n", encoding="utf-8"
+    )
+    assert codes(completeness.test_files_exist(spec)) == []
+
+
 def test_test_ref_absolute_path_escapes(tmp_path: Path) -> None:
     spec = _spec_with_test(tmp_path, "/etc/passwd#x")
     found = list(completeness.test_files_exist(spec))

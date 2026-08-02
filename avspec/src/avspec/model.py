@@ -34,7 +34,7 @@ class Language(StrictModel):
 
 
 class Stack(StrictModel):
-    languages: list[str | Language] = Field(default_factory=list)
+    languages: list[NonBlankStr | Language] = Field(default_factory=list)
     package_manager: str | None = None
     frameworks: list[str] = Field(default_factory=list)
     bdd: str | None = None
@@ -68,7 +68,7 @@ class Requirement(StrictModel):
 
 class Contract(StrictModel):
     id: NonBlankStr
-    type: str  # openapi | asyncapi | jsonschema — free-form, never an enum
+    type: NonBlankStr  # openapi | asyncapi | jsonschema — free-form, never an enum
     path: NonBlankStr
 
 

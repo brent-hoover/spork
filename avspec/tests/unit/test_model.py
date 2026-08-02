@@ -79,6 +79,31 @@ def test_blank_project_name_is_rejected() -> None:
         Manifest.model_validate({**MINIMAL, "project": {"name": ""}})
 
 
+def test_blank_language_entry_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(
+            {
+                **MINIMAL,
+                "project": {"name": "demo", "stack": {"languages": ["   "]}},
+            }
+        )
+
+
+def test_blank_contract_type_is_rejected() -> None:
+    data = {
+        **MINIMAL,
+        "modules": [
+            {
+                "id": "MOD-api",
+                "name": "api",
+                "contracts": [{"id": "CTR-x", "type": "  ", "path": "contracts/x.yaml"}],
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(data)
+
+
 def test_stack_accepts_bare_and_versioned_languages() -> None:
     m = Manifest.model_validate(
         {

@@ -60,7 +60,7 @@ def prefix_mismatch(spec: Spec) -> Iterable[Finding]:
                 ref=obj_id,
                 message=f"A {kind} id must start with {prefix!r}; got {obj_id!r}.",
             )
-        elif obj_id == prefix or len(obj_id) <= len(prefix):
+        elif not obj_id[len(prefix) :].strip():
             yield Finding(
                 code="PREFIX_MISMATCH",
                 severity=Severity.ERROR,

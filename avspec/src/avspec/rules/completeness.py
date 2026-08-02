@@ -35,7 +35,15 @@ def _path_escape(owner: str, rel_path: str) -> Finding:
     )
 
 
-_SCENARIO_RE = re.compile(r"^\s*Scenario(?: Outline)?:\s*(.*?)\s*$")
+# Matches Gherkin's "Scenario" keyword and its aliases (Example, Scenario Outline,
+# Scenario Template — Outline and Template are synonyms in the Gherkin grammar).
+# This is a line-based matcher, not a Gherkin-AST parser: it only recognizes the
+# English keyword set, and a matching line inside a docstring/comment/data table
+# would false-positive. Full Gherkin-AST parsing is deliberately deferred — it
+# would pull in a new runtime dependency for a check that's advisory, not load-bearing.
+_SCENARIO_RE = re.compile(
+    r"^\s*(?:Scenario(?: Outline)?|Example|Scenario Template):\s*(.*?)\s*$"
+)
 
 
 def _scenario_exists(feature_path: Path, scenario: str) -> bool:
