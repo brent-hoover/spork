@@ -94,10 +94,17 @@ skipped ones at the end rather than spinning on them.
   `VIEW_UNREACHABLE`, `ACTION_ORPHAN`) → the UI spec is functionality only:
   screens, what each shows, what each can do, where each navigates. Never
   ask about layout or styling.
+- `NO_APPS` → ask which deployable application(s) the modules belong to.
+  One app is a valid, explicit answer; only split into more when there's a
+  forcing reason (different runtime shape, deploy cadence, isolation,
+  scaling).
+- `MOD_NO_APP` / `MOD_MULTI_APP` → ask which single app runs this module.
+- `BOUNDARY_CROSS_APP` → a module imports one living in a different app;
+  imports can't cross a process boundary — replace it with a contract.
 - `NO_STACK` → asked last: stack is an implementation detail, chosen once
   requirements and modules are known. Fill `project.stack`: languages,
-  package_manager, frameworks, bdd, and the install/test/lint commands.
-  Free-form strings.
+  package_manager, frameworks, bdd, store, and the install/test/lint
+  commands. Free-form strings.
 
 ## Done
 

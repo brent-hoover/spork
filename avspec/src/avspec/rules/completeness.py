@@ -163,6 +163,31 @@ def data_present(spec: Spec) -> Iterable[Finding]:
 
 
 @rule
+def apps_present(spec: Spec) -> Iterable[Finding]:
+    manifest = spec.manifest
+    if not manifest.modules:
+        return
+    if not manifest.apps:
+        yield _todo(
+            "NO_APPS",
+            "Modules exist but no apps are declared.",
+            "Which deployable application(s) do the modules belong to? "
+            "One app is a valid, explicit answer; separate apps only for a forcing "
+            "reason (different runtime shape, deploy cadence, isolation, scaling).",
+        )
+        return
+    assigned = {mod_id for app in manifest.apps for mod_id in app.modules}
+    for module in manifest.modules:
+        if module.id not in assigned:
+            yield _todo(
+                "MOD_NO_APP",
+                f"{module.id} is in no app.",
+                f"Which app does {module.id} ({module.name}) belong to?",
+                ref=module.id,
+            )
+
+
+@rule
 def test_files_exist(spec: Spec) -> Iterable[Finding]:
     for req in spec.manifest.requirements:
         for ac in req.acceptance:

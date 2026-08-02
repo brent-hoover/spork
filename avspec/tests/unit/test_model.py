@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from avspec.model import Data, Entity, EntityField, Language, Manifest, Relation
+from avspec.model import App, Data, Entity, EntityField, Language, Manifest, Relation
 
 MINIMAL = {"avspec": "0.3", "project": {"name": "demo"}}
 
@@ -164,6 +164,35 @@ def test_entity_extra_field_is_rejected() -> None:
 def test_module_owns_defaults_to_empty() -> None:
     m = Manifest.model_validate({**MINIMAL, "modules": [{"id": "MOD-a", "name": "a"}]})
     assert m.modules[0].owns == []
+
+
+def test_apps_default_to_empty() -> None:
+    m = Manifest.model_validate(MINIMAL)
+    assert m.apps == []
+
+
+def test_apps_round_trip() -> None:
+    data = {
+        **MINIMAL,
+        "modules": [{"id": "MOD-api", "name": "api"}],
+        "apps": [{"id": "APP-server", "name": "server", "modules": ["MOD-api"]}],
+    }
+    m = Manifest.model_validate(data)
+    assert isinstance(m.apps[0], App)
+    assert m.apps[0].modules == ["MOD-api"]
+
+
+def test_app_extra_field_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        App.model_validate({"id": "APP-x", "name": "X", "bogus": "nope"})
+
+
+def test_stack_accepts_store() -> None:
+    m = Manifest.model_validate(
+        {**MINIMAL, "project": {"name": "demo", "stack": {"store": "postgres"}}}
+    )
+    assert m.project.stack is not None
+    assert m.project.stack.store == "postgres"
 
 
 def test_stack_accepts_bare_and_versioned_languages() -> None:

@@ -167,9 +167,26 @@ modules that both need to touch the same row are coupled whether or not
 their `boundaries` say so. Making ownership explicit and single-writer
 surfaces that coupling before it becomes a runtime bug.
 
+**`apps:`** models deployment topology: each `APP-*` bundles a list of
+`MOD-*` ids that ship and run together as one process/deployable unit. This
+is a first-class, verifiable decision rather than an implementation detail,
+because process topology changes failure semantics (a crash in one module
+now takes down or spares its neighbors depending on which app it's in),
+transactionality (in-process calls can share a transaction; cross-process
+calls cannot), and enforcement (an import is a compile-time guarantee; a
+cross-process call is a runtime contract). `MOD_MULTI_APP` (a module shipped
+in two apps — which one actually runs it?) and `BOUNDARY_CROSS_APP` (a
+module's `may_import` names a module living in a different app — imports
+cannot cross a process boundary; that communication has to go through a
+`contracts` entry instead) are errors. `NO_APPS` only fires once modules
+exist, and — like `data` — a single declared app is a complete, valid
+answer; the todo's question pushes back only when nothing has been said,
+not when the answer is "we deploy as one thing." `MOD_NO_APP` catches a
+module left out of every app once `apps:` exists at all.
+
 `store` (postgres, sqlite, none, ...) deliberately lives on `Stack`, not on
-`Data` — it's an implementation choice about how persistence is realized,
-made last, same as languages and package managers.
+`Data` or `App` — it's an implementation choice about how persistence is
+realized, made last, same as languages and package managers.
 
 ## The verifier core
 

@@ -189,6 +189,75 @@ def test_entity_single_owner_is_clean(tmp_path: Path) -> None:
     assert codes(wellformed.entity_multi_owner(make_spec(tmp_path, data))) == []
 
 
+def test_app_prefix_mismatch(tmp_path: Path) -> None:
+    data = base()
+    data["apps"] = [{"id": "A-oops", "name": "x"}]
+    assert codes(wellformed.prefix_mismatch(make_spec(tmp_path, data))) == ["PREFIX_MISMATCH"]
+
+
+def test_app_duplicate_id(tmp_path: Path) -> None:
+    data = base()
+    data["apps"] = [{"id": "APP-a", "name": "A"}, {"id": "APP-a", "name": "B"}]
+    assert codes(wellformed.duplicate_ids(make_spec(tmp_path, data))) == ["DUPLICATE_ID"]
+
+
+def test_dangling_app_modules(tmp_path: Path) -> None:
+    data = base()
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-ghost"]}]
+    assert codes(wellformed.dangling_refs(make_spec(tmp_path, data))) == ["DANGLING_REF"]
+
+
+def test_module_multi_app(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-x", "name": "x"}]
+    data["apps"] = [
+        {"id": "APP-a", "name": "a", "modules": ["MOD-x"]},
+        {"id": "APP-b", "name": "b", "modules": ["MOD-x"]},
+    ]
+    assert codes(wellformed.module_multi_app(make_spec(tmp_path, data))) == ["MOD_MULTI_APP"]
+
+
+def test_module_single_app_is_clean(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-x", "name": "x"}]
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-x"]}]
+    assert codes(wellformed.module_multi_app(make_spec(tmp_path, data))) == []
+
+
+def test_boundary_cross_app(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {"id": "MOD-a", "name": "a", "boundaries": {"may_import": ["MOD-b"]}},
+        {"id": "MOD-b", "name": "b", "boundaries": {"may_import": []}},
+    ]
+    data["apps"] = [
+        {"id": "APP-a", "name": "a", "modules": ["MOD-a"]},
+        {"id": "APP-b", "name": "b", "modules": ["MOD-b"]},
+    ]
+    found = codes(wellformed.boundary_cross_app(make_spec(tmp_path, data)))
+    assert found == ["BOUNDARY_CROSS_APP"]
+
+
+def test_boundary_same_app_is_clean(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {"id": "MOD-a", "name": "a", "boundaries": {"may_import": ["MOD-b"]}},
+        {"id": "MOD-b", "name": "b", "boundaries": {"may_import": []}},
+    ]
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-a", "MOD-b"]}]
+    assert codes(wellformed.boundary_cross_app(make_spec(tmp_path, data))) == []
+
+
+def test_boundary_cross_app_only_fires_when_both_assigned(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {"id": "MOD-a", "name": "a", "boundaries": {"may_import": ["MOD-b"]}},
+        {"id": "MOD-b", "name": "b", "boundaries": {"may_import": []}},
+    ]
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-a"]}]  # MOD-b unassigned
+    assert codes(wellformed.boundary_cross_app(make_spec(tmp_path, data))) == []
+
+
 def test_boundary_cycle(tmp_path: Path) -> None:
     data = base()
     data["modules"] = [
@@ -211,5 +280,7 @@ def test_clean_spec_has_no_errors(tmp_path: Path) -> None:
         + codes(wellformed.dangling_refs(spec))
         + codes(wellformed.boundary_cycle(spec))
         + codes(wellformed.entity_multi_owner(spec))
+        + codes(wellformed.module_multi_app(spec))
+        + codes(wellformed.boundary_cross_app(spec))
         == []
     )

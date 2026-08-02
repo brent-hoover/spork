@@ -95,3 +95,11 @@ modules:
         - id: ACT-create
           name: create_link
           invokes: CTR-links#createLink
+
+apps:
+  - id: APP-server
+    name: linkshort-server
+    modules: [MOD-api, MOD-domain, MOD-data]
+  - id: APP-web
+    name: linkshort-web
+    modules: [MOD-web]

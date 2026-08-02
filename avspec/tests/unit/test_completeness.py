@@ -23,6 +23,7 @@ def test_empty_spec_fires_all_absence_todos(tmp_path: Path) -> None:
         + codes(completeness.requirements_present(spec))
         + codes(completeness.modules_present(spec))
         + codes(completeness.data_present(spec))
+        + codes(completeness.apps_present(spec))
     )
     assert found == ["NO_CONSTITUTION", "NO_DATA", "NO_MODULES", "NO_REQUIREMENTS", "NO_STACK"]
 
@@ -35,6 +36,7 @@ def test_every_todo_has_a_question(tmp_path: Path) -> None:
         completeness.requirements_present,
         completeness.modules_present,
         completeness.data_present,
+        completeness.apps_present,
     ):
         for finding in run(spec):
             assert finding.question, f"{finding.code} has no question"
@@ -210,6 +212,30 @@ def test_entity_unowned(tmp_path: Path) -> None:
         "entities": [{"id": "ENT-a", "name": "A", "fields": [{"name": "x", "type": "string"}]}]
     }
     assert codes(completeness.data_present(make_spec(tmp_path, data))) == ["ENT_UNOWNED"]
+
+
+def test_no_apps_without_modules_is_quiet(tmp_path: Path) -> None:
+    assert codes(completeness.apps_present(make_spec(tmp_path, base()))) == []
+
+
+def test_no_apps_when_modules_exist(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-a", "name": "a"}]
+    assert codes(completeness.apps_present(make_spec(tmp_path, data))) == ["NO_APPS"]
+
+
+def test_mod_no_app(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-a", "name": "a"}, {"id": "MOD-b", "name": "b"}]
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-a"]}]
+    assert codes(completeness.apps_present(make_spec(tmp_path, data))) == ["MOD_NO_APP"]
+
+
+def test_all_modules_assigned_is_clean(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-a", "name": "a"}]
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-a"]}]
+    assert codes(completeness.apps_present(make_spec(tmp_path, data))) == []
 
 
 def test_contract_file_missing_unparseable_and_ok(tmp_path: Path) -> None:

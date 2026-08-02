@@ -36,6 +36,7 @@ def _all_ids(manifest: Manifest) -> list[tuple[str, str]]:
             out.extend(("action", a.id) for a in module.ui.actions)
     if manifest.data:
         out.extend(("entity", e.id) for e in manifest.data.entities)
+    out.extend(("app", a.id) for a in manifest.apps)
     return out
 
 
@@ -137,6 +138,10 @@ def dangling_refs(spec: Spec) -> Iterable[Finding]:
             for field in entity.fields:
                 if field.ref is not None and field.ref not in entities:
                     yield _dangling(field.ref, entity.id, "fields.ref")
+    for app in manifest.apps:
+        for mod_id in app.modules:
+            if mod_id not in module_ids:
+                yield _dangling(mod_id, app.id, "modules")
 
 
 @rule
@@ -152,6 +157,51 @@ def entity_multi_owner(spec: Spec) -> Iterable[Finding]:
                 severity=Severity.ERROR,
                 ref=entity_id,
                 message=f"{entity_id} is owned by more than one module: {', '.join(module_ids)}.",
+            )
+
+
+def _module_apps(manifest: Manifest) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for app in manifest.apps:
+        for mod_id in app.modules:
+            result.setdefault(mod_id, []).append(app.id)
+    return result
+
+
+@rule
+def module_multi_app(spec: Spec) -> Iterable[Finding]:
+    for mod_id, app_ids in _module_apps(spec.manifest).items():
+        if len(app_ids) > 1:
+            yield Finding(
+                code="MOD_MULTI_APP",
+                severity=Severity.ERROR,
+                ref=mod_id,
+                message=f"{mod_id} is assigned to more than one app: {', '.join(app_ids)}.",
+            )
+
+
+@rule
+def boundary_cross_app(spec: Spec) -> Iterable[Finding]:
+    mod_apps = _module_apps(spec.manifest)
+    for module in spec.manifest.modules:
+        if module.boundaries is None:
+            continue
+        src_apps = set(mod_apps.get(module.id, []))
+        if not src_apps:
+            continue
+        for target in module.boundaries.may_import:
+            tgt_apps = set(mod_apps.get(target, []))
+            if not tgt_apps or not src_apps.isdisjoint(tgt_apps):
+                continue
+            yield Finding(
+                code="BOUNDARY_CROSS_APP",
+                severity=Severity.ERROR,
+                ref=module.id,
+                message=(
+                    f"{module.id} (app {sorted(src_apps)}) imports {target} "
+                    f"(app {sorted(tgt_apps)}) — imports cannot cross app boundaries; "
+                    "use a contract instead."
+                ),
             )
 
 

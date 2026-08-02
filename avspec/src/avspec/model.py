@@ -142,6 +142,12 @@ class Data(StrictModel):
     entities: list[Entity] = Field(default_factory=list)
 
 
+class App(StrictModel):
+    id: NonBlankStr
+    name: NonBlankStr
+    modules: list[str] = Field(default_factory=list)  # MOD-*
+
+
 class Manifest(StrictModel):
     avspec: Literal["0.3"]
     project: Project
@@ -149,3 +155,4 @@ class Manifest(StrictModel):
     requirements: list[Requirement] = Field(default_factory=list)
     modules: list[Module] = Field(default_factory=list)
     data: Data | None = None
+    apps: list[App] = Field(default_factory=list)
