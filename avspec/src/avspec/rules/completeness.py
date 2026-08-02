@@ -61,7 +61,8 @@ def _scenario_exists(feature_path: Path, scenario: str) -> tuple[bool, str | Non
     try:
         document = Parser().parse(text)
     except CompositeParserException as exc:
-        return False, str(exc).splitlines()[0]
+        detail = str(exc.errors[0]) if exc.errors else str(exc).splitlines()[0]
+        return False, detail
     feature = document.get("feature")
     if feature is None:
         return False, None

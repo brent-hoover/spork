@@ -166,6 +166,8 @@ def test_test_scenario_unparseable_feature_file(tmp_path: Path) -> None:
     found = list(completeness.test_files_exist(spec))
     assert codes(found) == ["TEST_SCENARIO_MISSING"]
     assert "could not be parsed as Gherkin" in found[0].message
+    assert "Parser errors:" not in found[0].message
+    assert "(1:1)" in found[0].message
 
 
 def test_test_ref_absolute_path_escapes(tmp_path: Path) -> None:

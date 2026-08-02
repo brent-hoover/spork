@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 def _reject_blank(v: str) -> str:
@@ -122,6 +122,16 @@ class EntityField(StrictModel):
     unique: bool = False
     values: list[str] = Field(default_factory=list)  # enum only
     ref: str | None = None  # ENT-* target, ref type only
+
+    @model_validator(mode="after")
+    def _check_ref_integrity(self) -> EntityField:
+        if self.type == "ref" and not (self.ref and self.ref.strip()):
+            raise ValueError("EntityField.type == 'ref' requires a non-blank 'ref' target.")
+        if self.type != "ref" and self.ref is not None:
+            raise ValueError(
+                f"EntityField.ref is only valid when type == 'ref'; got {self.type!r}."
+            )
+        return self
 
 
 class Relation(StrictModel):

@@ -182,6 +182,13 @@ def test_entity_multi_owner(tmp_path: Path) -> None:
     assert codes(wellformed.entity_multi_owner(make_spec(tmp_path, data))) == ["ENT_MULTI_OWNER"]
 
 
+def test_entity_multi_owner_ignores_duplicate_entry_within_one_module(tmp_path: Path) -> None:
+    data = base()
+    data["data"] = {"entities": [{"id": "ENT-a", "name": "A"}]}
+    data["modules"] = [{"id": "MOD-x", "name": "x", "owns": ["ENT-a", "ENT-a"]}]
+    assert codes(wellformed.entity_multi_owner(make_spec(tmp_path, data))) == []
+
+
 def test_entity_single_owner_is_clean(tmp_path: Path) -> None:
     data = base()
     data["data"] = {"entities": [{"id": "ENT-a", "name": "A"}]}
@@ -215,6 +222,13 @@ def test_module_multi_app(tmp_path: Path) -> None:
         {"id": "APP-b", "name": "b", "modules": ["MOD-x"]},
     ]
     assert codes(wellformed.module_multi_app(make_spec(tmp_path, data))) == ["MOD_MULTI_APP"]
+
+
+def test_module_multi_app_ignores_duplicate_entry_within_one_app(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [{"id": "MOD-x", "name": "x"}]
+    data["apps"] = [{"id": "APP-a", "name": "a", "modules": ["MOD-x", "MOD-x"]}]
+    assert codes(wellformed.module_multi_app(make_spec(tmp_path, data))) == []
 
 
 def test_module_single_app_is_clean(tmp_path: Path) -> None:

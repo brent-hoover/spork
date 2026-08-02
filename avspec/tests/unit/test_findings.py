@@ -31,3 +31,23 @@ def test_ties_break_on_ref() -> None:
 
 def test_code_order_is_unique() -> None:
     assert len(CODE_ORDER) == len(set(CODE_ORDER))
+
+
+def test_ten_step_flow_order() -> None:
+    landmarks = [
+        "NO_CONSTITUTION",
+        "NO_REQUIREMENTS",
+        "NO_MODULES",
+        "NO_DATA",
+        "NO_APPS",
+        "MOD_NO_BOUNDARIES",
+        "CONTRACT_FILE_MISSING",
+        "REQ_NO_AC",
+        "UI_NO_VIEWS",
+        "AC_NO_TEST",
+        "TEST_FILE_MISSING",
+        "NO_STACK",
+    ]
+    indices = [CODE_ORDER.index(code) for code in landmarks]
+    assert indices == sorted(set(indices))
+    assert all(a < b for a, b in zip(indices, indices[1:], strict=False))

@@ -146,25 +146,28 @@ def dangling_refs(spec: Spec) -> Iterable[Finding]:
 
 @rule
 def entity_multi_owner(spec: Spec) -> Iterable[Finding]:
-    owners: dict[str, list[str]] = {}
+    owners: dict[str, set[str]] = {}
     for module in spec.manifest.modules:
         for entity_id in module.owns:
-            owners.setdefault(entity_id, []).append(module.id)
+            owners.setdefault(entity_id, set()).add(module.id)
     for entity_id, module_ids in owners.items():
         if len(module_ids) > 1:
             yield Finding(
                 code="ENT_MULTI_OWNER",
                 severity=Severity.ERROR,
                 ref=entity_id,
-                message=f"{entity_id} is owned by more than one module: {', '.join(module_ids)}.",
+                message=(
+                    f"{entity_id} is owned by more than one module: "
+                    f"{', '.join(sorted(module_ids))}."
+                ),
             )
 
 
-def _module_apps(manifest: Manifest) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {}
+def _module_apps(manifest: Manifest) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
     for app in manifest.apps:
         for mod_id in app.modules:
-            result.setdefault(mod_id, []).append(app.id)
+            result.setdefault(mod_id, set()).add(app.id)
     return result
 
 
@@ -176,7 +179,7 @@ def module_multi_app(spec: Spec) -> Iterable[Finding]:
                 code="MOD_MULTI_APP",
                 severity=Severity.ERROR,
                 ref=mod_id,
-                message=f"{mod_id} is assigned to more than one app: {', '.join(app_ids)}.",
+                message=f"{mod_id} is assigned to more than one app: {', '.join(sorted(app_ids))}.",
             )
 
 

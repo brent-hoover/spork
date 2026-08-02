@@ -151,6 +151,21 @@ def test_entity_field_blank_name_is_rejected() -> None:
         EntityField.model_validate({"name": "   ", "type": "string"})
 
 
+def test_entity_field_ref_type_without_target_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        EntityField.model_validate({"name": "owner", "type": "ref"})
+
+
+def test_entity_field_ref_on_non_ref_type_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        EntityField.model_validate({"name": "owner", "type": "string", "ref": "ENT-user"})
+
+
+def test_entity_field_valid_ref_is_accepted() -> None:
+    field = EntityField.model_validate({"name": "owner", "type": "ref", "ref": "ENT-user"})
+    assert field.ref == "ENT-user"
+
+
 def test_relation_bad_kind_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Relation.model_validate({"to": "ENT-x", "kind": "many_to_many_to_many"})
