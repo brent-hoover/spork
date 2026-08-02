@@ -21,4 +21,4 @@ def rule(fn: Rule) -> Rule:
 
 
 # Imported for registration side effects — a rule module missing here does nothing.
-from avspec.rules import completeness, wellformed  # noqa: E402, F401
+from avspec.rules import completeness, ui, wellformed  # noqa: E402, F401
