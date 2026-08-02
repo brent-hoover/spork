@@ -1,0 +1,21 @@
+openapi: 3.0.3
+info:
+  title: linkshort
+  version: 0.1.0
+paths:
+  /links:
+    post:
+      operationId: createLink
+      summary: Create a short link
+      responses:
+        "201": { description: Created }
+        "400": { description: Malformed URL }
+  /{code}:
+    get:
+      operationId: resolveLink
+      summary: Resolve a short code
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        "302": { description: Redirect to the original URL }
+        "404": { description: Unknown code }

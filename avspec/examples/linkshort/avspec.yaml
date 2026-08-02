@@ -1,0 +1,80 @@
+avspec: "0.3"
+
+project:
+  name: linkshort
+  description: A minimal URL shortener, specified end to end.
+  status: ready
+  stack:
+    languages: [{ name: typescript, version: "5" }]
+    package_manager: pnpm
+    frameworks: [fastify]
+    bdd: cucumber-js
+    commands:
+      install: pnpm install
+      test: pnpm test
+      lint: pnpm lint
+
+constitution:
+  - id: CON-layering
+    statement: Dependencies flow api -> domain -> data; no back-edges.
+  - id: CON-test-first
+    statement: No endpoint is implemented before the test mapped to its AC exists and fails.
+
+requirements:
+  - id: REQ-create-link
+    title: Create a short link
+    rationale: Users need a compact code that maps to a long URL.
+    acceptance:
+      - id: AC-valid-url
+        statement: When a valid URL is POSTed to /links, the system shall persist it and return 201 with a short code.
+        test: verification/REQ-create-link.feature#valid url is shortened
+      - id: AC-bad-url
+        statement: If the submitted URL is malformed, then the system shall return 400 and persist nothing.
+        test: verification/REQ-create-link.feature#malformed url is rejected
+  - id: REQ-resolve-link
+    title: Resolve a short link
+    rationale: A short code must send the visitor to the original URL.
+    acceptance:
+      - id: AC-known-code
+        statement: When a request targets a known short code, the system shall respond 302 to the original URL.
+        test: verification/REQ-resolve-link.feature#known code redirects
+      - id: AC-unknown-code
+        statement: If a request targets an unknown short code, then the system shall respond 404.
+        test: verification/REQ-resolve-link.feature#unknown code is not found
+
+modules:
+  - id: MOD-api
+    name: api
+    responsibility: HTTP edge — validates requests and maps them to the domain service.
+    boundaries: { may_import: [MOD-domain] }
+    contracts:
+      - id: CTR-links
+        type: openapi
+        path: contracts/links.openapi.yaml
+  - id: MOD-domain
+    name: domain
+    responsibility: Generates codes and orchestrates create and resolve.
+    boundaries: { may_import: [MOD-data] }
+  - id: MOD-data
+    name: data
+    responsibility: Persists and looks up code-to-URL mappings.
+    boundaries: { may_import: [] }
+  - id: MOD-web
+    name: web-ui
+    responsibility: Browser front end for creating links.
+    boundaries: { may_import: [] }
+    ui:
+      kind: web
+      entry: VIEW-create
+      views:
+        - id: VIEW-create
+          name: Create link
+          route: /
+          purpose: Paste a URL, get a short code.
+          shows: [target_url, short_code]
+          actions: [ACT-create]
+          satisfies: [AC-valid-url, AC-bad-url]
+      actions:
+        - id: ACT-create
+          name: create_link
+          invokes: CTR-links#createLink
