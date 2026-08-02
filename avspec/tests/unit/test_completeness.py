@@ -102,3 +102,24 @@ def test_contract_file_missing_unparseable_and_ok(tmp_path: Path) -> None:
     assert found[0].severity is Severity.ERROR
     contract.write_text("openapi: 3.0.3", encoding="utf-8")
     assert codes(completeness.contract_files(spec)) == []
+
+
+def test_non_yaml_contract_type_is_existence_only(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-api",
+            "name": "api",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-gql", "type": "graphql", "path": "contracts/x.graphql"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.graphql"
+    contract.parent.mkdir(parents=True)
+    # Valid GraphQL SDL, but not parseable YAML (would raise YAMLError if loaded).
+    contract.write_text(
+        "type Query {\n  foo: String!\n  bar(id: ID!): [Bar!]!\n}\n", encoding="utf-8"
+    )
+    assert codes(completeness.contract_files(spec)) == []

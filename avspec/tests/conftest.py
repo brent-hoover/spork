@@ -2,7 +2,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from avspec.analysis import Spec  # noqa: F401  (re-exported for step files)
+from avspec.analysis import Spec
 from avspec.model import Manifest
 
 MINIMAL: dict = {"avspec": "0.3", "project": {"name": "demo", "status": "draft"}}
@@ -15,5 +15,5 @@ def write_manifest(spec_dir: Path, data: dict) -> None:
         yaml.dump(data, fh)
 
 
-def make_spec(spec_dir: Path, data: dict):
+def make_spec(spec_dir: Path, data: dict) -> Spec:
     return Spec(dir=spec_dir, manifest=Manifest.model_validate(data))

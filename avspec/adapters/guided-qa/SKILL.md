@@ -38,7 +38,9 @@ Repeat until `avspec next` returns zero findings:
 1. Run `avspec next <dir> --json`.
 2. Take the FIRST finding (the queue is already in authoring order,
    errors before todos). Its `question` field is your prompt — rephrase it
-   naturally, keep any IDs verbatim.
+   naturally, keep any IDs verbatim. If `question` is null, the finding is an
+   inconsistency, not a gap to ask about — explain and fix what `message`
+   describes, then continue.
 3. Ask ONE question at a time. Digging deeper on an answer is encouraged;
    moving to a different finding before writing the current answer is not.
 4. Write the answer into `avspec.yaml` (and create any referenced files —

@@ -22,7 +22,7 @@ def stack_declared(spec: Spec) -> Iterable[Finding]:
     if stack is None or (not stack.languages and stack.commands is None):
         yield _todo(
             "NO_STACK",
-            "No stack is declared for the project.",
+            "No languages or commands are declared in the stack.",
             "What languages, package manager, and frameworks does this project use, "
             "and what commands run install, test, and lint?",
         )
@@ -111,6 +111,9 @@ def test_files_exist(spec: Spec) -> Iterable[Finding]:
                 )
 
 
+_YAML_CONTRACT_TYPES = {"openapi", "asyncapi", "jsonschema"}
+
+
 @rule
 def contract_files(spec: Spec) -> Iterable[Finding]:
     yaml = YAML(typ="safe")
@@ -124,6 +127,8 @@ def contract_files(spec: Spec) -> Iterable[Finding]:
                     f"Create the {contract.type} document at {contract.path} for {contract.id}.",
                     ref=contract.id,
                 )
+                continue
+            if contract.type.lower() not in _YAML_CONTRACT_TYPES:
                 continue
             try:
                 yaml.load(path.read_text(encoding="utf-8"))
