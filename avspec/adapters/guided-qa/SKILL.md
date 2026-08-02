@@ -40,16 +40,12 @@ conversationally, not asked verbatim:
    one-way dependency flow, no secrets in source) with a one-line
    confirmation, not a question each. Spend the actual question on
    project-specific principles: "what are THIS system's non-negotiables?"
-2. **Differentiators** — only for a well-known app type (issue tracker,
-   shop, CMS): ask **"what makes yours different?"** first. The answer is
-   NOT the inventory — it is the reason the project exists, and it shapes
-   what the inventory must contain. Skip this step for a novel app type.
-3. **Functionality inventory** — always its own step. Collect the full
-   capability list: the differentiators from step 2 plus the baseline the
-   genre implies (for a known type, PROPOSE the baseline as a bullet list
-   for the user to prune and extend rather than asking open-ended). Write
-   each capability as a `REQ-*` with a title (rationale optional at this
-   stage) and let the gap loop (`REQ_NO_AC` …) turn them into full
+2. **Functionality inventory** — always, for every project. Collect the
+   full capability list as light bullets. For a well-known app type (issue
+   tracker, shop, CMS), PROPOSE the genre's baseline as a bullet list for
+   the user to prune and extend rather than asking open-ended. Write each
+   surviving capability as a `REQ-*` with a title (rationale optional at
+   this stage) and let the gap loop (`REQ_NO_AC` …) turn them into full
    requirements later.
 
 ## The loop
