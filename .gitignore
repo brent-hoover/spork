@@ -6,3 +6,4 @@ __pycache__/
 .md-review/
 # roborev snapshots
 /.roborev/
+.kata.local.toml
