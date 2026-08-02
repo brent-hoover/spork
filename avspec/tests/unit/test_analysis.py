@@ -31,5 +31,5 @@ def test_analyze_runs_registry_on_valid_manifest(tmp_path: Path) -> None:
     write_manifest(tmp_path, MINIMAL)
     report = analyze(tmp_path)
     assert report.status == "draft"
-    # Registry is empty until Task 6; a valid minimal manifest yields no findings yet.
+    # Rules registered; minimal manifest is well-formed — no errors; todos aren't errors.
     assert report.counts["error"] == 0

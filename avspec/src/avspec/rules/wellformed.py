@@ -62,7 +62,7 @@ def prefix_mismatch(spec: Spec) -> Iterable[Finding]:
             )
 
 
-def _dangling(ref: str, known: set[str], owner: str, field: str) -> Finding:
+def _dangling(ref: str, owner: str, field: str) -> Finding:
     return Finding(
         code="DANGLING_REF",
         severity=Severity.ERROR,
@@ -81,28 +81,28 @@ def dangling_refs(spec: Spec) -> Iterable[Finding]:
         if module.boundaries:
             for target in module.boundaries.may_import:
                 if target not in module_ids:
-                    yield _dangling(target, module_ids, module.id, "boundaries.may_import")
+                    yield _dangling(target, module.id, "boundaries.may_import")
         if module.ui is None:
             continue
         view_ids = {v.id for v in module.ui.views}
         action_ids = {a.id for a in module.ui.actions}
         if module.ui.entry is not None and module.ui.entry not in view_ids:
-            yield _dangling(module.ui.entry, view_ids, module.id, "ui.entry")
+            yield _dangling(module.ui.entry, module.id, "ui.entry")
         for view in module.ui.views:
             for act in view.actions:
                 if act not in action_ids:
-                    yield _dangling(act, action_ids, view.id, "actions")
+                    yield _dangling(act, view.id, "actions")
             for nav in view.navigates_to:
                 if nav not in view_ids:
-                    yield _dangling(nav, view_ids, view.id, "navigates_to")
+                    yield _dangling(nav, view.id, "navigates_to")
             for ac in view.satisfies:
                 if ac not in ac_ids:
-                    yield _dangling(ac, ac_ids, view.id, "satisfies")
+                    yield _dangling(ac, view.id, "satisfies")
         for action in module.ui.actions:
             if action.invokes is not None:
                 contract_ref = action.invokes.split("#", 1)[0]
                 if contract_ref not in contract_ids:
-                    yield _dangling(contract_ref, contract_ids, action.id, "invokes")
+                    yield _dangling(contract_ref, action.id, "invokes")
 
 
 @rule
