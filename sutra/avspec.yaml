@@ -1,0 +1,227 @@
+avspec: "0.3"
+
+project:
+  name: sutra
+  description: An issue tracker for agents and humans.
+  status: draft
+
+constitution:
+  - id: CON-test-first
+    statement: No behavior is implemented before the test mapped to its acceptance criterion exists and fails.
+  - id: CON-dependency-flow
+    statement: Dependencies flow one way between layers; no back-edges.
+  - id: CON-no-secrets
+    statement: No secrets in source; configuration is injected at runtime.
+
+requirements:
+  - id: REQ-core-issues
+    title: Track issues (create, update, comment, label, assign, close)
+    rationale: The baseline issue-tracker capability everything else hangs off.
+  - id: REQ-cli-parity
+    title: Agents can access every feature via the CLI
+    rationale: Agents are first-class users; no capability is UI-only.
+  - id: REQ-doc-database
+    title: Doc database — planning docs filed under project and issue, with versioning
+    rationale: Planning artifacts live with the work they describe, not in a separate wiki.
+  - id: REQ-doc-review-server
+    title: Integrated web server for viewing and giving threaded feedback on documents
+    rationale: Humans review and comment on docs in place, with threads.
+  - id: REQ-agent-queue
+    title: Issues assigned to an agent form a work stack the agent pops from
+    rationale: Assignment to an agent identity is an executable handoff; popping is atomic, so concurrent instances of one identity never grab the same issue.
+  - id: REQ-thread-catalog
+    title: Import, catalog, and search agent transcripts ("threads")
+    rationale: Agent conversations are work artifacts worth indexing and citing.
+  - id: REQ-issue-hierarchy
+    title: Parent/child relationships between issues
+  - id: REQ-issue-blocking
+    title: Blocks / is-blocked-by relationships between issues
+  - id: REQ-doc-issue-links
+    title: Documents can be tied to issues
+  - id: REQ-doc-templates
+    title: Hold templates for planning docs
+  - id: REQ-close-requires-review
+    title: Closing an issue requires an approved code review
+    rationale: Work is not done until a human has reviewed the branch.
+  - id: REQ-code-review
+    title: Agents prepare a Code Review object — a branch ready for human review — which humans comment on and approve via the web UI
+  - id: REQ-comments
+    title: Unlimited comments on issues
+  - id: REQ-cli-output-formats
+    title: Issues can be output as JSON or YAML from the CLI
+    rationale: Agent-consumable output is a first-class contract, not a scrape.
+  - id: REQ-status-workflow
+    title: "Issue statuses: open, in-progress, blocked, deferred, complete"
+  - id: REQ-kanban
+    title: Kanban board in the web UI
+  - id: REQ-search
+    title: Search and filter across issues
+  - id: REQ-projects
+    title: Projects as first-class containers for issues and docs
+  - id: REQ-identities
+    title: Identities for both humans and agents
+  - id: REQ-notifications
+    title: Notifications and an event feed (webhook or poll surface)
+  - id: REQ-audit
+    title: Audit history per issue
+  - id: REQ-import-export
+    title: Import and export of tracker data
+  - id: REQ-thread-links
+    title: Threads can be tied to either projects or issues
+
+apps:
+  - id: APP-sutra
+    name: sutra
+    modules: [MOD-issues, MOD-projects, MOD-docs, MOD-threads,
+              MOD-identity, MOD-events, MOD-review, MOD-api, MOD-cli, MOD-web]
+
+data:
+  entities:
+    - id: ENT-issue
+      name: Issue
+      fields:
+        - { name: number, type: integer, required: true, unique: true }
+        - { name: title, type: string, required: true }
+        - { name: body, type: string }
+        - { name: status, type: enum, required: true, values: [open, in-progress, blocked, deferred, complete] }
+        - { name: project, type: ref, ref: ENT-project, required: true }
+        - { name: assignee, type: ref, ref: ENT-identity }
+        - { name: created, type: datetime, required: true }
+        - { name: updated, type: datetime, required: true }
+      relations:
+        - { to: ENT-label, kind: many_to_many, name: labels }
+    - id: ENT-comment
+      name: Comment
+      description: Polymorphic, threaded — anchors to exactly one of issue, doc version, or code review.
+      fields:
+        - { name: issue, type: ref, ref: ENT-issue }
+        - { name: doc_version, type: ref, ref: ENT-doc-version }
+        - { name: code_review, type: ref, ref: ENT-code-review }
+        - { name: parent, type: ref, ref: ENT-comment }
+        - { name: author, type: ref, ref: ENT-identity, required: true }
+        - { name: body, type: string, required: true }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-label
+      name: Label
+      fields:
+        - { name: name, type: string, required: true, unique: true }
+        - { name: color, type: string }
+    - id: ENT-issue-relation
+      name: IssueRelation
+      fields:
+        - { name: from, type: ref, ref: ENT-issue, required: true }
+        - { name: to, type: ref, ref: ENT-issue, required: true }
+        - { name: kind, type: enum, required: true, values: [parent_of, blocks] }
+    - id: ENT-project
+      name: Project
+      fields:
+        - { name: key, type: string, required: true, unique: true }
+        - { name: name, type: string, required: true }
+        - { name: description, type: string }
+    - id: ENT-document
+      name: Document
+      fields:
+        - { name: project, type: ref, ref: ENT-project, required: true }
+        - { name: issue, type: ref, ref: ENT-issue }
+        - { name: title, type: string, required: true }
+        - { name: current_version, type: ref, ref: ENT-doc-version }
+    - id: ENT-doc-version
+      name: DocVersion
+      fields:
+        - { name: document, type: ref, ref: ENT-document, required: true }
+        - { name: number, type: integer, required: true }
+        - { name: content, type: string, required: true }
+        - { name: author, type: ref, ref: ENT-identity, required: true }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-doc-template
+      name: DocTemplate
+      fields:
+        - { name: name, type: string, required: true, unique: true }
+        - { name: content, type: string, required: true }
+    - id: ENT-thread
+      name: Thread
+      description: An imported agent transcript, tied to a project or an issue.
+      fields:
+        - { name: title, type: string, required: true }
+        - { name: transcript, type: json, required: true }
+        - { name: project, type: ref, ref: ENT-project }
+        - { name: issue, type: ref, ref: ENT-issue }
+        - { name: imported_at, type: datetime, required: true }
+    - id: ENT-identity
+      name: Identity
+      fields:
+        - { name: handle, type: string, required: true, unique: true }
+        - { name: kind, type: enum, required: true, values: [human, agent] }
+        - { name: display_name, type: string }
+    - id: ENT-event
+      name: Event
+      description: Single stream, consumed twice — notification/webhook feed and per-issue audit history.
+      fields:
+        - { name: kind, type: string, required: true }
+        - { name: subject, type: string, required: true }
+        - { name: actor, type: ref, ref: ENT-identity, required: true }
+        - { name: payload, type: json }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-code-review
+      name: CodeReview
+      description: A branch prepared by an agent for human review.
+      fields:
+        - { name: issue, type: ref, ref: ENT-issue, required: true }
+        - { name: branch, type: string, required: true }
+        - { name: summary, type: string }
+        - { name: author, type: ref, ref: ENT-identity, required: true }
+        - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
+        - { name: created, type: datetime, required: true }
+
+modules:
+  - id: MOD-issues
+    name: issues
+    responsibility: Issue lifecycle — CRUD, comments, labels, statuses, parent/child and blocking relations, audit trail, and the per-agent work stack with atomic pop.
+    owns: [ENT-issue, ENT-comment, ENT-label, ENT-issue-relation]
+    boundaries: { may_import: [MOD-projects, MOD-identity, MOD-review, MOD-events] }
+  - id: MOD-projects
+    name: projects
+    responsibility: Containers — projects that issues, docs, and threads hang off.
+    owns: [ENT-project]
+    boundaries: { may_import: [] }
+  - id: MOD-docs
+    name: docs
+    responsibility: Doc database — documents, versions, templates, and links to projects/issues.
+    owns: [ENT-document, ENT-doc-version, ENT-doc-template]
+    boundaries: { may_import: [MOD-projects, MOD-issues, MOD-identity, MOD-events] }
+  - id: MOD-threads
+    name: threads
+    responsibility: Agent transcript import, cataloging, search, and links to projects/issues.
+    owns: [ENT-thread]
+    boundaries: { may_import: [MOD-projects, MOD-issues, MOD-events] }
+  - id: MOD-identity
+    name: identity
+    responsibility: Human and agent identities.
+    owns: [ENT-identity]
+    boundaries: { may_import: [] }
+  - id: MOD-events
+    name: events
+    responsibility: Event feed, notifications, and webhook delivery.
+    owns: [ENT-event]
+    contracts:
+      - { id: CTR-webhooks, type: asyncapi, path: contracts/webhooks.asyncapi.yaml }
+    boundaries: { may_import: [] }
+  - id: MOD-review
+    name: review
+    responsibility: Code Review objects — a branch prepared by an agent for human review, with comments and approval.
+    owns: [ENT-code-review]
+    boundaries: { may_import: [MOD-identity, MOD-events] }
+  - id: MOD-api
+    name: api
+    responsibility: HTTP edge — exposes every capability as the API both UIs and agents use.
+    contracts:
+      - { id: CTR-api, type: openapi, path: contracts/sutra.openapi.yaml }
+    boundaries: { may_import: [MOD-issues, MOD-projects, MOD-docs, MOD-threads, MOD-identity, MOD-events, MOD-review] }
+  - id: MOD-cli
+    name: cli
+    responsibility: CLI surface — full feature parity, JSON/YAML output.
+    boundaries: { may_import: [] }
+  - id: MOD-web
+    name: web
+    responsibility: Web UI — doc review and code review with threaded feedback, kanban board.
+    boundaries: { may_import: [] }
