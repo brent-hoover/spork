@@ -1,0 +1,43 @@
+[project]
+name = "avspec"
+version = "0.2.0"
+description = "Agent-Verifiable Architecture Spec format, verifier, and interview CLI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.11",
+    "questionary>=2.1",
+    "rich>=14.0",
+    "ruamel.yaml>=0.18",
+    "typer>=0.16",
+]
+
+[project.scripts]
+avspec = "avspec.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "ruff>=0.12",
+    "ty>=0.0.1a16",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avspec"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["feature-work"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -51,10 +51,12 @@ avspec/
 ├── adapters/                # optional thin per-tool bindings (neutral core stays clean)
 │   └── claude/              # e.g. CLAUDE.md + slash-command that runs the flow
 ├── ci/verify.yml            # GitHub Actions gate
+├── src/avspec/              # Python verifier and interview CLI
+├── tests/                   # Python verifier/interview tests
 └── tools/
-    ├── lib/analyze.mjs      # shared analyzer — one brain for verify + interview
-    ├── verify.mjs           # the runnable verifier (CI gate)
-    └── interview.mjs        # guided-QA CLI (next / apply / ask)
+    ├── lib/analyze.mjs      # legacy JS analyzer
+    ├── verify.mjs           # legacy JS verifier
+    └── interview.mjs        # legacy JS guided-QA CLI
 ```
 
 The `example/` directory is a filled, passing instance you can run the verifier
@@ -87,7 +89,7 @@ each declaring which `AC-*` it satisfies and which `CMP-*`/`CTR-*` it touches.
 
 ## The verification layer (what makes it "verifiable")
 
-Four gates, run by `tools/verify.mjs` locally and in CI:
+Four gates, run by `avspec verify` locally and in CI:
 
 1. **Schema gate.** `avspec.yaml` validates against `avspec.schema.yaml`. If the
    manifest is malformed, nothing else runs. This is what makes AVSpec a
@@ -125,7 +127,7 @@ The intended handoff, tool-agnostic:
 
 1. Agent reads `avspec.yaml` to discover the artifacts and their order.
 2. Agent reads constitution → requirements → design → tasks.
-3. Agent runs `node tools/verify.mjs` and refuses to start if gates 1–3 fail
+3. Agent runs `avspec verify` and refuses to start if gates 1–3 fail
    (the spec isn't ready).
 4. Agent implements `TSK-*` in dependency order, writing code + the tests each
    `AC-*` maps to.
@@ -156,13 +158,11 @@ agnostic to how it was written.
 
 - **Manual** — copy `templates/`, fill `avspec.yaml` (authoritative), run the
   verifier until `PASS`.
-- **Guided-QA** — an interview drafts it for you, using the verifier's gap report
-  to decide what to ask and when it's done. Two drivers over one shared analyzer
-  (`tools/lib/analyze.mjs`): a conversational **Claude skill**
-  (`adapters/guided-qa/SKILL.md`) and a deterministic **CLI**
-  (`tools/interview.mjs`) for offline/scripted use. Both ask the next open
-  `todo`'s `question`, write the answer, and repeat until no todo remains. See
-  `adapters/guided-qa/DESIGN.md`.
+- **Guided-QA** — `avspec ask` drafts it with a module-first interview. It starts
+  with modules, boundaries, and API/message contracts before requirements,
+  then captures a top-level suite constitution before acceptance criteria,
+  tasks, tests, or implementation stack details. Stack can be declared per
+  module through `components[].stack`.
 
 The verifier supports draft authoring: **well-formedness** (shapes, ID patterns)
 is always enforced, but **completeness** (every AC has a test, every AC is
@@ -172,16 +172,14 @@ satisfied by a task, …) is reported as `todo` and only *fails the build* once
 ## Getting started
 
 ```bash
-npm install                          # ajv + js-yaml
+uv sync
 
 # verify (the CI gate)
-node tools/verify.mjs example        # complete spec (status: ready) → PASS
-node tools/verify.mjs example-draft --json   # partial draft → JSON gap/question queue
+uv run avspec verify example
+uv run avspec next spork-suite
 
-# author by guided-QA (the CLI driver)
-node tools/interview.mjs example-draft next          # show the open questions
-node tools/interview.mjs <dir> apply <patch.yaml> --scaffold   # apply answers + stub files
-node tools/interview.mjs <dir> ask                   # interactive wizard (needs a TTY)
+# author by module-first interview
+uv run avspec ask spork-suite
 ```
 
 To author a new spec: copy the `templates/` into place, fill `avspec.yaml`

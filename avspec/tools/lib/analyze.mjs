@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import YAML from "js-yaml";
+import * as YAML from "js-yaml";
 import Ajv2020 from "ajv/dist/2020.js";
 
 export function analyze(specDir) {
