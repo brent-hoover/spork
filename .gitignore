@@ -7,3 +7,4 @@ __pycache__/
 # roborev snapshots
 /.roborev/
 .kata.local.toml
+.worktrees/
