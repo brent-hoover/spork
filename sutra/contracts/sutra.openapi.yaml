@@ -144,11 +144,13 @@ paths:
         events are preserved verbatim, and import appends exactly one
         `project.imported` event, stamped with `actor`, that never re-stamps
         per-record creation events. `actor` is the identity performing the
-        import — either an identity already existing on this server or one
-        contained in the export — and is validated the same as any other
-        actor reference. A round-trip comparison (AC-import-round-trip)
-        excludes this appended import-audit event; re-exporting an imported
-        project matches the original once that one event is discounted.
+        import and must reference an identity contained in the export's
+        `identities` — an actor existing only on the server would break the
+        round-trip guarantee, since re-exporting would then contain an
+        identity absent from the original. A round-trip comparison
+        (AC-import-round-trip) excludes this appended import-audit event;
+        re-exporting an imported project matches the original once that one
+        event is discounted.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -158,8 +160,10 @@ paths:
           description: >-
             The identity performing the import, recorded as the actor on
             the appended `project.imported` event. Must resolve to an
-            identity already existing on this server or one contained in
-            the export.
+            identity contained in the export's `identities` — the
+            round-trip guarantee requires every identity in a re-export to
+            trace back to the original, so an identity that exists only on
+            this server is not a valid actor here.
           schema: { type: string, format: uuid }
       requestBody:
         required: true
@@ -417,6 +421,7 @@ paths:
     delete:
       operationId: detachLabel
       summary: Detach a label from an issue
+      description: Records an `issue.unlabeled` event.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -495,7 +500,9 @@ paths:
     delete:
       operationId: removeIssueRelation
       summary: Remove a relation
-      description: Removal clears both sides (AC-block-create).
+      description: >-
+        Removal clears both sides (AC-block-create) and records an
+        `issue.relation-removed` event.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -857,7 +864,8 @@ paths:
     delete:
       operationId: unlinkDocumentFromIssue
       summary: Untie a document from its issue
-      description: Untied after creation (AC-doc-link).
+      description: >-
+        Untied after creation (AC-doc-link); records a `doc.unlinked` event.
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'
@@ -1857,7 +1865,8 @@ components:
         per-issue audit history; append-only through every API operation
         (AC-audit-immutable). The v1 kinds consumers route on: issue.created,
         issue.updated, issue.status-changed, issue.assigned, issue.labeled,
-        issue.linked, comment.created, doc.version-saved, thread.imported,
+        issue.unlabeled, issue.linked, issue.relation-removed, comment.created,
+        doc.version-saved, doc.unlinked, thread.imported,
         thread.anchor-changed, review.created, review.changes-requested,
         review.approved, review.resubmitted, project.created,
         project.archived, project.imported.
@@ -1865,7 +1874,11 @@ components:
       properties:
         id: { type: string, format: uuid }
         kind: { type: string }
-        subject: { type: string }
+        subject:
+          type: string
+          description: >-
+            The subject entity's canonical UUID, bare, with no type prefix;
+            consumers filter by uuid and get the entity's type from `kind`.
         actor: { type: string, format: uuid }
         payload:
           description: Arbitrary JSON event payload.

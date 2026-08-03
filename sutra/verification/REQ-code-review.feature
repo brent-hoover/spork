@@ -64,8 +64,17 @@ Feature: Review lifecycle
     Then the comment is rejected
     And no comment is created
 
-  Scenario: unresolvable repository rejects submission
-    Given a project with no repo_path set
-    When an agent creates a review for SUT-1 with a code deliverable
-    Then the operation is rejected with a conflict
+  Scenario Outline: unresolvable repository rejects submission
+    Given a project with <failure>
+    When an agent <operation>s a code deliverable for SUT-1
+    Then the <operation> is rejected with a conflict
     And no submission is created
+
+    Examples:
+      | operation | failure                       |
+      | create    | inaccessible repository path  |
+      | create    | unknown commit                |
+      | create    | unavailable merge base        |
+      | resubmit  | inaccessible repository path  |
+      | resubmit  | unknown commit                |
+      | resubmit  | unavailable merge base        |
