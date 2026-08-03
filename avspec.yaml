@@ -1,0 +1,66 @@
+avspec: "0.3"
+
+project:
+  name: spork
+  description: >-
+    An agent software harness: issue tracking (sutra), a code pipeline, and
+    context management, built as small, focused apps that talk only through
+    contracts. Envelope: single user, one machine, a handful of concurrent
+    agent instances — facts to build with, not requirements to test.
+  status: draft
+
+constitution:
+  - id: CON-small-apps
+    statement: >-
+      The system is composed of small, focused apps communicating only through
+      contracts — no shared code, no shared database, no imports across apps.
+      Prior art: one large application became unwieldy for agents to build;
+      small apps are the correction.
+  - id: CON-uniform-access
+    statement: >-
+      The pipeline integrates with sutra as an ordinary agent identity using
+      sutra's public API and webhooks. No private integration paths exist.
+  - id: CON-no-auth-yet
+    statement: >-
+      No auth model anywhere; identities are plain strings. Single-user
+      system — auth is earned by success, not built in advance (YAGNI).
+
+requirements:
+  - id: REQ-agent-workflow
+    title: Work flows tracker -> pipeline -> review -> tracker without human plumbing
+    rationale: >-
+      An issue assigned to an agent identity is popped by the pipeline, worked,
+      returned as a sutra CodeReview, and the issue status updated — the core
+      loop spork exists to close.
+  - id: REQ-spec-first
+    title: Every app in the system is specified in AVSpec before it is built
+    rationale: Architecture as a verifiable signal is the point of the harness.
+
+modules:
+  - id: MOD-sutra
+    name: sutra
+    responsibility: Issue tracker for agents and humans. Specified in sutra/avspec.yaml.
+    boundaries: { may_import: [] }
+    contracts:
+      - { id: CTR-sutra-api, type: openapi, path: sutra/contracts/sutra.openapi.yaml }
+      - { id: CTR-sutra-webhooks, type: asyncapi, path: sutra/contracts/webhooks.asyncapi.yaml }
+  - id: MOD-pipeline
+    name: code-pipeline
+    responsibility: Picks issues off sutra work stacks, drives agents to build them, submits CodeReviews.
+    boundaries: { may_import: [] }
+  - id: MOD-context
+    name: context-manager
+    responsibility: Manages and serves context to working agents. May fold into the pipeline — deliberately not yet assigned to an app so the open decision stays visible as a todo.
+    boundaries: { may_import: [] }
+
+apps:
+  - id: APP-sutra
+    name: sutra
+    modules: [MOD-sutra]
+  - id: APP-pipeline
+    name: pipeline
+    modules: [MOD-pipeline]
+  # MOD-context intentionally unassigned: MOD_NO_APP is the open fold-in decision.
+
+data:
+  entities: []   # the system level owns no entities; each app owns its own

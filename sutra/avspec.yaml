@@ -12,6 +12,8 @@ constitution:
     statement: Dependencies flow one way between layers; no back-edges.
   - id: CON-no-secrets
     statement: No secrets in source; configuration is injected at runtime.
+  - id: CON-idempotent-mutations
+    statement: Mutating API operations are idempotent (client-supplied keys); agents retry aggressively and replays must be safe.
 
 requirements:
   - id: REQ-core-issues
@@ -60,6 +62,7 @@ requirements:
     title: Projects as first-class containers for issues and docs
   - id: REQ-identities
     title: Identities for both humans and agents
+    rationale: Plain strings, no auth model — single-user system, YAGNI until success demands it.
   - id: REQ-notifications
     title: Notifications and an event feed (webhook or poll surface)
   - id: REQ-audit

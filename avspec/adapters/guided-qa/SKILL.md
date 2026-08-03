@@ -37,9 +37,9 @@ The queue enforces this order; conduct the conversation to match it:
 
 1. **Vision + non-negotiables** — 1–3 sentences into `project.description`.
    Apply the user's standing constitution defaults (test-first, one-way
-   dependency flow, no secrets in source) with a one-line confirmation, not
-   a question each; spend the actual question on THIS system's
-   project-specific principles.
+   dependency flow, no secrets in source, idempotent mutations) with a
+   one-line confirmation, not a question each; spend the actual question on
+   THIS system's project-specific principles.
 2. **Functionality inventory** — always, for every project. Broad
    capability bullets, not user stories yet. For a well-known app type
    (issue tracker, shop, CMS), PROPOSE the genre's baseline for the user to
