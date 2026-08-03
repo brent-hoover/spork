@@ -1883,7 +1883,9 @@ components:
             The UUID of the aggregation root this event belongs to, bare,
             with no type prefix. For issue-scoped events (status,
             assignment, labels, relations, comments on issues, reviews,
-            queue operations) this is the issue's UUID. For project-scoped
+            queue operations) this is the issue's UUID — for doc.unlinked
+            the formerly linked issue, and for issue.relation-removed the
+            relation's `from` issue. For project-scoped
             events (project.*, doc/thread events not tied to an issue) this
             is the project's UUID. For identity events this is the identity
             itself. Consumers filter the feed and the per-issue audit by
