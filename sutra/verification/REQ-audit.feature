@@ -5,7 +5,7 @@ Feature: Issue audit history
   Scenario: every mutation is recorded
     Given issue SUT-1 exists
     When "claude" changes SUT-1 status to "in-progress"
-    Then an event exists for SUT-1 with actor "claude", kind "status-changed", and a timestamp
+    Then an event exists for SUT-1 with actor "claude", kind "issue.status-changed", and a timestamp
 
   Scenario: history reads back in order
     Given issue SUT-1 was created, assigned, and closed in that order

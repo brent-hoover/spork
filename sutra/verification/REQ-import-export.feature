@@ -19,7 +19,7 @@ Feature: Import and export
 
   Scenario: unknown import actor is rejected
     Given an export of project "SUT"
-    And an actor id not present in the export's identities
-    When the export is imported with that actor
-    Then the import is rejected
+    And identity "outsider" exists on the server but not in the export's identities
+    When the export is imported with "outsider" as the actor
+    Then the import is rejected as a bad request
     And nothing is written

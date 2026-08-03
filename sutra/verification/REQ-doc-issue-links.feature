@@ -4,9 +4,9 @@ Feature: Documents tied to issues
     Given document "notes" exists in project "SUT" with no issue
     When "notes" is tied to issue SUT-1
     Then SUT-1 lists "notes"
-    When "notes" is untied from SUT-1
+    When "notes" is untied from SUT-1 by "human-brent"
     Then SUT-1 lists no documents
-    And a "doc.unlinked" event is recorded for SUT-1
+    And a "doc.unlinked" event with actor "human-brent" and a timestamp is recorded for SUT-1
 
   Scenario: both sides see the link
     Given document "design" is tied to issue SUT-1

@@ -73,6 +73,8 @@ Feature: Review lifecycle
 
     Examples:
       | operation | failure                       |
+      | create    | an unset repo_path            |
+      | resubmit  | an unset repo_path            |
       | create    | inaccessible repository path  |
       | create    | unknown commit                |
       | create    | unavailable merge base        |
