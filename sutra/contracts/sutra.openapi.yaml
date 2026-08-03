@@ -1,0 +1,6 @@
+openapi: 3.0.3
+info:
+  title: sutra
+  description: The single API surface — CLI, web UI, and external agents all speak this contract.
+  version: 0.1.0
+paths: {}

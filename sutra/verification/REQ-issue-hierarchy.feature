@@ -1,0 +1,18 @@
+Feature: Issue hierarchy
+
+  Scenario: parent and child see each other
+    Given issues SUT-1 and SUT-2 exist
+    When SUT-2 becomes a child of SUT-1
+    Then SUT-1 lists SUT-2 among its children
+    And SUT-2 shows SUT-1 as its parent
+    And making SUT-1 a child of SUT-2 is rejected as a cycle
+
+  Scenario: parent rolls up child progress
+    Given SUT-1 has five children of which three are complete
+    When SUT-1 is viewed
+    Then it shows progress "3 of 5 complete"
+
+  Scenario: open children hold the parent open
+    Given SUT-1 has a child in status "in-progress"
+    When SUT-1 is transitioned to "complete"
+    Then the transition is rejected naming the open child

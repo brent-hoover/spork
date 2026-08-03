@@ -1,0 +1,37 @@
+Feature: Agent work stack
+  Issues assigned to an agent identity form its work stack; popping is the
+  atomic handoff from tracker to working agent.
+
+  Scenario: pop claims the issue
+    Given issue SUT-1 is assigned to agent "claude" with status "open"
+    When "claude" pops its work stack
+    Then it receives SUT-1
+    And SUT-1 has status "in-progress"
+
+  Scenario: concurrent pops never collide
+    Given issues SUT-1 and SUT-2 are assigned to agent "claude" with status "open"
+    When two instances of "claude" pop concurrently
+    Then one instance receives SUT-1 and the other receives SUT-2
+
+  Scenario: oldest issue comes first
+    Given issue SUT-1 was assigned to "claude" before issue SUT-2
+    When "claude" pops its work stack
+    Then it receives SUT-1
+
+  Scenario: blocker is worked first
+    Given issue SUT-1 is assigned to "claude"
+    And SUT-1 is blocked by issue SUT-2, also assigned to "claude" and open
+    When "claude" pops its work stack
+    Then it receives SUT-2
+
+  Scenario: externally blocked issues are skipped
+    Given issue SUT-1 is assigned to "claude"
+    And SUT-1 is blocked by an open issue assigned to "human-brent"
+    And issue SUT-3 is assigned to "claude" and unblocked
+    When "claude" pops its work stack
+    Then it receives SUT-3
+
+  Scenario: empty stack is not an error
+    Given agent "claude" has no open assigned issues
+    When "claude" pops its work stack
+    Then it receives an explicit empty result

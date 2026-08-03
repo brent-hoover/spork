@@ -2,8 +2,22 @@ avspec: "0.3"
 
 project:
   name: sutra
-  description: An issue tracker for agents and humans.
-  status: draft
+  description: >-
+    An issue tracker for agents and humans. Envelope: single user, one
+    machine, a handful of concurrent agent instances — facts to build
+    with, not requirements to test.
+  status: ready
+  stack:
+    languages: [{ name: go, version: "1.23" }]
+    package_manager: go
+    frameworks: [net/http, htmx]
+    bdd: godog
+    store: sqlite  # FTS5 for search; single-binary friendly
+    commands:
+      install: go mod download
+      test: go test ./...
+      lint: golangci-lint run
+      typecheck: go vet ./...
 
 constitution:
   - id: CON-test-first
@@ -14,63 +28,308 @@ constitution:
     statement: No secrets in source; configuration is injected at runtime.
   - id: CON-idempotent-mutations
     statement: Mutating API operations are idempotent (client-supplied keys); agents retry aggressively and replays must be safe.
+  - id: CON-uuid-keys
+    statement: Entity primary keys are UUIDv7; human-facing numbers are project-scoped display aliases, never canonical identity (federation-safe by construction).
 
 requirements:
   - id: REQ-core-issues
     title: Track issues (create, update, comment, label, assign, close)
     rationale: The baseline issue-tracker capability everything else hangs off.
+    acceptance:
+      - id: AC-issue-create
+        statement: A created issue gets a UUIDv7 id plus a per-project sequential display number, status open, and a creation event.
+        test: verification/REQ-core-issues.feature#create mints uuid and display number
+      - id: AC-issue-update
+        statement: Changes to title, body, or fields persist and updated reflects the mutation.
+        test: verification/REQ-core-issues.feature#updates persist
+      - id: AC-issue-labels
+        statement: Labels attach and detach; an issue lists its current labels.
+        test: verification/REQ-core-issues.feature#labels attach and detach
+      - id: AC-issue-assign
+        statement: An issue can be assigned to any identity, human or agent, and unassigned; assignment feeds the agent work stack.
+        test: verification/REQ-core-issues.feature#assignment to any identity
   - id: REQ-cli-parity
     title: Agents can access every feature via the CLI
     rationale: Agents are first-class users; no capability is UI-only.
+    acceptance:
+      - id: AC-parity-coverage
+        statement: For every operation in the API contract, a CLI command exists that invokes it; the parity test enumerates the contract and fails on any uncovered operation.
+        test: verification/REQ-cli-parity.feature#every api operation has a command
+      - id: AC-parity-remote
+        statement: With --server pointing at any sutra instance, every CLI command behaves identically to loopback — the CLI has no private path to daemon internals.
+        test: verification/REQ-cli-parity.feature#remote server behaves like loopback
   - id: REQ-doc-database
     title: Doc database — planning docs filed under project and issue, with versioning
     rationale: Planning artifacts live with the work they describe, not in a separate wiki.
+    acceptance:
+      - id: AC-doc-create
+        statement: A document created in a project (optionally tied to an issue) is filed there and readable back with title and content.
+        test: verification/REQ-doc-database.feature#doc files under its project
+      - id: AC-doc-versioning
+        statement: Saving content appends a new immutable DocVersion with author, number, and timestamp; prior versions stay readable, no in-place edits.
+        test: verification/REQ-doc-database.feature#saves append immutable versions
+      - id: AC-doc-current
+        statement: A document always identifies its current version; requesting it without a version yields the latest.
+        test: verification/REQ-doc-database.feature#latest by default
+      - id: AC-doc-history
+        statement: A document's history lists all versions in order with author and time, and any two versions can be diffed.
+        test: verification/REQ-doc-database.feature#history lists and diffs versions
   - id: REQ-doc-review-server
     title: Integrated web server for viewing and giving threaded feedback on documents
     rationale: Humans review and comment on docs in place, with threads.
+    acceptance:
+      - id: AC-docweb-render
+        statement: Opening a document in the web UI renders its content (markdown formatted), showing a chosen or latest version.
+        test: verification/REQ-doc-review-server.feature#doc renders in the browser
+      - id: AC-docweb-inline-comments
+        statement: A reader attaches a comment to a specific span or block of a doc version; the comment anchors to that version so later versions never orphan it silently.
+        test: verification/REQ-doc-review-server.feature#comments pin to a spot in a version
+      - id: AC-docweb-threads
+        statement: Doc comments thread via reply-to and the discussion is visible alongside the content.
+        test: verification/REQ-doc-review-server.feature#discussion sits beside the doc
+      - id: AC-docweb-live
+        statement: When a new version of an open document is saved, the viewer is notified or refreshed to see it.
+        test: verification/REQ-doc-review-server.feature#viewer learns of new versions
   - id: REQ-agent-queue
     title: Issues assigned to an agent form a work stack the agent pops from
     rationale: Assignment to an agent identity is an executable handoff; popping is atomic, so concurrent instances of one identity never grab the same issue.
+    acceptance:
+      - id: AC-pop-claims
+        statement: When an agent pops its work stack, it receives its next workable assigned issue and that issue's status becomes in-progress in the same operation.
+        test: verification/REQ-agent-queue.feature#pop claims the issue
+      - id: AC-pop-atomic
+        statement: When two instances of the same agent identity pop concurrently, each receives a different issue — never the same issue twice.
+        test: verification/REQ-agent-queue.feature#concurrent pops never collide
+      - id: AC-pop-fifo
+        statement: When an agent pops, it receives its oldest workable assigned issue first.
+        test: verification/REQ-agent-queue.feature#oldest issue comes first
+      - id: AC-pop-blocker-first
+        statement: If the next issue is blocked by an open issue also assigned to the same agent, the pop returns the blocker instead, walking chains to the deepest open blocker.
+        test: verification/REQ-agent-queue.feature#blocker is worked first
+      - id: AC-pop-skips-blocked
+        statement: If an issue is blocked by an open issue not assigned to the popping agent, it is skipped and the next workable issue is returned.
+        test: verification/REQ-agent-queue.feature#externally blocked issues are skipped
+      - id: AC-pop-empty
+        statement: When an agent with no workable assigned issues pops, it receives an explicit empty result, not an error.
+        test: verification/REQ-agent-queue.feature#empty stack is not an error
   - id: REQ-thread-catalog
     title: Import, catalog, and search agent transcripts ("threads")
     rationale: Agent conversations are work artifacts worth indexing and citing.
+    acceptance:
+      - id: AC-thread-import
+        statement: Importing a transcript creates a Thread with title, session id, and import time; content is preserved verbatim.
+        test: verification/REQ-thread-catalog.feature#import preserves the transcript
+      - id: AC-thread-view
+        statement: A thread renders turn-by-turn readable in the web UI, not as a raw blob.
+        test: verification/REQ-thread-catalog.feature#threads read like conversations
+      - id: AC-thread-search
+        statement: Searching within threads returns matching threads with surrounding context.
+        test: verification/REQ-thread-catalog.feature#thread content is searchable
   - id: REQ-issue-hierarchy
     title: Parent/child relationships between issues
+    acceptance:
+      - id: AC-parent-create
+        statement: An issue can be made a child of another; parent lists children, child shows parent; at most one parent per issue and ancestry cycles are rejected.
+        test: verification/REQ-issue-hierarchy.feature#parent and child see each other
+      - id: AC-parent-rollup
+        statement: A parent shows progress over its children, e.g. 3 of 5 complete.
+        test: verification/REQ-issue-hierarchy.feature#parent rolls up child progress
+      - id: AC-parent-close-gate
+        statement: Transitioning a parent to complete while any child is not complete is rejected.
+        test: verification/REQ-issue-hierarchy.feature#open children hold the parent open
   - id: REQ-issue-blocking
     title: Blocks / is-blocked-by relationships between issues
+    acceptance:
+      - id: AC-block-create
+        statement: Marking issue A as blocking B shows on both sides (A blocks, B blocked-by); removal clears both.
+        test: verification/REQ-issue-blocking.feature#both sides see the block
+      - id: AC-block-status
+        statement: While its blocker is open an issue is unworkable (pop skips or redirects); when the blocker completes it becomes workable again.
+        test: verification/REQ-issue-blocking.feature#blocker completion unblocks
+      - id: AC-block-no-cycles
+        statement: A blocking relationship that would create a cycle, directly or transitively, is rejected.
+        test: verification/REQ-issue-blocking.feature#cycles are rejected
   - id: REQ-doc-issue-links
     title: Documents can be tied to issues
+    acceptance:
+      - id: AC-doc-link
+        statement: An existing document can be tied to an issue and untied after creation.
+        test: verification/REQ-doc-issue-links.feature#link and unlink after creation
+      - id: AC-doc-list-by-issue
+        statement: An issue lists its currently tied documents; a document shows its issue.
+        test: verification/REQ-doc-issue-links.feature#both sides see the link
   - id: REQ-doc-templates
     title: Hold templates for planning docs
+    acceptance:
+      - id: AC-template-crud
+        statement: Templates can be created, listed, updated, and removed; each has a unique name and content.
+        test: verification/REQ-doc-templates.feature#templates are managed by name
+      - id: AC-template-instantiate
+        statement: A document created from a template starts with the template's content as its first version and proceeds as a normal versioned document.
+        test: verification/REQ-doc-templates.feature#template seeds the first version
   - id: REQ-close-requires-review
-    title: Closing an issue requires an approved code review
-    rationale: Work is not done until a human has reviewed the branch.
+    title: Closing an issue requires an approved review
+    rationale: Work — code or docs, docs especially — is not done until a human has approved the deliverable.
+    acceptance:
+      - id: AC-close-approved
+        statement: Given an issue with a Review in state approved, transitioning the issue to complete succeeds.
+        test: verification/REQ-close-requires-review.feature#approved review allows close
+      - id: AC-close-blocked-without
+        statement: Given an issue with no Review in state approved, a transition to complete is rejected with an error naming the missing approval.
+        test: verification/REQ-close-requires-review.feature#no approval no close
+      - id: AC-review-deliverable-kinds
+        statement: A Review's deliverable is exactly one of a branch or a document; both kinds gate closing identically.
+        test: verification/REQ-close-requires-review.feature#doc deliverables gate like code
   - id: REQ-code-review
-    title: Agents prepare a Code Review object — a branch ready for human review — which humans comment on and approve via the web UI
+    title: Agents prepare a Review object — a branch or document ready for human review — which humans comment on and approve via the web UI
+    acceptance:
+      - id: AC-review-create
+        statement: An agent creates a Review naming an issue and exactly one deliverable (branch or doc version), optionally stamped with its session id; it exists in state open and is visible to reviewers.
+        test: verification/REQ-code-review.feature#agent submits a review
+      - id: AC-review-web
+        statement: Opening a Review in the web UI shows the deliverable's content for reading.
+        test: verification/REQ-code-review.feature#reviewer sees the deliverable
+      - id: AC-review-threads
+        statement: Comments on a Review thread via reply-to and anchor to that Review.
+        test: verification/REQ-code-review.feature#feedback threads on the review
+      - id: AC-review-verdict
+        statement: A human sets approved or changes-requested; the state changes and an Event records who and when.
+        test: verification/REQ-code-review.feature#verdict changes state and is recorded
+      - id: AC-review-approved-event
+        statement: When a Review enters approved, an event is published on the feed such that a subscriber can act on it; merge execution stays outside sutra.
+        test: verification/REQ-code-review.feature#approval publishes an event
+      - id: AC-review-rework
+        statement: On changes-requested the emitted event carries the review's session id and issue ref; when the agent resubmits the deliverable the review returns to open.
+        test: verification/REQ-code-review.feature#rework routes back with session context
   - id: REQ-comments
     title: Unlimited comments on issues
+    acceptance:
+      - id: AC-comment-create
+        statement: When an identity comments on an issue, the comment is stored with author and timestamp and appears in the issue's comment list.
+        test: verification/REQ-comments.feature#comment lands on the issue
+      - id: AC-comment-threading
+        statement: A comment replying to another nests under its parent; thread depth is unbounded.
+        test: verification/REQ-comments.feature#replies nest without depth limit
+      - id: AC-comment-no-cap
+        statement: No limit on comment count or body length beyond the store's physical limits; large volumes on one issue succeed.
+        test: verification/REQ-comments.feature#no artificial caps
   - id: REQ-cli-output-formats
     title: Issues can be output as JSON or YAML from the CLI
     rationale: Agent-consumable output is a first-class contract, not a scrape.
+    acceptance:
+      - id: AC-cli-json
+        statement: When an issue-listing or issue-showing CLI command runs with --json, the output is valid JSON containing the full issue fields.
+        test: verification/REQ-cli-output-formats.feature#json output is complete and valid
+      - id: AC-cli-yaml
+        statement: When the same command runs with --yaml, the output is valid YAML with content identical to the JSON form.
+        test: verification/REQ-cli-output-formats.feature#yaml output matches json content
+      - id: AC-cli-stable-shape
+        statement: JSON/YAML field names match the API contract's schema, so one parser handles HTTP and stdout alike.
+        test: verification/REQ-cli-output-formats.feature#output shape matches the api contract
   - id: REQ-status-workflow
     title: "Issue statuses: open, in-progress, blocked, deferred, complete"
+    acceptance:
+      - id: AC-status-set
+        statement: Transitions among open, in-progress, blocked, and deferred are free and recorded as events; only complete is gated (approved review, no open children). The blocked status is a judgment, independent of the blocks-relation workability machinery.
+        test: verification/REQ-status-workflow.feature#free transitions are recorded
+      - id: AC-status-reopen
+        statement: A complete issue can be reopened to open, recorded as an event; its closing review stays in history.
+        test: verification/REQ-status-workflow.feature#complete can reopen
+      - id: AC-status-invalid
+        statement: A status outside the five is rejected.
+        test: verification/REQ-status-workflow.feature#unknown statuses are rejected
   - id: REQ-kanban
     title: Kanban board in the web UI
+    acceptance:
+      - id: AC-kanban-columns
+        statement: The board shows one column per status with each issue as a card in its column, scoped to a project.
+        test: verification/REQ-kanban.feature#columns mirror statuses
+      - id: AC-kanban-drag
+        statement: Moving a card between columns performs the real status transition, including rejections — an invalid move snaps back with the error.
+        test: verification/REQ-kanban.feature#drag is a real transition
+      - id: AC-kanban-card
+        statement: A card shows at minimum number, title, assignee, and labels, and opens the issue on click.
+        test: verification/REQ-kanban.feature#cards carry the essentials
   - id: REQ-search
     title: Search and filter across issues
+    acceptance:
+      - id: AC-search-text
+        statement: Searching a project for a term matches issue titles, bodies, and comments, returning ranked issues.
+        test: verification/REQ-search.feature#text search over issues
+      - id: AC-search-filters
+        statement: Listings filter by status, assignee, and label, combinable with each other and with text search.
+        test: verification/REQ-search.feature#filters compose
+      - id: AC-search-cross
+        statement: Search spans docs and threads as well — one query surface over issues, docs, and transcripts.
+        test: verification/REQ-search.feature#one surface over all content
+      - id: AC-search-session
+        statement: Searching by session id returns the work that instance produced — reviews stamped with it, threads imported from it, and their linked issues.
+        test: verification/REQ-search.feature#session id joins an instance's work
   - id: REQ-projects
     title: Projects as first-class containers for issues and docs
+    acceptance:
+      - id: AC-project-init
+        statement: Running `sutra init` in a repository creates the project via the public API, records the repo path, and writes a local marker linking the directory to the project.
+        test: verification/REQ-projects.feature#init anchors a project to a repo
+      - id: AC-project-context
+        statement: CLI commands inside an initialized repo default to that repo's project; outside one, project-scoped commands require an explicit project flag.
+        test: verification/REQ-projects.feature#repo context is implicit
+      - id: AC-project-scoping
+        statement: Issues, docs, and threads belong to exactly one project; listings scope by project.
+        test: verification/REQ-projects.feature#content scopes to its project
+      - id: AC-project-archive
+        statement: Archived projects are hidden from default listings and read-only; nothing is deleted.
+        test: verification/REQ-projects.feature#archive hides without deleting
   - id: REQ-identities
     title: Identities for both humans and agents
     rationale: Plain strings, no auth model — single-user system, YAGNI until success demands it.
+    acceptance:
+      - id: AC-identity-create
+        statement: An identity is created with a unique handle and a kind (human or agent); no credentials, no auth — it is a name.
+        test: verification/REQ-identities.feature#identity is just a named kind
+      - id: AC-identity-referenced
+        statement: Actor fields accept any existing identity; unknown handles are rejected, never silently created.
+        test: verification/REQ-identities.feature#unknown handles are rejected
   - id: REQ-notifications
-    title: Notifications and an event feed (webhook or poll surface)
+    title: Event feed with cursor-based polling
+    rationale: Poll-only by design — every subscriber today lives on the same machine; webhooks return only when a remote subscriber exists (delivery-only change, the Event stream already carries everything).
+    acceptance:
+      - id: AC-feed-poll
+        statement: The event feed supports cursor-based polling — a consumer passes its last-seen position and receives only newer events, in order; a restarted consumer resumes from its cursor and misses nothing.
+        test: verification/REQ-notifications.feature#cursor polling resumes losslessly
+      - id: AC-feed-filter
+        statement: The feed filters by event kind and/or subject, so a consumer watches exactly its concerns.
+        test: verification/REQ-notifications.feature#filters narrow the feed
   - id: REQ-audit
     title: Audit history per issue
+    acceptance:
+      - id: AC-audit-mutations
+        statement: When an issue is created, changes status, is assigned, labeled, commented, or linked, an Event is recorded with actor, change kind, and timestamp.
+        test: verification/REQ-audit.feature#every mutation is recorded
+      - id: AC-audit-query
+        statement: When an issue's audit history is requested, all its events are returned in chronological order with actor, change kind, and time.
+        test: verification/REQ-audit.feature#history reads back in order
+      - id: AC-audit-immutable
+        statement: Events cannot be edited or deleted through any API operation; the history is append-only.
+        test: verification/REQ-audit.feature#events are append-only
   - id: REQ-import-export
     title: Import and export of tracker data
+    acceptance:
+      - id: AC-export-full
+        statement: A project export captures issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project.
+        test: verification/REQ-import-export.feature#export captures the whole project
+      - id: AC-import-round-trip
+        statement: Importing an export into an empty server reconstructs the project with UUIDs preserved.
+        test: verification/REQ-import-export.feature#import round-trips losslessly
+      - id: AC-import-collision
+        statement: Importing an export whose UUIDs already exist is rejected as a whole, naming the conflict; no partial imports.
+        test: verification/REQ-import-export.feature#colliding import is rejected whole
   - id: REQ-thread-links
     title: Threads can be tied to either projects or issues
+    acceptance:
+      - id: AC-thread-anchor
+        statement: At import or later, a thread ties to a project or an issue — at least one, retargetable; both sides list it.
+        test: verification/REQ-thread-links.feature#threads anchor to their work
 
 apps:
   - id: APP-sutra
@@ -83,7 +342,7 @@ data:
     - id: ENT-issue
       name: Issue
       fields:
-        - { name: number, type: integer, required: true, unique: true }
+        - { name: number, type: integer, required: true }  # project-scoped display alias (SUT-42); pk is uuid per CON-uuid-keys
         - { name: title, type: string, required: true }
         - { name: body, type: string }
         - { name: status, type: enum, required: true, values: [open, in-progress, blocked, deferred, complete] }
@@ -95,12 +354,13 @@ data:
         - { to: ENT-label, kind: many_to_many, name: labels }
     - id: ENT-comment
       name: Comment
-      description: Polymorphic, threaded — anchors to exactly one of issue, doc version, or code review.
+      description: Polymorphic, threaded — anchors to exactly one of issue, doc version, or review.
       fields:
         - { name: issue, type: ref, ref: ENT-issue }
         - { name: doc_version, type: ref, ref: ENT-doc-version }
-        - { name: code_review, type: ref, ref: ENT-code-review }
+        - { name: review, type: ref, ref: ENT-review }
         - { name: parent, type: ref, ref: ENT-comment }
+        - { name: anchor, type: string }  # optional span/block locator within the anchored artifact
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: body, type: string, required: true }
         - { name: created, type: datetime, required: true }
@@ -121,6 +381,7 @@ data:
         - { name: key, type: string, required: true, unique: true }
         - { name: name, type: string, required: true }
         - { name: description, type: string }
+        - { name: repo_path, type: string }  # recorded by `sutra init`; projects are repo-anchored
     - id: ENT-document
       name: Document
       fields:
@@ -147,6 +408,7 @@ data:
       fields:
         - { name: title, type: string, required: true }
         - { name: transcript, type: json, required: true }
+        - { name: session, type: string }  # the instance this transcript came from; joins with Review.session
         - { name: project, type: ref, ref: ENT-project }
         - { name: issue, type: ref, ref: ENT-issue }
         - { name: imported_at, type: datetime, required: true }
@@ -158,19 +420,21 @@ data:
         - { name: display_name, type: string }
     - id: ENT-event
       name: Event
-      description: Single stream, consumed twice — notification/webhook feed and per-issue audit history.
+      description: Single append-only stream, consumed twice — the pollable feed and per-issue audit history.
       fields:
         - { name: kind, type: string, required: true }
         - { name: subject, type: string, required: true }
         - { name: actor, type: ref, ref: ENT-identity, required: true }
         - { name: payload, type: json }
         - { name: created, type: datetime, required: true }
-    - id: ENT-code-review
-      name: CodeReview
-      description: A branch prepared by an agent for human review.
+    - id: ENT-review
+      name: Review
+      description: A deliverable prepared for human approval — exactly one of branch or document. Docs need approval like code.
       fields:
         - { name: issue, type: ref, ref: ENT-issue, required: true }
-        - { name: branch, type: string, required: true }
+        - { name: branch, type: string }
+        - { name: document, type: ref, ref: ENT-document }
+        - { name: session, type: string }
         - { name: summary, type: string }
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
@@ -204,15 +468,13 @@ modules:
     boundaries: { may_import: [] }
   - id: MOD-events
     name: events
-    responsibility: Event feed, notifications, and webhook delivery.
+    responsibility: Event feed — append-only stream serving audit history and cursor-based polling (no push delivery in v1).
     owns: [ENT-event]
-    contracts:
-      - { id: CTR-webhooks, type: asyncapi, path: contracts/webhooks.asyncapi.yaml }
     boundaries: { may_import: [] }
   - id: MOD-review
     name: review
-    responsibility: Code Review objects — a branch prepared by an agent for human review, with comments and approval.
-    owns: [ENT-code-review]
+    responsibility: Review objects — a branch or document prepared for human review, with comments and approval.
+    owns: [ENT-review]
     boundaries: { may_import: [MOD-identity, MOD-events] }
   - id: MOD-api
     name: api
@@ -228,3 +490,63 @@ modules:
     name: web
     responsibility: Web UI — doc review and code review with threaded feedback, kanban board.
     boundaries: { may_import: [] }
+    ui:
+      kind: web
+      entry: VIEW-projects
+      views:
+        - id: VIEW-projects
+          name: Projects
+          route: /
+          purpose: List projects; jump into a project's board.
+          shows: [ENT-project.key, ENT-project.name]
+          navigates_to: [VIEW-board]
+          satisfies: [AC-project-scoping]
+        - id: VIEW-board
+          name: Kanban board
+          route: /p/:key
+          purpose: Column-per-status board; dragging is a real transition.
+          shows: [ENT-issue.number, ENT-issue.title, ENT-issue.status, ENT-issue.assignee]
+          actions: [ACT-move-card]
+          navigates_to: [VIEW-issue, VIEW-doc, VIEW-thread]
+          satisfies: [AC-kanban-columns, AC-kanban-drag, AC-kanban-card]
+        - id: VIEW-issue
+          name: Issue detail
+          route: /p/:key/i/:num
+          purpose: Everything about one issue — status, comments, docs, threads, reviews, audit trail.
+          shows: [ENT-issue.title, ENT-issue.body, ENT-issue.status, ENT-issue.assignee]
+          actions: [ACT-comment]
+          navigates_to: [VIEW-doc, VIEW-review, VIEW-thread]
+          satisfies: [AC-comment-create, AC-audit-query, AC-doc-list-by-issue]
+        - id: VIEW-doc
+          name: Document
+          route: /p/:key/d/:doc
+          purpose: Rendered doc with versions, inline threaded comments, live refresh.
+          shows: [ENT-document.title, ENT-doc-version.content, ENT-doc-version.number]
+          actions: [ACT-comment, ACT-save-doc]
+          satisfies: [AC-docweb-render, AC-docweb-inline-comments, AC-docweb-threads, AC-docweb-live, AC-doc-history]
+        - id: VIEW-review
+          name: Review
+          route: /p/:key/r/:id
+          purpose: The deliverable, its discussion, and the verdict.
+          shows: [ENT-review.branch, ENT-review.state, ENT-review.summary]
+          actions: [ACT-comment, ACT-verdict]
+          satisfies: [AC-review-web, AC-review-threads, AC-review-verdict]
+        - id: VIEW-thread
+          name: Thread
+          route: /p/:key/t/:id
+          purpose: An imported transcript, turn by turn.
+          shows: [ENT-thread.title, ENT-thread.transcript]
+          satisfies: [AC-thread-view]
+      actions:
+        - id: ACT-move-card
+          name: move_card
+          invokes: CTR-api#updateIssueStatus
+        - id: ACT-comment
+          name: comment
+          invokes: CTR-api#createComment
+        - id: ACT-verdict
+          name: set_verdict
+          invokes: CTR-api#setReviewVerdict
+        - id: ACT-save-doc
+          name: save_doc_version
+          invokes: CTR-api#saveDocVersion
