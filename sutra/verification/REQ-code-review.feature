@@ -4,13 +4,13 @@ Feature: Review lifecycle
   publishes events; acting on them is the subscriber's job.
 
   Scenario: agent submits a review
-    Given agent "claude" finished work on issue SUT-1 on branch "sut-1-fix" at commit "a1b2c3d"
-    When it creates a review for SUT-1 with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d" and session "sess-42"
+    Given agent "claude" finished work on issue SUT-1 on branch "sut-1-fix" at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+    When it creates a review for SUT-1 with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4" and session "sess-42"
     Then the review exists in state "open"
     And it is listed for reviewers
 
   Scenario: reviewer sees the deliverable
-    Given an open review with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d"
+    Given an open review with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
     When a human opens it in the web UI
     Then the deliverable content is shown for reading
     And later commits pushed to "sut-1-fix" do not change the reviewed content
@@ -34,7 +34,10 @@ Feature: Review lifecycle
 
   Scenario: rework routes back with session context
     Given a review created with session "sess-42" is set to "changes-requested"
+    And a reviewer commented on the review before resubmission
     Then the emitted event carries session "sess-42" and the issue ref
-    When the agent resubmits the deliverable pinned at commit "e4f5a6b"
+    When the agent resubmits the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
     Then the review returns to state "open"
-    And the review's pinned commit is "e4f5a6b"
+    And the review's pinned commit is "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
+    And the review's revision is 2
+    And the earlier comment remains associated with revision 1

@@ -112,6 +112,9 @@ requirements:
       - id: AC-pop-empty
         statement: When an agent with no workable assigned issues pops, it receives an explicit empty result, not an error.
         test: verification/REQ-agent-queue.feature#empty stack is not an error
+      - id: AC-pop-skips-archived
+        statement: Issues belonging to archived projects are never returned by pop — archived projects are read-only, so their work is never handed out.
+        test: verification/REQ-agent-queue.feature#archived project issues are never handed out
   - id: REQ-thread-catalog
     title: Import, catalog, and search agent transcripts ("threads")
     rationale: Agent conversations are work artifacts worth indexing and citing.
@@ -199,7 +202,7 @@ requirements:
         statement: When a Review enters approved, an event is published on the feed such that a subscriber can act on it; merge execution stays outside sutra.
         test: verification/REQ-code-review.feature#approval publishes an event
       - id: AC-review-rework
-        statement: On changes-requested the emitted event carries the review's session id and issue ref; when the agent resubmits the deliverable the review returns to open.
+        statement: On changes-requested the emitted event carries the review's session id and issue ref; when the agent resubmits the deliverable the review returns to open, its revision increments, and prior feedback stays associated with the revision it concerned.
         test: verification/REQ-code-review.feature#rework routes back with session context
   - id: REQ-comments
     title: Unlimited comments on issues
@@ -361,6 +364,7 @@ data:
         - { name: review, type: ref, ref: ENT-review }
         - { name: parent, type: ref, ref: ENT-comment }
         - { name: anchor, type: string }  # optional span/block locator within the anchored artifact
+        - { name: review_revision, type: integer }  # for review-anchored comments: the review revision the comment was made against; server-stamped
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: body, type: string, required: true }
         - { name: created, type: datetime, required: true }
@@ -430,16 +434,17 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-review
       name: Review
-      description: A deliverable prepared for human approval — exactly one of a code deliverable (pinned at an immutable commit; branch is display metadata) or doc_version (immutable, so approval pins a version). Docs need approval like code.
+      description: A deliverable prepared for human approval — exactly one of a code deliverable (pinned at an immutable commit; branch is display metadata) or doc_version (immutable, so approval pins a version). Docs need approval like code. Carries a revision counter that increments on each resubmission; feedback stays associated with the revision it concerned.
       fields:
         - { name: issue, type: ref, ref: ENT-issue, required: true }
         - { name: branch, type: string }
-        - { name: commit, type: string }  # immutable SHA pinned at creation/resubmission; branch is display metadata
+        - { name: commit, type: string }  # canonical full object id, pinned at creation/resubmission; branch is display metadata
         - { name: doc_version, type: ref, ref: ENT-doc-version }
         - { name: session, type: string }
         - { name: summary, type: string }
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
+        - { name: revision, type: integer, required: true }  # 1 on creation, +1 per resubmission; server-managed
         - { name: created, type: datetime, required: true }
 
 modules:

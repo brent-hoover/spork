@@ -3,9 +3,10 @@ Feature: Closing requires an approved review
   has approved the deliverable.
 
   Scenario: approved review allows close
-    Given issue SUT-1 has a review of branch "sut-1-fix" in state "approved"
+    Given issue SUT-1 has a review of branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4" in state "approved"
     When SUT-1 is transitioned to "complete"
     Then the transition succeeds
+    And the close is gated on the review's pinned commit
 
   Scenario: no approval no close
     Given issue SUT-1 has no review in state "approved"

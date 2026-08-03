@@ -1093,7 +1093,9 @@ paths:
       summary: Set a review's verdict
       description: >-
         A human sets approved or changes-requested; the state changes and an
-        Event records who and when (AC-review-verdict). Approval publishes an
+        Event records who and when (AC-review-verdict). The verdict applies
+        to the review's current revision — for a code deliverable, approval
+        covers the commit pinned as of that revision. Approval publishes an
         event a subscriber can act on (AC-review-approved-event);
         changes-requested carries the review's session id and issue ref so a
         resubmission routes back to the same agent instance
@@ -1129,7 +1131,9 @@ paths:
         After changes-requested, the agent resubmits a replacement
         deliverable — the same exactly-one shape as creation, a branch
         pinned at an immutable commit or a doc version — and the review
-        returns to state open (AC-review-rework).
+        returns to state open, incrementing its revision; feedback left on
+        the prior deliverable stays associated with the revision it
+        concerned (AC-review-rework).
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1487,6 +1491,12 @@ components:
           type: string
           nullable: true
           description: Optional span/block locator within the anchored artifact.
+        review_revision:
+          type: integer
+          readOnly: true
+          description: >-
+            For review-anchored comments, the review revision the comment
+            was made against; server-stamped, absent otherwise.
         author: { type: string, format: uuid }
         body: { type: string }
         created: { type: string, format: date-time }
@@ -1734,23 +1744,35 @@ components:
         A deliverable prepared for human approval — exactly one of a code
         deliverable (a branch pinned at an immutable commit; branch is
         display metadata, the commit is what approval covers) or doc_version
-        (immutable, so approval pins a version).
-      required: [id, issue, author, state, created]
+        (immutable, so approval pins a version). Absent fields are omitted,
+        never sent as null — this applies to every optional field on this
+        schema. `revision` starts at 1 and increments on each resubmission
+        (AC-review-rework); a verdict and its approval apply to the review's
+        current revision, and for a code deliverable that means the commit
+        pinned as of that revision.
+      required: [id, issue, author, state, revision, created]
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }
-        branch: { type: string, nullable: true }
+        branch: { type: string }
         commit:
           type: string
-          nullable: true
+          pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
           description: >-
-            Immutable SHA pinned at creation/resubmission; branch is display
-            metadata, this is what approval covers.
-        doc_version: { type: string, format: uuid, nullable: true }
-        session: { type: string, nullable: true }
-        summary: { type: string, nullable: true }
+            Canonical full object id — never an abbreviation. Immutable,
+            pinned at creation/resubmission; branch is display metadata,
+            this is what approval covers.
+        doc_version: { type: string, format: uuid }
+        session: { type: string }
+        summary: { type: string }
         author: { type: string, format: uuid }
         state: { $ref: '#/components/schemas/ReviewState' }
+        revision:
+          type: integer
+          description: >-
+            1 on creation, +1 per resubmission; server-managed. Feedback
+            left on an earlier revision stays associated with that
+            revision — it does not move forward.
         created: { type: string, format: date-time }
       oneOf:
         - required: [branch, commit]
@@ -1774,7 +1796,10 @@ components:
         branch: { type: string }
         commit:
           type: string
-          description: Immutable SHA pinned at creation; required alongside branch.
+          pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          description: >-
+            Canonical full object id — never an abbreviation. Immutable,
+            pinned at creation; required alongside branch.
         doc_version: { type: string, format: uuid }
         session: { type: string }
         summary: { type: string }
@@ -1800,7 +1825,10 @@ components:
         branch: { type: string }
         commit:
           type: string
-          description: Immutable SHA pinned at resubmission; required alongside branch.
+          pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          description: >-
+            Canonical full object id — never an abbreviation. Immutable,
+            pinned at resubmission; required alongside branch.
         doc_version: { type: string, format: uuid }
         session: { type: string }
         summary: { type: string }

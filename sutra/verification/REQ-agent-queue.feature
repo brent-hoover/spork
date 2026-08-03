@@ -35,3 +35,10 @@ Feature: Agent work stack
     Given agent "claude" has no open assigned issues
     When "claude" pops its work stack
     Then it receives an explicit empty result
+
+  Scenario: archived project issues are never handed out
+    Given issue SUT-4 is assigned to "claude" in an archived project
+    And issue SUT-5 is assigned to "claude" in an active project
+    When "claude" pops its work stack
+    Then it receives SUT-5
+    And SUT-4 is unmutated
