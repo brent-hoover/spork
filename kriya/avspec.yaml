@@ -39,3 +39,50 @@ constitution:
 #       contact with the maintainers.
 #   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
 #       ticket at acceptable speed, or only as a slower periodic gate?
+
+requirements:
+  - id: REQ-spec-intake
+    title: Consume a ready avspec — verify it, refuse anything less
+    rationale: Ready means buildable without further prompting; kriya holds the spec to its own claim.
+  - id: REQ-decompose
+    title: PM agent decomposes the spec into tracer-bullet tickets in sutra
+    rationale: Thin end-to-end slices first; BDD acceptance criteria on every ticket; blocks/blocked-by wired for parallelism.
+  - id: REQ-risk-first
+    title: Risk items are identified and retired first via spike/research tickets
+    rationale: Risk and spike labels plus blocking relations ensure nothing dependent starts before its risk is retired.
+  - id: REQ-parallel-build
+    title: Pop tickets off sutra work stacks and run parallel dev agents where relations allow
+  - id: REQ-workspaces
+    title: Isolated workspace (worktree/branch) per ticket
+  - id: REQ-pair-loop
+    title: Pair-programming loop — small commits, roborev reviews, fix, recommit until pass
+    rationale: Kriya drives the actual roborev tool (enqueue on commit, poll verdicts, respond, close) per CON-buy-over-build.
+  - id: REQ-sa-agent
+    title: System architect agent resolves impasses and escalates scope to the operator
+    rationale: Highest-tier agent; writes no code; the escape valve when dev and review cannot converge.
+  - id: REQ-context-assembly
+    title: Context manager assembles each dev agent's context and toolset per ticket
+  - id: REQ-learning-loop
+    title: Mistakes become persistent learnings fed into future builds
+    rationale: Project-specific and cross-project; captured as they happen, not post-mortem.
+  - id: REQ-gate-structure
+    title: Structural linting with hard limits on the target app
+    rationale: Google-style-guide strictness — max module size and kin; agents love god modules and do not mind strict rules.
+  - id: REQ-gate-typing
+    title: Typing everywhere on the target app
+  - id: REQ-gate-branch-coverage
+    title: Branch coverage — every conditional arm, not an overall percentage
+  - id: REQ-gate-mutation
+    title: Mutation testing proves the tests test
+  - id: REQ-po-validation
+    title: Product owner agent validates ACs are genuinely satisfied and tests are not gaming
+    rationale: The PO holds the big picture the coding agent cannot have.
+  - id: REQ-submit-review
+    title: Submit a sutra Review, merge on approval, update ticket status
+  - id: REQ-run-to-complete
+    title: Loop until every ticket of the spec is complete
+  - id: REQ-tier-routing
+    title: Model-tier routing is configuration, not hardcoded
+  - id: REQ-thread-capture
+    title: Dev-agent transcripts auto-import into sutra's thread catalog, session-stamped
+    rationale: Auditability plus fuel for the learning loop.
