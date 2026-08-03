@@ -459,6 +459,37 @@ def test_action_unresolved_quiet_when_contract_file_missing(tmp_path: Path) -> N
     assert codes(completeness.contract_files(spec)) == ["CONTRACT_FILE_MISSING"]
 
 
+def test_contract_empty_when_document_is_top_level_list(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-api",
+            "name": "api",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-x", "type": "openapi", "path": "contracts/x.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("- just\n- a\n- list\n", encoding="utf-8")
+    found = list(completeness.contract_files(spec))
+    assert codes(found) == ["CONTRACT_EMPTY"]
+    assert found[0].ref == "CTR-x"
+
+
+def test_action_unresolved_quiet_when_contract_unparseable(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x#getX")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("a: [unclosed", encoding="utf-8")
+    assert codes(completeness.action_operations_resolve(spec)) == []
+    assert codes(completeness.contract_files(spec)) == ["CONTRACT_UNPARSEABLE"]
+
+
 def test_non_yaml_contract_type_is_existence_only(tmp_path: Path) -> None:
     data = base()
     data["modules"] = [

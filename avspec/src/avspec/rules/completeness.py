@@ -332,6 +332,9 @@ def _operation_ids(doc: object) -> set[str]:
     return ids
 
 
+_UNPARSEABLE = object()
+
+
 @rule
 def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
     """Every ui.action invoking CTR-x#operation must name a real openapi operation.
@@ -342,6 +345,16 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
     """
     yaml = YAML(typ="safe")
     contracts = {c.id: c for m in spec.manifest.modules for c in m.contracts}
+    doc_cache: dict[Path, object] = {}
+
+    def load_doc(path: Path) -> object:
+        if path not in doc_cache:
+            try:
+                doc_cache[path] = yaml.load(path.read_text(encoding="utf-8"))
+            except YAMLError:
+                doc_cache[path] = _UNPARSEABLE
+        return doc_cache[path]
+
     for module in spec.manifest.modules:
         if module.ui is None:
             continue
@@ -358,9 +371,8 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
             path = spec.dir / contract.path
             if not path.is_file():
                 continue
-            try:
-                doc = yaml.load(path.read_text(encoding="utf-8"))
-            except YAMLError:
+            doc = load_doc(path)
+            if doc is _UNPARSEABLE:
                 continue
             if operation not in _operation_ids(doc):
                 yield _todo(
