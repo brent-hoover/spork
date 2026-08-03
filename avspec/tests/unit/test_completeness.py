@@ -490,6 +490,47 @@ def test_action_unresolved_quiet_when_contract_unparseable(tmp_path: Path) -> No
     assert codes(completeness.contract_files(spec)) == ["CONTRACT_UNPARSEABLE"]
 
 
+def test_action_unresolved_quiet_when_path_item_is_ref(tmp_path: Path) -> None:
+    # A $ref path item hides whatever operations live behind it; _operation_ids
+    # can't see through it, so enumeration is partial. Firing ACTION_UNRESOLVED
+    # against a partial enumeration would false-positive on real operations the
+    # rule simply couldn't see — so the rule stays quiet for the whole contract.
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x#getY")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\n"
+        "paths:\n"
+        "  /x:\n"
+        "    get:\n"
+        "      operationId: getX\n"
+        "  /y:\n"
+        "    $ref: '#/components/pathItems/Y'\n",
+        encoding="utf-8",
+    )
+    assert codes(completeness.action_operations_resolve(spec)) == []
+
+
+def test_action_unresolved_empty_operation_name_is_not_silent(tmp_path: Path) -> None:
+    # Pins current behavior for `invokes: CTR-x#` (empty operation name after
+    # the hash): it is treated as an unresolved operation reference rather than
+    # ignored outright.
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x#")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\npaths:\n  /x:\n    get:\n      operationId: getX\n",
+        encoding="utf-8",
+    )
+    found = list(completeness.action_operations_resolve(spec))
+    assert codes(found) == ["ACTION_UNRESOLVED"]
+    assert found[0].ref == "ACT-a"
+
+
 def test_non_yaml_contract_type_is_existence_only(tmp_path: Path) -> None:
     data = base()
     data["modules"] = [

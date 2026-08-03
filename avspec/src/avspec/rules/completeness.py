@@ -335,6 +335,25 @@ def _operation_ids(doc: object) -> set[str]:
 _UNPARSEABLE = object()
 
 
+def _has_ref_path_items(doc: object) -> bool:
+    """True if any path item under `paths` is itself a $ref.
+
+    A $ref path item (external or internal) points at an operation set this
+    rule does not resolve, so `_operation_ids` silently under-enumerates a
+    document that has one — walking straight past it rather than raising.
+    Treating that partial enumeration as authoritative would false-positive
+    ACTION_UNRESOLVED for every operation hidden behind the ref, so contracts
+    with any $ref path item are skipped entirely rather than partially
+    checked.
+    """
+    if not isinstance(doc, dict):
+        return False
+    paths = doc.get("paths")
+    if not isinstance(paths, dict):
+        return False
+    return any(isinstance(item, dict) and "$ref" in item for item in paths.values())
+
+
 @rule
 def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
     """Every ui.action invoking CTR-x#operation must name a real openapi operation.
@@ -373,6 +392,8 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
                 continue
             doc = load_doc(path)
             if doc is _UNPARSEABLE:
+                continue
+            if _has_ref_path_items(doc):
                 continue
             if operation not in _operation_ids(doc):
                 yield _todo(
