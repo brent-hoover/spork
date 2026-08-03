@@ -2,8 +2,9 @@ Feature: Documents tied to issues
 
   Scenario: link and unlink after creation
     Given document "notes" exists in project "SUT" with no issue
-    When "notes" is tied to issue SUT-1
+    When "notes" is tied to issue SUT-1 by "human-brent"
     Then SUT-1 lists "notes"
+    And a "doc.linked" event with actor "human-brent" and a timestamp is recorded for SUT-1
     When "notes" is untied from SUT-1 by "human-brent"
     Then SUT-1 lists no documents
     And a "doc.unlinked" event with actor "human-brent" and a timestamp is recorded for SUT-1

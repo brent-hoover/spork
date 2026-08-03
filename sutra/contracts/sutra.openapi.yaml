@@ -452,7 +452,8 @@ paths:
       description: >-
         Creates a parent_of or blocks relation from this issue. Ancestry cycles
         (AC-parent-create) and blocking cycles, direct or transitive
-        (AC-block-no-cycles), are rejected.
+        (AC-block-no-cycles), are rejected. Records an `issue.relation-added`
+        event (subject: the relation's `from` issue).
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -692,7 +693,9 @@ paths:
         Files a document under the project, optionally tied to an issue, readable
         back with title and content (AC-doc-create). With template_id set, the
         document's first version starts with the template's content
-        (AC-template-instantiate); otherwise content is required.
+        (AC-template-instantiate); otherwise content is required. Records a
+        `doc.version-saved` event for the initial version, plus a `doc.linked`
+        event when created with `issue` set.
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'
@@ -837,7 +840,10 @@ paths:
     post:
       operationId: linkDocumentToIssue
       summary: Tie an existing document to an issue
-      description: An existing document can be tied to an issue after creation (AC-doc-link).
+      description: >-
+        An existing document can be tied to an issue after creation
+        (AC-doc-link); records a `doc.linked` event (subject: the newly
+        linked issue).
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'
@@ -1055,7 +1061,10 @@ paths:
     post:
       operationId: setThreadAnchor
       summary: Retarget a thread's project or issue anchor
-      description: At least one of project or issue must be set; both sides list the thread (AC-thread-anchor).
+      description: >-
+        The request's anchor replaces the existing anchor entirely — omitted
+        fields clear the corresponding side. At least one of project or issue
+        must be set; both sides list the thread (AC-thread-anchor).
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/ThreadIdPath'
@@ -1167,8 +1176,12 @@ paths:
         A human sets approved or changes-requested; the state changes and an
         Event records who and when (AC-review-verdict). The verdict applies
         to the review's current revision — for a code deliverable, approval
-        covers the commit pinned as of that revision. Approval publishes an
-        event a subscriber can act on (AC-review-approved-event);
+        covers the commit pinned as of that revision. A verdict carrying the
+        current revision always applies, including changing an earlier
+        verdict (approved -> changes-requested and vice versa); the latest
+        verdict for the current revision is authoritative, and each verdict
+        is recorded as an event. Approval publishes an event a subscriber
+        can act on (AC-review-approved-event);
         changes-requested carries the review's session id and issue ref so a
         resubmission routes back to the same agent instance
         (AC-review-rework). Invoked by the review view's verdict action
@@ -1243,13 +1256,14 @@ paths:
         For a doc deliverable, the doc version's content; for a code
         deliverable, the complete pinned diff/content — never a summary in
         its place, so approval never happens against a summary
-        (AC-review-web). Content is resolved via the project's repo_path;
-        for code deliverables it is the diff between the resolved
-        submission's pinned `base_commit` and `commit` — never recomputed
-        against the project's current default branch, since `base_commit`
-        was already resolved once at submission time. With `revision`
-        omitted, resolves the latest submission; a given `revision`
-        resolves that submission's deliverable instead.
+        (AC-review-web). For code deliverables, content is resolved via the
+        project's repo_path as the diff between the resolved submission's
+        pinned `base_commit` and `commit` — never recomputed against the
+        project's current default branch, since `base_commit` was already
+        resolved once at submission time; doc deliverables read the stored
+        doc version. With `revision` omitted, resolves the latest
+        submission; a given `revision` resolves that submission's
+        deliverable instead.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1867,11 +1881,11 @@ components:
         per-issue audit history; append-only through every API operation
         (AC-audit-immutable). The v1 kinds consumers route on: issue.created,
         issue.updated, issue.status-changed, issue.assigned, issue.labeled,
-        issue.unlabeled, issue.linked, issue.relation-removed, comment.created,
-        doc.version-saved, doc.unlinked, thread.imported,
-        thread.anchor-changed, review.created, review.changes-requested,
-        review.approved, review.resubmitted, project.created,
-        project.archived, project.imported.
+        issue.unlabeled, issue.relation-added, issue.relation-removed,
+        comment.created, doc.version-saved, doc.linked, doc.unlinked,
+        thread.imported, thread.anchor-changed, review.created,
+        review.changes-requested, review.approved, review.resubmitted,
+        project.created, project.archived, project.imported.
       required: [id, kind, subject, actor, created]
       properties:
         id: { type: string, format: uuid }
@@ -1887,10 +1901,10 @@ components:
             the formerly linked issue, and for issue.relation-removed the
             relation's `from` issue. For project-scoped
             events (project.*, doc/thread events not tied to an issue) this
-            is the project's UUID. For identity events this is the identity
-            itself. Consumers filter the feed and the per-issue audit by
-            this uuid; `payload` names the specific record involved (e.g.
-            a review id) when it differs from `subject`.
+            is the project's UUID. Consumers filter the feed and the
+            per-issue audit by this uuid; `payload` names the specific
+            record involved (e.g. a review id) when it differs from
+            `subject`.
         actor: { type: string, format: uuid }
         payload:
           description: Arbitrary JSON event payload.
