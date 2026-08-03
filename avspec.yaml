@@ -59,7 +59,10 @@ modules:
     boundaries: { may_import: [] }
   - id: MOD-context
     name: context-manager
-    responsibility: Manages and serves context to working agents. Decided: part of kriya for now — splits into its own app only if ever used with non-spork projects.
+    responsibility: >-
+      Manages and serves context to working agents. Decided — part of kriya
+      for now; splits into its own app only if ever used with non-spork
+      projects.
     boundaries: { may_import: [] }
 
 apps:
