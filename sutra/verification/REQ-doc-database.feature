@@ -3,11 +3,11 @@ Feature: Doc database
 
   Scenario: doc files under its project
     Given project "SUT" and issue SUT-1 exist
-    When document "design" is created in "SUT" tied to SUT-1
+    When document "design" is created in "SUT" tied to SUT-1 with author "human-brent"
     Then it is listed under "SUT" and under SUT-1
     And reading it returns title and content
-    And a "doc.version-saved" event with actor and timestamp is recorded
-    And a "doc.linked" event with actor and timestamp is recorded for SUT-1
+    And a "doc.version-saved" event with actor "human-brent", a timestamp, and subject SUT-1 is recorded
+    And a "doc.linked" event with actor "human-brent", a timestamp, and subject SUT-1 is recorded
 
   Scenario: saves append immutable versions
     Given document "design" has one version

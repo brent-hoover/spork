@@ -600,7 +600,9 @@ paths:
         it never claims a second issue.
         Issues belonging to archived projects are skipped like externally
         blocked issues — archived projects are read-only, so their work is
-        never handed out. The pop-induced `issue.status-changed` event's
+        never handed out. Eligibility means status open: the judgment
+        statuses blocked and deferred are never handed out, nor are
+        in-progress, complete, or relation-blocked issues. The pop-induced `issue.status-changed` event's
         actor is the popping identity.
       tags: [work-stack]
       parameters:
