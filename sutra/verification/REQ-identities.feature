@@ -6,8 +6,8 @@ Feature: Identities without auth
     Then it exists with handle "claude" and kind "agent"
     And creating another "claude" is rejected as a duplicate
 
-  Scenario: unknown handles are rejected
-    Given no identity "claud" exists
-    When issue SUT-1 is assigned to "claud"
+  Scenario: unknown identity ids are rejected
+    Given an identity id that names no identity
+    When issue SUT-1 is assigned to that identity id
     Then the operation is rejected
-    And no identity "claud" was created
+    And nothing is created

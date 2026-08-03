@@ -42,3 +42,9 @@ Feature: Agent work stack
     When "claude" pops its work stack
     Then it receives SUT-5
     And SUT-4 is unmutated
+
+  Scenario: same-key replay claims nothing new
+    Given "claude" popped its work stack with idempotency key "K" and received SUT-1
+    When the pop is replayed with idempotency key "K"
+    Then the response is identical to the original
+    And no additional issue is claimed

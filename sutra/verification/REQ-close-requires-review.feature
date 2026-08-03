@@ -6,7 +6,7 @@ Feature: Closing requires an approved review
     Given issue SUT-1 has a review of branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4" in state "approved"
     When SUT-1 is transitioned to "complete"
     Then the transition succeeds
-    And the close is gated on the review's pinned commit
+    And the recorded approval names commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
 
   Scenario: no approval no close
     Given issue SUT-1 has no review in state "approved"

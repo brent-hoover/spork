@@ -52,6 +52,23 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Project' }
 
+  /projects/{projectId}:
+    get:
+      operationId: getProject
+      summary: Get a project
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          description: The project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /projects/{projectId}/archive:
     post:
       operationId: archiveProject
@@ -81,6 +98,12 @@ paths:
                 $ref: '#/components/schemas/Project'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: The project is already archived.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /projects/{projectId}/export:
     get:
@@ -111,9 +134,13 @@ paths:
         Reconstructs a project from a previous export with UUIDs preserved
         (AC-import-round-trip). Identities referenced by the export's records are
         recreated from the export itself — never invented — so every actor and
-        assignee resolves after import. Rejected as a whole, naming the conflict,
-        if any UUID already exists on this server (AC-import-collision); no
-        partial imports.
+        assignee resolves after import. Exported records are canonical
+        serializations — every field, including server-stamped ones (e.g.
+        Comment.review_revision), is preserved on import verbatim, not
+        recomputed. Import deliberately targets empty servers: rejected as a
+        whole, naming the conflict, if any UUID already exists on this
+        server (AC-import-collision) — any pre-existing UUID is a
+        collision, including identity ids; no partial imports.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -293,8 +320,10 @@ paths:
       operationId: assignIssue
       summary: Assign or unassign an issue
       description: >-
-        Assigns to any identity, human or agent, or clears assignment with a null
-        assignee; assignment feeds the agent work stack (AC-issue-assign).
+        Assigns to any identity, human or agent, or clears assignment with an
+        explicit null assignee; assignment feeds the agent work stack
+        (AC-issue-assign). assignee is required in the request — an absent
+        assignee is invalid; to clear assignment, send assignee: null.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -305,12 +334,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [actor]
+              required: [assignee, actor]
               properties:
                 assignee:
                   type: string
                   format: uuid
                   nullable: true
+                  description: >-
+                    Required. Set to an identity id to assign, or explicit
+                    null to clear; absent is invalid.
                 actor: { type: string, format: uuid }
       responses:
         '200':
@@ -1133,7 +1165,9 @@ paths:
         pinned at an immutable commit or a doc version — and the review
         returns to state open, incrementing its revision; feedback left on
         the prior deliverable stays associated with the revision it
-        concerned (AC-review-rework).
+        concerned (AC-review-rework). Appends a new ReviewSubmission
+        recording what this revision submitted; prior submissions are
+        preserved immutably.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1166,10 +1200,18 @@ paths:
         For a doc deliverable, the doc version's content; for a code
         deliverable, the complete pinned diff/content — never a summary in
         its place, so approval never happens against a summary
-        (AC-review-web).
+        (AC-review-web). Content is resolved via the project's repo_path;
+        for code deliverables it is the diff of the pinned commit against
+        the merge base with the project's default_branch. With `revision`
+        omitted, resolves the latest submission; a given `revision`
+        resolves that submission's deliverable instead.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
+        - name: revision
+          in: query
+          description: A specific revision's submission to resolve; omit for the latest.
+          schema: { type: integer, minimum: 1 }
       responses:
         '200':
           description: The resolved deliverable content.
@@ -1179,6 +1221,14 @@ paths:
                 $ref: '#/components/schemas/ResolvedDeliverable'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The pinned commit could not be resolved against the project's
+            default branch, or the project has no repo_path set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ------------------------------------------------------------------ events
   /events:
@@ -1368,8 +1418,11 @@ components:
     Conflict:
       description: >-
         The request conflicts with current state — e.g. closing without an
-        approved review, a blocking or ancestry cycle, a colliding import, or a
-        write against an archived project.
+        approved review, a blocking or ancestry cycle, a colliding import, a
+        write against an archived project, or a review-anchored comment or
+        verdict naming a stale revision (superseded by a resubmission since
+        the reviewer last saw it) — rejected atomically, never applied to
+        content the reviewer did not see.
       content:
         application/json:
           schema:
@@ -1479,7 +1532,9 @@ components:
       type: object
       description: >-
         Polymorphic and threaded — anchors to exactly one of issue, doc_version,
-        or review.
+        or review; the exactly-one invariant is documented here rather than
+        schema-encoded, since response fields follow omit-when-absent and
+        cannot express oneOf the way requests do — NewComment encodes it.
       required: [id, author, body, created]
       properties:
         id: { type: string, format: uuid }
@@ -1493,22 +1548,32 @@ components:
           description: Optional span/block locator within the anchored artifact.
         review_revision:
           type: integer
-          readOnly: true
           description: >-
             For review-anchored comments, the review revision the comment
-            was made against; server-stamped, absent otherwise.
+            was made against; stamped from the submitted value; preserved
+            verbatim on import. Absent otherwise.
         author: { type: string, format: uuid }
         body: { type: string }
         created: { type: string, format: date-time }
 
     NewComment:
       type: object
-      description: Exactly one of issue, doc_version, or review must be set.
+      description: >-
+        Exactly one of issue, doc_version, or review must be set. When
+        anchored to a review, review_revision is required — the revision
+        the reviewer saw; a value naming a stale revision (superseded by a
+        resubmission) is rejected (AC-review-stale-guard).
       required: [author, body]
       properties:
         issue: { type: string, format: uuid }
         doc_version: { type: string, format: uuid }
         review: { type: string, format: uuid }
+        review_revision:
+          type: integer
+          description: >-
+            Required when review is set: the review revision the reviewer
+            saw. Rejected if it names a revision superseded by a
+            resubmission since (AC-review-stale-guard).
         parent: { type: string, format: uuid }
         anchor: { type: string }
         author: { type: string, format: uuid }
@@ -1524,7 +1589,7 @@ components:
             anyOf:
               - required: [issue]
               - required: [review]
-        - required: [review]
+        - required: [review, review_revision]
           not:
             anyOf:
               - required: [issue]
@@ -1539,6 +1604,12 @@ components:
         name: { type: string }
         description: { type: string, nullable: true }
         repo_path: { type: string, nullable: true }
+        default_branch:
+          type: string
+          nullable: true
+          description: >-
+            Diff base for code deliverables (AC-review-web). Defaults to
+            "main" when not set at creation.
         archived_at:
           type: string
           format: date-time
@@ -1553,6 +1624,10 @@ components:
         name: { type: string }
         description: { type: string }
         repo_path: { type: string }
+        default_branch:
+          type: string
+          description: >-
+            Diff base for code deliverables; defaults to "main" when omitted.
         actor:
           type: string
           format: uuid
@@ -1580,9 +1655,10 @@ components:
     NewDocument:
       type: object
       description: >-
-        Either template_id or content must be given: template_id seeds the first
-        version from the template's content (AC-template-instantiate); otherwise
-        content is the first version's content directly.
+        Exactly one of template_id or content must be given: template_id
+        seeds the first version from the template's content
+        (AC-template-instantiate); otherwise content is the first version's
+        content directly. Both set is rejected.
       required: [title, author]
       properties:
         title: { type: string }
@@ -1593,6 +1669,13 @@ components:
           type: string
           format: uuid
           description: Identity recorded as the author of the first DocVersion.
+      oneOf:
+        - required: [template_id]
+          not:
+            required: [content]
+        - required: [content]
+          not:
+            required: [template_id]
 
     DocVersion:
       type: object
@@ -1749,8 +1832,9 @@ components:
         schema. `revision` starts at 1 and increments on each resubmission
         (AC-review-rework); a verdict and its approval apply to the review's
         current revision, and for a code deliverable that means the commit
-        pinned as of that revision.
-      required: [id, issue, author, state, revision, created]
+        pinned as of that revision. These top-level fields mirror the latest
+        submission; `submissions` holds the immutable history.
+      required: [id, issue, author, state, revision, submissions, created]
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }
@@ -1773,6 +1857,14 @@ components:
             1 on creation, +1 per resubmission; server-managed. Feedback
             left on an earlier revision stays associated with that
             revision — it does not move forward.
+        submissions:
+          type: array
+          readOnly: true
+          description: >-
+            One immutable ReviewSubmission per revision, oldest first —
+            exactly what each revision submitted, preserved even after
+            later resubmissions replace the top-level deliverable fields.
+          items: { $ref: '#/components/schemas/ReviewSubmission' }
         created: { type: string, format: date-time }
       oneOf:
         - required: [branch, commit]
@@ -1804,6 +1896,33 @@ components:
         session: { type: string }
         summary: { type: string }
         author: { type: string, format: uuid }
+      oneOf:
+        - required: [branch, commit]
+          not:
+            required: [doc_version]
+        - required: [doc_version]
+          not:
+            anyOf:
+              - required: [branch]
+              - required: [commit]
+
+    ReviewSubmission:
+      type: object
+      description: >-
+        Immutable record of what one revision submitted — exactly one
+        deliverable per submission: a branch pinned at an immutable commit,
+        or a doc version. Never mutated after creation.
+      required: [review, revision, created]
+      properties:
+        review: { type: string, format: uuid }
+        revision: { type: integer }
+        branch: { type: string }
+        commit:
+          type: string
+          pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          description: Canonical full object id — never an abbreviation.
+        doc_version: { type: string, format: uuid }
+        created: { type: string, format: date-time }
       oneOf:
         - required: [branch, commit]
           not:
@@ -1869,11 +1988,19 @@ components:
 
     ReviewVerdict:
       type: object
-      required: [verdict, actor]
+      description: >-
+        `revision` is the review revision the reviewer saw; a verdict
+        naming a revision superseded by a resubmission since is rejected,
+        never applied to content the reviewer did not see
+        (AC-review-stale-guard).
+      required: [verdict, revision, actor]
       properties:
         verdict:
           type: string
           enum: [approved, changes-requested]
+        revision:
+          type: integer
+          description: The review revision this verdict applies to.
         actor:
           type: string
           format: uuid

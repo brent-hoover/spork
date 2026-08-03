@@ -41,3 +41,10 @@ Feature: Review lifecycle
     And the review's pinned commit is "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
     And the review's revision is 2
     And the earlier comment remains associated with revision 1
+
+  Scenario: stale feedback is rejected
+    Given a review at revision 1 open in a reviewer's browser
+    When the agent resubmits the deliverable, advancing the review to revision 2
+    And the reviewer submits an approval carrying revision 1
+    Then the verdict is rejected
+    And the review remains unapproved

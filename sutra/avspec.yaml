@@ -30,6 +30,8 @@ constitution:
     statement: Mutating API operations are idempotent (client-supplied keys); agents retry aggressively and replays must be safe.
   - id: CON-uuid-keys
     statement: Entity primary keys are UUIDv7; human-facing numbers are project-scoped display aliases, never canonical identity (federation-safe by construction).
+  - id: CON-id-opaque-refs
+    statement: Entity refs across module boundaries are id-opaque and imply no imports; referential validation happens at the API edge (MOD-api), which is the only module that imports every domain module. This is why MOD-review holds issue and doc-version ids without importing their owners.
 
 requirements:
   - id: REQ-core-issues
@@ -115,6 +117,9 @@ requirements:
       - id: AC-pop-skips-archived
         statement: Issues belonging to archived projects are never returned by pop — archived projects are read-only, so their work is never handed out.
         test: verification/REQ-agent-queue.feature#archived project issues are never handed out
+      - id: AC-pop-replay
+        statement: Replaying a pop with the same idempotency key returns the original result and claims nothing further.
+        test: verification/REQ-agent-queue.feature#same-key replay claims nothing new
   - id: REQ-thread-catalog
     title: Import, catalog, and search agent transcripts ("threads")
     rationale: Agent conversations are work artifacts worth indexing and citing.
@@ -202,8 +207,11 @@ requirements:
         statement: When a Review enters approved, an event is published on the feed such that a subscriber can act on it; merge execution stays outside sutra.
         test: verification/REQ-code-review.feature#approval publishes an event
       - id: AC-review-rework
-        statement: On changes-requested the emitted event carries the review's session id and issue ref; when the agent resubmits the deliverable the review returns to open, its revision increments, and prior feedback stays associated with the revision it concerned.
+        statement: On changes-requested the emitted event carries the review's session id and issue ref; when the agent resubmits the deliverable the review returns to open, its revision increments, and prior feedback stays associated with the revision it concerned. Each revision's submission is preserved immutably.
         test: verification/REQ-code-review.feature#rework routes back with session context
+      - id: AC-review-stale-guard
+        statement: Review comments and verdicts carry the revision the reviewer saw; a submission that arrives after a resubmission (stale revision) is rejected, never applied to content the reviewer did not see.
+        test: verification/REQ-code-review.feature#stale feedback is rejected
   - id: REQ-comments
     title: Unlimited comments on issues
     acceptance:
@@ -292,7 +300,7 @@ requirements:
         test: verification/REQ-identities.feature#identity is just a named kind
       - id: AC-identity-referenced
         statement: At the API, actor and assignee fields are identity ids, not handles — handle-to-id resolution is the CLI's job; unknown ids are rejected, never silently created.
-        test: verification/REQ-identities.feature#unknown handles are rejected
+        test: verification/REQ-identities.feature#unknown identity ids are rejected
   - id: REQ-notifications
     title: Event feed with cursor-based polling
     rationale: Poll-only by design — every subscriber today lives on the same machine; webhooks return only when a remote subscriber exists (delivery-only change, the Event stream already carries everything).
@@ -386,6 +394,7 @@ data:
         - { name: name, type: string, required: true }
         - { name: description, type: string }
         - { name: repo_path, type: string }  # recorded by `sutra init`; projects are repo-anchored
+        - { name: default_branch, type: string }  # e.g. main; diff base for code deliverables
         - { name: archived_at, type: datetime }  # set = archived (hidden, read-only)
     - id: ENT-document
       name: Document
@@ -434,7 +443,7 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-review
       name: Review
-      description: A deliverable prepared for human approval — exactly one of a code deliverable (pinned at an immutable commit; branch is display metadata) or doc_version (immutable, so approval pins a version). Docs need approval like code. Carries a revision counter that increments on each resubmission; feedback stays associated with the revision it concerned.
+      description: A deliverable prepared for human approval — exactly one of a code deliverable (pinned at an immutable commit; branch is display metadata) or doc_version (immutable, so approval pins a version). Docs need approval like code. Carries a revision counter that increments on each resubmission; feedback stays associated with the revision it concerned. Current fields mirror the latest submission; history lives in submissions.
       fields:
         - { name: issue, type: ref, ref: ENT-issue, required: true }
         - { name: branch, type: string }
@@ -445,6 +454,16 @@ data:
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
         - { name: revision, type: integer, required: true }  # 1 on creation, +1 per resubmission; server-managed
+        - { name: created, type: datetime, required: true }
+    - id: ENT-review-submission
+      name: ReviewSubmission
+      description: Immutable record of what each revision submitted; exactly one deliverable per submission.
+      fields:
+        - { name: review, type: ref, ref: ENT-review, required: true }
+        - { name: revision, type: integer, required: true }
+        - { name: branch, type: string }
+        - { name: commit, type: string }  # canonical full object id
+        - { name: doc_version, type: ref, ref: ENT-doc-version }
         - { name: created, type: datetime, required: true }
 
 modules:
@@ -481,7 +500,7 @@ modules:
   - id: MOD-review
     name: review
     responsibility: Review objects — a branch pinned at an immutable commit, or a document version, prepared for human review, with comments and approval.
-    owns: [ENT-review]
+    owns: [ENT-review, ENT-review-submission]
     boundaries: { may_import: [MOD-identity, MOD-events] }
   - id: MOD-api
     name: api
