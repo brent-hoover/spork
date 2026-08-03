@@ -6,7 +6,7 @@ project:
     An issue tracker for agents and humans. Envelope: single user, one
     machine, a handful of concurrent agent instances — facts to build
     with, not requirements to test.
-  status: draft
+  status: ready
   stack:
     languages: [{ name: go, version: "1.23" }]
     package_manager: go
