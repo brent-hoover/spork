@@ -86,3 +86,44 @@ requirements:
   - id: REQ-thread-capture
     title: Dev-agent transcripts auto-import into sutra's thread catalog, session-stamped
     rationale: Auditability plus fuel for the learning loop.
+  - id: REQ-tui
+    title: TUI overview — what is running now, what is queued, and where agents surface things to the operator
+    rationale: The operator's most critical surface; escalations land here, not in a log file.
+
+modules:
+  - id: MOD-planner
+    name: planner
+    responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
+  - id: MOD-orchestrator
+    name: orchestrator
+    responsibility: The outer loop — pops tickets, schedules parallel builds, tracks build state, runs to complete.
+  - id: MOD-workspace
+    name: workspace
+    responsibility: Worktree/branch lifecycle per ticket.
+  - id: MOD-dev-loop
+    name: dev-loop
+    responsibility: The heart — one pair-programming session; dev agent, commit cadence, fix rounds.
+  - id: MOD-review-bridge
+    name: review-bridge
+    responsibility: The roborev seam — enqueue, poll verdicts, respond, close; buy-over-build boundary in one place.
+  - id: MOD-gates
+    name: gates
+    responsibility: Quality-gate runner — structural lint, typing, branch coverage, mutation testing via the target's stack commands.
+  - id: MOD-architect
+    name: architect
+    responsibility: SA agent — impasse resolution and operator escalation; writes no code.
+  - id: MOD-owner
+    name: owner
+    responsibility: PO agent — AC validation, anti-gaming, vision.
+  - id: MOD-context
+    name: context
+    responsibility: Context assembly per ticket and the learning store. Part of kriya for now; splits out only if ever used beyond spork.
+  - id: MOD-tracker-client
+    name: tracker-client
+    responsibility: The one module that speaks the issue tracker's API — sutra today, the seam where other trackers would plug in.
+  - id: MOD-cli
+    name: cli
+    responsibility: Command surface — start a build, inspect state.
+  - id: MOD-tui
+    name: tui
+    responsibility: Operator dashboard — live overview of running and queued work; where agents surface questions and escalations.
