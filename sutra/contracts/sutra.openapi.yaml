@@ -178,6 +178,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '409':
           $ref: '#/components/responses/Conflict'
 
@@ -1876,9 +1878,17 @@ components:
         kind: { type: string }
         subject:
           type: string
+          format: uuid
           description: >-
-            The subject entity's canonical UUID, bare, with no type prefix;
-            consumers filter by uuid and get the entity's type from `kind`.
+            The UUID of the aggregation root this event belongs to, bare,
+            with no type prefix. For issue-scoped events (status,
+            assignment, labels, relations, comments on issues, reviews,
+            queue operations) this is the issue's UUID. For project-scoped
+            events (project.*, doc/thread events not tied to an issue) this
+            is the project's UUID. For identity events this is the identity
+            itself. Consumers filter the feed and the per-issue audit by
+            this uuid; `payload` names the specific record involved (e.g.
+            a review id) when it differs from `subject`.
         actor: { type: string, format: uuid }
         payload:
           description: Arbitrary JSON event payload.

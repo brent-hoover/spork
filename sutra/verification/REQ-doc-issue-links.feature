@@ -6,6 +6,7 @@ Feature: Documents tied to issues
     Then SUT-1 lists "notes"
     When "notes" is untied from SUT-1
     Then SUT-1 lists no documents
+    And a "doc.unlinked" event is recorded for SUT-1
 
   Scenario: both sides see the link
     Given document "design" is tied to issue SUT-1

@@ -68,7 +68,8 @@ Feature: Review lifecycle
     Given a project with <failure>
     When an agent <operation>s a code deliverable for SUT-1
     Then the <operation> is rejected with a conflict
-    And no submission is created
+    And no new submission, review, or event results
+    And any pre-existing review's state, revision, deliverable, submissions, and events are unchanged
 
     Examples:
       | operation | failure                       |

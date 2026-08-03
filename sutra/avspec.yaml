@@ -344,6 +344,9 @@ requirements:
       - id: AC-import-collision
         statement: Importing an export whose UUIDs already exist is rejected as a whole, naming the conflict; no partial imports.
         test: verification/REQ-import-export.feature#colliding import is rejected whole
+      - id: AC-import-actor
+        statement: The import actor must be an identity contained in the export; an unknown actor rejects the import whole.
+        test: verification/REQ-import-export.feature#unknown import actor is rejected
   - id: REQ-thread-links
     title: Threads can be tied to either projects or issues
     acceptance:

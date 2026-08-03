@@ -7,6 +7,7 @@ Feature: Blocking relationships
     And SUT-2 shows "blocked by SUT-1"
     When the relationship is removed
     Then neither side shows it
+    And an "issue.relation-removed" event is recorded for SUT-1
 
   Scenario: blocker completion unblocks
     Given SUT-2 is blocked by open issue SUT-1, both assigned to "claude"

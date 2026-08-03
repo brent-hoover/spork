@@ -18,6 +18,7 @@ Feature: Core issue tracking
     Given issue SUT-1 exists and label "bug" exists
     When "bug" is attached to SUT-1 and then detached
     Then SUT-1's label list reflects each change
+    And an event of kind "issue.unlabeled" with actor and timestamp is recorded for SUT-1
 
   Scenario: assignment to any identity
     Given identities "human-brent" and "claude" exist

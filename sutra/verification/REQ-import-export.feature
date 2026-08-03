@@ -16,3 +16,10 @@ Feature: Import and export
     When the same export is imported again
     Then the import is rejected naming the conflicting records
     And no records were partially written
+
+  Scenario: unknown import actor is rejected
+    Given an export of project "SUT"
+    And an actor id not present in the export's identities
+    When the export is imported with that actor
+    Then the import is rejected
+    And nothing is written
