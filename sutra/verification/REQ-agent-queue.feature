@@ -32,6 +32,15 @@ Feature: Agent work stack
     When "claude" pops its work stack
     Then it receives SUT-3
 
+  Scenario: non-open statuses are never handed out
+    Given issues assigned to "claude" with statuses "blocked", "deferred", "in-progress", and "complete"
+    And issue SUT-9 assigned to "claude" with status "open"
+    When "claude" pops its work stack
+    Then it receives SUT-9
+    Given SUT-9 is no longer assigned to "claude"
+    When "claude" pops its work stack
+    Then it receives an explicit empty result
+
   Scenario: empty stack is not an error
     Given agent "claude" has no open assigned issues
     When "claude" pops its work stack

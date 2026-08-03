@@ -8,4 +8,4 @@ Feature: Threads tied to work
     And that event's payload carries the old and new anchors
     When it is retargeted to project "SUT" by "human-brent"
     Then "SUT" lists the thread and SUT-1 no longer does
-    And a "thread.anchor-changed" event with subject "SUT" and the old and new anchors in its payload is recorded
+    And a "thread.anchor-changed" event with actor "human-brent", a timestamp, subject "SUT", and the old and new anchors in its payload is recorded

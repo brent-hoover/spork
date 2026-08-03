@@ -111,6 +111,9 @@ requirements:
       - id: AC-pop-skips-blocked
         statement: If an issue is blocked by an open issue not assigned to the popping agent, it is skipped and the next workable issue is returned.
         test: verification/REQ-agent-queue.feature#externally blocked issues are skipped
+      - id: AC-pop-eligibility
+        statement: Only issues with status open are ever handed out by pop; blocked, deferred, in-progress, and complete assigned issues are skipped.
+        test: verification/REQ-agent-queue.feature#non-open statuses are never handed out
       - id: AC-pop-empty
         statement: When an agent with no workable assigned issues pops, it receives an explicit empty result, not an error.
         test: verification/REQ-agent-queue.feature#empty stack is not an error
