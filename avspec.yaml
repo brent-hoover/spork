@@ -19,7 +19,8 @@ constitution:
   - id: CON-uniform-access
     statement: >-
       The pipeline integrates with sutra as an ordinary agent identity using
-      sutra's public API and webhooks. No private integration paths exist.
+      sutra's public API, including its pollable event feed. No private
+      integration paths exist.
   - id: CON-no-auth-yet
     statement: >-
       No auth model anywhere; identities are plain strings. Single-user
@@ -30,7 +31,7 @@ requirements:
     title: Work flows tracker -> pipeline -> review -> tracker without human plumbing
     rationale: >-
       An issue assigned to an agent identity is popped by the pipeline, worked,
-      returned as a sutra CodeReview, and the issue status updated — the core
+      returned as a sutra Review, and the issue status updated — the core
       loop spork exists to close.
   - id: REQ-spec-first
     title: Every app in the system is specified in AVSpec before it is built
@@ -43,10 +44,9 @@ modules:
     boundaries: { may_import: [] }
     contracts:
       - { id: CTR-sutra-api, type: openapi, path: sutra/contracts/sutra.openapi.yaml }
-      - { id: CTR-sutra-webhooks, type: asyncapi, path: sutra/contracts/webhooks.asyncapi.yaml }
   - id: MOD-pipeline
     name: code-pipeline
-    responsibility: Picks issues off sutra work stacks, drives agents to build them, submits CodeReviews.
+    responsibility: Picks issues off sutra work stacks, drives agents to build them, submits Reviews.
     boundaries: { may_import: [] }
   - id: MOD-context
     name: context-manager
