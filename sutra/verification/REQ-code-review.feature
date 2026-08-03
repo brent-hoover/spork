@@ -33,6 +33,15 @@ Feature: Review lifecycle
     Then the review state is "changes-requested"
     And an event records the actor and time
 
+  Scenario: verdicts can be revised for the current revision
+    Given a review approved at its current revision
+    When a human sets it to "changes-requested" carrying the same revision
+    Then the review state is "changes-requested"
+    And a verdict event is recorded
+    When a human sets it to "approved" carrying the same revision
+    Then the review state is "approved"
+    And another verdict event is recorded
+
   Scenario: approval publishes an event
     Given an open review for issue SUT-1
     When a human sets it to "approved"

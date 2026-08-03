@@ -163,7 +163,8 @@ paths:
             identity contained in the export's `identities` — the
             round-trip guarantee requires every identity in a re-export to
             trace back to the original, so an identity that exists only on
-            this server is not a valid actor here.
+            this server is not a valid actor here. Such an actor is
+            rejected with 400 (AC-import-actor).
           schema: { type: string, format: uuid }
       requestBody:
         required: true
@@ -354,6 +355,7 @@ paths:
         explicit null assignee; assignment feeds the agent work stack
         (AC-issue-assign). assignee is required in the request — an absent
         assignee is invalid; to clear assignment, send assignee: null.
+        Clearing the assignee emits an `issue.unassigned` event.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -695,7 +697,8 @@ paths:
         document's first version starts with the template's content
         (AC-template-instantiate); otherwise content is required. Records a
         `doc.version-saved` event for the initial version, plus a `doc.linked`
-        event when created with `issue` set.
+        event when created with `issue` set — both stamped with `author` as
+        the actor.
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'
@@ -1103,7 +1106,8 @@ paths:
         client-supplied, so the rendered diff never shifts as the default
         branch moves. A code deliverable with an unset project `repo_path`
         or an unresolvable `commit`/`base_commit` is rejected 409 at
-        submission time.
+        submission time. A supplied `session` is recorded on the
+        submission.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1213,17 +1217,20 @@ paths:
       operationId: resubmitReview
       summary: Resubmit a review with a replacement deliverable
       description: >-
-        After changes-requested, the agent resubmits a replacement
-        deliverable — the same exactly-one shape as creation, a branch
-        pinned at an immutable commit or a doc version — and the review
-        returns to state open, incrementing its revision; feedback left on
-        the prior deliverable stays associated with the revision it
-        concerned (AC-review-rework). Appends a new ReviewSubmission
-        recording what this revision submitted; prior submissions are
-        preserved immutably. For a code deliverable, `base_commit` is
-        resolved and pinned at submission time, not client-supplied. A code
-        deliverable with an unset project `repo_path` or an unresolvable
-        `commit`/`base_commit` is rejected 409 at submission time.
+        Valid only from state changes-requested; resubmitting an open or
+        approved review is rejected with a conflict. After
+        changes-requested, the agent resubmits a replacement deliverable —
+        the same exactly-one shape as creation, a branch pinned at an
+        immutable commit or a doc version — and the review returns to state
+        open, incrementing its revision; feedback left on the prior
+        deliverable stays associated with the revision it concerned
+        (AC-review-rework). Appends a new ReviewSubmission recording what
+        this revision submitted; prior submissions are preserved
+        immutably. A supplied `session` is recorded on the submission. For
+        a code deliverable, `base_commit` is resolved and pinned at
+        submission time, not client-supplied. A code deliverable with an
+        unset project `repo_path` or an unresolvable `commit`/`base_commit`
+        is rejected 409 at submission time.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1748,7 +1755,10 @@ components:
         author:
           type: string
           format: uuid
-          description: Identity recorded as the author of the first DocVersion.
+          description: >-
+            Identity recorded as the author of the first DocVersion, and as
+            the actor of the creation-time events (`doc.version-saved`, and
+            `doc.linked` when created with `issue` set).
       oneOf:
         - required: [template_id]
           not:
@@ -1880,8 +1890,8 @@ components:
         A single append-only stream, consumed both as the pollable feed and the
         per-issue audit history; append-only through every API operation
         (AC-audit-immutable). The v1 kinds consumers route on: issue.created,
-        issue.updated, issue.status-changed, issue.assigned, issue.labeled,
-        issue.unlabeled, issue.relation-added, issue.relation-removed,
+        issue.updated, issue.status-changed, issue.assigned, issue.unassigned,
+        issue.labeled, issue.unlabeled, issue.relation-added, issue.relation-removed,
         comment.created, doc.version-saved, doc.linked, doc.unlinked,
         thread.imported, thread.anchor-changed, review.created,
         review.changes-requested, review.approved, review.resubmitted,
@@ -2034,6 +2044,11 @@ components:
             never client-supplied. Paired with commit, this makes the
             rendered diff immutable.
         doc_version: { type: string, format: uuid }
+        session:
+          type: string
+          description: >-
+            The submitting instance's session id, preserved per revision;
+            Review.session mirrors the latest submission's value.
         created: { type: string, format: date-time }
       oneOf:
         - required: [branch, commit, base_commit]

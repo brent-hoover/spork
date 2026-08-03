@@ -2,9 +2,10 @@ Feature: Issue hierarchy
 
   Scenario: parent and child see each other
     Given issues SUT-1 and SUT-2 exist
-    When SUT-2 becomes a child of SUT-1
+    When SUT-2 becomes a child of SUT-1 by "human-brent"
     Then SUT-1 lists SUT-2 among its children
     And SUT-2 shows SUT-1 as its parent
+    And an "issue.relation-added" event with actor "human-brent" and a timestamp is recorded for SUT-1
     And making SUT-1 a child of SUT-2 is rejected as a cycle
 
   Scenario: parent rolls up child progress

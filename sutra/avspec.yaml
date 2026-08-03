@@ -221,6 +221,9 @@ requirements:
       - id: AC-review-resolution-guard
         statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission.
         test: verification/REQ-code-review.feature#unresolvable repository rejects submission
+      - id: AC-review-reverdict
+        statement: A verdict carrying the current revision always applies, including reversing an earlier verdict; the latest verdict for the current revision is authoritative and every verdict is recorded.
+        test: verification/REQ-code-review.feature#verdicts can be revised for the current revision
   - id: REQ-comments
     title: Unlimited comments on issues
     acceptance:
@@ -351,7 +354,7 @@ requirements:
     title: Threads can be tied to either projects or issues
     acceptance:
       - id: AC-thread-anchor
-        statement: At import or later, a thread ties to a project or an issue — at least one, retargetable; both sides list it.
+        statement: Every thread is anchored from import onward — to a project or an issue, at least one, retargetable later; both sides list it.
         test: verification/REQ-thread-links.feature#threads anchor to their work
 
 apps:
@@ -482,6 +485,7 @@ data:
         - { name: commit, type: string }  # canonical full object id
         - { name: base_commit, type: string }  # canonical full object id; merge base with the project's default branch, resolved once at submission time
         - { name: doc_version, type: ref, ref: ENT-doc-version }
+        - { name: session, type: string }  # submitting instance; preserved per revision
         - { name: created, type: datetime, required: true }
 
 modules:
