@@ -62,6 +62,7 @@ paths:
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -219,6 +220,7 @@ paths:
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -250,6 +252,7 @@ paths:
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -290,6 +293,7 @@ paths:
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -352,6 +356,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
         - $ref: '#/components/parameters/LabelIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
         - name: actor
           in: query
           required: true
@@ -426,6 +431,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
         - $ref: '#/components/parameters/RelationIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
         - name: actor
           in: query
           required: true
@@ -485,10 +491,13 @@ paths:
         identity is walked to the deepest open blocker (AC-pop-blocker-first); one
         blocked by an issue assigned elsewhere is skipped (AC-pop-skips-blocked).
         With no workable issues, returns an explicit empty result, not an error
-        (AC-pop-empty).
+        (AC-pop-empty). Idempotent (CON-idempotent-mutations): replaying a pop
+        with the same Idempotency-Key returns the same claimed issue again —
+        it never claims a second issue.
       tags: [work-stack]
       parameters:
         - $ref: '#/components/parameters/IdentityIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       responses:
         '200':
           description: The claimed issue, or an empty result if none was workable.
@@ -688,6 +697,27 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /doc-versions/{docVersionId}:
+    get:
+      operationId: getDocVersion
+      summary: Get a specific document version
+      description: >-
+        A single DocVersion, including its content, addressable independent
+        of the parent document — e.g. to render a doc deliverable pinned by
+        a Review (AC-review-web).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocVersionIdPath'
+      responses:
+        '200':
+          description: The document version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocVersion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /documents/{documentId}/diff:
     get:
       operationId: diffDocVersions
@@ -722,6 +752,7 @@ paths:
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -748,6 +779,7 @@ paths:
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
         - name: actor
           in: query
           required: true
@@ -821,6 +853,7 @@ paths:
       tags: [templates]
       parameters:
         - $ref: '#/components/parameters/TemplateIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -844,6 +877,7 @@ paths:
       tags: [templates]
       parameters:
         - $ref: '#/components/parameters/TemplateIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       responses:
         '204':
           description: Template removed.
@@ -929,6 +963,7 @@ paths:
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/ThreadIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -1033,6 +1068,7 @@ paths:
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -1046,6 +1082,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Review'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reviews/{reviewId}/resubmit:
+    post:
+      operationId: resubmitReview
+      summary: Resubmit a review with a replacement deliverable
+      description: >-
+        After changes-requested, the agent resubmits a replacement
+        deliverable — the same exactly-one shape as creation, a branch
+        pinned at an immutable commit or a doc version — and the review
+        returns to state open (AC-review-rework).
+      tags: [reviews]
+      parameters:
+        - $ref: '#/components/parameters/ReviewIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResubmitReview'
+      responses:
+        '200':
+          description: Review reopened with the replacement deliverable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reviews/{reviewId}/deliverable:
+    get:
+      operationId: getReviewDeliverable
+      summary: Get a review's deliverable content, resolved for rendering
+      description: >-
+        For a doc deliverable, the doc version's content; for a code
+        deliverable, the pinned commit's diff/content summary (AC-review-web).
+      tags: [reviews]
+      parameters:
+        - $ref: '#/components/parameters/ReviewIdPath'
+      responses:
+        '200':
+          description: The resolved deliverable content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolvedDeliverable'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1161,9 +1248,10 @@ components:
       in: header
       required: true
       description: >-
-        Client-supplied key that makes this creating mutation safe to retry
-        (CON-idempotent-mutations); replaying the same key returns the original
-        result instead of creating a duplicate.
+        Client-supplied key that makes this mutating operation safe to retry
+        (CON-idempotent-mutations): replaying the same key returns the
+        original response verbatim and has no second effect — no duplicate
+        resource, no second state transition, no second side effect.
       schema: { type: string }
     ProjectIdPath:
       name: projectId
@@ -1207,6 +1295,11 @@ components:
       schema: { type: string, format: uuid }
     IdentityIdPath:
       name: identityId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DocVersionIdPath:
+      name: docVersionId
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -1369,6 +1462,22 @@ components:
         anchor: { type: string }
         author: { type: string, format: uuid }
         body: { type: string }
+      oneOf:
+        - required: [issue]
+          not:
+            anyOf:
+              - required: [doc_version]
+              - required: [review]
+        - required: [doc_version]
+          not:
+            anyOf:
+              - required: [issue]
+              - required: [review]
+        - required: [review]
+          not:
+            anyOf:
+              - required: [issue]
+              - required: [doc_version]
 
     Project:
       type: object
@@ -1507,6 +1616,9 @@ components:
         session: { type: string }
         project: { type: string, format: uuid }
         issue: { type: string, format: uuid }
+      anyOf:
+        - required: [project]
+        - required: [issue]
 
     ThreadAnchor:
       type: object
@@ -1562,13 +1674,21 @@ components:
     Review:
       type: object
       description: >-
-        A deliverable prepared for human approval — exactly one of branch or
-        doc_version (immutable, so approval pins a version).
+        A deliverable prepared for human approval — exactly one of a code
+        deliverable (a branch pinned at an immutable commit; branch is
+        display metadata, the commit is what approval covers) or doc_version
+        (immutable, so approval pins a version).
       required: [id, issue, author, state, created]
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }
         branch: { type: string, nullable: true }
+        commit:
+          type: string
+          nullable: true
+          description: >-
+            Immutable SHA pinned at creation/resubmission; branch is display
+            metadata, this is what approval covers.
         doc_version: { type: string, format: uuid, nullable: true }
         session: { type: string, nullable: true }
         summary: { type: string, nullable: true }
@@ -1578,15 +1698,73 @@ components:
 
     NewReview:
       type: object
-      description: Exactly one of branch or doc_version must be set.
+      description: >-
+        Exactly one deliverable: a branch pinned at an immutable commit
+        (both required together; branch is display metadata, commit is what
+        approval covers), or a doc version.
       required: [issue, author]
       properties:
         issue: { type: string, format: uuid }
         branch: { type: string }
+        commit:
+          type: string
+          description: Immutable SHA pinned at creation; required alongside branch.
         doc_version: { type: string, format: uuid }
         session: { type: string }
         summary: { type: string }
         author: { type: string, format: uuid }
+      oneOf:
+        - required: [branch, commit]
+          not:
+            required: [doc_version]
+        - required: [doc_version]
+          not:
+            anyOf:
+              - required: [branch]
+              - required: [commit]
+
+    ResubmitReview:
+      type: object
+      description: >-
+        Replacement deliverable for a review returning to open — same
+        exactly-one shape as NewReview: a branch pinned at an immutable
+        commit, or a doc version.
+      required: [author]
+      properties:
+        branch: { type: string }
+        commit:
+          type: string
+          description: Immutable SHA pinned at resubmission; required alongside branch.
+        doc_version: { type: string, format: uuid }
+        session: { type: string }
+        summary: { type: string }
+        author: { type: string, format: uuid }
+      oneOf:
+        - required: [branch, commit]
+          not:
+            required: [doc_version]
+        - required: [doc_version]
+          not:
+            anyOf:
+              - required: [branch]
+              - required: [commit]
+
+    ResolvedDeliverable:
+      type: object
+      description: >-
+        A review's deliverable resolved for rendering — a doc version's
+        content for a doc deliverable, or the pinned commit's diff/content
+        summary for a code deliverable.
+      required: [kind, content]
+      properties:
+        kind:
+          type: string
+          enum: [doc, code]
+        content:
+          type: string
+          description: >-
+            For kind=doc, the doc version's content. For kind=code, a diff
+            or content summary of the pinned commit snapshot.
 
     ReviewVerdict:
       type: object

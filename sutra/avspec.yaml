@@ -184,7 +184,7 @@ requirements:
     title: Agents prepare a Review object — a branch or document ready for human review — which humans comment on and approve via the web UI
     acceptance:
       - id: AC-review-create
-        statement: An agent creates a Review naming an issue and exactly one deliverable (branch or doc version), optionally stamped with its session id; it exists in state open and is visible to reviewers.
+        statement: An agent creates a Review naming an issue and exactly one deliverable — a code deliverable pinned at an immutable commit (branch is display metadata) or a doc version — optionally stamped with its session id; it exists in state open and is visible to reviewers.
         test: verification/REQ-code-review.feature#agent submits a review
       - id: AC-review-web
         statement: Opening a Review in the web UI shows the deliverable's content for reading.
@@ -430,10 +430,11 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-review
       name: Review
-      description: A deliverable prepared for human approval — exactly one of branch or doc_version (immutable, so approval pins a version). Docs need approval like code.
+      description: A deliverable prepared for human approval — exactly one of a code deliverable (pinned at an immutable commit; branch is display metadata) or doc_version (immutable, so approval pins a version). Docs need approval like code.
       fields:
         - { name: issue, type: ref, ref: ENT-issue, required: true }
         - { name: branch, type: string }
+        - { name: commit, type: string }  # immutable SHA pinned at creation/resubmission; branch is display metadata
         - { name: doc_version, type: ref, ref: ENT-doc-version }
         - { name: session, type: string }
         - { name: summary, type: string }
