@@ -42,6 +42,8 @@ def test_ten_step_flow_order() -> None:
         "NO_APPS",
         "MOD_NO_BOUNDARIES",
         "CONTRACT_FILE_MISSING",
+        "CONTRACT_EMPTY",
+        "ACTION_UNRESOLVED",
         "REQ_NO_AC",
         "UI_NO_VIEWS",
         "AC_NO_TEST",

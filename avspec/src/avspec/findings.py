@@ -37,6 +37,8 @@ CODE_ORDER: tuple[str, ...] = (
     "MOD_NO_APP",
     "MOD_NO_BOUNDARIES",
     "CONTRACT_FILE_MISSING",
+    "CONTRACT_EMPTY",
+    "ACTION_UNRESOLVED",
     "REQ_NO_AC",
     "UI_NO_VIEWS",
     "UI_NO_ENTRY",

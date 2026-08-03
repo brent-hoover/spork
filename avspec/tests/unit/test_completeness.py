@@ -294,8 +294,169 @@ def test_contract_file_missing_unparseable_and_ok(tmp_path: Path) -> None:
     found = list(completeness.contract_files(spec))
     assert codes(found) == ["CONTRACT_UNPARSEABLE"]
     assert found[0].severity is Severity.ERROR
-    contract.write_text("openapi: 3.0.3", encoding="utf-8")
+    contract.write_text(
+        "openapi: 3.0.3\npaths:\n  /x:\n    get:\n      operationId: getX\n",
+        encoding="utf-8",
+    )
     assert codes(completeness.contract_files(spec)) == []
+
+
+def test_contract_empty_openapi_paths(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-api",
+            "name": "api",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-x", "type": "openapi", "path": "contracts/x.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("openapi: 3.0.3\npaths: {}\n", encoding="utf-8")
+    found = list(completeness.contract_files(spec))
+    assert codes(found) == ["CONTRACT_EMPTY"]
+    assert found[0].ref == "CTR-x"
+    assert found[0].question
+
+
+def test_contract_with_real_paths_is_clean(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-api",
+            "name": "api",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-x", "type": "openapi", "path": "contracts/x.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\npaths:\n  /x:\n    get:\n      operationId: getX\n",
+        encoding="utf-8",
+    )
+    assert codes(completeness.contract_files(spec)) == []
+
+
+def test_contract_empty_openapi_missing_paths_key(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-api",
+            "name": "api",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-x", "type": "openapi", "path": "contracts/x.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("openapi: 3.0.3\n", encoding="utf-8")
+    assert codes(completeness.contract_files(spec)) == ["CONTRACT_EMPTY"]
+
+
+def test_contract_empty_asyncapi_channels(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-events",
+            "name": "events",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-y", "type": "asyncapi", "path": "contracts/y.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "y.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("asyncapi: 2.6.0\nchannels: {}\n", encoding="utf-8")
+    found = list(completeness.contract_files(spec))
+    assert codes(found) == ["CONTRACT_EMPTY"]
+    assert found[0].ref == "CTR-y"
+
+
+def test_contract_empty_jsonschema_is_exempt(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [
+        {
+            "id": "MOD-x",
+            "name": "x",
+            "responsibility": "r",
+            "boundaries": {"may_import": []},
+            "contracts": [{"id": "CTR-z", "type": "jsonschema", "path": "contracts/z.yaml"}],
+        }
+    ]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "z.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("{}\n", encoding="utf-8")
+    assert codes(completeness.contract_files(spec)) == []
+
+
+def _module_with_action(invokes: str) -> dict:
+    return {
+        "id": "MOD-api",
+        "name": "api",
+        "responsibility": "r",
+        "boundaries": {"may_import": []},
+        "contracts": [{"id": "CTR-x", "type": "openapi", "path": "contracts/x.yaml"}],
+        "ui": {
+            "kind": "web",
+            "entry": "VIEW-a",
+            "views": [
+                {
+                    "id": "VIEW-a",
+                    "name": "a",
+                    "route": "/",
+                    "actions": ["ACT-a"],
+                }
+            ],
+            "actions": [{"id": "ACT-a", "name": "a", "invokes": invokes}],
+        },
+    }
+
+
+def test_action_unresolved_operation(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x#nope")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\npaths:\n  /x:\n    get:\n      operationId: getX\n",
+        encoding="utf-8",
+    )
+    found = list(completeness.action_operations_resolve(spec))
+    assert codes(found) == ["ACTION_UNRESOLVED"]
+    assert found[0].ref == "ACT-a"
+    assert found[0].question
+
+
+def test_action_resolved_operation_is_clean(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x#getX")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\npaths:\n  /x:\n    get:\n      operationId: getX\n",
+        encoding="utf-8",
+    )
+    assert codes(completeness.action_operations_resolve(spec)) == []
+
+
+def test_action_unresolved_quiet_when_contract_file_missing(tmp_path: Path) -> None:
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x#getX")]
+    spec = make_spec(tmp_path, data)
+    assert codes(completeness.action_operations_resolve(spec)) == []
+    assert codes(completeness.contract_files(spec)) == ["CONTRACT_FILE_MISSING"]
 
 
 def test_non_yaml_contract_type_is_existence_only(tmp_path: Path) -> None:

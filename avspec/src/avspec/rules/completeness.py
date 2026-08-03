@@ -257,6 +257,12 @@ def test_files_exist(spec: Spec) -> Iterable[Finding]:
 
 _YAML_CONTRACT_TYPES = {"openapi", "asyncapi", "jsonschema"}
 
+# The key whose emptiness makes a contract of this type devoid of operations.
+# jsonschema and unknown types have no such key and are exempt from CONTRACT_EMPTY.
+_EMPTINESS_KEY = {"openapi": "paths", "asyncapi": "channels"}
+
+_HTTP_METHODS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
 
 @rule
 def contract_files(spec: Spec) -> Iterable[Finding]:
@@ -275,14 +281,93 @@ def contract_files(spec: Spec) -> Iterable[Finding]:
                     ref=contract.id,
                 )
                 continue
-            if contract.type.lower() not in _YAML_CONTRACT_TYPES:
+            contract_type = contract.type.lower()
+            if contract_type not in _YAML_CONTRACT_TYPES:
                 continue
             try:
-                yaml.load(path.read_text(encoding="utf-8"))
+                doc = yaml.load(path.read_text(encoding="utf-8"))
             except YAMLError as exc:
                 yield Finding(
                     code="CONTRACT_UNPARSEABLE",
                     severity=Severity.ERROR,
                     ref=contract.id,
                     message=f"{contract.path} is not parseable: {exc}",
+                )
+                continue
+            key = _EMPTINESS_KEY.get(contract_type)
+            if key is None:
+                continue
+            value = doc.get(key) if isinstance(doc, dict) else None
+            if not value:
+                yield _todo(
+                    "CONTRACT_EMPTY",
+                    f"{contract.id} has no {key} in {contract.path}.",
+                    f"What operations does {contract.id} ({contract.path}) expose? "
+                    f"Add them under {key} in the document.",
+                    ref=contract.id,
+                )
+
+
+def _operation_ids(doc: object) -> set[str]:
+    """Walk an OpenAPI document's paths -> methods -> operationId."""
+    if not isinstance(doc, dict):
+        return set()
+    paths = doc.get("paths")
+    if not isinstance(paths, dict):
+        return set()
+    ids: set[str] = set()
+    for path_item in paths.values():
+        if not isinstance(path_item, dict):
+            continue
+        for method, operation in path_item.items():
+            if (
+                not isinstance(method, str)
+                or method.lower() not in _HTTP_METHODS
+                or not isinstance(operation, dict)
+            ):
+                continue
+            op_id = operation.get("operationId")
+            if isinstance(op_id, str) and op_id:
+                ids.add(op_id)
+    return ids
+
+
+@rule
+def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
+    """Every ui.action invoking CTR-x#operation must name a real openapi operation.
+
+    Dangling contract refs are handled by wellformed.dangling_refs; a missing or
+    unparseable contract file is handled by contract_files. This rule stays quiet
+    in those cases and only checks resolvable, parseable openapi contracts.
+    """
+    yaml = YAML(typ="safe")
+    contracts = {c.id: c for m in spec.manifest.modules for c in m.contracts}
+    for module in spec.manifest.modules:
+        if module.ui is None:
+            continue
+        for action in module.ui.actions:
+            if action.invokes is None or "#" not in action.invokes:
+                continue
+            contract_ref, _, operation = action.invokes.partition("#")
+            operation = operation.strip()
+            contract = contracts.get(contract_ref)
+            if contract is None or contract.type.lower() != "openapi":
+                continue
+            if _path_escapes(spec.dir, contract.path):
+                continue
+            path = spec.dir / contract.path
+            if not path.is_file():
+                continue
+            try:
+                doc = yaml.load(path.read_text(encoding="utf-8"))
+            except YAMLError:
+                continue
+            if operation not in _operation_ids(doc):
+                yield _todo(
+                    "ACTION_UNRESOLVED",
+                    f"{action.id} invokes {action.invokes!r}, which is not an "
+                    f"operation in {contract.path}.",
+                    f"Add operation {operation!r} to {contract.path}, or fix "
+                    f"{action.id}.invokes to reference an existing operation.",
+                    ref=action.id,
                 )
