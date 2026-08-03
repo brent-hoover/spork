@@ -27,3 +27,15 @@ constitution:
     statement: "The gate chain is inviolable and no agent may skip a stage: review pass -> mutation testing -> product-owner validation -> sutra Review approval -> merge."
   - id: CON-role-separation
     statement: The system architect never writes code; the coding agent never decides scope; scope decisions escalate to the operator; the product owner alone holds the big picture.
+  - id: CON-buy-over-build
+    statement: Solved problems use existing, maintained tools — reviews are roborev itself, not a reimplementation, exactly as tests use an existing test framework.
+  - id: CON-risk-first
+    statement: Planning orders work by risk; a risk item is validated by research or a spike before anything that depends on it is built, so we never code ourselves into a corner.
+
+# Risk register — validated before kriya's own build begins:
+#   R1: Can roborev be used as-is for the pair-programming loop (drive it
+#       programmatically, consume verdicts, close findings) without forking?
+#       Validate via spike against the roborev CLI/daemon. Owner is in
+#       contact with the maintainers.
+#   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
+#       ticket at acceptable speed, or only as a slower periodic gate?

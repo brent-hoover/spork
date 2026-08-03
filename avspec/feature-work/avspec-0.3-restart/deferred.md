@@ -52,6 +52,11 @@ the backlog of record.)
     omit-when-absent.
 11. `searchThreads` carries a sentence about review-session matching that
     belongs on `listReviews`/`/search` only.
+12. Risk/spike representation: kriya's risk-first planning needs risk items
+    and spike tickets visible in sutra. Convention for now — a `risk` /
+    `spike` label plus blocks-relations making risky items block their
+    dependents; promote to a first-class field only if the convention
+    proves insufficient.
 
 ## Decisions to record when slice 2 starts
 
