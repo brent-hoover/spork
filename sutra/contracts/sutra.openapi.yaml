@@ -1626,6 +1626,9 @@ components:
       properties:
         project: { type: string, format: uuid }
         issue: { type: string, format: uuid }
+      anyOf:
+        - required: [project]
+        - required: [issue]
 
     Identity:
       type: object
