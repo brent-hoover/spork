@@ -178,7 +178,7 @@ requirements:
         statement: Given an issue with no Review in state approved, a transition to complete is rejected with an error naming the missing approval.
         test: verification/REQ-close-requires-review.feature#no approval no close
       - id: AC-review-deliverable-kinds
-        statement: A Review's deliverable is exactly one of a branch or a document; both kinds gate closing identically.
+        statement: A Review's deliverable is exactly one of a branch (pinned at an immutable commit) or a document version; both kinds gate closing identically.
         test: verification/REQ-close-requires-review.feature#doc deliverables gate like code
   - id: REQ-code-review
     title: Agents prepare a Review object — a branch or document ready for human review — which humans comment on and approve via the web UI
@@ -288,7 +288,7 @@ requirements:
         statement: An identity is created with a unique handle and a kind (human or agent); no credentials, no auth — it is a name.
         test: verification/REQ-identities.feature#identity is just a named kind
       - id: AC-identity-referenced
-        statement: Actor fields accept any existing identity; unknown handles are rejected, never silently created.
+        statement: At the API, actor and assignee fields are identity ids, not handles — handle-to-id resolution is the CLI's job; unknown ids are rejected, never silently created.
         test: verification/REQ-identities.feature#unknown handles are rejected
   - id: REQ-notifications
     title: Event feed with cursor-based polling
@@ -316,7 +316,7 @@ requirements:
     title: Import and export of tracker data
     acceptance:
       - id: AC-export-full
-        statement: A project export captures issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project.
+        statement: A project export captures identities, issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project.
         test: verification/REQ-import-export.feature#export captures the whole project
       - id: AC-import-round-trip
         statement: Importing an export into an empty server reconstructs the project with UUIDs preserved.
@@ -475,7 +475,7 @@ modules:
     boundaries: { may_import: [] }
   - id: MOD-review
     name: review
-    responsibility: Review objects — a branch or document prepared for human review, with comments and approval.
+    responsibility: Review objects — a branch pinned at an immutable commit, or a document version, prepared for human review, with comments and approval.
     owns: [ENT-review]
     boundaries: { may_import: [MOD-identity, MOD-events] }
   - id: MOD-api
@@ -530,7 +530,7 @@ modules:
           name: Review
           route: /p/:key/r/:id
           purpose: The deliverable, its discussion, and the verdict.
-          shows: [ENT-review.branch, ENT-review.state, ENT-review.summary]
+          shows: [ENT-review.branch, ENT-review.commit, ENT-review.state, ENT-review.summary]
           actions: [ACT-comment, ACT-verdict]
           satisfies: [AC-review-web, AC-review-threads, AC-review-verdict]
         - id: VIEW-thread

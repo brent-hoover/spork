@@ -87,8 +87,9 @@ paths:
       operationId: exportProject
       summary: Export a project
       description: >-
-        Captures issues, comments, labels, relations, docs with all versions, threads,
-        reviews, and events — enough to reconstruct the project (AC-export-full).
+        Captures identities, issues, comments, labels, relations, docs with all
+        versions, threads, reviews, and events — enough to reconstruct the
+        project (AC-export-full).
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'
@@ -108,8 +109,11 @@ paths:
       summary: Import a project export
       description: >-
         Reconstructs a project from a previous export with UUIDs preserved
-        (AC-import-round-trip). Rejected as a whole, naming the conflict, if any UUID
-        already exists on this server (AC-import-collision); no partial imports.
+        (AC-import-round-trip). Identities referenced by the export's records are
+        recreated from the export itself — never invented — so every actor and
+        assignee resolves after import. Rejected as a whole, naming the conflict,
+        if any UUID already exists on this server (AC-import-collision); no
+        partial imports.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -276,8 +280,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            The transition is rejected: closing without an approved review, an open
-            child holding the parent open, or an unknown status.
+            The transition is rejected: closing without an approved review, an
+            open child holding the parent open, or the issue's project being
+            archived.
           content:
             application/json:
               schema:
@@ -318,6 +323,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /issues/{issueId}/labels:
     post:
@@ -347,6 +354,8 @@ paths:
                 $ref: '#/components/schemas/Issue'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /issues/{issueId}/labels/{labelId}:
     delete:
@@ -370,6 +379,8 @@ paths:
                 $ref: '#/components/schemas/Issue'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /issues/{issueId}/relations:
     post:
@@ -399,7 +410,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: The relation would create a cycle, or this issue already has a parent.
+          description: >-
+            The relation would create a cycle, this issue already has a parent,
+            or the issue's project is archived.
           content:
             application/json:
               schema:
@@ -441,6 +454,8 @@ paths:
           description: Relation removed.
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /issues/{issueId}/events:
     get:
@@ -575,6 +590,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
     get:
       operationId: listComments
       summary: List comments anchored to an issue, doc version, or review
@@ -629,6 +646,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /documents/{documentId}:
     get:
@@ -679,6 +698,8 @@ paths:
                 $ref: '#/components/schemas/DocVersion'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
     get:
       operationId: listDocVersions
       summary: List a document's version history
@@ -772,6 +793,8 @@ paths:
                 $ref: '#/components/schemas/Document'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
     delete:
       operationId: unlinkDocumentFromIssue
       summary: Untie a document from its issue
@@ -793,6 +816,8 @@ paths:
                 $ref: '#/components/schemas/Document'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   # -------------------------------------------------------------- templates
   /templates:
@@ -911,6 +936,8 @@ paths:
                 $ref: '#/components/schemas/Thread'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /threads/{threadId}:
     get:
@@ -981,6 +1008,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   # ----------------------------------------------------------------- reviews
   /reviews:
@@ -1011,6 +1040,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
     get:
       operationId: listReviews
       summary: List reviews
@@ -1084,6 +1115,8 @@ paths:
                 $ref: '#/components/schemas/Review'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /reviews/{reviewId}/resubmit:
     post:
@@ -1115,6 +1148,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /reviews/{reviewId}/deliverable:
     get:
@@ -1122,7 +1157,9 @@ paths:
       summary: Get a review's deliverable content, resolved for rendering
       description: >-
         For a doc deliverable, the doc version's content; for a code
-        deliverable, the pinned commit's diff/content summary (AC-review-web).
+        deliverable, the complete pinned diff/content — never a summary in
+        its place, so approval never happens against a summary
+        (AC-review-web).
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1307,9 +1344,10 @@ components:
   responses:
     BadRequest:
       description: >-
-        The request is invalid — e.g. an actor or assignee handle that names no
-        known identity (AC-identity-referenced), or a status outside the five
-        defined values (AC-status-invalid).
+        The request is invalid — e.g. an actor or assignee identity id that
+        names no known identity (AC-identity-referenced), or a status outside
+        the five defined values (AC-status-invalid). The API deals only in
+        identity ids; resolving a human-typed handle to an id is the CLI's job.
       content:
         application/json:
           schema:
@@ -1496,12 +1534,16 @@ components:
 
     NewProject:
       type: object
-      required: [key, name]
+      required: [key, name, actor]
       properties:
         key: { type: string }
         name: { type: string }
         description: { type: string }
         repo_path: { type: string }
+        actor:
+          type: string
+          format: uuid
+          description: Identity recorded as the actor on the creation event.
 
     Document:
       type: object
@@ -1608,7 +1650,7 @@ components:
     NewThread:
       type: object
       description: At least one of project or issue must be set.
-      required: [title, transcript]
+      required: [title, transcript, actor]
       properties:
         title: { type: string }
         transcript:
@@ -1616,6 +1658,10 @@ components:
         session: { type: string }
         project: { type: string, format: uuid }
         issue: { type: string, format: uuid }
+        actor:
+          type: string
+          format: uuid
+          description: Identity recorded as the actor on the import event.
       anyOf:
         - required: [project]
         - required: [issue]
@@ -1623,9 +1669,14 @@ components:
     ThreadAnchor:
       type: object
       description: At least one of project or issue must be set.
+      required: [actor]
       properties:
         project: { type: string, format: uuid }
         issue: { type: string, format: uuid }
+        actor:
+          type: string
+          format: uuid
+          description: Identity recorded as the actor on the anchor-change event.
       anyOf:
         - required: [project]
         - required: [issue]
@@ -1698,6 +1749,15 @@ components:
         author: { type: string, format: uuid }
         state: { $ref: '#/components/schemas/ReviewState' }
         created: { type: string, format: date-time }
+      oneOf:
+        - required: [branch, commit]
+          not:
+            required: [doc_version]
+        - required: [doc_version]
+          not:
+            anyOf:
+              - required: [branch]
+              - required: [commit]
 
     NewReview:
       type: object
@@ -1756,8 +1816,9 @@ components:
       type: object
       description: >-
         A review's deliverable resolved for rendering — a doc version's
-        content for a doc deliverable, or the pinned commit's diff/content
-        summary for a code deliverable.
+        content for a doc deliverable, or the complete pinned diff/content
+        for a code deliverable. `summary` is optional metadata only;
+        approval always covers `content`, never a summary in its place.
       required: [kind, content]
       properties:
         kind:
@@ -1766,8 +1827,14 @@ components:
         content:
           type: string
           description: >-
-            For kind=doc, the doc version's content. For kind=code, a diff
-            or content summary of the pinned commit snapshot.
+            For kind=doc, the doc version's content. For kind=code, the
+            complete diff/content of the pinned commit — never a summary.
+        summary:
+          type: string
+          nullable: true
+          description: >-
+            Optional human-written summary metadata; not a substitute for
+            content and never what approval covers.
 
     ReviewVerdict:
       type: object
@@ -1785,9 +1852,9 @@ components:
       type: object
       properties:
         issue:
-          $ref: '#/components/schemas/Issue'
-          nullable: true
-          description: The claimed issue, now in-progress; absent/null if the stack was empty.
+          description: The claimed issue, now in-progress; absent if the stack was empty.
+          allOf:
+            - $ref: '#/components/schemas/Issue'
 
     DocumentExport:
       type: object
@@ -1801,9 +1868,16 @@ components:
     ProjectExport:
       type: object
       required:
-        [project, issues, comments, labels, issue_relations, documents, threads, reviews, events]
+        [project, identities, issues, comments, labels, issue_relations, documents, threads, reviews, events]
       properties:
         project: { $ref: '#/components/schemas/Project' }
+        identities:
+          type: array
+          description: >-
+            Every identity referenced by this export's records — authors,
+            actors, assignees — so import recreates them instead of inventing
+            or dropping references.
+          items: { $ref: '#/components/schemas/Identity' }
         issues:
           type: array
           items: { $ref: '#/components/schemas/Issue' }
