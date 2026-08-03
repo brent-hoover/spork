@@ -513,6 +513,38 @@ def test_action_unresolved_quiet_when_path_item_is_ref(tmp_path: Path) -> None:
     assert codes(completeness.action_operations_resolve(spec)) == []
 
 
+def test_action_unresolved_missing_fragment_fires_even_with_ref_path_item(
+    tmp_path: Path,
+) -> None:
+    # The missing-fragment check doesn't depend on operation enumeration, so it
+    # must fire before the $ref-path-item guard kicks in and silences the rule.
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\n"
+        "paths:\n"
+        "  /x:\n"
+        "    get:\n"
+        "      operationId: getX\n"
+        "  /y:\n"
+        "    $ref: '#/components/pathItems/Y'\n",
+        encoding="utf-8",
+    )
+    found = list(completeness.action_operations_resolve(spec))
+    assert codes(found) == ["ACTION_UNRESOLVED"]
+    assert found[0].ref == "ACT-a"
+
+    # But a fragmented invokes against the same $ref-bearing contract still
+    # stays quiet, since operation enumeration is partial in that case.
+    data_fragmented = base()
+    data_fragmented["modules"] = [_module_with_action("CTR-x#getX")]
+    spec_fragmented = make_spec(tmp_path, data_fragmented)
+    assert codes(completeness.action_operations_resolve(spec_fragmented)) == []
+
+
 def test_action_unresolved_empty_operation_name_is_not_silent(tmp_path: Path) -> None:
     # Pins current behavior for `invokes: CTR-x#` (empty operation name after
     # the hash): it is treated as an unresolved operation reference rather than

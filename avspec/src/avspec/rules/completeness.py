@@ -394,8 +394,6 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
             doc = load_doc(path)
             if doc is _UNPARSEABLE:
                 continue
-            if _has_ref_path_items(doc):
-                continue
             if not has_fragment:
                 yield _todo(
                     "ACTION_UNRESOLVED",
@@ -405,6 +403,8 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
                     f"an existing operation in {contract.path}.",
                     ref=action.id,
                 )
+                continue
+            if _has_ref_path_items(doc):
                 continue
             if operation not in _operation_ids(doc):
                 yield _todo(
