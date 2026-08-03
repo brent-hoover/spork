@@ -55,8 +55,10 @@ the backlog of record.)
 
 ## Decisions to record when slice 2 starts
 
-- **Drop the ATS example.** The original plan's medium example; sutra took
-  that seat via the live interview and validated more (multi-module,
-  data, apps, UI, full AC set). Three tiers are now: linkshort (small,
-  hand-written fixture), sutra (medium, interview-authored), spork
-  (large, system-level).
+- **Sutra took the ATS's place.** The ATS was chosen as the medium example
+  because it is an app with a well-understood feature set; sutra serves
+  the same purpose (issue trackers are an equally well-understood genre)
+  while also being a real spork component, and its live interview
+  validated more (multi-module, data, apps, UI, full AC set). Three tiers
+  are now: linkshort (small, hand-written fixture), sutra (medium,
+  interview-authored), spork (large, system-level).
