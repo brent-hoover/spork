@@ -509,6 +509,9 @@ paths:
         (AC-pop-empty). Idempotent (CON-idempotent-mutations): replaying a pop
         with the same Idempotency-Key returns the same claimed issue again —
         it never claims a second issue.
+        Issues belonging to archived projects are skipped like externally
+        blocked issues — archived projects are read-only, so their work is
+        never handed out.
       tags: [work-stack]
       parameters:
         - $ref: '#/components/parameters/IdentityIdPath'
