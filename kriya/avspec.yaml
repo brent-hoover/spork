@@ -94,30 +94,39 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
+    owns: [ENT-plan]
   - id: MOD-orchestrator
     name: orchestrator
     responsibility: The outer loop — pops tickets, schedules parallel builds, tracks build state, runs to complete.
+    owns: [ENT-build-run]
   - id: MOD-workspace
     name: workspace
     responsibility: Worktree/branch lifecycle per ticket.
+    owns: [ENT-workspace]
   - id: MOD-dev-loop
     name: dev-loop
     responsibility: The heart — one pair-programming session; dev agent, commit cadence, fix rounds.
+    owns: [ENT-dev-session]
   - id: MOD-review-bridge
     name: review-bridge
     responsibility: The roborev seam — enqueue, poll verdicts, respond, close; buy-over-build boundary in one place.
+    owns: [ENT-review-round]
   - id: MOD-gates
     name: gates
     responsibility: Quality-gate runner — structural lint, typing, branch coverage, mutation testing via the target's stack commands.
+    owns: [ENT-gate-result]
   - id: MOD-architect
     name: architect
     responsibility: SA agent — impasse resolution and operator escalation; writes no code.
+    owns: [ENT-escalation]
   - id: MOD-owner
     name: owner
     responsibility: PO agent — AC validation, anti-gaming, vision.
+    owns: [ENT-validation]
   - id: MOD-context
     name: context
     responsibility: Context assembly per ticket and the learning store. Part of kriya for now; splits out only if ever used beyond spork.
+    owns: [ENT-learning, ENT-context-bundle]
   - id: MOD-tracker-client
     name: tracker-client
     responsibility: The one module that speaks the issue tracker's API — sutra today, the seam where other trackers would plug in.
@@ -127,3 +136,94 @@ modules:
   - id: MOD-tui
     name: tui
     responsibility: Operator dashboard — live overview of running and queued work; where agents surface questions and escalations.
+
+# Kriya's store is the observability plane: the TUI reads it live and it is
+# the post-mortem record of every build. Two exceptions are operational
+# state that must survive restarts: BuildRun (crash recovery) and Learning
+# (the point of the exercise). Sutra remains the system of record for the
+# work itself; tracker-side records are referenced by opaque ids.
+data:
+  entities:
+    - id: ENT-plan
+      name: Plan
+      description: The decomposition record tying an avspec to the tickets it produced.
+      fields:
+        - { name: target_spec, type: string, required: true }
+        - { name: project_key, type: string, required: true }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-build-run
+      name: BuildRun
+      fields:
+        - { name: ticket, type: string, required: true }  # opaque tracker id
+        - { name: state, type: enum, required: true, values: [queued, running, awaiting-review, awaiting-human, merged, failed] }
+        - { name: workspace, type: ref, ref: ENT-workspace }
+        - { name: started, type: datetime }
+        - { name: finished, type: datetime }
+    - id: ENT-workspace
+      name: Workspace
+      fields:
+        - { name: path, type: string, required: true }
+        - { name: branch, type: string, required: true }
+        - { name: ticket, type: string, required: true }
+        - { name: created, type: datetime, required: true }
+        - { name: removed_at, type: datetime }
+    - id: ENT-dev-session
+      name: DevSession
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: session, type: string, required: true }
+        - { name: agent, type: string, required: true }
+        - { name: tier, type: string, required: true }
+        - { name: started, type: datetime, required: true }
+        - { name: ended, type: datetime }
+        - { name: thread_ref, type: string }  # sutra thread id once the transcript imports
+    - id: ENT-review-round
+      name: ReviewRound
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: commit, type: string, required: true }  # canonical full object id
+        - { name: verdict, type: enum, required: true, values: [pass, findings] }
+        - { name: findings, type: json }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-gate-result
+      name: GateResult
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: gate, type: string, required: true }  # structure | typing | branch-coverage | mutation
+        - { name: passed, type: boolean, required: true }
+        - { name: detail, type: json }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-escalation
+      name: Escalation
+      description: What the TUI surfaces to the operator.
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: kind, type: enum, required: true, values: [impasse, scope] }
+        - { name: question, type: string, required: true }
+        - { name: state, type: enum, required: true, values: [open, answered] }
+        - { name: answer, type: string }
+        - { name: raised_by, type: string, required: true }
+        - { name: created, type: datetime, required: true }
+        - { name: resolved, type: datetime }
+    - id: ENT-validation
+      name: Validation
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: verdict, type: enum, required: true, values: [satisfied, not-satisfied, tests-gamed] }
+        - { name: notes, type: string }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-learning
+      name: Learning
+      fields:
+        - { name: scope, type: enum, required: true, values: [project, global] }
+        - { name: project_key, type: string }
+        - { name: lesson, type: string, required: true }
+        - { name: source_session, type: string }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-context-bundle
+      name: ContextBundle
+      description: Exactly what a dev agent was given — the debug record for bad builds and the audit for the learning loop.
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: content, type: json, required: true }
+        - { name: created, type: datetime, required: true }
