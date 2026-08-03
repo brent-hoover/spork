@@ -2,5 +2,1664 @@ openapi: 3.0.3
 info:
   title: sutra
   description: The single API surface — CLI, web UI, and external agents all speak this contract.
-  version: 0.1.0
-paths: {}
+  version: 0.2.0
+
+paths:
+  # ---------------------------------------------------------------- projects
+  /projects:
+    post:
+      operationId: createProject
+      summary: Create a project
+      description: >-
+        Creates a project. Used directly by `sutra init` (AC-project-init), which then
+        records the repo path here and writes a local marker linking the directory to
+        the returned project id.
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewProject'
+      responses:
+        '201':
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listProjects
+      summary: List projects
+      description: Archived projects are excluded unless includeArchived=true (AC-project-archive).
+      tags: [projects]
+      parameters:
+        - name: includeArchived
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Projects.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Project' }
+
+  /projects/{projectId}/archive:
+    post:
+      operationId: archiveProject
+      summary: Archive a project
+      description: >-
+        Hides the project from default listings and makes it read-only; nothing is
+        deleted (AC-project-archive).
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                actor: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Project archived.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectId}/export:
+    get:
+      operationId: exportProject
+      summary: Export a project
+      description: >-
+        Captures issues, comments, labels, relations, docs with all versions, threads,
+        reviews, and events — enough to reconstruct the project (AC-export-full).
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          description: Full project export.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectExport'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/import:
+    post:
+      operationId: importProject
+      summary: Import a project export
+      description: >-
+        Reconstructs a project from a previous export with UUIDs preserved
+        (AC-import-round-trip). Rejected as a whole, naming the conflict, if any UUID
+        already exists on this server (AC-import-collision); no partial imports.
+      tags: [projects]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectExport'
+      responses:
+        '201':
+          description: Project reconstructed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ------------------------------------------------------------------ issues
+  /projects/{projectId}/issues:
+    post:
+      operationId: createIssue
+      summary: Create an issue
+      description: >-
+        Mints a UUIDv7 id plus a per-project sequential display number, sets status
+        open, and records a creation event (AC-issue-create).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewIssue'
+      responses:
+        '201':
+          description: Issue created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listIssues
+      summary: List and search issues in a project
+      description: >-
+        Filters by status, assignee, and label, combinable with each other and with
+        text search over title/body/comments (AC-search-text, AC-search-filters).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+        - name: status
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/IssueStatus' }
+        - name: assignee
+          in: query
+          schema: { type: string, format: uuid }
+        - name: label
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { type: string }
+        - name: q
+          in: query
+          description: Free-text search over issue titles, bodies, and comments.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Matching issues, ranked by relevance when q is set.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Issue' }
+
+  /issues/{issueId}:
+    get:
+      operationId: getIssue
+      summary: Get an issue
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      responses:
+        '200':
+          description: The issue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateIssue
+      summary: Update an issue's title, body, or fields
+      description: Changes persist and `updated` reflects the mutation (AC-issue-update).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIssue'
+      responses:
+        '200':
+          description: Updated issue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /issues/{issueId}/status:
+    post:
+      operationId: updateIssueStatus
+      summary: Transition an issue's status
+      description: >-
+        Transitions among open, in-progress, blocked, and deferred are free and
+        recorded as events; complete is gated on an approved Review and no open
+        children (AC-status-set, AC-status-reopen, AC-parent-close-gate,
+        AC-close-approved, AC-close-blocked-without). Invoked by the kanban board's
+        drag-to-move action (ACT-move-card).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, actor]
+              properties:
+                status: { $ref: '#/components/schemas/IssueStatus' }
+                actor: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Issue transitioned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The transition is rejected: closing without an approved review, an open
+            child holding the parent open, or an unknown status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /issues/{issueId}/assign:
+    post:
+      operationId: assignIssue
+      summary: Assign or unassign an issue
+      description: >-
+        Assigns to any identity, human or agent, or clears assignment with a null
+        assignee; assignment feeds the agent work stack (AC-issue-assign).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor]
+              properties:
+                assignee:
+                  type: string
+                  format: uuid
+                  nullable: true
+                actor: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Issue reassigned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /issues/{issueId}/labels:
+    post:
+      operationId: attachLabel
+      summary: Attach a label to an issue
+      description: Labels attach and detach; an issue lists its current labels (AC-issue-labels).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, actor]
+              properties:
+                label: { type: string, format: uuid }
+                actor: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Issue with the label attached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /issues/{issueId}/labels/{labelId}:
+    delete:
+      operationId: detachLabel
+      summary: Detach a label from an issue
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/LabelIdPath'
+        - name: actor
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Issue with the label detached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Issue'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /issues/{issueId}/relations:
+    post:
+      operationId: addIssueRelation
+      summary: Add a parent/child or blocking relation
+      description: >-
+        Creates a parent_of or blocks relation from this issue. Ancestry cycles
+        (AC-parent-create) and blocking cycles, direct or transitive
+        (AC-block-no-cycles), are rejected.
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewIssueRelation'
+      responses:
+        '201':
+          description: Relation created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueRelation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The relation would create a cycle, or this issue already has a parent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      operationId: listIssueRelations
+      summary: List an issue's relations
+      description: >-
+        Backs parent/child views (parent lists children, child shows parent,
+        AC-parent-create) and blocking views (AC-block-create) from both sides.
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      responses:
+        '200':
+          description: Relations where this issue is either side.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/IssueRelation' }
+
+  /issues/{issueId}/relations/{relationId}:
+    delete:
+      operationId: removeIssueRelation
+      summary: Remove a relation
+      description: Removal clears both sides (AC-block-create).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+        - $ref: '#/components/parameters/RelationIdPath'
+        - name: actor
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Relation removed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /issues/{issueId}/events:
+    get:
+      operationId: listIssueEvents
+      summary: Get an issue's audit history
+      description: >-
+        All events for the issue, in chronological order, with actor, change kind,
+        and time (AC-audit-query).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      responses:
+        '200':
+          description: Audit history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Event' }
+
+  /issues/{issueId}/documents:
+    get:
+      operationId: listIssueDocuments
+      summary: List documents currently tied to an issue
+      description: An issue lists its currently tied documents (AC-doc-list-by-issue).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      responses:
+        '200':
+          description: Tied documents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Document' }
+
+  # -------------------------------------------------------------- work stack
+  /identities/{identityId}/work-stack/pop:
+    post:
+      operationId: popWorkStack
+      summary: Atomically claim the next workable issue assigned to an identity
+      description: >-
+        Returns the oldest workable assigned issue and sets its status to
+        in-progress in the same operation (AC-pop-claims, AC-pop-fifo). Concurrent
+        pops by the same identity never return the same issue twice
+        (AC-pop-atomic). A blocked issue whose blocker is also assigned to this
+        identity is walked to the deepest open blocker (AC-pop-blocker-first); one
+        blocked by an issue assigned elsewhere is skipped (AC-pop-skips-blocked).
+        With no workable issues, returns an explicit empty result, not an error
+        (AC-pop-empty).
+      tags: [work-stack]
+      parameters:
+        - $ref: '#/components/parameters/IdentityIdPath'
+      responses:
+        '200':
+          description: The claimed issue, or an empty result if none was workable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkStackPopResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ------------------------------------------------------------------ labels
+  /labels:
+    post:
+      operationId: createLabel
+      summary: Create a label
+      tags: [labels]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewLabel'
+      responses:
+        '201':
+          description: Label created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Label'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listLabels
+      summary: List labels
+      tags: [labels]
+      responses:
+        '200':
+          description: Labels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Label' }
+
+  # ---------------------------------------------------------------- comments
+  /comments:
+    post:
+      operationId: createComment
+      summary: Comment on an issue, doc version, or review
+      description: >-
+        Stores a comment with author and timestamp, anchored to exactly one of
+        issue, doc_version, or review (AC-comment-create). A comment replying to
+        another nests under its parent with unbounded thread depth
+        (AC-comment-threading, AC-review-threads, AC-docweb-threads). Invoked by
+        the comment action in the issue, document, and review views (ACT-comment).
+      tags: [comments]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewComment'
+      responses:
+        '201':
+          description: Comment created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: listComments
+      summary: List comments anchored to an issue, doc version, or review
+      tags: [comments]
+      parameters:
+        - name: issue
+          in: query
+          schema: { type: string, format: uuid }
+        - name: doc_version
+          in: query
+          schema: { type: string, format: uuid }
+        - name: review
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Comments, threaded via parent.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Comment' }
+
+  # -------------------------------------------------------------- documents
+  /projects/{projectId}/documents:
+    post:
+      operationId: createDocument
+      summary: Create a document, optionally from a template
+      description: >-
+        Files a document under the project, optionally tied to an issue, readable
+        back with title and content (AC-doc-create). With template_id set, the
+        document's first version starts with the template's content
+        (AC-template-instantiate); otherwise content is required.
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewDocument'
+      responses:
+        '201':
+          description: Document created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{documentId}:
+    get:
+      operationId: getDocument
+      summary: Get a document, latest version by default
+      description: Requesting without a version yields the latest (AC-doc-current).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+        - name: version
+          in: query
+          description: A specific version number; omit for the current version.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: The document and the resolved version's content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentView'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{documentId}/versions:
+    post:
+      operationId: saveDocVersion
+      summary: Save a new document version
+      description: >-
+        Appends a new immutable DocVersion with author, number, and timestamp;
+        prior versions stay readable, no in-place edits (AC-doc-versioning).
+        Invoked by the document view's save action (ACT-save-doc).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewDocVersion'
+      responses:
+        '201':
+          description: New version saved and made current.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocVersion'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: listDocVersions
+      summary: List a document's version history
+      description: All versions in order with author and time (AC-doc-history).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+      responses:
+        '200':
+          description: Version history, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DocVersion' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{documentId}/diff:
+    get:
+      operationId: diffDocVersions
+      summary: Diff two versions of a document
+      description: Any two versions can be diffed (AC-doc-history).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+        - name: from
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: to
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: The diff between the two versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocDiff'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{documentId}/issue:
+    post:
+      operationId: linkDocumentToIssue
+      summary: Tie an existing document to an issue
+      description: An existing document can be tied to an issue after creation (AC-doc-link).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issue, actor]
+              properties:
+                issue: { type: string, format: uuid }
+                actor: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Document with the issue tied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: unlinkDocumentFromIssue
+      summary: Untie a document from its issue
+      description: Untied after creation (AC-doc-link).
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+        - name: actor
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Document with the issue untied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # -------------------------------------------------------------- templates
+  /templates:
+    post:
+      operationId: createTemplate
+      summary: Create a doc template
+      description: Templates can be created, listed, updated, and removed by unique name (AC-template-crud).
+      tags: [templates]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewDocTemplate'
+      responses:
+        '201':
+          description: Template created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocTemplate'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listTemplates
+      summary: List doc templates
+      tags: [templates]
+      responses:
+        '200':
+          description: Templates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DocTemplate' }
+
+  /templates/{templateId}:
+    get:
+      operationId: getTemplate
+      summary: Get a doc template
+      tags: [templates]
+      parameters:
+        - $ref: '#/components/parameters/TemplateIdPath'
+      responses:
+        '200':
+          description: The template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocTemplate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateTemplate
+      summary: Update a doc template
+      tags: [templates]
+      parameters:
+        - $ref: '#/components/parameters/TemplateIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDocTemplate'
+      responses:
+        '200':
+          description: Updated template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocTemplate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      operationId: deleteTemplate
+      summary: Remove a doc template
+      tags: [templates]
+      parameters:
+        - $ref: '#/components/parameters/TemplateIdPath'
+      responses:
+        '204':
+          description: Template removed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ----------------------------------------------------------------- threads
+  /threads:
+    post:
+      operationId: importThread
+      summary: Import an agent transcript
+      description: >-
+        Creates a Thread with title, session id, and import time; content is
+        preserved verbatim (AC-thread-import). Ties to a project or an issue —
+        at least one is required (AC-thread-anchor).
+      tags: [threads]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewThread'
+      responses:
+        '201':
+          description: Thread imported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thread'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /threads/{threadId}:
+    get:
+      operationId: getThread
+      summary: Get a thread
+      description: Returned turn-by-turn so the web UI can render it as a conversation (AC-thread-view).
+      tags: [threads]
+      parameters:
+        - $ref: '#/components/parameters/ThreadIdPath'
+      responses:
+        '200':
+          description: The thread.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thread'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /threads/search:
+    get:
+      operationId: searchThreads
+      summary: Search threads, including by session id
+      description: >-
+        Returns matching threads with surrounding context (AC-thread-search).
+        Filtering by session returns the threads imported from that instance
+        (AC-search-session).
+      tags: [threads]
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: session
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Matching threads.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Thread' }
+
+  /threads/{threadId}/anchor:
+    post:
+      operationId: setThreadAnchor
+      summary: Retarget a thread's project or issue anchor
+      description: At least one of project or issue must be set; both sides list the thread (AC-thread-anchor).
+      tags: [threads]
+      parameters:
+        - $ref: '#/components/parameters/ThreadIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreadAnchor'
+      responses:
+        '200':
+          description: Thread with the new anchor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thread'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ----------------------------------------------------------------- reviews
+  /reviews:
+    post:
+      operationId: createReview
+      summary: Submit a review
+      description: >-
+        Names an issue and exactly one deliverable, branch or doc version,
+        optionally stamped with a session id; created in state open and visible
+        to reviewers (AC-review-create, AC-review-deliverable-kinds).
+      tags: [reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewReview'
+      responses:
+        '201':
+          description: Review created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: listReviews
+      summary: List reviews
+      description: Filtering by session returns the reviews stamped with that instance (AC-search-session).
+      tags: [reviews]
+      parameters:
+        - name: issue
+          in: query
+          schema: { type: string, format: uuid }
+        - name: session
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ReviewState' }
+      responses:
+        '200':
+          description: Reviews.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Review' }
+
+  /reviews/{reviewId}:
+    get:
+      operationId: getReview
+      summary: Get a review
+      description: Shows the deliverable's content for reading (AC-review-web).
+      tags: [reviews]
+      parameters:
+        - $ref: '#/components/parameters/ReviewIdPath'
+      responses:
+        '200':
+          description: The review.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /reviews/{reviewId}/verdict:
+    post:
+      operationId: setReviewVerdict
+      summary: Set a review's verdict
+      description: >-
+        A human sets approved or changes-requested; the state changes and an
+        Event records who and when (AC-review-verdict). Approval publishes an
+        event a subscriber can act on (AC-review-approved-event);
+        changes-requested carries the review's session id and issue ref so a
+        resubmission routes back to the same agent instance
+        (AC-review-rework). Invoked by the review view's verdict action
+        (ACT-verdict).
+      tags: [reviews]
+      parameters:
+        - $ref: '#/components/parameters/ReviewIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewVerdict'
+      responses:
+        '200':
+          description: Review with the new state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ------------------------------------------------------------------ events
+  /events:
+    get:
+      operationId: listEvents
+      summary: Poll the event feed
+      description: >-
+        Cursor-based polling — pass the last-seen cursor to receive only newer
+        events, in order; a restarted consumer resumes from its cursor and
+        misses nothing (AC-feed-poll). Filters by event kind and/or subject so a
+        consumer watches exactly its concerns (AC-feed-filter).
+      tags: [events]
+      parameters:
+        - name: cursor
+          in: query
+          description: The last-seen position; omit to start from the beginning of the feed.
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { type: string }
+        - name: subject
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      responses:
+        '200':
+          description: A page of events newer than the cursor, plus the cursor to resume from.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+
+  # -------------------------------------------------------------- identities
+  /identities:
+    post:
+      operationId: createIdentity
+      summary: Create an identity
+      description: >-
+        A unique handle and a kind, human or agent; no credentials, no auth — it
+        is a name (AC-identity-create).
+      tags: [identities]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewIdentity'
+      responses:
+        '201':
+          description: Identity created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listIdentities
+      summary: List identities
+      tags: [identities]
+      parameters:
+        - name: kind
+          in: query
+          schema: { $ref: '#/components/schemas/IdentityKind' }
+      responses:
+        '200':
+          description: Identities.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Identity' }
+
+  # ------------------------------------------------------------------ search
+  /search:
+    get:
+      operationId: search
+      summary: Search across issues, docs, and threads
+      description: >-
+        One query surface over issues, docs, and transcripts (AC-search-cross).
+        Filtering by session returns the work that instance produced — reviews
+        stamped with it, threads imported from it, and their linked issues
+        (AC-search-session).
+      tags: [search]
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string, format: uuid }
+        - name: session
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Results grouped by kind.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResults'
+
+components:
+  parameters:
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Client-supplied key that makes this creating mutation safe to retry
+        (CON-idempotent-mutations); replaying the same key returns the original
+        result instead of creating a duplicate.
+      schema: { type: string }
+    ProjectIdPath:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IssueIdPath:
+      name: issueId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    LabelIdPath:
+      name: labelId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RelationIdPath:
+      name: relationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DocumentIdPath:
+      name: documentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TemplateIdPath:
+      name: templateId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ThreadIdPath:
+      name: threadId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReviewIdPath:
+      name: reviewId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdentityIdPath:
+      name: identityId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: >-
+        The request is invalid — e.g. an actor or assignee handle that names no
+        known identity (AC-identity-referenced), or a status outside the five
+        defined values (AC-status-invalid).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The referenced resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: >-
+        The request conflicts with current state — e.g. closing without an
+        approved review, a blocking or ancestry cycle, a colliding import, or a
+        write against an archived project.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Human-readable explanation of the rejection.
+        conflicts:
+          type: array
+          description: Ids of the resources this request conflicts with, if applicable.
+          items: { type: string }
+
+    IssueStatus:
+      type: string
+      enum: [open, in-progress, blocked, deferred, complete]
+
+    RelationKind:
+      type: string
+      enum: [parent_of, blocks]
+
+    IdentityKind:
+      type: string
+      enum: [human, agent]
+
+    ReviewState:
+      type: string
+      enum: [open, changes-requested, approved]
+
+    Issue:
+      type: object
+      required: [id, number, title, status, project, created, updated]
+      properties:
+        id: { type: string, format: uuid }
+        number:
+          type: integer
+          description: Project-scoped display alias (e.g. SUT-42); never canonical identity.
+        title: { type: string }
+        body: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/IssueStatus' }
+        project: { type: string, format: uuid }
+        assignee: { type: string, format: uuid, nullable: true }
+        labels:
+          type: array
+          items: { $ref: '#/components/schemas/Label' }
+        created: { type: string, format: date-time }
+        updated: { type: string, format: date-time }
+
+    NewIssue:
+      type: object
+      required: [title, actor]
+      properties:
+        title: { type: string }
+        body: { type: string }
+        assignee: { type: string, format: uuid }
+        actor:
+          type: string
+          format: uuid
+          description: Identity recorded as the actor on the creation event.
+
+    UpdateIssue:
+      type: object
+      required: [actor]
+      properties:
+        title: { type: string }
+        body: { type: string }
+        actor: { type: string, format: uuid }
+
+    Label:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        color: { type: string, nullable: true }
+
+    NewLabel:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        color: { type: string }
+
+    IssueRelation:
+      type: object
+      required: [id, from, to, kind]
+      properties:
+        id: { type: string, format: uuid }
+        from: { type: string, format: uuid }
+        to: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/RelationKind' }
+
+    NewIssueRelation:
+      type: object
+      required: [to, kind, actor]
+      properties:
+        to: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/RelationKind' }
+        actor: { type: string, format: uuid }
+
+    Comment:
+      type: object
+      description: >-
+        Polymorphic and threaded — anchors to exactly one of issue, doc_version,
+        or review.
+      required: [id, author, body, created]
+      properties:
+        id: { type: string, format: uuid }
+        issue: { type: string, format: uuid, nullable: true }
+        doc_version: { type: string, format: uuid, nullable: true }
+        review: { type: string, format: uuid, nullable: true }
+        parent: { type: string, format: uuid, nullable: true }
+        anchor:
+          type: string
+          nullable: true
+          description: Optional span/block locator within the anchored artifact.
+        author: { type: string, format: uuid }
+        body: { type: string }
+        created: { type: string, format: date-time }
+
+    NewComment:
+      type: object
+      description: Exactly one of issue, doc_version, or review must be set.
+      required: [author, body]
+      properties:
+        issue: { type: string, format: uuid }
+        doc_version: { type: string, format: uuid }
+        review: { type: string, format: uuid }
+        parent: { type: string, format: uuid }
+        anchor: { type: string }
+        author: { type: string, format: uuid }
+        body: { type: string }
+
+    Project:
+      type: object
+      required: [id, key, name]
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        repo_path: { type: string, nullable: true }
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set means archived (hidden, read-only).
+
+    NewProject:
+      type: object
+      required: [key, name]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        repo_path: { type: string }
+
+    Document:
+      type: object
+      required: [id, project, title]
+      properties:
+        id: { type: string, format: uuid }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid, nullable: true }
+        title: { type: string }
+        current_version: { type: string, format: uuid, nullable: true }
+
+    DocumentView:
+      description: A document together with its resolved version's content (latest by default).
+      allOf:
+        - $ref: '#/components/schemas/Document'
+        - type: object
+          required: [version]
+          properties:
+            version: { $ref: '#/components/schemas/DocVersion' }
+
+    NewDocument:
+      type: object
+      description: >-
+        Either template_id or content must be given: template_id seeds the first
+        version from the template's content (AC-template-instantiate); otherwise
+        content is the first version's content directly.
+      required: [title, author]
+      properties:
+        title: { type: string }
+        issue: { type: string, format: uuid }
+        template_id: { type: string, format: uuid }
+        content: { type: string }
+        author:
+          type: string
+          format: uuid
+          description: Identity recorded as the author of the first DocVersion.
+
+    DocVersion:
+      type: object
+      required: [id, document, number, content, author, created]
+      properties:
+        id: { type: string, format: uuid }
+        document: { type: string, format: uuid }
+        number: { type: integer }
+        content: { type: string }
+        author: { type: string, format: uuid }
+        created: { type: string, format: date-time }
+
+    NewDocVersion:
+      type: object
+      required: [content, author]
+      properties:
+        content: { type: string }
+        author: { type: string, format: uuid }
+
+    DocDiff:
+      type: object
+      required: [from, to, diff]
+      properties:
+        from: { type: integer }
+        to: { type: integer }
+        diff:
+          type: string
+          description: Unified diff between the `from` and `to` version contents.
+
+    DocTemplate:
+      type: object
+      required: [id, name, content]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        content: { type: string }
+
+    NewDocTemplate:
+      type: object
+      required: [name, content]
+      properties:
+        name: { type: string }
+        content: { type: string }
+
+    UpdateDocTemplate:
+      type: object
+      properties:
+        name: { type: string }
+        content: { type: string }
+
+    Thread:
+      type: object
+      description: An imported agent transcript, tied to a project or an issue.
+      required: [id, title, transcript, imported_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        transcript:
+          description: Arbitrary JSON transcript content, preserved verbatim.
+        session:
+          type: string
+          nullable: true
+          description: The instance this transcript came from; joins with Review.session.
+        project: { type: string, format: uuid, nullable: true }
+        issue: { type: string, format: uuid, nullable: true }
+        imported_at: { type: string, format: date-time }
+
+    NewThread:
+      type: object
+      description: At least one of project or issue must be set.
+      required: [title, transcript]
+      properties:
+        title: { type: string }
+        transcript:
+          description: Arbitrary JSON transcript content, preserved verbatim.
+        session: { type: string }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid }
+
+    ThreadAnchor:
+      type: object
+      description: At least one of project or issue must be set.
+      properties:
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid }
+
+    Identity:
+      type: object
+      required: [id, handle, kind]
+      properties:
+        id: { type: string, format: uuid }
+        handle: { type: string }
+        kind: { $ref: '#/components/schemas/IdentityKind' }
+        display_name: { type: string, nullable: true }
+
+    NewIdentity:
+      type: object
+      required: [handle, kind]
+      properties:
+        handle: { type: string }
+        kind: { $ref: '#/components/schemas/IdentityKind' }
+        display_name: { type: string }
+
+    Event:
+      type: object
+      description: >-
+        A single append-only stream, consumed both as the pollable feed and the
+        per-issue audit history; append-only through every API operation
+        (AC-audit-immutable).
+      required: [id, kind, subject, actor, created]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        subject: { type: string }
+        actor: { type: string, format: uuid }
+        payload:
+          description: Arbitrary JSON event payload.
+        created: { type: string, format: date-time }
+
+    EventPage:
+      type: object
+      required: [events, next_cursor]
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/Event' }
+        next_cursor:
+          type: string
+          description: Pass as `cursor` on the next call to resume after this page.
+
+    Review:
+      type: object
+      description: >-
+        A deliverable prepared for human approval — exactly one of branch or
+        doc_version (immutable, so approval pins a version).
+      required: [id, issue, author, state, created]
+      properties:
+        id: { type: string, format: uuid }
+        issue: { type: string, format: uuid }
+        branch: { type: string, nullable: true }
+        doc_version: { type: string, format: uuid, nullable: true }
+        session: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        author: { type: string, format: uuid }
+        state: { $ref: '#/components/schemas/ReviewState' }
+        created: { type: string, format: date-time }
+
+    NewReview:
+      type: object
+      description: Exactly one of branch or doc_version must be set.
+      required: [issue, author]
+      properties:
+        issue: { type: string, format: uuid }
+        branch: { type: string }
+        doc_version: { type: string, format: uuid }
+        session: { type: string }
+        summary: { type: string }
+        author: { type: string, format: uuid }
+
+    ReviewVerdict:
+      type: object
+      required: [verdict, actor]
+      properties:
+        verdict:
+          type: string
+          enum: [approved, changes-requested]
+        actor:
+          type: string
+          format: uuid
+          description: The human identity setting the verdict.
+
+    WorkStackPopResult:
+      type: object
+      properties:
+        issue:
+          $ref: '#/components/schemas/Issue'
+          nullable: true
+          description: The claimed issue, now in-progress; absent/null if the stack was empty.
+
+    DocumentExport:
+      type: object
+      required: [document, versions]
+      properties:
+        document: { $ref: '#/components/schemas/Document' }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/DocVersion' }
+
+    ProjectExport:
+      type: object
+      required:
+        [project, issues, comments, labels, issue_relations, documents, threads, reviews, events]
+      properties:
+        project: { $ref: '#/components/schemas/Project' }
+        issues:
+          type: array
+          items: { $ref: '#/components/schemas/Issue' }
+        comments:
+          type: array
+          items: { $ref: '#/components/schemas/Comment' }
+        labels:
+          type: array
+          items: { $ref: '#/components/schemas/Label' }
+        issue_relations:
+          type: array
+          items: { $ref: '#/components/schemas/IssueRelation' }
+        documents:
+          type: array
+          items: { $ref: '#/components/schemas/DocumentExport' }
+        threads:
+          type: array
+          items: { $ref: '#/components/schemas/Thread' }
+        reviews:
+          type: array
+          items: { $ref: '#/components/schemas/Review' }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/Event' }
+
+    SearchResults:
+      type: object
+      properties:
+        issues:
+          type: array
+          items: { $ref: '#/components/schemas/Issue' }
+        documents:
+          type: array
+          items: { $ref: '#/components/schemas/Document' }
+        threads:
+          type: array
+          items: { $ref: '#/components/schemas/Thread' }
+        reviews:
+          type: array
+          items: { $ref: '#/components/schemas/Review' }
