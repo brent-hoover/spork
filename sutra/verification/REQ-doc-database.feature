@@ -6,6 +6,8 @@ Feature: Doc database
     When document "design" is created in "SUT" tied to SUT-1
     Then it is listed under "SUT" and under SUT-1
     And reading it returns title and content
+    And a "doc.version-saved" event with actor and timestamp is recorded
+    And a "doc.linked" event with actor and timestamp is recorded for SUT-1
 
   Scenario: saves append immutable versions
     Given document "design" has one version

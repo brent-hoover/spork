@@ -73,6 +73,16 @@ Feature: Review lifecycle
     Then the comment is rejected
     And no comment is created
 
+  Scenario: resubmission requires changes-requested
+    Given an open review
+    When the agent resubmits the deliverable
+    Then the resubmission is rejected with a conflict
+    And no submission, state change, or event results
+    Given a review approved at its current revision
+    When the agent resubmits the deliverable
+    Then the resubmission is rejected with a conflict
+    And no submission, state change, or event results
+
   Scenario Outline: unresolvable repository rejects submission
     Given a project with <failure>
     When an agent <operation>s a code deliverable for SUT-1

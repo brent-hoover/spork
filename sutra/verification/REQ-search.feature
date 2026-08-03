@@ -17,6 +17,7 @@ Feature: Search and filter
     Then the doc and the thread appear alongside matching issues
 
   Scenario: session id joins an instance's work
-    Given a review and an imported thread both carry session "sess-42"
+    Given a review whose revision 1 was submitted under session "sess-42" and revision 2 under session "sess-43"
+    And an imported thread carrying session "sess-42"
     When "sess-42" is searched
     Then the review, the thread, and their linked issues are returned

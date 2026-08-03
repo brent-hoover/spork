@@ -224,6 +224,9 @@ requirements:
       - id: AC-review-reverdict
         statement: A verdict carrying the current revision always applies, including reversing an earlier verdict; the latest verdict for the current revision is authoritative and every verdict is recorded.
         test: verification/REQ-code-review.feature#verdicts can be revised for the current revision
+      - id: AC-review-resubmit-guard
+        statement: Resubmission is valid only from changes-requested; open or approved reviews reject it with no mutation.
+        test: verification/REQ-code-review.feature#resubmission requires changes-requested
   - id: REQ-comments
     title: Unlimited comments on issues
     acceptance:
@@ -286,7 +289,7 @@ requirements:
         statement: Search spans docs and threads as well — one query surface over issues, docs, and transcripts.
         test: verification/REQ-search.feature#one surface over all content
       - id: AC-search-session
-        statement: Searching by session id returns the work that instance produced — reviews stamped with it, threads imported from it, and their linked issues.
+        statement: Searching by session id returns the work that instance produced — reviews stamped with it, threads imported from it, and their linked issues, including reviews where any historical submission carries the session.
         test: verification/REQ-search.feature#session id joins an instance's work
   - id: REQ-projects
     title: Projects as first-class containers for issues and docs

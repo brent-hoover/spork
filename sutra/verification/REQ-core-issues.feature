@@ -25,3 +25,5 @@ Feature: Core issue tracking
     When SUT-1 is assigned to "claude"
     Then SUT-1 shows assignee "claude"
     And SUT-1 is on "claude"'s work stack
+    When SUT-1 is unassigned by "human-brent"
+    And an "issue.unassigned" event with actor "human-brent" and a timestamp is recorded for SUT-1

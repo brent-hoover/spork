@@ -561,6 +561,27 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Document' }
 
+  /issues/{issueId}/threads:
+    get:
+      operationId: listIssueThreads
+      summary: List threads anchored to an issue
+      description: >-
+        An issue lists the threads anchored to it, mirroring
+        listIssueDocuments (AC-thread-anchor).
+      tags: [issues]
+      parameters:
+        - $ref: '#/components/parameters/IssueIdPath'
+      responses:
+        '200':
+          description: Anchored threads.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Thread' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # -------------------------------------------------------------- work stack
   /identities/{identityId}/work-stack/pop:
     post:
@@ -579,7 +600,8 @@ paths:
         it never claims a second issue.
         Issues belonging to archived projects are skipped like externally
         blocked issues — archived projects are read-only, so their work is
-        never handed out.
+        never handed out. The pop-induced `issue.status-changed` event's
+        actor is the popping identity.
       tags: [work-stack]
       parameters:
         - $ref: '#/components/parameters/IdentityIdPath'
@@ -1042,7 +1064,14 @@ paths:
       description: >-
         Returns matching threads with surrounding context (AC-thread-search).
         Filtering by session returns the threads imported from that instance
-        (AC-search-session).
+        (AC-search-session); elsewhere, a session query is considered to
+        match a review whose ANY ReviewSubmission.session equals the query,
+        not just the latest submission's session — the same broadened
+        matching underlies the linked reviews /search surfaces for a given
+        session. Filtering by project returns the threads anchored to that
+        project, giving the project side of a thread's anchor a direct
+        listing route (AC-thread-anchor). With `q` omitted, returns all
+        threads in scope of the other filters (session, project).
       tags: [threads]
       parameters:
         - name: q
@@ -1051,6 +1080,9 @@ paths:
         - name: session
           in: query
           schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string, format: uuid }
       responses:
         '200':
           description: Matching threads.
@@ -1067,7 +1099,12 @@ paths:
       description: >-
         The request's anchor replaces the existing anchor entirely — omitted
         fields clear the corresponding side. At least one of project or issue
-        must be set; both sides list the thread (AC-thread-anchor).
+        must be set; both sides list the thread — listIssueThreads on the
+        issue side, searchThreads (filtered by project) on the project side
+        (AC-thread-anchor). Emits a `thread.anchor-changed` event whose
+        subject is the NEW anchor's aggregation root — the issue if
+        retargeted to an issue, otherwise the project; the payload carries
+        both the old and new anchors.
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/ThreadIdPath'
@@ -1133,7 +1170,12 @@ paths:
     get:
       operationId: listReviews
       summary: List reviews
-      description: Filtering by session returns the reviews stamped with that instance (AC-search-session).
+      description: >-
+        Filtering by session returns the reviews stamped with that instance
+        (AC-search-session) — a session query matches a review whose ANY
+        ReviewSubmission.session equals the query, not just the latest
+        submission's session, since the session that mattered may belong to
+        an earlier revision.
       tags: [reviews]
       parameters:
         - name: issue
@@ -1381,7 +1423,10 @@ paths:
         One query surface over issues, docs, and transcripts (AC-search-cross).
         Filtering by session returns the work that instance produced — reviews
         stamped with it, threads imported from it, and their linked issues
-        (AC-search-session).
+        (AC-search-session); a session query matches a review whose ANY
+        ReviewSubmission.session equals the query, not just the latest
+        submission's session. With `q` omitted, returns all content in scope
+        of the other filters (project, session).
       tags: [search]
       parameters:
         - name: q
@@ -1818,7 +1863,13 @@ components:
 
     Thread:
       type: object
-      description: An imported agent transcript, tied to a project or an issue.
+      description: >-
+        An imported agent transcript, tied to a project or an issue. At
+        least one of project or issue is always set — the invariant is
+        schema-encoded via anyOf under the omit-when-absent convention (an
+        absent side is omitted, never sent as null) — and applies equally
+        to imported threads carried in ProjectExport/importProject payloads,
+        not just to threads created through importThread/setThreadAnchor.
       required: [id, title, transcript, imported_at]
       properties:
         id: { type: string, format: uuid }
@@ -1829,9 +1880,12 @@ components:
           type: string
           nullable: true
           description: The instance this transcript came from; joins with Review.session.
-        project: { type: string, format: uuid, nullable: true }
-        issue: { type: string, format: uuid, nullable: true }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid }
         imported_at: { type: string, format: date-time }
+      anyOf:
+        - required: [project]
+        - required: [issue]
 
     NewThread:
       type: object
