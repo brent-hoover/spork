@@ -140,7 +140,10 @@ paths:
         recomputed. Import deliberately targets empty servers: rejected as a
         whole, naming the conflict, if any UUID already exists on this
         server (AC-import-collision) — any pre-existing UUID is a
-        collision, including identity ids; no partial imports.
+        collision, including identity ids; no partial imports. Imported
+        events are preserved verbatim, and import appends exactly one
+        `project.imported` event; it never re-stamps per-record creation
+        events.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -198,6 +201,13 @@ paths:
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'
+        - name: number
+          in: query
+          description: >-
+            Filter to the issue with this project-scoped display number
+            (e.g. 42 for SUT-42), so /p/:key/i/:num and `sutra issue show
+            SUT-42` can resolve directly instead of listing and scanning.
+          schema: { type: integer }
         - name: status
           in: query
           style: form
@@ -1058,7 +1068,9 @@ paths:
         code deliverable, `base_commit` — the merge base with the project's
         default branch — is resolved and pinned at submission time, not
         client-supplied, so the rendered diff never shifts as the default
-        branch moves.
+        branch moves. A code deliverable with an unset project `repo_path`
+        or an unresolvable `commit`/`base_commit` is rejected 409 at
+        submission time.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1172,7 +1184,9 @@ paths:
         concerned (AC-review-rework). Appends a new ReviewSubmission
         recording what this revision submitted; prior submissions are
         preserved immutably. For a code deliverable, `base_commit` is
-        resolved and pinned at submission time, not client-supplied.
+        resolved and pinned at submission time, not client-supplied. A code
+        deliverable with an unset project `repo_path` or an unresolvable
+        `commit`/`base_commit` is rejected 409 at submission time.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1539,29 +1553,48 @@ components:
       type: object
       description: >-
         Polymorphic and threaded — anchors to exactly one of issue, doc_version,
-        or review; the exactly-one invariant is documented here rather than
-        schema-encoded, since response fields follow omit-when-absent and
-        cannot express oneOf the way requests do — NewComment encodes it.
+        or review, with review_revision required exactly when review is set.
+        The invariant is schema-encoded via oneOf, the same technique the
+        Review response schema uses to encode its deliverable oneOf under
+        the omit-when-absent convention — applied identically here, for
+        responses and for comments carried in ProjectExport imports alike.
       required: [id, author, body, created]
       properties:
         id: { type: string, format: uuid }
-        issue: { type: string, format: uuid, nullable: true }
-        doc_version: { type: string, format: uuid, nullable: true }
-        review: { type: string, format: uuid, nullable: true }
-        parent: { type: string, format: uuid, nullable: true }
+        issue: { type: string, format: uuid }
+        doc_version: { type: string, format: uuid }
+        review: { type: string, format: uuid }
+        parent: { type: string, format: uuid }
         anchor:
           type: string
-          nullable: true
           description: Optional span/block locator within the anchored artifact.
         review_revision:
           type: integer
           description: >-
             For review-anchored comments, the review revision the comment
             was made against; stamped from the submitted value; preserved
-            verbatim on import. Absent otherwise.
+            verbatim on import. Required when review is set, absent otherwise.
         author: { type: string, format: uuid }
         body: { type: string }
         created: { type: string, format: date-time }
+      oneOf:
+        - required: [issue]
+          not:
+            anyOf:
+              - required: [doc_version]
+              - required: [review]
+              - required: [review_revision]
+        - required: [doc_version]
+          not:
+            anyOf:
+              - required: [issue]
+              - required: [review]
+              - required: [review_revision]
+        - required: [review, review_revision]
+          not:
+            anyOf:
+              - required: [issue]
+              - required: [doc_version]
 
     NewComment:
       type: object
@@ -1808,7 +1841,12 @@ components:
       description: >-
         A single append-only stream, consumed both as the pollable feed and the
         per-issue audit history; append-only through every API operation
-        (AC-audit-immutable).
+        (AC-audit-immutable). The v1 kinds consumers route on: issue.created,
+        issue.updated, issue.status-changed, issue.assigned, issue.labeled,
+        issue.linked, comment.created, doc.version-saved, thread.imported,
+        review.created, review.changes-requested, review.approved,
+        review.resubmitted, project.created, project.archived,
+        project.imported.
       required: [id, kind, subject, actor, created]
       properties:
         id: { type: string, format: uuid }

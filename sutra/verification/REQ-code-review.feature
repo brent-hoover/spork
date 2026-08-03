@@ -15,6 +15,12 @@ Feature: Review lifecycle
     Then the deliverable content is shown for reading
     And later commits pushed to "sut-1-fix" do not change the reviewed content
 
+  Scenario: pinned base survives default branch movement
+    Given a code submission for SUT-1 with base_commit "b1b2b3b4b1b2b3b4b1b2b3b4b1b2b3b4b1b2b3b4" and commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+    When new commits are merged onto the project's default branch
+    Then the submission's stored base_commit is still "b1b2b3b4b1b2b3b4b1b2b3b4b1b2b3b4b1b2b3b4"
+    And the rendered diff is identical to before the default branch moved
+
   Scenario: feedback threads on the review
     Given an open review
     When a human comments and another replies

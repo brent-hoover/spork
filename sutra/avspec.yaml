@@ -197,6 +197,9 @@ requirements:
       - id: AC-review-web
         statement: Opening a Review in the web UI shows the deliverable's content for reading.
         test: verification/REQ-code-review.feature#reviewer sees the deliverable
+      - id: AC-review-pinned-base
+        statement: For a code deliverable, the stored base_commit and the rendered diff are fixed at submission time; the project's default branch moving afterward changes neither.
+        test: verification/REQ-code-review.feature#pinned base survives default branch movement
       - id: AC-review-threads
         statement: Comments on a Review thread via reply-to and anchor to that Review.
         test: verification/REQ-code-review.feature#feedback threads on the review
@@ -210,8 +213,11 @@ requirements:
         statement: On changes-requested the emitted event carries the review's session id and issue ref; when the agent resubmits the deliverable the review returns to open, its revision increments, and prior feedback stays associated with the revision it concerned. Each revision's submission is preserved immutably.
         test: verification/REQ-code-review.feature#rework routes back with session context
       - id: AC-review-stale-guard
-        statement: Review comments and verdicts carry the revision the reviewer saw; a submission that arrives after a resubmission (stale revision) is rejected, never applied to content the reviewer did not see.
+        statement: Review verdicts carry the revision the reviewer saw; a verdict naming a revision superseded by a resubmission since is rejected, never applied to content the reviewer did not see.
         test: verification/REQ-code-review.feature#stale feedback is rejected
+      - id: AC-review-stale-comments
+        statement: A review comment carrying a superseded revision is rejected and no comment is created.
+        test: verification/REQ-code-review.feature#stale comments are rejected
   - id: REQ-comments
     title: Unlimited comments on issues
     acceptance:
@@ -537,6 +543,9 @@ modules:
           name: Kanban board
           route: /p/:key
           purpose: Column-per-status board; dragging is a real transition.
+          # AC-kanban-card also requires labels on each card, but the `shows:`
+          # list can only name entity fields, not relations like
+          # ENT-issue.labels — a format limitation, tracked as an avspec backlog item.
           shows: [ENT-issue.number, ENT-issue.title, ENT-issue.status, ENT-issue.assignee]
           actions: [ACT-move-card]
           navigates_to: [VIEW-issue, VIEW-doc, VIEW-thread]
