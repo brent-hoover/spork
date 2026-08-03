@@ -63,3 +63,9 @@ Feature: Review lifecycle
     And the reviewer submits a comment carrying revision 1
     Then the comment is rejected
     And no comment is created
+
+  Scenario: unresolvable repository rejects submission
+    Given a project with no repo_path set
+    When an agent creates a review for SUT-1 with a code deliverable
+    Then the operation is rejected with a conflict
+    And no submission is created

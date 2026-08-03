@@ -218,6 +218,9 @@ requirements:
       - id: AC-review-stale-comments
         statement: A review comment carrying a superseded revision is rejected and no comment is created.
         test: verification/REQ-code-review.feature#stale comments are rejected
+      - id: AC-review-resolution-guard
+        statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission.
+        test: verification/REQ-code-review.feature#unresolvable repository rejects submission
   - id: REQ-comments
     title: Unlimited comments on issues
     acceptance:
@@ -336,7 +339,7 @@ requirements:
         statement: A project export captures identities, issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project.
         test: verification/REQ-import-export.feature#export captures the whole project
       - id: AC-import-round-trip
-        statement: Importing an export into an empty server reconstructs the project with UUIDs preserved.
+        statement: Importing an export into an empty server reconstructs the project with UUIDs preserved; re-export matching excludes the import audit event itself.
         test: verification/REQ-import-export.feature#import round-trips losslessly
       - id: AC-import-collision
         statement: Importing an export whose UUIDs already exist is rejected as a whole, naming the conflict; no partial imports.

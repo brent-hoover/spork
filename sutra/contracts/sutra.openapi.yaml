@@ -142,11 +142,25 @@ paths:
         server (AC-import-collision) — any pre-existing UUID is a
         collision, including identity ids; no partial imports. Imported
         events are preserved verbatim, and import appends exactly one
-        `project.imported` event; it never re-stamps per-record creation
-        events.
+        `project.imported` event, stamped with `actor`, that never re-stamps
+        per-record creation events. `actor` is the identity performing the
+        import — either an identity already existing on this server or one
+        contained in the export — and is validated the same as any other
+        actor reference. A round-trip comparison (AC-import-round-trip)
+        excludes this appended import-audit event; re-exporting an imported
+        project matches the original once that one event is discounted.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
+        - name: actor
+          in: query
+          required: true
+          description: >-
+            The identity performing the import, recorded as the actor on
+            the appended `project.imported` event. Must resolve to an
+            identity already existing on this server or one contained in
+            the export.
+          schema: { type: string, format: uuid }
       requestBody:
         required: true
         content:
@@ -1844,9 +1858,9 @@ components:
         (AC-audit-immutable). The v1 kinds consumers route on: issue.created,
         issue.updated, issue.status-changed, issue.assigned, issue.labeled,
         issue.linked, comment.created, doc.version-saved, thread.imported,
-        review.created, review.changes-requested, review.approved,
-        review.resubmitted, project.created, project.archived,
-        project.imported.
+        thread.anchor-changed, review.created, review.changes-requested,
+        review.approved, review.resubmitted, project.created,
+        project.archived, project.imported.
       required: [id, kind, subject, actor, created]
       properties:
         id: { type: string, format: uuid }

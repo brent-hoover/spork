@@ -8,7 +8,7 @@ Feature: Import and export
   Scenario: import round-trips losslessly
     Given an export of project "SUT"
     When it is imported into an empty server
-    Then the project's content matches the original
+    Then the project's content matches the original, excluding the import audit event
     And every record keeps its original UUID
 
   Scenario: colliding import is rejected whole
