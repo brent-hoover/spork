@@ -3,10 +3,19 @@ avspec: "0.3"
 project:
   name: spork
   description: >-
-    An agent software harness: issue tracking (sutra), a code pipeline, and
-    context management, built as small, focused apps that talk only through
-    contracts. Envelope: single user, one machine, a handful of concurrent
-    agent instances — facts to build with, not requirements to test.
+    An agent software harness built to answer one question: can agents write
+    clean code? Three axes, three answers. Completeness — does the app do
+    what the user actually wants? (BDD acceptance criteria + the product
+    owner agent.) Cohesion — do the pieces fit together? (avspec:
+    validatable architecture.) Quality — is the code maintainable: can a
+    human or agent change it without breaking it, find code without an
+    expedition, change implementation without changing interface?
+    (structural linting with hard limits, typing everywhere, branch
+    coverage, mutation testing, and a learning loop.) Components: sutra
+    (issue tracking), kriya (the build pipeline), context management.
+    Small, focused apps talking only through contracts. Envelope: single
+    user, one machine, a handful of concurrent agent instances — facts to
+    build with, not requirements to test.
   status: draft
 
 constitution:
@@ -44,9 +53,9 @@ modules:
     boundaries: { may_import: [] }
     contracts:
       - { id: CTR-sutra-api, type: openapi, path: sutra/contracts/sutra.openapi.yaml }
-  - id: MOD-pipeline
-    name: code-pipeline
-    responsibility: Picks issues off sutra work stacks, drives agents to build them, submits Reviews.
+  - id: MOD-kriya
+    name: kriya
+    responsibility: The build pipeline — decomposes ready specs into tracer-bullet tickets, drives coding agents through the pair-programming gate chain, submits Reviews. Specified in kriya/avspec.yaml.
     boundaries: { may_import: [] }
   - id: MOD-context
     name: context-manager
@@ -57,9 +66,9 @@ apps:
   - id: APP-sutra
     name: sutra
     modules: [MOD-sutra]
-  - id: APP-pipeline
-    name: pipeline
-    modules: [MOD-pipeline]
+  - id: APP-kriya
+    name: kriya
+    modules: [MOD-kriya]
   # MOD-context intentionally unassigned: MOD_NO_APP is the open fold-in decision.
 
 data:

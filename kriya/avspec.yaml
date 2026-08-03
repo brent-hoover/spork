@@ -1,0 +1,29 @@
+avspec: "0.3"
+
+project:
+  name: kriya
+  description: >-
+    The build engine of spork. Takes a ready avspec, decomposes it into
+    tracer-bullet tickets in sutra (BDD acceptance criteria on every
+    ticket), and drives coding agents through a pair-programming loop —
+    small commits, continuous review, fix, recommit — then mutation
+    testing, product-owner validation, and a sutra Review for human
+    approval. Loops until the app is complete. Kriya: Sanskrit, a
+    deliberate, practiced sequence of actions.
+  status: draft
+
+constitution:
+  - id: CON-test-first
+    statement: No behavior is implemented before the test mapped to its acceptance criterion exists and fails.
+  - id: CON-dependency-flow
+    statement: Dependencies flow one way between layers; no back-edges.
+  - id: CON-no-secrets
+    statement: No secrets in source; configuration is injected at runtime.
+  - id: CON-idempotent-mutations
+    statement: Mutating operations are idempotent; agents retry aggressively and replays must be safe.
+  - id: CON-pair-programming
+    statement: Work moves in small commits with review latency measured in minutes, not as end-stage pull requests.
+  - id: CON-gate-chain
+    statement: "The gate chain is inviolable and no agent may skip a stage: review pass -> mutation testing -> product-owner validation -> sutra Review approval -> merge."
+  - id: CON-role-separation
+    statement: The system architect never writes code; the coding agent never decides scope; scope decisions escalate to the operator; the product owner alone holds the big picture.
