@@ -29,6 +29,14 @@ constitution:
     statement: The system architect never writes code; the coding agent never decides scope; scope decisions escalate to the operator; the product owner alone holds the big picture.
   - id: CON-buy-over-build
     statement: Solved problems use existing, maintained tools — reviews are roborev itself, not a reimplementation, exactly as tests use an existing test framework.
+  - id: CON-deterministic-orchestrator
+    statement: >-
+      The orchestrator is a deterministic state machine — it sequences the
+      gate chain from an explicit state table and delegates all judgment to
+      the agent modules. If a change requires the orchestrator to decide
+      anything, the change is wrong. (Prior art: in earlier attempts the
+      orchestrator became a god module; the state table and the structural
+      lint limits are the correction.)
   - id: CON-risk-first
     statement: Planning orders work by risk; a risk item is validated by research or a spike before anything that depends on it is built, so we never code ourselves into a corner.
 
@@ -95,47 +103,59 @@ modules:
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
     owns: [ENT-plan]
+    boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
-    responsibility: The outer loop — pops tickets, schedules parallel builds, tracks build state, runs to complete.
+    responsibility: The outer loop as a deterministic state machine — pops tickets, advances BuildRun states from an explicit state table, delegates every stage; no judgment, no agent conversations.
     owns: [ENT-build-run]
+    boundaries: { may_import: [MOD-planner, MOD-workspace, MOD-dev-loop, MOD-gates, MOD-owner, MOD-tracker-client] }
   - id: MOD-workspace
     name: workspace
     responsibility: Worktree/branch lifecycle per ticket.
     owns: [ENT-workspace]
+    boundaries: { may_import: [] }
   - id: MOD-dev-loop
     name: dev-loop
     responsibility: The heart — one pair-programming session; dev agent, commit cadence, fix rounds.
     owns: [ENT-dev-session]
+    boundaries: { may_import: [MOD-context, MOD-review-bridge, MOD-architect] }
   - id: MOD-review-bridge
     name: review-bridge
     responsibility: The roborev seam — enqueue, poll verdicts, respond, close; buy-over-build boundary in one place.
     owns: [ENT-review-round]
+    boundaries: { may_import: [] }
   - id: MOD-gates
     name: gates
     responsibility: Quality-gate runner — structural lint, typing, branch coverage, mutation testing via the target's stack commands.
     owns: [ENT-gate-result]
+    boundaries: { may_import: [] }
   - id: MOD-architect
     name: architect
     responsibility: SA agent — impasse resolution and operator escalation; writes no code.
     owns: [ENT-escalation]
+    boundaries: { may_import: [] }
   - id: MOD-owner
     name: owner
     responsibility: PO agent — AC validation, anti-gaming, vision.
     owns: [ENT-validation]
+    boundaries: { may_import: [] }
   - id: MOD-context
     name: context
     responsibility: Context assembly per ticket and the learning store. Part of kriya for now; splits out only if ever used beyond spork.
     owns: [ENT-learning, ENT-context-bundle]
+    boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-tracker-client
     name: tracker-client
     responsibility: The one module that speaks the issue tracker's API — sutra today, the seam where other trackers would plug in.
+    boundaries: { may_import: [] }
   - id: MOD-cli
     name: cli
     responsibility: Command surface — start a build, inspect state.
+    boundaries: { may_import: [MOD-planner, MOD-orchestrator] }
   - id: MOD-tui
     name: tui
     responsibility: Operator dashboard — live overview of running and queued work; where agents surface questions and escalations.
+    boundaries: { may_import: [MOD-orchestrator, MOD-architect] }
 
 # Kriya's store is the observability plane: the TUI reads it live and it is
 # the post-mortem record of every build. Two exceptions are operational
@@ -227,3 +247,11 @@ data:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: content, type: json, required: true }
         - { name: created, type: datetime, required: true }
+
+apps:
+  - id: APP-kriya
+    name: kriya
+    modules: [MOD-planner, MOD-orchestrator, MOD-workspace, MOD-dev-loop,
+              MOD-review-bridge, MOD-gates, MOD-architect, MOD-owner,
+              MOD-context, MOD-tracker-client, MOD-cli, MOD-tui]
+
