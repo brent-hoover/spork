@@ -1054,7 +1054,11 @@ paths:
       description: >-
         Names an issue and exactly one deliverable, branch or doc version,
         optionally stamped with a session id; created in state open and visible
-        to reviewers (AC-review-create, AC-review-deliverable-kinds).
+        to reviewers (AC-review-create, AC-review-deliverable-kinds). For a
+        code deliverable, `base_commit` — the merge base with the project's
+        default branch — is resolved and pinned at submission time, not
+        client-supplied, so the rendered diff never shifts as the default
+        branch moves.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1167,7 +1171,8 @@ paths:
         the prior deliverable stays associated with the revision it
         concerned (AC-review-rework). Appends a new ReviewSubmission
         recording what this revision submitted; prior submissions are
-        preserved immutably.
+        preserved immutably. For a code deliverable, `base_commit` is
+        resolved and pinned at submission time, not client-supplied.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1201,8 +1206,10 @@ paths:
         deliverable, the complete pinned diff/content — never a summary in
         its place, so approval never happens against a summary
         (AC-review-web). Content is resolved via the project's repo_path;
-        for code deliverables it is the diff of the pinned commit against
-        the merge base with the project's default_branch. With `revision`
+        for code deliverables it is the diff between the resolved
+        submission's pinned `base_commit` and `commit` — never recomputed
+        against the project's current default branch, since `base_commit`
+        was already resolved once at submission time. With `revision`
         omitted, resolves the latest submission; a given `revision`
         resolves that submission's deliverable instead.
       tags: [reviews]
@@ -1223,8 +1230,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            The pinned commit could not be resolved against the project's
-            default branch, or the project has no repo_path set.
+            The submission's pinned `commit` or `base_commit` could not be
+            resolved, or the project has no repo_path set.
           content:
             application/json:
               schema:
@@ -1584,11 +1591,13 @@ components:
             anyOf:
               - required: [doc_version]
               - required: [review]
+              - required: [review_revision]
         - required: [doc_version]
           not:
             anyOf:
               - required: [issue]
               - required: [review]
+              - required: [review_revision]
         - required: [review, review_revision]
           not:
             anyOf:
@@ -1859,11 +1868,12 @@ components:
             revision — it does not move forward.
         submissions:
           type: array
-          readOnly: true
           description: >-
             One immutable ReviewSubmission per revision, oldest first —
             exactly what each revision submitted, preserved even after
             later resubmissions replace the top-level deliverable fields.
+            Accepted verbatim in importProject payloads so revision history
+            round-trips.
           items: { $ref: '#/components/schemas/ReviewSubmission' }
         created: { type: string, format: date-time }
       oneOf:
@@ -1910,10 +1920,12 @@ components:
       type: object
       description: >-
         Immutable record of what one revision submitted — exactly one
-        deliverable per submission: a branch pinned at an immutable commit,
-        or a doc version. Never mutated after creation.
-      required: [review, revision, created]
+        deliverable per submission: a branch pinned at an immutable commit
+        with its resolved base_commit, or a doc version. Never mutated
+        after creation.
+      required: [id, review, revision, created]
       properties:
+        id: { type: string, format: uuid }
         review: { type: string, format: uuid }
         revision: { type: integer }
         branch: { type: string }
@@ -1921,10 +1933,19 @@ components:
           type: string
           pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
           description: Canonical full object id — never an abbreviation.
+        base_commit:
+          type: string
+          pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          description: >-
+            Canonical full object id — never an abbreviation. The merge
+            base with the project's default branch, resolved once and
+            pinned at submission time (createReview/resubmitReview) —
+            never client-supplied. Paired with commit, this makes the
+            rendered diff immutable.
         doc_version: { type: string, format: uuid }
         created: { type: string, format: date-time }
       oneOf:
-        - required: [branch, commit]
+        - required: [branch, commit, base_commit]
           not:
             required: [doc_version]
         - required: [doc_version]
@@ -1932,6 +1953,7 @@ components:
             anyOf:
               - required: [branch]
               - required: [commit]
+              - required: [base_commit]
 
     ResubmitReview:
       type: object

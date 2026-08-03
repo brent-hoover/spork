@@ -35,12 +35,14 @@ Feature: Review lifecycle
   Scenario: rework routes back with session context
     Given a review created with session "sess-42" is set to "changes-requested"
     And a reviewer commented on the review before resubmission
-    Then the emitted event carries session "sess-42" and the issue ref
     When the agent resubmits the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
     Then the review returns to state "open"
     And the review's pinned commit is "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
     And the review's revision is 2
     And the earlier comment remains associated with revision 1
+    And the emitted event carries session "sess-42" and the issue ref
+    And revision 1's submission still exists and resolves to its original deliverable
+    And revision 2's submission exists and carries the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
 
   Scenario: stale feedback is rejected
     Given a review at revision 1 open in a reviewer's browser
@@ -48,3 +50,10 @@ Feature: Review lifecycle
     And the reviewer submits an approval carrying revision 1
     Then the verdict is rejected
     And the review remains unapproved
+
+  Scenario: stale comments are rejected
+    Given a review at revision 1 rendered for a reviewer
+    When the agent resubmits the deliverable, advancing the review to revision 2
+    And the reviewer submits a comment carrying revision 1
+    Then the comment is rejected
+    And no comment is created

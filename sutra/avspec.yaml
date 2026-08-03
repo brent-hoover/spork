@@ -372,7 +372,7 @@ data:
         - { name: review, type: ref, ref: ENT-review }
         - { name: parent, type: ref, ref: ENT-comment }
         - { name: anchor, type: string }  # optional span/block locator within the anchored artifact
-        - { name: review_revision, type: integer }  # for review-anchored comments: the review revision the comment was made against; server-stamped
+        - { name: review_revision, type: integer }  # for review-anchored comments: the review revision the comment was made against; client-supplied (the revision the reviewer saw); validated against the review's current revision
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: body, type: string, required: true }
         - { name: created, type: datetime, required: true }
@@ -457,12 +457,18 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-review-submission
       name: ReviewSubmission
-      description: Immutable record of what each revision submitted; exactly one deliverable per submission.
+      description: >-
+        Immutable record of what each revision submitted; exactly one
+        deliverable per submission. For code deliverables, the pair
+        (base_commit, commit) makes the rendered diff immutable — base_commit
+        is the merge base with the project's default branch, resolved once at
+        submission time. Serialized submissions in exports keep their ids.
       fields:
         - { name: review, type: ref, ref: ENT-review, required: true }
         - { name: revision, type: integer, required: true }
         - { name: branch, type: string }
         - { name: commit, type: string }  # canonical full object id
+        - { name: base_commit, type: string }  # canonical full object id; merge base with the project's default branch, resolved once at submission time
         - { name: doc_version, type: ref, ref: ENT-doc-version }
         - { name: created, type: datetime, required: true }
 
