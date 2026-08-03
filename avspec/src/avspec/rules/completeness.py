@@ -378,8 +378,9 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
         if module.ui is None:
             continue
         for action in module.ui.actions:
-            if action.invokes is None or "#" not in action.invokes:
+            if action.invokes is None:
                 continue
+            has_fragment = "#" in action.invokes
             contract_ref, _, operation = action.invokes.partition("#")
             operation = operation.strip()
             contract = contracts.get(contract_ref)
@@ -394,6 +395,16 @@ def action_operations_resolve(spec: Spec) -> Iterable[Finding]:
             if doc is _UNPARSEABLE:
                 continue
             if _has_ref_path_items(doc):
+                continue
+            if not has_fragment:
+                yield _todo(
+                    "ACTION_UNRESOLVED",
+                    f"{action.id} invokes {action.invokes!r}, which has no "
+                    f"'#operation' fragment naming an operation in {contract.path}.",
+                    f"Add a '#operation' fragment to {action.id}.invokes naming "
+                    f"an existing operation in {contract.path}.",
+                    ref=action.id,
+                )
                 continue
             if operation not in _operation_ids(doc):
                 yield _todo(

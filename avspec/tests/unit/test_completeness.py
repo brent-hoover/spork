@@ -531,6 +531,26 @@ def test_action_unresolved_empty_operation_name_is_not_silent(tmp_path: Path) ->
     assert found[0].ref == "ACT-a"
 
 
+def test_action_unresolved_missing_fragment_is_not_silent(tmp_path: Path) -> None:
+    # `invokes: CTR-x` with no '#operation' fragment at all used to pass silently
+    # (the old guard skipped anything without a '#'). It now fires ACTION_UNRESOLVED
+    # like any other unresolved reference, since the contract is a real, enumerable
+    # openapi doc and the action names no operation within it.
+    data = base()
+    data["modules"] = [_module_with_action("CTR-x")]
+    spec = make_spec(tmp_path, data)
+    contract = tmp_path / "contracts" / "x.yaml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        "openapi: 3.0.3\npaths:\n  /x:\n    get:\n      operationId: getX\n",
+        encoding="utf-8",
+    )
+    found = list(completeness.action_operations_resolve(spec))
+    assert codes(found) == ["ACTION_UNRESOLVED"]
+    assert found[0].ref == "ACT-a"
+    assert found[0].question
+
+
 def test_non_yaml_contract_type_is_existence_only(tmp_path: Path) -> None:
     data = base()
     data["modules"] = [
