@@ -250,7 +250,13 @@ data:
         stale claimant dying mid-call. The TUI's unresolved list is:
         pending attempts, plus completed attempts whose id is not their
         round's accepted external_id; the operator resolves entries after
-        checking roborev, stamping resolved. Recovery is therefore: enqueued -> resume
+        checking roborev, stamping resolved. Resolution and reset are
+        only offered when the attempt's claimant is not live — decidable
+        because kriya is a single process whose claimants are its own
+        tasks, and after a crash every claimant is conclusively dead.
+        As a backstop, a late completion is a CAS that atomically reopens
+        a resolved attempt (clearing resolved while recording the id),
+        returning it to the unresolved list rather than hiding it. Recovery is therefore: enqueued -> resume
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
         surfaced in the TUI.
