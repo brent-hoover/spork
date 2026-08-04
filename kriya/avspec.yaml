@@ -204,8 +204,12 @@ data:
         is matched against plans' recorded ticket lists — exactly one
         match binds the plan; no match (a ticket assigned outside any
         plan) or multiple matches leaves plan absent and the build
-        proceeds regardless, since the ticket itself carries the ACs.
-        Nothing about plan resolution can strand a claimed ticket. An
+        proceeds regardless, since the ticket itself carries the ACs and
+        target_spec is persisted on the row at bind time — from the
+        matched plan, or for unplanned tickets resolved via the ticket's
+        project repo_path. If neither yields a spec the row goes to
+        awaiting-operator with the claimed ticket preserved. Nothing
+        about plan resolution can strand a claimed ticket. An
         empty result transitions the row to the terminal no-work state in
         the same transaction; a later poll creates a fresh row with a
         fresh pop_key, so an exhausted key is never revisited. A crash at
@@ -214,6 +218,8 @@ data:
         no immortal empty rows.
       fields:
         - { name: pop_key, type: string, required: true, unique: true }  # deterministic idempotency key persisted before the pop; replayed on recovery
+        - { name: identity, type: string, required: true }  # the agent identity popped as — persisted pre-pop so replay hits the same stack even if configuration changes
+        - { name: target_spec, type: string }  # gate-chain context, persisted at bind — from the plan, or the ticket's project repo_path; unresolvable -> awaiting-operator
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
