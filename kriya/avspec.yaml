@@ -57,9 +57,8 @@ constitution:
 #       any uncovered arm). The validated compound command is pinned in
 #       sutra's stack: gobco writes to a TMPDIR file removed with exit
 #       status preserved, && carries tool failure, and awk requires the
-#       coverage summary — POSIX sh, no pipefail (all modes spike-tested). Residual note for R1's spike: the roborev-as-is
-#       validation must also confirm a recovery/reconciliation path for
-#       in-flight reviews (e.g. listing jobs by commit SHA).
+#       coverage summary — POSIX sh, no pipefail (all modes spike-tested). R1's spike subsequently confirmed the
+#       recovery constraints; the final protocol lives on ENT-review-round.
 
 requirements:
   - id: REQ-spec-intake
@@ -226,19 +225,24 @@ data:
         correlation key, so provenance of a listed job is unprovable —
         therefore kriya NEVER adopts, responds to, cancels, or closes a
         job whose id it did not record from its own enqueue return.
-        Recovery is: external_id present, resume polling it; absent,
-        atomically claim the round first (compare-and-set of external_id
-        from empty to a lease marker) and only the claim winner calls
-        roborev, recording the returned id over its lease — concurrent
-        recovery workers lose the CAS and stand down. A crash between
-        enqueue return and store yields at
-        most one orphan job, which is never touched and is surfaced in
-        the TUI for the operator. Rounds are unique per (build, commit)
-        via the derived key, so a rebuilt commit gets its own round.
+        Claim state lives in enqueue_state, never in external_id (which
+        only ever holds a real recorded id). Lifecycle: unclaimed ->
+        claimed (CAS, stamping claimed_at) -> enqueued (id recorded).
+        Only the claim winner calls roborev; concurrent workers lose the
+        CAS and stand down. A claim whose lease has expired (claimed_at
+        older than the lease window) is reclaimable by the same CAS —
+        covering a crash between claiming and recording. Recovery is
+        therefore: enqueued -> resume polling external_id; unclaimed or
+        expired-claim -> claim and enqueue. Any crash-window orphan job
+        is never touched and is surfaced in the TUI for the operator.
+        Rounds are unique per (build, commit) via the derived key, so a
+        rebuilt commit gets its own round.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: commit, type: string, required: true }  # canonical full object id
         - { name: operation_key, type: string, required: true, unique: true }  # deterministic hash of (build, commit) — the write-ahead idempotency handle
+        - { name: enqueue_state, type: enum, required: true, values: [unclaimed, claimed, enqueued] }
+        - { name: claimed_at, type: datetime }  # lease stamp; expired claims are reclaimable
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
