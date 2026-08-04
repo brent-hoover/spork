@@ -256,7 +256,16 @@ data:
         tasks, and after a crash every claimant is conclusively dead.
         As a backstop, a late completion is a CAS that atomically reopens
         a resolved attempt (clearing resolved while recording the id),
-        returning it to the unresolved list rather than hiding it. Recovery is therefore: enqueued -> resume
+        returning it to the unresolved list rather than hiding it.
+        One residual is accepted EXPLICITLY rather than pretended away:
+        a dead claimant's already-sent request may still land server-side
+        after resolution, and without a server idempotency key (absent,
+        per the R1 spike) no client protocol can prevent it. Therefore
+        resolving a pending attempt moves it to a permanent watch rather
+        than oblivion — the TUI continuously cross-checks roborev's job
+        list for each watched round's commit and flags any job id kriya
+        never recorded as a probable late orphan: display-only, never
+        acted on, never silently forgotten. Recovery is therefore: enqueued -> resume
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
         surfaced in the TUI.
