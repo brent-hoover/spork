@@ -222,21 +222,19 @@ data:
         its uniqueness makes the write-ahead insert idempotent — a
         concurrent or recovered replay collides instead of duplicating.
         Enqueue happens after the insert; roborev offers no caller
-        correlation key and can hold duplicate jobs per SHA. Recovery
-        lists jobs by the round's commit and adopts the oldest job not
-        already claimed by another round (claimed ids are known from
-        stored external_ids); if none remains it enqueues anew. Kriya
-        NEVER cancels a job it cannot prove it enqueued — foreign or
-        manual jobs for the same SHA are left to finish and simply not
-        adopted. Verdict equivalence (a pure function of the commit)
-        makes adoption safe; rounds are unique per (build, commit) via
-        the derived key, so a rebuilt commit gets its own round and its
-        own adoption.
+        correlation key, so provenance of a listed job is unprovable —
+        therefore kriya NEVER adopts, responds to, cancels, or closes a
+        job whose id it did not record from its own enqueue return.
+        Recovery is: external_id present, resume polling it; absent,
+        enqueue anew. A crash between enqueue return and store yields at
+        most one orphan job, which is never touched and is surfaced in
+        the TUI for the operator. Rounds are unique per (build, commit)
+        via the derived key, so a rebuilt commit gets its own round.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: commit, type: string, required: true }  # canonical full object id
         - { name: operation_key, type: string, required: true, unique: true }  # deterministic hash of (build, commit) — the write-ahead idempotency handle
-        - { name: external_id, type: string }  # roborev job/review id, recorded once the enqueue returns
+        - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
         - { name: created, type: datetime, required: true }
