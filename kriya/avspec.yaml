@@ -199,14 +199,21 @@ data:
         (state queued, pop_key set, ticket absent) BEFORE calling sutra's
         pop; sutra's pop is idempotent per key (AC-pop-replay), so
         recovery replays the same pop_key and receives the same issue,
-        then binds ticket to the row transactionally. A crash at any
-        point either replays to the same ticket or finds the bind already
-        done — no stranded tickets, no double claims.
+        then binds ticket to the row transactionally — and the plan is
+        resolved in the same transaction by matching the returned ticket
+        against plans' recorded ticket lists (a pop spans the identity's
+        whole stack, so the plan is knowable only from the response). An
+        empty result transitions the row to the terminal no-work state in
+        the same transaction; a later poll creates a fresh row with a
+        fresh pop_key, so an exhausted key is never revisited. A crash at
+        any point either replays to the same outcome or finds the
+        transition already done — no stranded tickets, no double claims,
+        no immortal empty rows.
       fields:
         - { name: pop_key, type: string, required: true, unique: true }  # deterministic idempotency key persisted before the pop; replayed on recovery
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
-        - { name: plan, type: ref, ref: ENT-plan, required: true }
-        - { name: state, type: enum, required: true, values: [queued, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
+        - { name: plan, type: ref, ref: ENT-plan }  # resolved from the returned ticket in the bind transaction; absent before the pop returns and on no-work rows
+        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }
