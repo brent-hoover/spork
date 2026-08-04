@@ -194,8 +194,17 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-build-run
       name: BuildRun
+      description: >-
+        Also the write-ahead record for the pop itself: the row is created
+        (state queued, pop_key set, ticket absent) BEFORE calling sutra's
+        pop; sutra's pop is idempotent per key (AC-pop-replay), so
+        recovery replays the same pop_key and receives the same issue,
+        then binds ticket to the row transactionally. A crash at any
+        point either replays to the same ticket or finds the bind already
+        done — no stranded tickets, no double claims.
       fields:
-        - { name: ticket, type: string, required: true }  # opaque tracker id
+        - { name: pop_key, type: string, required: true, unique: true }  # deterministic idempotency key persisted before the pop; replayed on recovery
+        - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan, required: true }
         - { name: state, type: enum, required: true, values: [queued, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
@@ -340,9 +349,10 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-learning
       name: Learning
+      description: project_key is present exactly when scope is project — a project learning without its key is rejected at write time.
       fields:
         - { name: scope, type: enum, required: true, values: [project, global] }
-        - { name: project_key, type: string }
+        - { name: project_key, type: string }  # required when scope is project, absent when global — enforced at write time (the format cannot express conditional requiredness)
         - { name: lesson, type: string, required: true }
         - { name: source_session, type: string }
         - { name: created, type: datetime, required: true }
