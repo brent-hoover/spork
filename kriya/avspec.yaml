@@ -215,7 +215,7 @@ data:
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: commit, type: string, required: true }  # canonical full object id
-        - { name: operation_key, type: string, required: true }  # caller-generated before enqueue; the recovery/idempotency handle
+        - { name: operation_key, type: string, required: true, unique: true }  # caller-generated before enqueue; the recovery/idempotency handle
         - { name: external_id, type: string }  # roborev job/review id, recorded once the enqueue returns
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
