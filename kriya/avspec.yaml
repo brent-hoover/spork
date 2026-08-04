@@ -229,12 +229,15 @@ data:
         only ever holds a real recorded id). Lifecycle: unclaimed ->
         claimed (CAS, stamping claimed_at) -> enqueued (id recorded).
         Only the claim winner calls roborev; concurrent workers lose the
-        CAS and stand down. A claim whose lease has expired (claimed_at
-        older than the lease window) is reclaimable by the same CAS —
-        covering a crash between claiming and recording. Recovery is
-        therefore: enqueued -> resume polling external_id; unclaimed or
-        expired-claim -> claim and enqueue. Any crash-window orphan job
-        is never touched and is surfaced in the TUI for the operator.
+        CAS and stand down. An expired claim (claimed_at older than the
+        lease window) is NEVER auto-reclaimed — roborev offers no fencing
+        token, so a merely-slow claimant could still enqueue after a
+        reclaim and duplicate the job. Instead the round surfaces in the
+        TUI for operator reconciliation: confirm whether an orphan job
+        exists, then reset the claim. Recovery is therefore: enqueued ->
+        resume polling external_id; unclaimed -> claim and enqueue;
+        expired claim -> operator. Any crash-window orphan job is never
+        touched and is likewise surfaced in the TUI.
         Rounds are unique per (build, commit) via the derived key, so a
         rebuilt commit gets its own round.
       fields:
@@ -242,7 +245,7 @@ data:
         - { name: commit, type: string, required: true }  # canonical full object id
         - { name: operation_key, type: string, required: true, unique: true }  # deterministic hash of (build, commit) — the write-ahead idempotency handle
         - { name: enqueue_state, type: enum, required: true, values: [unclaimed, claimed, enqueued] }
-        - { name: claimed_at, type: datetime }  # lease stamp; expired claims are reclaimable
+        - { name: claimed_at, type: datetime }  # lease stamp; expired claims go to operator reconciliation, never auto-reclaim
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
