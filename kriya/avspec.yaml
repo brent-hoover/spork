@@ -44,7 +44,10 @@ constitution:
 #   R1: Can roborev be used as-is for the pair-programming loop (drive it
 #       programmatically, consume verdicts, close findings) without forking?
 #       Validate via spike against the roborev CLI/daemon. Owner is in
-#       contact with the maintainers.
+#       contact with the maintainers. Must also confirm: (a) a recovery
+#       path for in-flight jobs (list by commit works because rounds are
+#       unique per commit), and (b) whether enqueue accepts a caller
+#       correlation value, which would strengthen reconciliation further.
 #   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
 #       ticket at acceptable speed, or only as a slower periodic gate?
 #   R3 (RETIRED 2026-08-04 by spike): gobco detects uncovered arms but
@@ -212,10 +215,10 @@ data:
         - { name: thread_ref, type: string }  # sutra thread id once the transcript imports
     - id: ENT-review-round
       name: ReviewRound
-      description: Restart-safe by write-ahead — the row (with its caller-generated operation_key) is persisted BEFORE enqueueing; recovery replays by operation key and reconciles against roborev (e.g. jobs listed by commit) instead of enqueueing a duplicate. external_id is recorded once known.
+      description: Restart-safe by write-ahead — the row (with its caller-generated operation_key) is persisted BEFORE enqueueing, and exactly one round exists per commit, so post-crash reconciliation by commit is unambiguous; a re-review request for the same commit replays its round. external_id is recorded once known.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
-        - { name: commit, type: string, required: true }  # canonical full object id
+        - { name: commit, type: string, required: true, unique: true }  # canonical full object id; one round per commit is the reconciliation invariant
         - { name: operation_key, type: string, required: true, unique: true }  # caller-generated before enqueue; the recovery/idempotency handle
         - { name: external_id, type: string }  # roborev job/review id, recorded once the enqueue returns
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
