@@ -56,6 +56,7 @@ Feature: Review lifecycle
     And the review's revision is 2
     And submission 1 still carries session "sess-42" while submission 2 carries "sess-43"
     And the review's session mirrors the latest submission, "sess-43"
+    Given a human sets the review to "changes-requested" carrying revision 2
     When the agent resubmits the deliverable pinned at commit "0123abcd0123abcd0123abcd0123abcd0123abcd" with no session
     Then submission 3 carries no session
     And the review's session is absent, mirroring the latest submission
