@@ -120,7 +120,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-spec-mapping]
+    owns: [ENT-plan, ENT-spec-mapping, ENT-spec-snapshot]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -184,6 +184,13 @@ modules:
 # for the work itself; tracker-side records are referenced by opaque ids.
 data:
   entities:
+    - id: ENT-spec-snapshot
+      name: SpecSnapshot
+      description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree.
+      fields:
+        - { name: hash, type: string, required: true, unique: true }
+        - { name: content, type: json, required: true }
+        - { name: created, type: datetime, required: true }
     - id: ENT-spec-mapping
       name: SpecMapping
       description: The project-to-spec registry — seeded by every plan at decomposition, operator-editable; the only trusted fallback for resolving an unplanned ticket's target spec.
@@ -232,6 +239,7 @@ data:
         - { name: pop_key, type: string, required: true, unique: true }  # deterministic idempotency key persisted before the pop; replayed on recovery
         - { name: identity, type: string, required: true }  # the agent identity popped as — persisted pre-pop so replay hits the same stack even if configuration changes
         - { name: target_spec, type: string }  # gate-chain context, persisted at bind — from the plan, else the project-to-spec registry; unresolvable or ambiguous -> awaiting-operator
+        - { name: spec_hash, type: string }  # content hash of the target spec, pinned at bind — the build and any recovery execute against the stored SpecSnapshot for this hash, so mid-build spec or registry edits never change a running build
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
