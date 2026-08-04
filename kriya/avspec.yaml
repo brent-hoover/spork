@@ -46,9 +46,10 @@ constitution:
 #       and close were all exercised programmatically throughout the spec
 #       sessions. Spike facts: enqueue accepts NO caller correlation key,
 #       and duplicate jobs for the same SHA ARE possible (no dedupe); but
-#       `list` exposes jobs by SHA and `cancel` exists, and a verdict is a
-#       pure function of the commit, so adopt-any-job-for-commit
-#       reconciliation is safe and surplus jobs are cancelled.
+#       `list` exposes jobs by SHA and `cancel` exists. Final protocol
+#       (see ENT-review-round): kriya acts ONLY on ids recorded from its
+#       own enqueue returns — no adoption, no cancellation of unproven
+#       jobs; rare crash-window orphans are surfaced in the TUI.
 #   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
 #       ticket at acceptable speed, or only as a slower periodic gate?
 #   R3 (RETIRED 2026-08-04 by spike): gobco detects uncovered arms but
@@ -226,7 +227,11 @@ data:
         therefore kriya NEVER adopts, responds to, cancels, or closes a
         job whose id it did not record from its own enqueue return.
         Recovery is: external_id present, resume polling it; absent,
-        enqueue anew. A crash between enqueue return and store yields at
+        atomically claim the round first (compare-and-set of external_id
+        from empty to a lease marker) and only the claim winner calls
+        roborev, recording the returned id over its lease — concurrent
+        recovery workers lose the CAS and stand down. A crash between
+        enqueue return and store yields at
         most one orphan job, which is never touched and is surfaced in
         the TUI for the operator. Rounds are unique per (build, commit)
         via the derived key, so a rebuilt commit gets its own round.
