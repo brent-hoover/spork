@@ -140,7 +140,7 @@ modules:
   - id: MOD-review-bridge
     name: review-bridge
     responsibility: The roborev seam — enqueue, poll verdicts, respond, close; buy-over-build boundary in one place.
-    owns: [ENT-review-round, ENT-enqueue-attempt]
+    owns: [ENT-review-round, ENT-enqueue-attempt, ENT-orphan-observation]
     boundaries: { may_import: [] }
   - id: MOD-gates
     name: gates
@@ -266,8 +266,8 @@ data:
         resolving a pending attempt moves it to a permanent watch rather
         than oblivion — the review bridge (the sole roborev seam)
         periodically cross-checks roborev's job list for each watched
-        round's commit and persists any job id kriya never recorded as a
-        probable late orphan; the TUI renders that persisted state:
+        round's commit and persists any job id kriya never recorded as an
+        OrphanObservation row; the TUI renders those rows:
         display-only, never acted on, never silently forgotten. Recovery is therefore: enqueued -> resume
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
@@ -294,6 +294,14 @@ data:
         - { name: external_id, type: string }  # absent while pending; filled from the enqueue return
         - { name: created, type: datetime, required: true }
         - { name: resolved, type: datetime }  # operator-stamped after reconciling against roborev
+    - id: ENT-orphan-observation
+      name: OrphanObservation
+      description: Durable record of a roborev job discovered for a watched round's commit whose id kriya never recorded — the persisted form of the late-orphan watch. Display-only; never acted on.
+      fields:
+        - { name: round, type: ref, ref: ENT-review-round, required: true }
+        - { name: external_id, type: string, required: true }
+        - { name: discovered, type: datetime, required: true }
+        - { name: resolved, type: datetime }  # operator-stamped after checking roborev
     - id: ENT-gate-result
       name: GateResult
       fields:
