@@ -18,7 +18,9 @@ Feature: Search and filter
 
   Scenario: session id joins an instance's work
     Given a review whose revision 1 was submitted under session "sess-42" and revision 2 under session "sess-43"
+    And an unrelated review whose submissions never carried "sess-42"
     And an imported thread carrying session "sess-42"
     When "sess-42" is searched
     Then the review, the thread, and their linked issues are returned
-    And listing reviews filtered by session "sess-42" also returns the review
+    And the unrelated review is not returned
+    And listing reviews filtered by session "sess-42" also returns the review and excludes the unrelated one
