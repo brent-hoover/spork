@@ -170,12 +170,14 @@ data:
       fields:
         - { name: target_spec, type: string, required: true }
         - { name: project_key, type: string, required: true }
+        - { name: tickets, type: json, required: true }  # ordered tracker ids the decomposition produced
         - { name: created, type: datetime, required: true }
     - id: ENT-build-run
       name: BuildRun
       fields:
         - { name: ticket, type: string, required: true }  # opaque tracker id
-        - { name: state, type: enum, required: true, values: [queued, running, awaiting-review, awaiting-human, merged, failed] }
+        - { name: plan, type: ref, ref: ENT-plan, required: true }
+        - { name: state, type: enum, required: true, values: [queued, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }
         - { name: finished, type: datetime }
@@ -209,7 +211,7 @@ data:
       name: GateResult
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
-        - { name: gate, type: string, required: true }  # structure | typing | branch-coverage | mutation
+        - { name: gate, type: enum, required: true, values: [structure, typing, branch-coverage, mutation] }
         - { name: passed, type: boolean, required: true }
         - { name: detail, type: json }
         - { name: created, type: datetime, required: true }

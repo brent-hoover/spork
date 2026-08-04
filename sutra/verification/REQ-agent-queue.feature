@@ -37,6 +37,7 @@ Feature: Agent work stack
     And issue SUT-9 assigned to "claude" with status "open"
     When "claude" pops its work stack
     Then it receives SUT-9
+    And every non-open issue retains its original status and stays assigned to "claude"
     Given SUT-9 is no longer assigned to "claude"
     When "claude" pops its work stack
     Then it receives an explicit empty result
