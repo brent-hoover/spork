@@ -7,7 +7,7 @@ Feature: Agent work stack
     When "claude" pops its work stack
     Then it receives SUT-1
     And SUT-1 has status "in-progress"
-    And the "issue.status-changed" event names "claude" as its actor
+    And an "issue.status-changed" event with subject SUT-1, actor "claude", and a timestamp is recorded
 
   Scenario: concurrent pops never collide
     Given issues SUT-1 and SUT-2 are assigned to agent "claude" with status "open"

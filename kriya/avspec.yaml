@@ -188,7 +188,7 @@ data:
       name: SpecMapping
       description: The project-to-spec registry — seeded by every plan at decomposition, operator-editable; the only trusted fallback for resolving an unplanned ticket's target spec.
       fields:
-        - { name: project_key, type: string, required: true, unique: true }
+        - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
         - { name: updated, type: datetime, required: true }
     - id: ENT-plan
@@ -216,8 +216,10 @@ data:
         matched plan, or for unplanned tickets from kriya's persisted
         project-to-spec registry (seeded by every plan, operator-editable;
         a bare repo_path is NOT trusted, since one repository can hold
-        several manifests). No unambiguous mapping means the row goes to
-        awaiting-operator with the claimed ticket preserved. Nothing
+        several manifests). The registry may hold several mappings per
+        project; the fallback binds only when exactly one exists — zero
+        or several means the row goes to awaiting-operator with the
+        claimed ticket preserved. Nothing
         about plan resolution can strand a claimed ticket. An
         empty result transitions the row to the terminal no-work state in
         the same transaction; a later poll creates a fresh row with a
