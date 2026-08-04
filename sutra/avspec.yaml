@@ -14,12 +14,12 @@ project:
     bdd: godog
     store: sqlite  # FTS5 for search; single-binary friendly
     commands:
-      install: go mod download && go install github.com/rillig/gobco@v1.3.4 && go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0  # pins the gate tools the coverage and mutation commands invoke
+      install: go mod download  # gate tools need no install — coverage and mutation invoke exact pinned versions via `go run pkg@version`, immune to PATH and preinstalled binaries
       test: go test ./...
       lint: golangci-lint run
       typecheck: go vet ./...
-      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; gobco ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # mktemp + trap cleanup, POSIX sh, spike-validated: covered=0; uncovered, tool-failure, missing-summary all nonzero (kriya R3, retired 2026-08-04)
-      mutation: gremlins unleash --threshold-efficacy 100 --threshold-mcover 100 ./...  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
+      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # mktemp + trap cleanup, POSIX sh, spike-validated: covered=0; uncovered, tool-failure, missing-summary all nonzero (kriya R3, retired 2026-08-04)
+      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100 ./...  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
 
 constitution:
   - id: CON-test-first

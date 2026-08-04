@@ -56,6 +56,10 @@ Feature: Review lifecycle
     And the review's revision is 2
     And submission 1 still carries session "sess-42" while submission 2 carries "sess-43"
     And the review's session mirrors the latest submission, "sess-43"
+    When the agent resubmits the deliverable pinned at commit "0123abcd0123abcd0123abcd0123abcd0123abcd" with no session
+    Then submission 3 carries no session
+    And the review's session is absent, mirroring the latest submission
+    And submissions 1 and 2 retain "sess-42" and "sess-43"
     And the earlier comment remains associated with revision 1
     And the emitted event carries session "sess-42" and the issue ref
     And revision 1's submission still exists and resolves to its original deliverable
