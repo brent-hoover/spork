@@ -249,7 +249,13 @@ data:
         pending) and completed with the returned id afterward. A pending
         attempt that never completes is therefore itself the durable
         may-have-orphaned marker, surviving any crash window including a
-        stale claimant dying mid-call. The TUI's unresolved list is:
+        stale claimant dying mid-call. Completing an attempt and
+        advancing its round to enqueued happen in ONE store transaction
+        (same durable store, so atomicity is free); and recovery promotes
+        before it resets — a completed attempt of the round's current
+        generation is folded into the round (id recorded, state
+        enqueued) before reset or any further claim is permitted, so a
+        proven kriya-owned job is never abandoned to duplication. The TUI's unresolved list is:
         pending attempts, plus completed attempts whose id is not their
         round's accepted external_id; the operator resolves entries after
         checking roborev, stamping resolved. Resolution and reset are
@@ -298,6 +304,7 @@ data:
       name: OrphanObservation
       description: Durable record of a roborev job discovered for a watched round's commit whose id kriya never recorded — the persisted form of the late-orphan watch. Display-only; never acted on.
       fields:
+        - { name: observation_key, type: string, required: true, unique: true }  # derived hash of (round, external_id) — the watch upserts, so re-polling never duplicates and resolved rows never reappear
         - { name: round, type: ref, ref: ENT-review-round, required: true }
         - { name: external_id, type: string, required: true }
         - { name: discovered, type: datetime, required: true }
