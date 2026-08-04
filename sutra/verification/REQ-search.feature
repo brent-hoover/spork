@@ -21,3 +21,4 @@ Feature: Search and filter
     And an imported thread carrying session "sess-42"
     When "sess-42" is searched
     Then the review, the thread, and their linked issues are returned
+    And listing reviews filtered by session "sess-42" also returns the review
