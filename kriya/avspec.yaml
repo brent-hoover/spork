@@ -47,6 +47,9 @@ constitution:
 #       contact with the maintainers.
 #   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
 #       ticket at acceptable speed, or only as a slower periodic gate?
+#   R3: Go branch coverage — does gobco (or an alternative) reliably exit
+#       nonzero on uncovered conditional arms, so stack.commands.coverage
+#       is a real gate for Go targets like sutra?
 
 requirements:
   - id: REQ-spec-intake
@@ -204,10 +207,12 @@ data:
         - { name: thread_ref, type: string }  # sutra thread id once the transcript imports
     - id: ENT-review-round
       name: ReviewRound
+      description: Restart-safe — the external id is stored at enqueue time, so an in-flight round resumes polling instead of enqueueing a duplicate.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: commit, type: string, required: true }  # canonical full object id
-        - { name: verdict, type: enum, required: true, values: [pass, findings] }
+        - { name: external_id, type: string, required: true }  # roborev job/review id, recorded at enqueue
+        - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
         - { name: created, type: datetime, required: true }
     - id: ENT-gate-result
