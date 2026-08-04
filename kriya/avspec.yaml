@@ -136,7 +136,7 @@ modules:
   - id: MOD-review-bridge
     name: review-bridge
     responsibility: The roborev seam — enqueue, poll verdicts, respond, close; buy-over-build boundary in one place.
-    owns: [ENT-review-round]
+    owns: [ENT-review-round, ENT-enqueue-attempt]
     boundaries: { may_import: [] }
   - id: MOD-gates
     name: gates
@@ -238,8 +238,12 @@ data:
         Every claim carries its generation, and recording an enqueue
         result is a CAS that requires the claimant's generation to still
         be current: a merely-slow claimant that enqueues after a reset
-        loses that CAS, its result is discarded, and its job becomes one
-        more untouched orphan. Recovery is therefore: enqueued -> resume
+        loses that CAS — but it still records its returned id as an
+        EnqueueAttempt row, so the orphan is visible, not just presumed.
+        The TUI's orphan list is exactly the attempts whose id is not
+        their round's accepted external_id; a crash before any return is
+        covered by orphan_possible, set on operator reset and cleared
+        when the operator confirms. Recovery is therefore: enqueued -> resume
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
         surfaced in the TUI.
@@ -252,9 +256,18 @@ data:
         - { name: enqueue_state, type: enum, required: true, values: [unclaimed, claimed, enqueued] }
         - { name: claimed_at, type: datetime }  # lease stamp; expired claims go to operator reconciliation, never auto-reclaim
         - { name: claim_generation, type: integer, required: true }  # fencing token — incremented per claim/reset; stale claimants lose the recording CAS
+        - { name: orphan_possible, type: boolean, required: true }  # set on operator reset when no attempt row exists for the stale generation; cleared on confirmation
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
+        - { name: created, type: datetime, required: true }
+    - id: ENT-enqueue-attempt
+      name: EnqueueAttempt
+      description: Append-only record of every roborev enqueue return, written regardless of the recording CAS outcome — the TUI's orphan list is attempts whose id is not their round's accepted external_id.
+      fields:
+        - { name: round, type: ref, ref: ENT-review-round, required: true }
+        - { name: generation, type: integer, required: true }
+        - { name: external_id, type: string, required: true }
         - { name: created, type: datetime, required: true }
     - id: ENT-gate-result
       name: GateResult
