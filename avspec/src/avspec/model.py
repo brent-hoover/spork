@@ -26,6 +26,8 @@ class Commands(StrictModel):
     lint: str | None = None
     typecheck: str | None = None
     arch: str | None = None
+    coverage: str | None = None  # branch coverage — every conditional arm
+    mutation: str | None = None  # mutation testing — proves the tests test
 
 
 class Language(StrictModel):

@@ -74,14 +74,16 @@ requirements:
     title: Mistakes become persistent learnings fed into future builds
     rationale: Project-specific and cross-project; captured as they happen, not post-mortem.
   - id: REQ-gate-structure
-    title: Structural linting with hard limits on the target app
+    title: Structural linting with hard limits on the target app, via the target's stack.commands.lint
     rationale: Google-style-guide strictness — max module size and kin; agents love god modules and do not mind strict rules.
   - id: REQ-gate-typing
     title: Typing everywhere on the target app
   - id: REQ-gate-branch-coverage
     title: Branch coverage — every conditional arm, not an overall percentage
+    rationale: Runs the target's stack.commands.coverage; targets that omit it are rejected at spec intake.
   - id: REQ-gate-mutation
     title: Mutation testing proves the tests test
+    rationale: Runs the target's stack.commands.mutation; targets that omit it are rejected at spec intake.
   - id: REQ-po-validation
     title: Product owner agent validates ACs are genuinely satisfied and tests are not gaming
     rationale: The PO holds the big picture the coding agent cannot have.
@@ -178,6 +180,7 @@ data:
         - { name: ticket, type: string, required: true }  # opaque tracker id
         - { name: plan, type: ref, ref: ENT-plan, required: true }
         - { name: state, type: enum, required: true, values: [queued, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
+        - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }
         - { name: finished, type: datetime }
@@ -212,6 +215,7 @@ data:
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: gate, type: enum, required: true, values: [structure, typing, branch-coverage, mutation] }
+        - { name: commit, type: string, required: true }  # full object id the gate ran against — stale results never satisfy the chain
         - { name: passed, type: boolean, required: true }
         - { name: detail, type: json }
         - { name: created, type: datetime, required: true }
@@ -232,6 +236,7 @@ data:
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: verdict, type: enum, required: true, values: [satisfied, not-satisfied, tests-gamed] }
+        - { name: commit, type: string, required: true }  # full object id the validation covered
         - { name: notes, type: string }
         - { name: created, type: datetime, required: true }
     - id: ENT-learning
