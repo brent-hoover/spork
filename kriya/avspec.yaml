@@ -63,7 +63,11 @@ constitution:
 requirements:
   - id: REQ-spec-intake
     title: Consume a ready avspec — verify it, refuse anything less
-    rationale: Ready means buildable without further prompting; kriya holds the spec to its own claim.
+    rationale: >-
+      Ready means buildable without further prompting; kriya holds the spec
+      to its own claim, and additionally requires non-empty test, lint,
+      typecheck, coverage, and mutation commands in the target's stack —
+      the gate chain cannot run without every one of them.
   - id: REQ-decompose
     title: PM agent decomposes the spec into tracer-bullet tickets in sutra
     rationale: Thin end-to-end slices first; BDD acceptance criteria on every ticket; blocks/blocked-by wired for parallelism.
@@ -238,12 +242,15 @@ data:
         Every claim carries its generation, and recording an enqueue
         result is a CAS that requires the claimant's generation to still
         be current: a merely-slow claimant that enqueues after a reset
-        loses that CAS — but it still records its returned id as an
-        EnqueueAttempt row, so the orphan is visible, not just presumed.
-        The TUI's orphan list is exactly the attempts whose id is not
-        their round's accepted external_id; a crash before any return is
-        covered by orphan_possible, set on operator reset and cleared
-        when the operator confirms. Recovery is therefore: enqueued -> resume
+        loses that CAS — and every call is bracketed by a durable
+        EnqueueAttempt row written BEFORE roborev is invoked (id absent,
+        pending) and completed with the returned id afterward. A pending
+        attempt that never completes is therefore itself the durable
+        may-have-orphaned marker, surviving any crash window including a
+        stale claimant dying mid-call. The TUI's unresolved list is:
+        pending attempts, plus completed attempts whose id is not their
+        round's accepted external_id; the operator resolves entries after
+        checking roborev, stamping resolved. Recovery is therefore: enqueued -> resume
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
         surfaced in the TUI.
@@ -256,19 +263,19 @@ data:
         - { name: enqueue_state, type: enum, required: true, values: [unclaimed, claimed, enqueued] }
         - { name: claimed_at, type: datetime }  # lease stamp; expired claims go to operator reconciliation, never auto-reclaim
         - { name: claim_generation, type: integer, required: true }  # fencing token — incremented per claim/reset; stale claimants lose the recording CAS
-        - { name: orphan_possible, type: boolean, required: true }  # set on operator reset when no attempt row exists for the stale generation; cleared on confirmation
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
         - { name: created, type: datetime, required: true }
     - id: ENT-enqueue-attempt
       name: EnqueueAttempt
-      description: Append-only record of every roborev enqueue return, written regardless of the recording CAS outcome — the TUI's orphan list is attempts whose id is not their round's accepted external_id.
+      description: Write-ahead, append-only bracket around every roborev enqueue — created pending BEFORE the call, completed with the returned id after; a never-completed pending row is the durable may-have-orphaned marker.
       fields:
         - { name: round, type: ref, ref: ENT-review-round, required: true }
         - { name: generation, type: integer, required: true }
-        - { name: external_id, type: string, required: true }
+        - { name: external_id, type: string }  # absent while pending; filled from the enqueue return
         - { name: created, type: datetime, required: true }
+        - { name: resolved, type: datetime }  # operator-stamped after reconciling against roborev
     - id: ENT-gate-result
       name: GateResult
       fields:
