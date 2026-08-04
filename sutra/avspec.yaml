@@ -19,7 +19,7 @@ project:
       lint: golangci-lint run
       typecheck: go vet ./...
       coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # mktemp + trap cleanup, POSIX sh, spike-validated: covered=0; uncovered, tool-failure, missing-summary all nonzero (kriya R3, retired 2026-08-04)
-      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100 ./...  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
+      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
 
 constitution:
   - id: CON-test-first

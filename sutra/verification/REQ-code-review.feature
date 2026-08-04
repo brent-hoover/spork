@@ -49,7 +49,8 @@ Feature: Review lifecycle
 
   Scenario: rework routes back with session context
     Given a review created with session "sess-42" is set to "changes-requested"
-    And a reviewer commented on the review before resubmission
+    Then the emitted event carries session "sess-42" and the issue ref
+    Given a reviewer commented on the review before resubmission
     When the agent resubmits the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1" under session "sess-43"
     Then the review returns to state "open"
     And the review's pinned commit is "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
@@ -57,12 +58,12 @@ Feature: Review lifecycle
     And submission 1 still carries session "sess-42" while submission 2 carries "sess-43"
     And the review's session mirrors the latest submission, "sess-43"
     Given a human sets the review to "changes-requested" carrying revision 2
+    Then that event carries session "sess-43", the session of revision 2
     When the agent resubmits the deliverable pinned at commit "0123abcd0123abcd0123abcd0123abcd0123abcd" with no session
     Then submission 3 carries no session
     And the review's session is absent, mirroring the latest submission
     And submissions 1 and 2 retain "sess-42" and "sess-43"
     And the earlier comment remains associated with revision 1
-    And the emitted event carries session "sess-42" and the issue ref
     And revision 1's submission still exists and resolves to its original deliverable
     And revision 2's submission exists and carries the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
 
