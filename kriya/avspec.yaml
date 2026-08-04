@@ -50,7 +50,8 @@ constitution:
 #   R3 (RETIRED 2026-08-04 by spike): gobco detects uncovered arms but
 #       exits 0; wrapped with an awk check it gates correctly (exit 1 on
 #       any uncovered arm). The validated compound command is pinned in
-#       sutra's stack. Residual note for R1's spike: the roborev-as-is
+#       sutra's stack, hardened with pipefail and a seen-summary check so
+#       tool failure or silence also gates (all four modes spike-tested). Residual note for R1's spike: the roborev-as-is
 #       validation must also confirm a recovery/reconciliation path for
 #       in-flight reviews (e.g. listing jobs by commit SHA).
 
