@@ -172,14 +172,16 @@ modules:
     boundaries: { may_import: [MOD-planner, MOD-orchestrator] }
   - id: MOD-tui
     name: tui
-    responsibility: Operator dashboard — live overview of running and queued work; where agents surface questions and escalations.
-    boundaries: { may_import: [MOD-orchestrator, MOD-architect] }
+    responsibility: Operator dashboard — live overview of running and queued work; where agents surface questions, escalations, and the review bridge's persisted orphan watch.
+    boundaries: { may_import: [MOD-orchestrator, MOD-architect, MOD-review-bridge] }
 
 # Kriya's store is the observability plane: the TUI reads it live and it is
-# the post-mortem record of every build. Two exceptions are operational
-# state that must survive restarts: BuildRun (crash recovery) and Learning
-# (the point of the exercise). Sutra remains the system of record for the
-# work itself; tracker-side records are referenced by opaque ids.
+# the post-mortem record of every build. The ENTIRE store is durable across
+# restarts; within it, four entities are operational — they drive behavior
+# after a restart, not just explain it: BuildRun (crash recovery),
+# ReviewRound and EnqueueAttempt (the write-ahead review protocol), and
+# Learning (the point of the exercise). Sutra remains the system of record
+# for the work itself; tracker-side records are referenced by opaque ids.
 data:
   entities:
     - id: ENT-plan
@@ -262,10 +264,11 @@ data:
         after resolution, and without a server idempotency key (absent,
         per the R1 spike) no client protocol can prevent it. Therefore
         resolving a pending attempt moves it to a permanent watch rather
-        than oblivion — the TUI continuously cross-checks roborev's job
-        list for each watched round's commit and flags any job id kriya
-        never recorded as a probable late orphan: display-only, never
-        acted on, never silently forgotten. Recovery is therefore: enqueued -> resume
+        than oblivion — the review bridge (the sole roborev seam)
+        periodically cross-checks roborev's job list for each watched
+        round's commit and persists any job id kriya never recorded as a
+        probable late orphan; the TUI renders that persisted state:
+        display-only, never acted on, never silently forgotten. Recovery is therefore: enqueued -> resume
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
         surfaced in the TUI.

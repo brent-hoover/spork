@@ -56,7 +56,7 @@ modules:
   - id: MOD-kriya
     name: kriya
     responsibility: The build pipeline — decomposes ready specs into tracer-bullet tickets, drives coding agents through the pair-programming gate chain, submits Reviews. Specified in kriya/avspec.yaml.
-    boundaries: { may_import: [] }
+    boundaries: { may_import: [MOD-context] }
   - id: MOD-context
     name: context-manager
     responsibility: >-
