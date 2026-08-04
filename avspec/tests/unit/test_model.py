@@ -210,6 +210,13 @@ def test_stack_accepts_store() -> None:
     assert m.project.stack.store == "postgres"
 
 
+def test_blank_command_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(
+            {**MINIMAL, "project": {"name": "demo", "stack": {"commands": {"coverage": "   "}}}}
+        )
+
+
 def test_stack_accepts_bare_and_versioned_languages() -> None:
     m = Manifest.model_validate(
         {

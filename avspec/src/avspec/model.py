@@ -21,13 +21,13 @@ class StrictModel(BaseModel):
 
 
 class Commands(StrictModel):
-    install: str | None = None
-    test: str | None = None
-    lint: str | None = None
-    typecheck: str | None = None
-    arch: str | None = None
-    coverage: str | None = None  # branch coverage — every conditional arm
-    mutation: str | None = None  # mutation testing — proves the tests test
+    install: NonBlankStr | None = None
+    test: NonBlankStr | None = None
+    lint: NonBlankStr | None = None
+    typecheck: NonBlankStr | None = None
+    arch: NonBlankStr | None = None
+    coverage: NonBlankStr | None = None  # branch coverage — every conditional arm
+    mutation: NonBlankStr | None = None  # mutation testing — proves the tests test
 
 
 class Language(StrictModel):

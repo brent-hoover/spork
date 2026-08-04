@@ -222,12 +222,16 @@ data:
         its uniqueness makes the write-ahead insert idempotent — a
         concurrent or recovered replay collides instead of duplicating.
         Enqueue happens after the insert; roborev offers no caller
-        correlation key and can hold duplicate jobs per SHA, so recovery
-        lists jobs by the round's commit, adopts any of them as
-        external_id (verdicts are a pure function of the commit), and
-        cancels surplus. Rounds are unique per (build, commit) via the
-        derived key; the same commit rebuilt under a different build gets
-        its own round.
+        correlation key and can hold duplicate jobs per SHA. Recovery
+        lists jobs by the round's commit and adopts the oldest job not
+        already claimed by another round (claimed ids are known from
+        stored external_ids); if none remains it enqueues anew. Kriya
+        NEVER cancels a job it cannot prove it enqueued — foreign or
+        manual jobs for the same SHA are left to finish and simply not
+        adopted. Verdict equivalence (a pure function of the commit)
+        makes adoption safe; rounds are unique per (build, commit) via
+        the derived key, so a rebuilt commit gets its own round and its
+        own adoption.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: commit, type: string, required: true }  # canonical full object id
