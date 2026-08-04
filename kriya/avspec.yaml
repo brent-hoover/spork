@@ -41,13 +41,14 @@ constitution:
     statement: Planning orders work by risk; a risk item is validated by research or a spike before anything that depends on it is built, so we never code ourselves into a corner.
 
 # Risk register — validated before kriya's own build begins:
-#   R1: Can roborev be used as-is for the pair-programming loop (drive it
-#       programmatically, consume verdicts, close findings) without forking?
-#       Validate via spike against the roborev CLI/daemon. Owner is in
-#       contact with the maintainers. Must also confirm: (a) a recovery
-#       path for in-flight jobs (list by commit works because rounds are
-#       unique per commit), and (b) whether enqueue accepts a caller
-#       correlation value, which would strengthen reconciliation further.
+#   R1 (RETIRED 2026-08-04 by spike + session-long live use): roborev is
+#       drivable as-is — enqueue (review), poll (show), respond (comment),
+#       and close were all exercised programmatically throughout the spec
+#       sessions. Spike facts: enqueue accepts NO caller correlation key,
+#       and duplicate jobs for the same SHA ARE possible (no dedupe); but
+#       `list` exposes jobs by SHA and `cancel` exists, and a verdict is a
+#       pure function of the commit, so adopt-any-job-for-commit
+#       reconciliation is safe and surplus jobs are cancelled.
 #   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
 #       ticket at acceptable speed, or only as a slower periodic gate?
 #   R3 (RETIRED 2026-08-04 by spike): gobco detects uncovered arms but
@@ -215,11 +216,22 @@ data:
         - { name: thread_ref, type: string }  # sutra thread id once the transcript imports
     - id: ENT-review-round
       name: ReviewRound
-      description: Restart-safe by write-ahead — the row (with its caller-generated operation_key) is persisted BEFORE enqueueing, and exactly one round exists per commit, so post-crash reconciliation by commit is unambiguous; a re-review request for the same commit replays its round. external_id is recorded once known.
+      description: >-
+        Restart-safe by write-ahead, grounded in the R1 spike facts. The
+        operation_key is derived deterministically from (build, commit), so
+        its uniqueness makes the write-ahead insert idempotent — a
+        concurrent or recovered replay collides instead of duplicating.
+        Enqueue happens after the insert; roborev offers no caller
+        correlation key and can hold duplicate jobs per SHA, so recovery
+        lists jobs by the round's commit, adopts any of them as
+        external_id (verdicts are a pure function of the commit), and
+        cancels surplus. Rounds are unique per (build, commit) via the
+        derived key; the same commit rebuilt under a different build gets
+        its own round.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
-        - { name: commit, type: string, required: true, unique: true }  # canonical full object id; one round per commit is the reconciliation invariant
-        - { name: operation_key, type: string, required: true, unique: true }  # caller-generated before enqueue; the recovery/idempotency handle
+        - { name: commit, type: string, required: true }  # canonical full object id
+        - { name: operation_key, type: string, required: true, unique: true }  # deterministic hash of (build, commit) — the write-ahead idempotency handle
         - { name: external_id, type: string }  # roborev job/review id, recorded once the enqueue returns
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
