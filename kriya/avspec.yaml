@@ -201,8 +201,20 @@ data:
         - { name: updated, type: datetime, required: true }
     - id: ENT-plan
       name: Plan
-      description: The decomposition record tying an avspec to the tickets it produced. The SpecSnapshot is created at decomposition and pinned here — every ticket of a plan builds against the exact spec version that produced its acceptance criteria.
+      description: >-
+        The decomposition record tying an avspec to the tickets it
+        produced. The SpecSnapshot is created at decomposition and pinned
+        here — every ticket of a plan builds against the exact spec
+        version that produced its acceptance criteria. Decomposition is
+        write-ahead and idempotent: the plan row (decomposition_key
+        derived from project and spec_hash, unique) and its planned
+        ticket definitions are persisted BEFORE any tracker call; each
+        ticket-creation request carries a deterministic idempotency key
+        derived from (decomposition_key, ticket ordinal), so a crash or
+        concurrent retry replays into the same sutra tickets instead of
+        duplicating them, per CON-idempotent-mutations.
       fields:
+        - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
         - { name: project_key, type: string, required: true }
@@ -220,7 +232,13 @@ data:
         is matched against plans' recorded ticket lists — exactly one
         match binds the plan; no match (a ticket assigned outside any
         plan) or multiple matches leaves plan absent and the build
-        proceeds regardless, since the ticket itself carries the ACs and
+        proceeds regardless. The snapshot is stricter than the lineage:
+        one match inherits its plan's spec_hash; multiple matches inherit
+        only when every matching plan pins the SAME spec_hash, and
+        disagreement routes to awaiting-operator rather than fresh-
+        pinning — a planned ticket never silently builds against a spec
+        other than the one that produced its ACs. The build otherwise
+        proceeds, since the ticket itself carries the ACs and
         target_spec is persisted on the row at bind time — from the
         matched plan, or for unplanned tickets from kriya's persisted
         project-to-spec registry (seeded by every plan, operator-editable;
