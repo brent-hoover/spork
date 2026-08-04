@@ -188,7 +188,8 @@ data:
       name: SpecMapping
       description: The project-to-spec registry — seeded by every plan at decomposition, operator-editable; the only trusted fallback for resolving an unplanned ticket's target spec.
       fields:
-        - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several specs; the fallback binds only when exactly one mapping exists
+        - { name: mapping_key, type: string, required: true, unique: true }  # derived hash of (project_key, normalized target_spec) — seeding upserts, so replanning the same spec never duplicates a row
+        - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
         - { name: updated, type: datetime, required: true }
     - id: ENT-plan
