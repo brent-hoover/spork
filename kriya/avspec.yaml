@@ -234,10 +234,15 @@ data:
         token, so a merely-slow claimant could still enqueue after a
         reclaim and duplicate the job. Instead the round surfaces in the
         TUI for operator reconciliation: confirm whether an orphan job
-        exists, then reset the claim. Recovery is therefore: enqueued ->
-        resume polling external_id; unclaimed -> claim and enqueue;
-        expired claim -> operator. Any crash-window orphan job is never
-        touched and is likewise surfaced in the TUI.
+        exists, then reset the claim — a reset increments claim_generation.
+        Every claim carries its generation, and recording an enqueue
+        result is a CAS that requires the claimant's generation to still
+        be current: a merely-slow claimant that enqueues after a reset
+        loses that CAS, its result is discarded, and its job becomes one
+        more untouched orphan. Recovery is therefore: enqueued -> resume
+        polling external_id; unclaimed -> claim and enqueue; expired
+        claim -> operator. Orphan jobs are never touched and are
+        surfaced in the TUI.
         Rounds are unique per (build, commit) via the derived key, so a
         rebuilt commit gets its own round.
       fields:
@@ -246,6 +251,7 @@ data:
         - { name: operation_key, type: string, required: true, unique: true }  # deterministic hash of (build, commit) — the write-ahead idempotency handle
         - { name: enqueue_state, type: enum, required: true, values: [unclaimed, claimed, enqueued] }
         - { name: claimed_at, type: datetime }  # lease stamp; expired claims go to operator reconciliation, never auto-reclaim
+        - { name: claim_generation, type: integer, required: true }  # fencing token — incremented per claim/reset; stale claimants lose the recording CAS
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }

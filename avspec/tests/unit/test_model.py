@@ -210,6 +210,21 @@ def test_stack_accepts_store() -> None:
     assert m.project.stack.store == "postgres"
 
 
+def test_coverage_and_mutation_commands_round_trip() -> None:
+    m = Manifest.model_validate(
+        {
+            **MINIMAL,
+            "project": {
+                "name": "demo",
+                "stack": {"commands": {"coverage": "gobco ./...", "mutation": "gremlins unleash"}},
+            },
+        }
+    )
+    assert m.project.stack is not None and m.project.stack.commands is not None
+    assert m.project.stack.commands.coverage == "gobco ./..."
+    assert m.project.stack.commands.mutation == "gremlins unleash"
+
+
 def test_blank_command_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Manifest.model_validate(

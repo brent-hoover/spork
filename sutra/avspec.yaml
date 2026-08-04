@@ -14,7 +14,7 @@ project:
     bdd: godog
     store: sqlite  # FTS5 for search; single-binary friendly
     commands:
-      install: go mod download
+      install: go mod download && go install github.com/rillig/gobco@v1.3.4 && go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0  # pins the gate tools the coverage and mutation commands invoke
       test: go test ./...
       lint: golangci-lint run
       typecheck: go vet ./...
