@@ -402,26 +402,28 @@ data:
         recovery replays the same pop_key and receives the same issue,
         then binds ticket to the row transactionally. Plan is lineage,
         not an execution dependency: in the same transaction the ticket
-        is matched by walking the predecessor chain from the plan that
-        currently heads its target (resolved through PlanHead): the
-        build binds to the FURTHEST-BACK plan on that chain holding an
-        UNSTAMPED PlannedTicket row for the ticket, falling through to
-        the current head's row only when no superseded plan holds one.
-        The fallback can only ever fire inside a retirement crash
-        window, and there it is exact: a completed retirement leaves no
-        unstamped row behind (it first binds every queued BuildRun with
-        an unfilled ticket via pop replay, then stamps every remaining
-        row — bound and completed builds' rows are consumed as history
-        since their plan and spec_hash refs are already authoritative),
-        so an unstamped superseded row exists only while its plan's
-        retirement is still resuming, and the deepest such row is
+        is matched by ONE state-aware precedence algorithm that walks
+        the predecessor chain from the plan currently heading its
+        target (resolved through PlanHead) and yields at most one
+        candidate: (1) the FURTHEST-BACK plan on the chain holding an
+        UNSTAMPED PlannedTicket row for the ticket binds — such a row
+        exists only while that plan's retirement is still resuming
+        (retirement binds every queued BuildRun with an unfilled ticket
+        via pop replay BEFORE stamping the remaining rows, so unstamped
+        means exactly claimed-in-flight), and the deepest such row is
         precisely the plan whose tickets were live when the pop claimed
-        this one. Binding to it (and its pinned snapshot) honors the
-        popped-builds-finish-under-predecessor guarantee even when the
-        current head also lists the ticket; the same transaction stamps
-        every unstamped superseded row it walked past. Stamped rows are
-        audit history and never bind, so a reopened ticket popped after
-        supersession completes always matches its then-current plan. (PlannedTicket
+        this one; the same transaction stamps every unstamped
+        superseded row it walked past. (2) Otherwise, while the head is
+        PENDING, the immediate predecessor's row — stamped or not —
+        binds: a pending head's rows NEVER bind, because activation is
+        the atomic switch of binding authority, so a reopened ticket
+        popped mid-retirement can never inherit the pending plan's
+        not-yet-wired snapshot. (3) Otherwise the ACTIVE head's row
+        binds, and stamped superseded rows are pure audit history — a
+        reopened ticket popped after activation always matches its
+        then-current plan. In every case the bound plan's pinned
+        snapshot travels with the binding, honoring the
+        popped-builds-finish-under-predecessor guarantee. (PlannedTicket
         remains the authoritative membership record — Plan holds no
         duplicate list.) Matching uses
         persisted ids directly: assignment-last guarantees any poppable
@@ -430,14 +432,9 @@ data:
         permanently failing creation elsewhere can never block an
         unrelated build; per-row replay failures set the row's own
         state to awaiting-operator with the error recorded, and the TUI
-        surfaces those rows alongside escalations. Then: the chain-precedence rule above runs FIRST and collapses
-        each head's predecessor chain to at most one candidate: a
-        PENDING head's rows never bind (activation is the atomic
-        membership switch); the deepest unstamped row on the chain wins
-        (a claimed-in-flight pop); else, while the head is pending, the
-        immediate predecessor's rows — stamped or not — remain the
-        binding authority; else the ACTIVE head's row binds. Rows
-        within one chain are never counted as multiple matches, so a
+        surfaces those rows alongside escalations. Then: the precedence algorithm above has already collapsed
+        each head's predecessor chain to at most one candidate, so rows
+        within one chain are never counted as multiple matches and a
         carried-forward ticket is unambiguous by construction. Exactly
         one surviving candidate binds the plan; no candidate (a ticket
         assigned outside any plan) or candidates surviving from
