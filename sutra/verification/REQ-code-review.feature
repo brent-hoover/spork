@@ -124,6 +124,16 @@ Feature: Review lifecycle
     When the submission is processed
     Then it is rejected with a conflict and nothing is created — the fence is the head, not the merge base
 
+  Scenario: resubmission enforces the same base and head fences
+    Given a changes-requested review whose caller resubmits a code deliverable expecting base "D1"
+    And sutra resolves the resubmission's merge base as "D0"
+    When the resubmission is processed
+    Then it is rejected with a conflict and no mutation
+    Given the caller resubmits expecting default head "D1"
+    And the default branch now stands at "D2"
+    When the resubmission is processed
+    Then it is rejected with a conflict and no mutation
+
   Scenario Outline: unresolvable repository rejects submission
     Given a project with <failure>
     When an agent <operation>s a code deliverable for SUT-1

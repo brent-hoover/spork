@@ -869,11 +869,14 @@ data:
         predecessor the retirement set is empty and the plan activates
         immediately. The head can never point at a losing plan and
         there is no window between head-move and supersession
-        — a concurrent would-be successor loses that CAS and durably moves
-        to plan state awaiting-operator with the error recorded, so
+        — a concurrent would-be successor loses that CAS and durably moves,
+        under the same atomic eligibility-checked verdict, to
+        awaiting-operator with the error recorded only while its intake
+        generation remains strictly newer than the winner's — and to
+        terminal historical otherwise — so
         exactly one replacement can ever activate and the loser is
-        operator-visible, never a lingering indistinguishable pending
-        row.
+        either operator-visible or terminal history, never a lingering
+        indistinguishable pending row and never a stale retryable.
         The retirement pass is then durable, ordered, and state-aware,
         acting in sutra ONLY on unfinished, unclaimed tickets (completed
         tickets and tickets claimed by LIVE builds get no server-side
@@ -1428,11 +1431,13 @@ data:
         learning without its key is rejected at write time. Matching for
         feed-forward runs on the module and pattern tags; provenance is
         explicit via source_kind plus its reference fields — for every
-        captured kind, source_run, source_commit (the triggering head,
-        which always exists at capture time), and source_ref are
-        required and operator entries carry none of them; both
-        constraints are enforced at write time (the format cannot
-        express conditional requiredness). remediation_commit is always
+        captured kind, source_run and source_ref are required; the
+        trigger anchor is source_commit (the triggering head) for
+        code-backed corrections and source_doc (the finding document
+        version) for research-backed ones — exactly one of the two,
+        matching the run kind; operator entries carry none of them. All
+        of this is enforced at write time (the format cannot express
+        conditional requiredness). remediation_commit is always
         optional — stamped later if a corrective commit lands.
       fields:
         - { name: scope, type: enum, required: true, values: [project, global] }
@@ -1442,7 +1447,8 @@ data:
         - { name: pattern, type: string, required: true }  # matching tag — the failure pattern the lesson concerns
         - { name: source_kind, type: enum, required: true, values: [review-finding, gate-failure, sa-direction, po-rejection, operator] }
         - { name: source_run, type: ref, ref: ENT-build-run }  # absent exactly when source_kind is operator
-        - { name: source_commit, type: string }  # full object id of the TRIGGERING head — the commit that was reviewed, gated, or validated when the lesson arose
+        - { name: source_commit, type: string }  # code-backed corrections — full object id of the TRIGGERING head, the commit that was reviewed, gated, or validated when the lesson arose
+        - { name: source_doc, type: string }  # research-backed corrections — the finding document version the lesson arose from; exactly one of source_commit/source_doc is present on captured learnings, matching the run kind
         - { name: remediation_commit, type: string }  # optional; stamped later when a corrective commit lands
         - { name: source_ref, type: string }  # the finding, gate result, or event that produced it
         - { name: source_session, type: string }
