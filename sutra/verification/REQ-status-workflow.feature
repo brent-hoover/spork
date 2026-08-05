@@ -35,9 +35,11 @@ Feature: Status workflow
 
   Scenario: simultaneous writers mutate exactly once
     Given issue SUT-1 is assigned to "claude" with status "open"
-    When a pop by "claude" and a conditional transition to "deferred" expecting "open" execute simultaneously, both having observed status "open"
+    And two clients have each read status "open" client-side, before either server operation starts
+    When a pop by "claude" and a conditional transition to "deferred" expecting "open" are released together at a synchronization barrier so the server executes them overlapping
     Then exactly one mutation is applied to SUT-1
-    And the check and update are atomic — the loser's operation observes the winner's committed state, never the stale read
+    And exactly one status event is recorded for SUT-1
+    And the losing operation receives an explicit conflict response reflecting the winner's committed status, never its stale client-side read
 
   Scenario: unknown statuses are rejected
     When issue SUT-1 is set to status "someday"
