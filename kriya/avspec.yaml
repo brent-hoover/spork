@@ -216,7 +216,8 @@ data:
         here — every ticket of a plan builds against the exact spec
         version that produced its acceptance criteria. Decomposition is
         write-ahead and idempotent: the plan row (decomposition_key
-        derived from project and spec_hash, unique) and its planned
+        derived from project_key, normalized target_spec, and spec_hash;
+        unique) and its planned
         ticket definitions are persisted BEFORE any tracker call; each
         ticket-creation request carries a deterministic idempotency key
         derived from (decomposition_key, ticket ordinal), so a crash or
@@ -231,7 +232,6 @@ data:
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
         - { name: project_key, type: string, required: true }
-        - { name: tickets, type: json, required: true }  # ordered tracker ids the decomposition produced
         - { name: created, type: datetime, required: true }
     - id: ENT-build-run
       name: BuildRun
@@ -242,7 +242,8 @@ data:
         recovery replays the same pop_key and receives the same issue,
         then binds ticket to the row transactionally. Plan is lineage,
         not an execution dependency: in the same transaction the ticket
-        is matched against plans' recorded ticket lists — exactly one
+        is matched against PlannedTicket rows (the authoritative
+        membership record — Plan holds no duplicate list) — exactly one
         match binds the plan; no match (a ticket assigned outside any
         plan) or multiple matches leaves plan absent and the build
         proceeds regardless. The snapshot is stricter than the lineage:
