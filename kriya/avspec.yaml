@@ -156,7 +156,7 @@ requirements:
         statement: Decomposition creates a spike/research ticket per identified risk, labeled with the risk/spike convention, blocking every ticket that depends on the risk's answer.
         test: verification/REQ-risk-first.feature#each risk becomes a blocking spike
       - id: AC-risk-order
-        statement: "Spike tickets are immediately workable and surface first by construction: the assignment phase assigns every spike ticket before any implementation ticket, and sutra's pop is FIFO on assignment order, so an open spike always pops ahead of the work it gates — no tracker-side priority is assumed."
+        statement: "The ordering guarantee is scoped to the plan's own tickets: the assignment phase assigns every spike before any implementation ticket, so among a plan's workable tickets a spike pops ahead of the plan's implementation work under sutra's FIFO; pre-existing assignments from other plans may pop between them, which is safe because they do not depend on this plan's risks — and work that DOES depend on a risk is blocked by relation regardless, so queue position alone can never start it early. No tracker-side priority is assumed."
         test: verification/REQ-risk-first.feature#spikes surface ahead of ordinary work
       - id: AC-risk-retire
         statement: A spike closes through sutra's own gate — its documented finding is submitted as a document-deliverable Review on the spike ticket, and approval closes the spike and unblocks dependents; the risk is retired by approved evidence, not assertion.
@@ -224,13 +224,13 @@ requirements:
         statement: "The impasse trigger is deterministic: a per-run round limit — snapshotted onto the BuildRun at creation, so config changes and restarts never move a live run's threshold — counts consecutive finding-bearing rounds since the last clean pass, and reaching the limit — or the dev agent declaring an impasse — pauses the run and hands the SA agent the findings history, the ticket's ACs, and the bound snapshot. A clean pass resets the counter; the limit lives in configuration beside tier routing."
         test: verification/REQ-sa-agent.feature#an impasse pauses the run and reaches the architect
       - id: AC-sa-no-code
-        statement: The SA resolves by direction; its decision is recorded durably on the run; it never commits to the workspace.
+        statement: The SA resolves by direction, recorded on a durable run-scoped Intervention row — trigger, findings handed over, direction, lifecycle state — which resume and recovery read; it never commits to the workspace.
         test: verification/REQ-sa-agent.feature#the architect directs but never codes
       - id: AC-sa-scope
         statement: "A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change. An approved spec change first cancels the paused run write-ahead: cancelling is recorded durably, the sutra ticket is conditionally transitioned out of in-progress to DEFERRED — never to open, so no agent can pop the obsolete ticket in the window before the supersession fence exists — and only then is the run stamped cancelled — terminal, never resuming, merging, or resubmitting; retirement and supersession classify a cancelled run's ticket as released work, never as issued work that will finish. Then the change takes the amended-spec path of re-intake and supersession, never a side channel."
         test: verification/REQ-sa-agent.feature#scope changes escalate to the operator
       - id: AC-sa-resume
-        statement: After direction the run resumes the pair loop with the SA's guidance in context; the impasse, direction, and outcome survive as part of the run's history.
+        statement: After direction the run resumes the pair loop with the SA's guidance in context; the Intervention row preserves the trigger, direction, and eventual outcome through resume, restart, and recovery.
         test: verification/REQ-sa-agent.feature#direction resumes the loop and survives in history
   - id: REQ-context-assembly
     title: Context manager assembles each dev agent's context and toolset per ticket
@@ -344,7 +344,7 @@ requirements:
         statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review and requires the branch head to still equal the still-approved current revision's pinned commit — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
-        statement: After a successful merge kriya transitions the ticket to complete through sutra, which itself enforces the approved-review gate; the workspace then becomes eligible for cleanup.
+        statement: "After a successful merge kriya re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra, which itself enforces the approved-review gate, and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop and resubmission path for them instead of completing, so no work is stranded on a terminal run."
         test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
@@ -440,7 +440,7 @@ modules:
   - id: MOD-architect
     name: architect
     responsibility: SA agent — impasse resolution and operator escalation; writes no code.
-    owns: [ENT-escalation]
+    owns: [ENT-escalation, ENT-intervention]
     boundaries: { may_import: [] }
   - id: MOD-owner
     name: owner
@@ -1021,9 +1021,11 @@ data:
         dev — created when the invocation starts. Records the tier the
         routing configuration named AND the resolved model actually
         used, so AC-tier-observed is provable for agents that run
-        before any BuildRun exists: plan-scoped invocations (the PM
-        decomposing) carry plan and no build; run-scoped invocations
-        carry build. DevSession remains the dev-loop's transcript
+        before any BuildRun exists: exactly ONE scope reference is
+        present — plan (and no build) for PM invocations, build (and no
+        plan) for SA, PO, and dev invocations — enforced at write time
+        (the format cannot express conditional requiredness), so no
+        record is orphaned or double-scoped. DevSession remains the dev-loop's transcript
         anchor; this is the execution ledger.
       fields:
         - { name: role, type: enum, required: true, values: [pm, sa, po, dev] }
@@ -1146,6 +1148,25 @@ data:
         - { name: passed, type: boolean, required: true }
         - { name: detail, type: json }
         - { name: created, type: datetime, required: true }
+    - id: ENT-intervention
+      name: Intervention
+      description: >-
+        Run-scoped record of a non-scope SA intervention — the durable
+        lifecycle AC-sa-resume promises. Created when the impasse
+        trigger fires, it preserves what fired it, the findings history
+        handed over, the SA's direction, and how the resumed run fared;
+        recovery and resume read this row, never transient state. Scope
+        escalations remain Escalation rows — an intervention that turns
+        out to need scope records escalated and hands off.
+      fields:
+        - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: trigger, type: enum, required: true, values: [round-limit, agent-declared] }
+        - { name: findings, type: json }  # the findings history handed to the SA
+        - { name: direction, type: string }  # the SA's recorded direction
+        - { name: state, type: enum, required: true, values: [open, directed, resumed, escalated] }
+        - { name: outcome, type: string }  # how the resumed run fared
+        - { name: created, type: datetime, required: true }
+        - { name: resolved, type: datetime }
     - id: ENT-escalation
       name: Escalation
       description: What the TUI surfaces to the operator.

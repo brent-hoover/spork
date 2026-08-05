@@ -148,7 +148,7 @@ requirements:
         statement: A parent shows progress over its children, e.g. 3 of 5 complete.
         test: verification/REQ-issue-hierarchy.feature#parent rolls up child progress
       - id: AC-parent-reopen-cascade
-        statement: Reopening a child whose parent is complete reopens the parent in the same transaction, with status events recorded on both — a parent is never complete while a child is open, before or after its close.
+        statement: Whenever an issue enters open, in-progress, or blocked — by reopening from complete, by leaving deferred, or by being attached as a child beneath a complete parent — every complete ancestor reopens atomically in the same transaction, with status events recorded on each; no complete issue ever has a descendant in open, in-progress, or blocked.
         test: verification/REQ-issue-hierarchy.feature#reopening a child reopens a complete parent
       - id: AC-parent-close-gate
         statement: Transitioning a parent to complete while any child is open, in-progress, or blocked is rejected; deferred children — intentionally parked work — do not hold the parent open.

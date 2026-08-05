@@ -20,7 +20,8 @@ Feature: System architect agent
   Scenario: the architect directs but never codes
     Given an impasse before the SA agent
     When the SA resolves it
-    Then the resolution is a recorded direction on the run
+    Then a durable Intervention row records the trigger, the findings handed over, the direction, and its lifecycle state
+    And resume and recovery read that row, never transient state
     And no commit authored by the SA appears in the workspace
 
   Scenario: scope changes escalate to the operator
@@ -40,4 +41,4 @@ Feature: System architect agent
     Given the SA recorded a direction for a paused run
     When the run resumes
     Then the pair loop continues with the direction in the dev agent's context
-    And the impasse, the direction, and the outcome are all readable in the run's history
+    And the Intervention row preserves the trigger, direction, and eventual outcome through resume, restart, and recovery

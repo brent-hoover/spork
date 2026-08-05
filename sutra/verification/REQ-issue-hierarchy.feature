@@ -26,3 +26,12 @@ Feature: Issue hierarchy
     When SUT-2 is reopened to "open"
     Then SUT-1 returns to "open" in the same transaction
     And a status event is recorded for both SUT-1 and SUT-2
+    Given a complete grandparent above SUT-1
+    When a nested child of SUT-1 reopens
+    Then every complete ancestor up the chain reopens in the same transaction
+    Given SUT-1 is "complete" with a child in status "deferred"
+    When the deferred child transitions to "in-progress"
+    Then SUT-1 reopens in the same transaction
+    Given SUT-1 is "complete"
+    When an open issue is attached as a child of SUT-1
+    Then SUT-1 reopens in the same transaction

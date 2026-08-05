@@ -36,6 +36,10 @@ Feature: Review submission and merge
 
   Scenario: merge completes the ticket through sutra
     Given the branch merged successfully
-    When kriya transitions the ticket to complete
+    When kriya re-reads the branch head and it still equals the merged commit
+    And kriya transitions the ticket to complete
     Then the transition goes through sutra, which enforces its approved-review gate
     And the run's workspace becomes eligible for cleanup
+    Given the branch head moved past the merged commit before completion
+    Then the ticket is not completed and the run returns to the pair loop and resubmission path for the unreviewed commits
+    And no work is stranded on a terminal run

@@ -12,9 +12,12 @@ Feature: Risk-first planning
     And tickets not depending on the risk are not blocked by it
 
   Scenario: spikes surface ahead of ordinary work
-    Given the assignment phase assigned every spike ticket before any implementation ticket
-    When an agent pops work under the tracker's FIFO-on-assignment ordering
-    Then an open spike pops ahead of the work it gates
+    Given the assignment phase assigned the plan's spike before its independent, workable implementation ticket
+    And an older assignment from another plan already sits in the identity's queue
+    When an agent pops work under the tracker's FIFO ordering
+    Then the pre-existing independent ticket may pop first, which is safe — it depends on none of this plan's risks
+    And among this plan's tickets the spike pops ahead of its implementation work
+    And a ticket depending on the risk cannot pop at all while the spike is open, regardless of queue position
     And no tracker-side priority mechanism is assumed
 
   Scenario: a finding retires the risk and unblocks dependents
