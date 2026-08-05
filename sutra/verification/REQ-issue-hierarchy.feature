@@ -26,7 +26,7 @@ Feature: Issue hierarchy
 
   Scenario: subtree revision fences history, not just state
     Given SUT-1's subtree_revision is 7 as observed by a caller
-    And a child of SUT-1 reopens and recompletes, advancing SUT-1's subtree_revision to 9
+    And a child of SUT-1 reopens and recompletes — two API transactions, each moving SUT-1's revision exactly once, to 9
     And SUT-1 has an unspent approved review named on every attempt
     When SUT-1 is transitioned to "complete" with expected_subtree_revision 7
     Then the transition is rejected with a conflict — current state matches but history moved

@@ -325,8 +325,10 @@ paths:
         AC-close-approved, AC-close-blocked-without). An issue entering open,
         in-progress, or blocked atomically reopens every complete ancestor in
         the same transaction, with a status event recorded on each
-        (AC-parent-reopen-cascade); every transition also increments
-        subtree_revision on the issue and its ancestors (AC-subtree-revision).
+        (AC-parent-reopen-cascade); every transition transaction also increments
+        subtree_revision by exactly one on each affected issue and its
+        ancestors — once per transaction, however many cascaded transitions
+        it produces (AC-subtree-revision).
         Invoked by the kanban board's
         drag-to-move action (ACT-move-card). The request may carry
         expected_status: when present and the issue's current status
