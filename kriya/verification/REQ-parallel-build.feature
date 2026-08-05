@@ -38,7 +38,13 @@ Feature: Parallel build with deterministic pop binding
     And every walked-past row is stamped by the binding
 
   Scenario: queued pops reconcile before classification
-    Given a queued BuildRun whose ticket field is unfilled at recovery
+    Given a queued BuildRun whose ticket field is unfilled at recovery because a claim landed but the ticket was never bound
     When retirement begins
     Then the BuildRun is bound by pop replay before any ownership classification
     And the in-flight claim is classified as issued work, never retired as pending
+
+  Scenario: an empty pop reconciles to no-work
+    Given a queued BuildRun whose ticket field is unfilled because the pop never claimed anything
+    When recovery replays the pop and the replay returns an explicit empty result
+    Then the BuildRun transitions to no-work
+    And no work is invented for it and nothing is classified as issued

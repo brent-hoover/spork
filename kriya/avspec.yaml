@@ -156,7 +156,7 @@ requirements:
         statement: Decomposition creates a spike/research ticket per identified risk, labeled with the risk/spike convention, blocking every ticket that depends on the risk's answer.
         test: verification/REQ-risk-first.feature#each risk becomes a blocking spike
       - id: AC-risk-order
-        statement: "Spike tickets are immediately workable and surface first by construction: decomposition creates every spike ticket before any implementation ticket, so under the tracker's FIFO pop an open spike is always strictly older than the work it gates — no tracker-side priority is assumed."
+        statement: "Spike tickets are immediately workable and surface first by construction: the assignment phase assigns every spike ticket before any implementation ticket, and sutra's pop is FIFO on assignment order, so an open spike always pops ahead of the work it gates — no tracker-side priority is assumed."
         test: verification/REQ-risk-first.feature#spikes surface ahead of ordinary work
       - id: AC-risk-retire
         statement: A spike closes through sutra's own gate — its documented finding is submitted as a document-deliverable Review on the spike ticket, and approval closes the spike and unblocks dependents; the risk is retired by approved evidence, not assertion.
@@ -180,7 +180,7 @@ requirements:
         statement: "A popped ticket binds by the state-aware precedence algorithm: the deepest unstamped superseded row mid-retirement; the nearest predecessor row while the head is unactivated (an unactivated head never binds); the activated head's own row; a ticket living only in consumed rows binds the nearest consumed row's plan — the decomposition that produced its ACs, never a head that omitted it. Binding stamps every walked-past row."
         test: verification/REQ-parallel-build.feature#binding follows the state-aware precedence
       - id: AC-pop-reconcile
-        statement: Recovery reconciles every queued BuildRun with an unfilled ticket by pop replay before any ownership classification, so retirement never misclassifies an in-flight claim.
+        statement: "Recovery reconciles every queued BuildRun with an unfilled ticket by pop replay before any ownership classification: a replay returning the claimed ticket binds it as issued work, while a replay proving no claim occurred transitions the row to no-work — an in-flight claim is never misclassified, and an empty pop is never invented into work."
         test: verification/REQ-parallel-build.feature#queued pops reconcile before classification
   - id: REQ-workspaces
     title: Isolated workspace (worktree/branch) per ticket
@@ -341,7 +341,7 @@ requirements:
         statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review pass, mutation, PO validation — passes again at the new head commit, going through sutra's resubmit path and incrementing the revision.
         test: verification/REQ-submit-review.feature#rework routes back by session
       - id: AC-submit-merge
-        statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review and merges only when the current revision's verdict is still approved and its pinned commit equals the branch head — then exactly once; a replayed or duplicate event never double-merges, and any mismatch surfaces instead of merging."
+        statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review, and what merges is the immutable commit pinned by the still-approved current revision — never the mutable branch reference — so the branch advancing after the check cannot change what lands; the merge happens exactly once, a replayed or duplicate event never double-merges, and any mismatch surfaces instead of merging."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
         statement: After a successful merge kriya transitions the ticket to complete through sutra, which itself enforces the approved-review gate; the workspace then becomes eligible for cleanup.
@@ -353,7 +353,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: When every ticket of the activated head plan is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the head generation it was earned under, and the stamp is a CAS against that generation still being current — a delayed approval from an older head surfaces instead of stamping. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history.
+        statement: When every ticket of the activated head plan is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every ticket reopen — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history.
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -611,13 +611,20 @@ data:
         around every sutra call — review-submitted before the epic
         close, closing around the close call, complete once the epic
         closed, reopening around a reopen — so crash recovery resumes
-        the exact step. Stamping completed is a CAS that requires the
-        PlanHead generation to still equal completed_generation: a
-        delayed approval earned under an older head can never stamp a
-        newer, unfinished head complete — it surfaces instead. A
+        the exact step. The claim binds to a completion_epoch — a
+        counter this row advances atomically on EVERY supersession and
+        EVERY ticket reopen (reopens do not move the PlanHead
+        generation, so the generation alone cannot fence them).
+        Stamping completed is a CAS that requires completion_epoch to
+        still equal the epoch recorded at review submission, and before
+        closing and stamping kriya revalidates that every ticket of the
+        activated head plan is still complete: a delayed approval
+        earned before a reopen or supersession can never stamp an
+        unfinished target complete — it surfaces instead. A
         supersession installing a new head, or a completed ticket
-        reopening, atomically clears completed, records the reopening
-        state, and reopens the epic through sutra, so popping resumes.
+        reopening, atomically advances the epoch, clears completed,
+        records the reopening state, and reopens the epic through
+        sutra, so popping resumes.
         Plans and runs reach the epic through their target key, never
         a second copy of it.
       fields:
@@ -627,7 +634,8 @@ data:
         - { name: completion_state, type: enum, required: true, values: [none, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
-        - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about; the completed CAS requires it to still be current
+        - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
+        - { name: completion_epoch, type: integer, required: true }  # init 0; advanced atomically on every supersession and every ticket reopen; the completed CAS requires the epoch recorded at review submission to still be current
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
@@ -1108,11 +1116,23 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-learning
       name: Learning
-      description: project_key is present exactly when scope is project — a project learning without its key is rejected at write time.
+      description: >-
+        project_key is present exactly when scope is project — a project
+        learning without its key is rejected at write time. Matching for
+        feed-forward runs on the module and pattern tags; provenance is
+        explicit via source_kind plus its reference fields — captured
+        learnings carry the run, commit, and originating finding or
+        event, operator entries carry source_kind operator and no run.
       fields:
         - { name: scope, type: enum, required: true, values: [project, global] }
         - { name: project_key, type: string }  # required when scope is project, absent when global — enforced at write time (the format cannot express conditional requiredness)
         - { name: lesson, type: string, required: true }
+        - { name: module, type: string }  # matching tag — target-spec module id the lesson concerns
+        - { name: pattern, type: string }  # matching tag — the failure pattern the lesson concerns
+        - { name: source_kind, type: enum, required: true, values: [review-finding, gate-failure, sa-direction, po-rejection, operator] }
+        - { name: source_run, type: ref, ref: ENT-build-run }  # absent exactly when source_kind is operator
+        - { name: source_commit, type: string }  # full object id the correction landed on
+        - { name: source_ref, type: string }  # the finding, gate result, or event that produced it
         - { name: source_session, type: string }
         - { name: created, type: datetime, required: true }
     - id: ENT-context-bundle

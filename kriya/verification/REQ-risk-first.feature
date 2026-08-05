@@ -12,9 +12,9 @@ Feature: Risk-first planning
     And tickets not depending on the risk are not blocked by it
 
   Scenario: spikes surface ahead of ordinary work
-    Given decomposition created every spike ticket before any implementation ticket
-    When an agent pops work under the tracker's FIFO ordering
-    Then an open spike is strictly older than the work it gates and is received first
+    Given the assignment phase assigned every spike ticket before any implementation ticket
+    When an agent pops work under the tracker's FIFO-on-assignment ordering
+    Then an open spike pops ahead of the work it gates
     And no tracker-side priority mechanism is assumed
 
   Scenario: a finding retires the risk and unblocks dependents
