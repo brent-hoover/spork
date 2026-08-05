@@ -235,9 +235,13 @@ data:
         resumes mid-sequence. Plans have a lifecycle: at most one ACTIVE
         plan exists per (project, normalized target_spec); a new
         decomposition begins by atomically marking the previous plan
-        superseded and idempotently unassigning its still-assigned,
-        unfinished tickets — removing them from the work stack — before
-        its own phases run. Builds already popped finish under their
+        superseded and idempotently retiring its unfinished tickets:
+        unassigning them AND setting their status to deferred. Because
+        pop eligibility requires status open, the deferred status is the
+        durable fence — even an in-flight assignment from a crashed
+        worker that lands afterwards cannot make a deferred ticket
+        poppable. The PM's reconciliation reopens exactly what the new
+        plan carries forward, before its own phases run. Builds already popped finish under their
         pinned snapshots; the superseded tickets stay in the tracker for
         the PM to reconcile into the new plan. Supersession is fenced the
         same way claim resolution is: it proceeds only when the prior
@@ -245,8 +249,9 @@ data:
         workers are the process's own tasks, and a crash kills them all),
         and every decomposition worker re-checks that its plan is still
         active in the same transaction that records each step, halting
-        when superseded — so no old-plan assignment can land after the
-        replacement's unassignment pass. Execution runs in PLAN-WIDE phases, not
+        when superseded — so no live worker assigns after supersession — and the
+        deferred-status fence covers the dead worker's in-flight
+        requests. Execution runs in PLAN-WIDE phases, not
         merely per ticket: every creation completes, then every label and
         relation across all tickets, and only then any assignment.
         Because pop eligibility requires assignment, the phase barrier
