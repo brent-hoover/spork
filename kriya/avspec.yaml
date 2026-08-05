@@ -218,6 +218,7 @@ data:
         - { name: ticket, type: string }  # tracker id, filled from the creation return
         - { name: state, type: enum, required: true, values: [pending, in-progress, complete, awaiting-operator] }  # per-row progress through the phased sequence; failures land here durably
         - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
+        - { name: defer_generation, type: integer, required: true }  # starts at 0 at row creation; durably incremented as its own atomic row update after each defer conflict-and-fresh-read, BEFORE the next attempt issues; scopes the defer idempotency key so a 409 retry never replays the cached conflict
         - { name: consumed, type: datetime }  # neutral consumption stamp written by a successor plan's retirement pass (or by the bind transaction for walked-past rows); a consumed row no longer participates in binding rule (1)
         - { name: disposition, type: enum, values: [retired, carried-forward, bound, completed] }  # written with consumed: retired = drained, unassigned, and deferred; carried-forward = unclaimed and re-listed by the successor; bound = a build had already bound this ticket (the build's own refs are authoritative); completed = the ticket was already done
     - id: ENT-spec-snapshot
@@ -245,14 +246,16 @@ data:
         decrements it in the same transaction that moves the PlanHead,
         each write bumping version. The orchestrator never writes it;
         the planner exposes an admission guard that the orchestrator
-        invokes inside its BuildRun-creating transaction, CAS-asserting
-        unactivated_heads == 0 against an unchanged version — so an
-        admission that observed a stale fence and any concurrent head
-        transition conflict on version and exactly one commits.
-        Ownership is respected: the guard only reads and asserts;
-        every write happens in planner head-transition transactions,
-        and the orchestrator reaches the guard through its existing
-        planner import.
+        invokes inside its BuildRun-creating transaction, and the guard
+        WRITES: it CAS-increments version conditional on
+        unactivated_heads == 0 and the version it read — a read-only
+        assertion could still commit beside a concurrent replacement,
+        so the guard's conditional write is what makes admission and
+        any head transition genuine write-write conflicts on the same
+        row, of which exactly one commits. Ownership is respected: the
+        guard is planner code, so every fence write still happens in
+        the planner; the orchestrator reaches the guard through its
+        existing planner import.
       fields:
         - { name: singleton_key, type: string, required: true, unique: true }  # constant — exactly one row, created at store bootstrap
         - { name: unactivated_heads, type: integer, required: true }
@@ -468,6 +471,7 @@ data:
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
         - { name: state, type: enum, required: true, values: [pending, active, superseded, awaiting-operator] }  # pending until the predecessor's retirement completes; awaiting-operator records a lost supersession CAS or unrecoverable phase failure
         - { name: activated, type: datetime }  # persisted at the pending -> active transition and never cleared; binding authority keys off this, not the state label, so a head parked awaiting-operator still resolves deterministically
+        - { name: abandoned, type: datetime }  # operator verdict on an unactivated awaiting-operator head: one atomic transaction stamps this, marks the plan superseded (superseded_by absent, error retained), rolls head.current back to the last activated predecessor with a generation bump, and decrements the fence's unactivated_heads — the counter can never stay positive indefinitely because the operator's only alternatives are resume (retirement completes, activation decrements) or abandon (this rollback decrements)
         - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
         - { name: predecessor, type: ref, ref: ENT-plan }  # the plan this one supersedes; persisted at creation so retirement is resumable
         - { name: superseded_by, type: ref, ref: ENT-plan }  # stamped by the supersession CAS — the one successor allowed to activate
