@@ -285,9 +285,16 @@ data:
         has moved since), and awaiting-operator is preserved and
         reported, never silently resumed past an unrecoverable failure.
         Only a request whose key resolves to NO existing row proceeds
-        to the replacement CAS, so only a DISTINCT competing candidate
-        can lose it and land awaiting-operator; a same-key retry is
-        never a competitor in any state. Bootstrap is the degenerate case of the same
+        to insert-and-CAS — and because two concurrent requests can
+        both observe no row, EVERY conflict on that path (the plan
+        insert's key-uniqueness violation or the head CAS losing) is
+        followed by re-resolving decomposition_key before any verdict:
+        finding a row for the SAME key means a twin won, and the
+        request resumes it state-aware exactly as above; only when
+        re-resolution shows a DIFFERENT key's plan holds the head does
+        competing-candidate handling apply and the loser land
+        awaiting-operator. A same-key retry is never a competitor in
+        any state, whether it arrived before or raced the winner. Bootstrap is the degenerate case of the same
         transaction: a target with no head yet creates the pending plan
         and INSERTS its PlanHead row atomically — target_key's uniqueness
         makes the insert the CAS, so a concurrent first decomposition
@@ -370,11 +377,15 @@ data:
         is visible to this fence. New pops cannot originate inside the window at all:
         BuildRun write-ahead creation lives in the same durable store
         as PlanHead, and the creating transaction is REFUSED (the
-        worker retries after activation) while any head of the pop's
-        project holds an unactivated current plan — so every claim is
-        either created before the window and drained by the recheck, or
-        created after activation and resolved by rule 3; no claim can
-        straddle activation. Activation therefore happens only
+        worker retries after activation) while ANY head in the store
+        holds an unactivated current plan — the fence is deliberately
+        GLOBAL because sutra's pop is identity-wide and accepts no
+        project filter, so the eventual ticket's project is unknowable
+        before the pop returns; unactivated windows are rare and short
+        (one replacement in flight), making the coarse fence cheap. So
+        every claim is either created before the window and drained by
+        the recheck, or created after activation and resolved by rule
+        3; no claim can straddle activation. Activation therefore happens only
         when NO claimed-but-unbound pop against a predecessor ticket
         exists; a crashed build worker replaying its bind after
         activation finds its BuildRun already bound (binding is
