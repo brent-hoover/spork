@@ -23,8 +23,9 @@ defect: report it, don't improvise around it.
 2. `project.description` + `constitution` — the envelope facts and the
    rules every line of code must obey.
 3. `project.stack` — languages, frameworks, store, and the exact
-   `commands` for install/test/lint/typecheck. Use these commands, not
-   your habits.
+   `commands` for install/test/lint/typecheck — plus `coverage` (branch
+   coverage, every conditional arm) and `mutation` (proves the tests
+   test) when declared. Use these commands, not your habits.
 4. `data.entities` — the schema. Field types are the neutral vocabulary
    (string, integer, decimal, boolean, datetime, date, uuid, json, enum,
    ref); map them to the stack's types yourself.
@@ -62,6 +63,10 @@ mechanically:
    graph is your build order.
 3. After every change run the spec's own commands: `test`, `lint`,
    `typecheck` (and `arch` if declared). Green before moving on.
+   `coverage` and `mutation` are the FINAL gates: run both after the
+   acceptance suite passes and before declaring any module or the build
+   done — they are slower, but skipping them is skipping the definition
+   of done.
 4. Re-run `avspec verify <dir>` whenever you touch the spec directory
    itself (new contract operations, etc.). It must stay green.
 
@@ -69,7 +74,7 @@ mechanically:
 
 - Every scenario referenced by every `AC-*` passes under the declared
   runner.
-- All `stack.commands` exit 0.
+- All `stack.commands` exit 0 — including `coverage` and `mutation`.
 - `avspec verify <dir>` exits 0.
 - No import violates a boundary; no entity is touched outside its owner.
 

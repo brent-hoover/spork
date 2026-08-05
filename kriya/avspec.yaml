@@ -177,10 +177,12 @@ modules:
 
 # Kriya's store is the observability plane: the TUI reads it live and it is
 # the post-mortem record of every build. The ENTIRE store is durable across
-# restarts; within it, four entities are operational — they drive behavior
-# after a restart, not just explain it: BuildRun (crash recovery),
-# ReviewRound and EnqueueAttempt (the write-ahead review protocol), and
-# Learning (the point of the exercise). Sutra remains the system of record
+# restarts; within it, the operational entities — those that drive
+# behavior after a restart, not just explain it — are BuildRun (crash
+# recovery), ReviewRound and EnqueueAttempt (the write-ahead review
+# protocol), Plan, PlannedTicket, SpecSnapshot, and SpecMapping (the
+# write-ahead decomposition and pinned-spec protocol), and Learning (the
+# point of the exercise). Sutra remains the system of record
 # for the work itself; tracker-side records are referenced by opaque ids.
 data:
   entities:
