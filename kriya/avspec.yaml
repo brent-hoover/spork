@@ -120,7 +120,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-spec-mapping, ENT-spec-snapshot]
+    owns: [ENT-plan, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -184,6 +184,15 @@ modules:
 # for the work itself; tracker-side records are referenced by opaque ids.
 data:
   entities:
+    - id: ENT-planned-ticket
+      name: PlannedTicket
+      description: Write-ahead definition of one ticket of a decomposition — persisted before any tracker call so recovery can replay the exact request.
+      fields:
+        - { name: plan, type: ref, ref: ENT-plan, required: true }
+        - { name: ordinal, type: integer, required: true }
+        - { name: payload, type: json, required: true }
+        - { name: idempotency_key, type: string, required: true, unique: true }  # derived from (decomposition_key, ordinal)
+        - { name: ticket, type: string }  # tracker id, filled from the creation return
     - id: ENT-spec-snapshot
       name: SpecSnapshot
       description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree.
@@ -212,9 +221,13 @@ data:
         ticket-creation request carries a deterministic idempotency key
         derived from (decomposition_key, ticket ordinal), so a crash or
         concurrent retry replays into the same sutra tickets instead of
-        duplicating them, per CON-idempotent-mutations.
+        duplicating them, per CON-idempotent-mutations. The write-ahead
+        payload lives in PlannedTicket rows — ordinal, full creation
+        payload, and derived key persisted before any call, with the
+        returned tracker id filled per row — so recovery replays the
+        exact requests from durable state.
       fields:
-        - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, spec_hash) — the write-ahead idempotency handle for the whole decomposition
+        - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
         - { name: project_key, type: string, required: true }
@@ -234,9 +247,9 @@ data:
         plan) or multiple matches leaves plan absent and the build
         proceeds regardless. The snapshot is stricter than the lineage:
         one match inherits its plan's spec_hash; multiple matches inherit
-        only when every matching plan pins the SAME spec_hash, and
-        disagreement routes to awaiting-operator rather than fresh-
-        pinning — a planned ticket never silently builds against a spec
+        only when every matching plan agrees on spec_hash, project, and
+        normalized target_spec path, and any disagreement routes to
+        awaiting-operator rather than fresh-pinning — a planned ticket never silently builds against a spec
         other than the one that produced its ACs. The build otherwise
         proceeds, since the ticket itself carries the ACs and
         target_spec is persisted on the row at bind time — from the
