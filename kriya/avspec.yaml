@@ -36,7 +36,7 @@ constitution:
   - id: CON-pair-programming
     statement: Work moves in small commits with review latency measured in minutes, not as end-stage pull requests.
   - id: CON-gate-chain
-    statement: "The gate chain is inviolable and no agent may skip a stage: review pass -> mutation testing -> product-owner validation -> sutra Review approval -> merge."
+    statement: "The gate chain is inviolable and no agent may skip a stage: review pass -> mutation testing -> product-owner validation -> sutra Review approval -> merge. The chain governs code deliverables; research and spike tickets carry a DOCUMENT deliverable and traverse the research path instead — documented finding -> document Review -> human approval -> close — with no code gates to skip because none apply."
   - id: CON-role-separation
     statement: The system architect never writes code; the coding agent never decides scope; scope decisions escalate to the operator; the product owner alone holds the big picture.
   - id: CON-buy-over-build
@@ -359,7 +359,7 @@ requirements:
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
         test: verification/REQ-run-to-complete.feature#supersession moves the finish line
       - id: AC-complete-stall
-        statement: When nothing is workable, nothing is in flight, and the epic still cannot close, the stall surfaces to the operator with its cause — never silent spinning, never a false done.
+        statement: When nothing is workable, nothing is in flight, and the epic still cannot close, a durable Stall row records the condition and its cause and surfaces in the operator inbox; resolution stamps it — never silent spinning, never a false done.
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
       - id: AC-complete-status
         statement: Build and run state — including the durable completion declaration — is inspectable from the CLI, machine-readably with --json, so agents and scripts can read kriya without the TUI.
@@ -415,7 +415,7 @@ modules:
   - id: MOD-orchestrator
     name: orchestrator
     responsibility: The outer loop as a deterministic state machine — pops tickets, advances BuildRun states from an explicit state table, delegates every stage; no judgment, no agent conversations.
-    owns: [ENT-build-run, ENT-agent-invocation]
+    owns: [ENT-build-run, ENT-agent-invocation, ENT-stall]
     boundaries: { may_import: [MOD-planner, MOD-workspace, MOD-dev-loop, MOD-gates, MOD-owner, MOD-tracker-client] }
   - id: MOD-workspace
     name: workspace
@@ -500,7 +500,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-review-round.enqueue_state, ENT-review-round.claimed_at]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-stall.cause, ENT-stall.state]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
@@ -605,12 +605,21 @@ data:
         this row, which is why tickets never re-parent. Build-level
         completion lives here as a write-ahead lifecycle, not a bare
         timestamp: when every ticket of the activated head plan is
-        complete, kriya first records review-submitting — carrying a
-        deterministic completion submission key and the completion-report
-        doc version — BEFORE the review-create call; sutra reviews are
-        session-searchable, so recovery from review-submitting queries by
-        that key and ADOPTS an already-created review instead of
-        submitting twice, and only a proven-absent review is resubmitted.
+        complete, kriya first records review-submitting — rotating the
+        ENTIRE claim-field set (submission key, report doc, review id and
+        revision, claim epoch) transactionally as one unit for THIS
+        attempt; the submission key is derived deterministically from
+        (target_key, completion_epoch), so it is epoch-scoped — BEFORE
+        the review-create call; sutra reviews are session-searchable, so
+        recovery from review-submitting queries by that key and ADOPTS an
+        already-created review instead of submitting twice, and only a
+        proven-absent review is resubmitted. Because the key embeds the
+        epoch, recovery can never adopt a PRIOR epoch's approved review:
+        after a reopen or supersession advances the epoch, recompletion
+        is a NEW attempt with a new key, a new review, and fresh human
+        approval — an old approval never authorizes newly added work.
+        The fields are immutable within an attempt and rotated only by
+        the next attempt's review-submitting transaction.
         The recorded review's id and revision land with the PlanHead
         generation the claim is about (completed_generation), and
         completion_state advances around every sutra call — closing
@@ -658,7 +667,7 @@ data:
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
         - { name: completion_state, type: enum, required: true, values: [none, review-submitting, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step; also the per-target SERIALIZER — a new close or reopen is issued only after the in-flight operation's outcome is durably resolved
-        - { name: completion_submission_key, type: string }  # immutable deterministic idempotency key; populated transactionally on entering review-submitting — recovery reconstructs and reconciles the exact request from it
+        - { name: completion_submission_key, type: string }  # deterministic per (target_key, completion_epoch) — epoch-scoped; immutable within an attempt, rotated with the whole claim-field set when a new epoch's attempt enters review-submitting
         - { name: completion_report_doc, type: string }  # opaque doc-version id of the completion report; populated with the submission key
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
@@ -988,7 +997,7 @@ data:
         - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets pinned fresh at bind — builds and recovery always execute against the stored SpecSnapshot, so later edits never change a running or planned build
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
-        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
+        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged; research runs traverse research-loop -> finding-submitted -> closed (the document path CON-gate-chain carves out — no code gates apply)
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }
@@ -1014,6 +1023,19 @@ data:
         - { name: ticket, type: string, required: true }
         - { name: created, type: datetime, required: true }
         - { name: removed_at, type: datetime }
+    - id: ENT-stall
+      name: Stall
+      description: >-
+        Durable record of a build stall — nothing workable, nothing in
+        flight, epic cannot close. Created when the orchestrator detects
+        the condition, carrying its cause; it is what the operator inbox
+        lists, and resolution stamps it rather than deleting it.
+      fields:
+        - { name: target_key, type: string, required: true }
+        - { name: cause, type: string, required: true }
+        - { name: state, type: enum, required: true, values: [open, resolved] }
+        - { name: created, type: datetime, required: true }
+        - { name: resolved, type: datetime }
     - id: ENT-agent-invocation
       name: AgentInvocation
       description: >-
@@ -1193,15 +1215,17 @@ data:
         project_key is present exactly when scope is project — a project
         learning without its key is rejected at write time. Matching for
         feed-forward runs on the module and pattern tags; provenance is
-        explicit via source_kind plus its reference fields — captured
-        learnings carry the run, commit, and originating finding or
-        event, operator entries carry source_kind operator and no run.
+        explicit via source_kind plus its reference fields — for every
+        captured kind, source_run, source_commit, and source_ref are
+        required and operator entries carry none of them; both
+        constraints are enforced at write time (the format cannot
+        express conditional requiredness).
       fields:
         - { name: scope, type: enum, required: true, values: [project, global] }
         - { name: project_key, type: string }  # required when scope is project, absent when global — enforced at write time (the format cannot express conditional requiredness)
         - { name: lesson, type: string, required: true }
-        - { name: module, type: string }  # matching tag — target-spec module id the lesson concerns
-        - { name: pattern, type: string }  # matching tag — the failure pattern the lesson concerns
+        - { name: module, type: string, required: true }  # matching tag — target-spec module id the lesson concerns
+        - { name: pattern, type: string, required: true }  # matching tag — the failure pattern the lesson concerns
         - { name: source_kind, type: enum, required: true, values: [review-finding, gate-failure, sa-direction, po-rejection, operator] }
         - { name: source_run, type: ref, ref: ENT-build-run }  # absent exactly when source_kind is operator
         - { name: source_commit, type: string }  # full object id the correction landed on

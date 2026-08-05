@@ -67,7 +67,16 @@ Feature: Run to complete
     When the status command runs with --json
     Then the same state is emitted machine-readably for agents and scripts
 
+  Scenario: recompletion needs a fresh review
+    Given a completed target whose epoch advanced after a ticket reopened and new work merged
+    When every head-plan ticket is complete again
+    Then a new completion attempt rotates the whole claim-field set with a key derived from the new epoch
+    And a new build-completion review is submitted for fresh human approval
+    And recovery can never adopt the prior epoch's approved review — its key names the old epoch
+
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close
-    Then the stall surfaces to the operator naming its cause
+    Then a durable Stall row records the condition and its cause
+    And the stall appears in the operator inbox from that row
+    And resolution stamps the row rather than deleting it
     And kriya neither spins nor declares the build done

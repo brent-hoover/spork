@@ -20,10 +20,13 @@ Feature: Parallel build with deterministic pop binding
     And no claim remains without a BuildRun that owns it
 
   Scenario: the pop fence holds until activation
-    Given a replacement has incremented the fence and the new head has not yet activated
-    When an agent attempts to pop
-    Then admission is refused by a CAS write on the fence, not a read-assert
-    When the head activates and decrements the fence
+    Given an agent read the fence at version V with the unactivated-heads counter at zero
+    When a replacement transaction concurrently increments the counter and the fence version
+    And the agent attempts admission using its stale read
+    Then the admission CAS on the fence version fails — a plain read-assert would have admitted it
+    When the agent retries against the fresh fence while the head is still unactivated
+    Then admission is refused because the counter is nonzero
+    When the head activates and decrements the counter
     Then the retried pop succeeds
 
   Scenario: binding follows the state-aware precedence
