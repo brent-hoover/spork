@@ -88,10 +88,11 @@ Feature: Review submission and merge
 
   Scenario: an ABA base move cannot smuggle a differently-based review
     Given the run's chain was gated at default head "D1"
-    And the default branch moved to "D2" when the review was submitted, pinning base commit "D2", then moved back to "D1"
-    When the approval event is processed
-    Then the preflight fails — the approved revision's pinned base "D2" does not equal the gated base "D1"
+    And the default branch moved to "D2" by the time the review was submitted
+    When the submission returns pinning base commit "D2"
+    Then the attempt aborts immediately — before any human reviews the mismatched diff — and that review is abandoned, never consumed
     And the run integrates, reruns the full chain, and submits a fresh review
+    And the merge preflight rechecks the same base equality as defense in depth
 
   Scenario: an attempt rerun never reuses stale passes
     Given integration of a new base left the branch head unchanged

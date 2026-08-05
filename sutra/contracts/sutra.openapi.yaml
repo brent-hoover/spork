@@ -1712,7 +1712,7 @@ components:
         updated: { type: string, format: date-time }
         subtree_revision:
           type: integer
-          description: Incremented atomically on the issue and every ancestor by each status transition or child attachment in its subtree.
+          description: Incremented atomically on the issue and every ancestor by each status transition, child attachment, or child removal in its subtree — removal increments the former parent's chain.
 
     NewIssue:
       type: object

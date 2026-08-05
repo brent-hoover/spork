@@ -85,6 +85,9 @@ Feature: Spec decomposition
     Given a head plan parked awaiting-operator after activation
     When the operator restores it
     Then it returns to active with ticket-row states recomputed from per-step progress
-    Given a non-head candidate parked after losing the replacement CAS
+    Given a non-head candidate parked after losing the replacement CAS, still generation-eligible
     When the operator retries it
     Then it re-enters the replacement CAS and on winning atomically repoints its predecessor to the head it beat
+    Given a parked candidate whose intake generation the head has since outrun
+    Then it transitions durably to terminal historical when the ineligibility is first observed
+    And it leaves the inbox's actionable set — adopting its decomposition again requires a fresh intake
