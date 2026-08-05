@@ -566,6 +566,7 @@ data:
         - { name: mapping_key, type: string, required: true, unique: true }  # derived hash of (project_key, normalized target_spec) — seeding upserts, so replanning the same spec never duplicates a row
         - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
+        - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot for this mapping, refreshed by each intake and each plan's seeding — the ONLY snapshot an unplanned bind may use
         - { name: updated, type: datetime, required: true }
     - id: ENT-pop-fence
       name: PopFence
@@ -628,10 +629,11 @@ data:
         the next attempt's review-submitting transaction — with ONE
         in-attempt exception: a changes-requested verdict on the
         completion review takes the rework path, itself write-ahead:
-        review-resubmitting is recorded FIRST — carrying a
-        revision-scoped resubmission key derived from (submission key,
-        next revision) and the pending report content reference —
-        before the new doc version or the sutra resubmission exists;
+        review-resubmitting is recorded FIRST — persisting
+        completion_resubmission_key, derived from (submission key,
+        next revision), and completion_pending_report, the prepared
+        report content reference — before the new doc version or the
+        sutra resubmission exists;
         recovery from review-resubmitting reads the review's current
         revision and reconciles (a landed resubmission is adopted, an
         absent one replayed under the same key), and only then are
@@ -699,6 +701,8 @@ data:
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every ticket reopen
+        - { name: completion_resubmission_key, type: string }  # revision-scoped, derived from (submission key, next revision); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
+        - { name: completion_pending_report, type: string }  # reference to the prepared report content, persisted BEFORE the doc version exists; reconciled into completion_report_doc on success
         - { name: completion_subtree_revision, type: integer }  # the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
@@ -1024,7 +1028,7 @@ data:
         - { name: pop_key, type: string, required: true, unique: true }  # deterministic idempotency key persisted before the pop; replayed on recovery
         - { name: identity, type: string, required: true }  # the agent identity popped as — persisted pre-pop so replay hits the same stack even if configuration changes
         - { name: target_spec, type: string }  # gate-chain context, persisted at bind — from the plan, else the project-to-spec registry; unresolvable or ambiguous -> awaiting-operator
-        - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets pinned fresh at bind — builds and recovery always execute against the stored SpecSnapshot, so later edits never change a running or planned build
+        - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets taken from the mapping's intake-pinned spec_hash — NEVER read fresh from the working tree, and a mapping without one parks the run awaiting-operator (explicit intake is the remedy) — so builds and recovery always execute against a stored, intake-approved SpecSnapshot
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged; research runs traverse research-loop -> finding-submitted -> closed (the document path CON-gate-chain carves out — no code gates apply)

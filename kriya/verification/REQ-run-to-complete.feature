@@ -21,10 +21,19 @@ Feature: Run to complete
 
   Scenario: a rejected completion review reworks within its attempt
     Given a build-completion review receives changes-requested
-    When kriya regenerates the completion report
+    When kriya records review-resubmitting — persisting the revision-scoped resubmission key and the pending report reference before any external call
+    And kriya regenerates the completion report
     Then the resubmission goes through sutra's resubmit path with a new document version
-    And completion_report_doc and completion_revision update transactionally within the same attempt — key and epoch unchanged
+    And completion_report_doc and completion_revision update transactionally within the same attempt — key and epoch unchanged — and the pending fields reconcile
     And the epic closes on the new revision's approval, never stranding the target
+
+  Scenario: rework crash windows recover exactly once
+    Given review-resubmitting was recorded and the crash hit before the new document version existed
+    When recovery runs
+    Then the pending report reference replays document creation and the resubmission under the persisted key
+    Given the crash hit after sutra accepted the resubmission but before the fields updated
+    When recovery reads the review's current revision
+    Then the landed resubmission is adopted and the fields reconcile — nothing double-submits, nothing is lost
 
   Scenario: completion is the head plan done and the epic closable
     Given the activated head plan bears its completed stamp

@@ -21,17 +21,24 @@ Feature: Review submission and merge
 
   Scenario: approval merges exactly once
     Given a review enters approved and the event is published
+    And the branch head still equals the approved current revision's pinned commit
     When kriya consumes the event
     Then it re-reads the review before acting
-    And the merge requires the branch head to still equal the still-approved current revision's pinned commit
     And what merges is that immutable pinned commit, never the mutable branch reference
-    And commits pushed to the branch after the check cannot change what lands
     And the merge happens exactly once
-    Given the branch head moved past the pinned commit before processing
-    Then nothing merges and the unreviewed-commits mismatch surfaces
     When the same approval event is replayed
     Then no second merge occurs
-    Given the verdict was reversed since the event was published
+
+  Scenario: a moved head refuses the merge
+    Given a review enters approved and the event is published
+    And the branch head moved past the pinned commit before kriya processes the event
+    When kriya consumes the event
+    Then nothing merges and the unreviewed-commits mismatch surfaces
+
+  Scenario: a reversed verdict refuses the merge
+    Given a review enters approved and the event is published
+    And the verdict is reversed to changes-requested before kriya processes the event
+    When kriya consumes the event and re-reads the review
     Then no merge happens and the mismatch surfaces
 
   Scenario: merge completes the ticket through sutra
@@ -42,8 +49,15 @@ Feature: Review submission and merge
     Then the transition goes through sutra, which enforces its approved-review gate
     And the completed head commit is durably recorded
     And the run's workspace becomes eligible for cleanup
-    Given the branch head moved past the merged commit before completion
+
+  Scenario: a pre-completion head advance returns the run to review
+    Given the branch merged successfully
+    And a commit landed on the branch before kriya's completion check
+    When kriya re-reads the branch head
     Then the ticket is not completed and the run returns to the pair loop and resubmission path for the unreviewed commits
     And no work is stranded on a terminal run
-    Given an out-of-band commit lands on the branch after completion
+
+  Scenario: a post-completion advance surfaces to the operator
+    Given the ticket completed with its head commit durably recorded
+    When an out-of-band commit lands on the branch afterward
     Then the advance is detected against the recorded head commit and surfaces to the operator with sutra's reopen path

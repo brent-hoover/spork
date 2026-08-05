@@ -267,7 +267,7 @@ requirements:
     title: "Issue statuses: open, in-progress, blocked, deferred, complete"
     acceptance:
       - id: AC-status-set
-        statement: Transitions among open, in-progress, blocked, and deferred are free and recorded as events; only complete is gated (approved review, and no child in open, in-progress, or blocked — deferred children do not block). The blocked status is a judgment, independent of the blocks-relation workability machinery.
+        statement: Transitions among open, in-progress, blocked, and deferred are free and recorded as events; only complete is gated (approved review, and no descendant at any depth in open, in-progress, or blocked — deferred nodes do not block, but active work beneath them does). The blocked status is a judgment, independent of the blocks-relation workability machinery.
         test: verification/REQ-status-workflow.feature#free transitions are recorded
       - id: AC-status-reopen
         statement: A complete issue can be reopened to open, recorded as an event; its closing review stays in history.

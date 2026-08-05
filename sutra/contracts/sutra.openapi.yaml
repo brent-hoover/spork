@@ -357,10 +357,14 @@ paths:
         '409':
           description: >-
             The transition is rejected: closing without an approved review, an
-            open child holding the parent open, or the issue's project being
+            active descendant at any depth — including beneath deferred
+            children — holding the issue open, or the issue's project being
             archived.
             An expected_status precondition that does not match the issue's
-            current status also conflicts (AC-status-conditional).
+            current status also conflicts (AC-status-conditional), as does an
+            expected_subtree_revision that does not match the issue's current
+            subtree_revision (AC-subtree-revision) — history-aware, so a
+            descendant that reopened and recompleted still conflicts.
           content:
             application/json:
               schema:
@@ -1596,7 +1600,7 @@ components:
 
     Issue:
       type: object
-      required: [id, number, title, status, project, created, updated]
+      required: [id, number, title, status, project, created, updated, subtree_revision]
       properties:
         id: { type: string, format: uuid }
         number:
