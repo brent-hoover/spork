@@ -120,7 +120,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot]
+    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -213,6 +213,14 @@ data:
         - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
         - { name: updated, type: datetime, required: true }
+    - id: ENT-plan-head
+      name: PlanHead
+      description: The single durable head per decomposition target — successor creation and activation move it by CAS, making the one-active-plan invariant enforceable rather than aspirational.
+      fields:
+        - { name: target_key, type: string, required: true, unique: true }  # derived from (project_key, normalized target_spec)
+        - { name: current, type: ref, ref: ENT-plan, required: true }
+        - { name: generation, type: integer, required: true }
+        - { name: updated, type: datetime, required: true }
     - id: ENT-plan
       name: Plan
       description: >-
@@ -235,9 +243,14 @@ data:
         — so recovery replays the exact sequence from durable state and
         resumes mid-sequence. Plans have a lifecycle: pending -> active ->
         superseded, with at most one ACTIVE plan per (project, normalized
-        target_spec). A replacement plan is created PENDING with a
-        persisted predecessor reference, and supersession itself is a
-        CAS: the predecessor moves active -> superseded with the
+        target_spec). Every (project, normalized target_spec) has ONE
+        durable PlanHead row; creating a replacement is a CAS on that
+        head — from the observed current plan to the new pending plan,
+        incrementing the head's generation — so a request racing on a
+        stale observation (including the window between supersession and
+        activation) loses the CAS and lands awaiting-operator instead of
+        forking an independent successor. Supersession then proceeds as
+        its own CAS: the predecessor moves active -> superseded with the
         successor's id stamped into superseded_by in the same transaction
         — a concurrent would-be successor loses that CAS and durably moves
         to plan state awaiting-operator with the error recorded, so
@@ -248,8 +261,11 @@ data:
         touching ONLY unfinished, unclaimed tickets (completed tickets
         and tickets already claimed by builds are untouched — popped
         builds finish under their pinned snapshots): first each such
-        ticket is set to status deferred (the pop fence lands before
-        anything else), then its pending mutations are drained by
+        ticket is set to status deferred via the tracker's conditional
+        transition (expected status open — a concurrent pop that already
+        claimed the ticket makes the defer fail, and the ticket is then
+        treated as claimed and left untouched), so the pop fence lands
+        before anything else without ever clobbering a live claim; then its pending mutations are drained by
         persisted key, then it is unassigned, with a retired stamp
         written per row so a crash resumes exactly where it stopped. A
         row with no recorded ticket id yet is handled in a fixed order
