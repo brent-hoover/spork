@@ -307,11 +307,14 @@ paths:
       summary: Transition an issue's status
       description: >-
         Transitions among open, in-progress, blocked, and deferred are free and
-        recorded as events; complete is gated on an approved Review — whose
-        current-revision approval is atomically CONSUMED by the successful
-        transition in the same transaction (AC-close-approved), so the
-        authorizing verdict can never be reversed after the close — and a
-        DESCENDANT-AWARE check — rejected while any descendant at any depth,
+        recorded as events; complete is gated on an approved Review NAMED in
+        the request (`review`, required exactly when status is complete): it
+        must belong to the issue, be approved at its current revision, and
+        not be close-used; the successful transition atomically stamps it
+        close-used and freezes its verdict (AC-close-approved) — a
+        merge-time consumption never blocks the close, a spent review never
+        authorizes another one, and a reopened issue closes again only under
+        a fresh approval — plus a DESCENDANT-AWARE check — rejected while any descendant at any depth,
         including beneath deferred children, is open, in-progress, or blocked
         (AC-status-set, AC-status-reopen, AC-parent-close-gate,
         AC-close-approved, AC-close-blocked-without). An issue entering open,
@@ -345,6 +348,10 @@ paths:
                 expected_subtree_revision:
                   type: integer
                   description: Valid only when status is complete; rejected with a conflict if the issue's subtree_revision differs — a history-aware fence.
+                review:
+                  type: string
+                  format: uuid
+                  description: Required exactly when status is complete — the authorizing review; must belong to the issue, be approved at its current revision, and not be close-used.
                 actor: { type: string, format: uuid }
       responses:
         '200':
@@ -359,10 +366,11 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            The transition is rejected: closing without an approved review, an
-            active descendant at any depth — including beneath deferred
-            children — holding the issue open, or the issue's project being
-            archived.
+            The transition is rejected: closing without naming a review that
+            belongs to the issue, is approved at its current revision, and is
+            not already close-used; an active descendant at any depth —
+            including beneath deferred children — holding the issue open; or
+            the issue's project being archived.
             An expected_status precondition that does not match the issue's
             current status also conflicts (AC-status-conditional), as does an
             expected_subtree_revision that does not match the issue's current
@@ -2114,6 +2122,10 @@ components:
         consumed_revision:
           type: integer
           description: The revision whose approval was consumed; present exactly when `consumed` is.
+        close_used:
+          type: string
+          format: date-time
+          description: Stamped atomically by the completion this review authorized; a spent review can never authorize another close. Round-trips through export/import.
         submissions:
           type: array
           description: >-

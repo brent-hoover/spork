@@ -191,7 +191,7 @@ requirements:
     rationale: Work — code or docs, docs especially — is not done until a human has approved the deliverable.
     acceptance:
       - id: AC-close-approved
-        statement: Given an issue with a Review in state approved, transitioning the issue to complete succeeds and atomically consumes that review's current-revision approval in the same transaction — after the close its verdict can no longer change, and a reversal committed first makes the close reject on the missing approval.
+        statement: A transition to complete NAMES its authorizing review, which must belong to the issue, be approved at its current revision, and not already have authorized an earlier close; success atomically stamps it close-used and freezes its verdict (consuming if not already consumed — a merge-time consumption never blocks the close). A reversal committed first, a spent review, or a review of another issue each rejects the close, and a reopened issue can close again only under a fresh approval.
         test: verification/REQ-close-requires-review.feature#approved review allows close
       - id: AC-close-blocked-without
         statement: Given an issue with no Review in state approved, a transition to complete is rejected with an error naming the missing approval.
@@ -499,8 +499,9 @@ data:
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
         - { name: revision, type: integer, required: true }  # 1 on creation, +1 per resubmission; server-managed
-        - { name: consumed, type: datetime }  # stamped by atomic approval consumption; a consumed approval's verdict can no longer change
+        - { name: consumed, type: datetime }  # verdict fence — stamped by atomic approval consumption (merge-time, or by a close if not already stamped; idempotent); a consumed approval's verdict can no longer change
         - { name: consumed_revision, type: integer }  # the revision whose approval was consumed
+        - { name: close_used, type: datetime }  # single-use close authorization — stamped atomically by the successful completion this review authorized; a spent review can never authorize another close, so a reopened issue needs a fresh approval
         - { name: created, type: datetime, required: true }
     - id: ENT-review-submission
       name: ReviewSubmission

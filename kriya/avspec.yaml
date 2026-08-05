@@ -350,7 +350,7 @@ requirements:
         statement: "An approval event is a signal, not an authority: before merging, kriya atomically CONSUMES the approval through sutra — conditional on state approved at the expected current revision, durably fencing any later verdict change — and requires the branch head to still equal that revision's pinned commit — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges; a reversal landing before consumption fails the consumption and nothing merges."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
-        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra, which itself enforces the approved-review gate, and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop instead of completing, and once the gates pass again the new head is submitted as a FRESH review durably recorded on the run (sutra forbids resubmitting an approved review; the consumed one stays in history), so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
+        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra NAMING the merged review as the close's authorizer (sutra stamps it close-used; the merge-time consumption never blocks it), and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop instead of completing, and once the gates pass again the new head is submitted as a FRESH review durably recorded on the run (sutra forbids resubmitting an approved review; the consumed one stays in history), so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
         test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
@@ -671,7 +671,10 @@ data:
         generation, so the generation alone cannot fence them).
         The submission records completion_claim_epoch — an immutable
         copy of the epoch at that moment — beside the review id and
-        revision, and stamping completed is a CAS that requires
+        revision; the epic close names the attempt's completion_review
+        as its authorizer, so sutra spends exactly that approval and a
+        prior epoch's spent review can never close a reopened epic; and
+        stamping completed is a CAS that requires
         completion_epoch to still equal completion_claim_epoch, so the
         comparison survives any number of later advances. The
         client-side read of ticket states is advisory only; the FENCE
@@ -1064,7 +1067,11 @@ data:
         crash-window worktree from the pending row (probe the recorded
         path, adopt what matches, recreate what is absent) and can
         verify the promised base — no orphaned worktree is ever
-        undiscoverable.
+        undiscoverable. The two states recover differently: a PENDING
+        row with no worktree simply recreates (creation never proven),
+        while a CREATED row whose worktree is missing or inconsistent
+        surfaces the discrepancy — proven state has vanished, and
+        silently recreating it would hide whatever destroyed it.
       fields:
         - { name: path, type: string, required: true }
         - { name: branch, type: string, required: true }

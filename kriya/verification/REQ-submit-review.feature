@@ -60,8 +60,8 @@ Feature: Review submission and merge
     Given the branch merged successfully
     When kriya terminates the run's dev session — the branch's only in-protocol writer — before the check
     And kriya re-reads the branch head and it still equals the merged commit
-    And kriya transitions the ticket to complete
-    Then the transition goes through sutra, which enforces its approved-review gate
+    And kriya transitions the ticket to complete naming the merged review as the authorizer
+    Then the transition goes through sutra, which stamps that review close-used — the merge-time consumption never blocks it
     And the completed head commit is durably recorded
     And the run's workspace becomes eligible for cleanup
 

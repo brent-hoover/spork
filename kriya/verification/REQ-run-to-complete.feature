@@ -65,7 +65,7 @@ Feature: Run to complete
     And a crash before the review id lands is recovered by replaying the persisted request under the same submission key — sutra returns the original review if it landed and creates it otherwise, never a second one
     And retired tickets resting deferred under the epic do not block its close
     When the human approves the review
-    Then the epic close is attempted through sutra, whose no-open-children gate is the authoritative check
+    Then the epic close is attempted through sutra naming the attempt's completion review as its authorizer, and sutra's no-open-children gate is the authoritative check
     And after the close succeeds, completion is stamped on the BuildTarget row — a CAS requiring the current epoch to still equal the immutable claim epoch recorded at submission — and popping stops for that target
 
   Scenario: a reopen-and-recomplete before the event is consumed still fences
