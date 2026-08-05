@@ -197,6 +197,7 @@ data:
         - { name: ticket, type: string }  # tracker id, filled from the creation return
         - { name: state, type: enum, required: true, values: [pending, in-progress, complete, awaiting-operator] }  # per-row progress through the phased sequence; failures land here durably
         - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
+        - { name: retired, type: datetime }  # stamped by a successor plan's retirement pass once this ticket is drained, unassigned, and deferred
     - id: ENT-spec-snapshot
       name: SpecSnapshot
       description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree.
@@ -232,11 +233,19 @@ data:
         relations, assignment), and derived per-step idempotency keys,
         all persisted before any call, with returned ids filled per step
         — so recovery replays the exact sequence from durable state and
-        resumes mid-sequence. Plans have a lifecycle: at most one ACTIVE
-        plan exists per (project, normalized target_spec); a new
-        decomposition begins by atomically marking the previous plan
-        superseded and idempotently retiring its unfinished tickets:
-        unassigning them AND setting their status to deferred. Because
+        resumes mid-sequence. Plans have a lifecycle: pending -> active ->
+        superseded, with at most one ACTIVE plan per (project, normalized
+        target_spec). A replacement plan is created PENDING with a
+        persisted predecessor reference; in one transaction the
+        predecessor is marked superseded. The retirement pass then runs
+        durably: each predecessor PlannedTicket is drained (its pending
+        mutations replayed by persisted key) and retired — unassigned AND
+        set to status deferred — with a retired stamp written per row, so
+        a crash resumes retirement exactly where it stopped. Only when
+        every predecessor row carries its stamp does the replacement
+        transition pending -> active, and only an active plan's worker
+        may run creation, wiring, or assignment phases — a crash
+        mid-cleanup can never leave both plans' tickets exposed. Because
         pop eligibility requires status open, the deferred status is the
         durable fence — even an in-flight assignment from a crashed
         worker that lands afterwards cannot make a deferred ticket
@@ -269,7 +278,8 @@ data:
         - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
-        - { name: state, type: enum, required: true, values: [active, superseded] }  # at most one active plan per (project, normalized target_spec); superseding is phase 0 of the replacement decomposition
+        - { name: state, type: enum, required: true, values: [pending, active, superseded] }  # pending until the predecessor's retirement completes; at most one active plan per (project, normalized target_spec)
+        - { name: predecessor, type: ref, ref: ENT-plan }  # the plan this one supersedes; persisted at creation so retirement is resumable
         - { name: project_key, type: string, required: true }
         - { name: created, type: datetime, required: true }
     - id: ENT-build-run
