@@ -64,6 +64,9 @@ Feature: Spec intake
     When a generation-1 plan seed inserts first and the generation-2 intake write arrives after
     Then the mapping converges on generation 2
     And unplanned binds always read the newest intake's snapshot
+    Given a re-intake pins the same content hash a prior intake pinned
+    Then it allocates a fresh, higher generation for the target
+    And a plan still carrying the prior intake's generation cannot regress the mapping, even naming the same hash
 
   Scenario: amended spec pins a new snapshot
     Given SpecSnapshot "S1" exists for a project with builds referencing it
