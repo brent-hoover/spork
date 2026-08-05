@@ -33,6 +33,12 @@ Feature: Status workflow
     Then it receives an explicit empty result
     And SUT-1 still has status "deferred"
 
+  Scenario: simultaneous writers mutate exactly once
+    Given issue SUT-1 is assigned to "claude" with status "open"
+    When a pop by "claude" and a conditional transition to "deferred" expecting "open" execute simultaneously, both having observed status "open"
+    Then exactly one mutation is applied to SUT-1
+    And the check and update are atomic — the loser's operation observes the winner's committed state, never the stale read
+
   Scenario: unknown statuses are rejected
     When issue SUT-1 is set to status "someday"
     Then the operation is rejected

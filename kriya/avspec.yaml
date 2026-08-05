@@ -286,15 +286,23 @@ data:
         defer retries from the freshly observed status; anything whose
         ownership cannot be determined goes to awaiting-operator. The
         pop fence thus lands before anything else without clobbering a
-        live claim or stranding a merely-moved ticket; then its pending mutations are drained by
-        persisted key, then it is unassigned, with a retired stamp
-        written per row so a crash resumes exactly where it stopped. Id-less
-        rows are handled plan-wide in fence-preserving phases: FIRST
-        every id-less ticket is created (creation only — created tickets
-        start unassigned and unpoppable), its id recorded, and it is
-        deferred; only when all ids exist are labels and relations
-        drained, so a relation targeting a later-created ticket always
-        has its tracker id. Every step in a
+        live claim or stranding a merely-moved ticket; then its ISSUED
+        mutations (and only those) are drained by persisted key, then it
+        is unassigned, with a retired stamp written per row so a crash
+        resumes exactly where it stopped. The retirement pass is executed
+        by the successor's fenced pending-phase worker, which is
+        EXPLICITLY authorized to replay issued predecessor steps even
+        though neither plan is active — completing an already-sent
+        request is finishing the past, not new work; creating
+        never-issued work remains active-only. Id-less rows therefore
+        split on their creation step's state: pending means nothing was
+        ever sent — the row is stamped retired with no server-side
+        action at all; issued means the creation is replayed to a
+        terminal result, the id recorded, the ticket deferred, and then
+        that row's issued labels and relations drained. The plan-wide
+        phase barrier guarantees an issued relation never targets an
+        uncreated ticket (relations only begin issuing after every
+        creation completed). Every step in a
         PlannedTicket's sequence carries a durable step state — pending
         (never sent), issued (written in the same transaction that
         precedes the call), complete (written on return) — and draining
@@ -312,9 +320,10 @@ data:
         pop eligibility requires status open, the deferred status is the
         durable fence — even an in-flight assignment from a crashed
         worker that lands afterwards cannot make a deferred ticket
-        poppable. Before retirement, every pending predecessor
+        poppable. Before retirement, every ISSUED predecessor
         mutation is drained by replaying its persisted idempotency key —
-        bringing any in-flight request to a known completed state — and
+        bringing any in-flight request to a known terminal state, while
+        pending steps, provably never sent, are skipped — and
         carried-forward tickets stay deferred through the replacement's
         creation and wiring phases: reopening happens in the final
         assignment phase, after the plan-wide relation barrier, so a

@@ -275,6 +275,9 @@ requirements:
       - id: AC-status-race-defer-wins
         statement: When a conditional defer lands before a pop, the pop receives an explicit empty result and the issue stays deferred — exactly one mutation.
         test: verification/REQ-status-workflow.feature#conditional defer wins the race over a pop
+      - id: AC-status-atomicity
+        statement: The conditional check and the transition are one atomic operation — two writers that both observed status open can never both mutate the issue, regardless of interleaving.
+        test: verification/REQ-status-workflow.feature#simultaneous writers mutate exactly once
       - id: AC-status-invalid
         statement: A status outside the five is rejected.
         test: verification/REQ-status-workflow.feature#unknown statuses are rejected
