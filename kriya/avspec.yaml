@@ -50,12 +50,11 @@ constitution:
 # both plans binds to the predecessor snapshot (deepest unstamped row),
 # and binding SETS and retains the consumed stamp on walked-past rows so
 # a later reopen binds to the head;
-# post-retirement reopen: a ticket bound or completed under a superseded
-# plan, later reopened and popped, binds to the current head because
-# retirement consumed the historical rows as stamped history — including
-# when the successor omitted the ticket (chain resolution binds the
-# activated head with no successor row); pop write-ahead refusal while a
-# project head is unactivated, and retry after activation.
+# post-retirement reopen: a ticket carried into the current head binds
+# the head; a ticket the successor OMITTED binds the nearest consumed
+# row's plan and its snapshot (the decomposition that produced its ACs),
+# never the head that dropped it; pop write-ahead refusal while any head
+# is unactivated (global fence), and retry after activation.
 #
 # Risk register — validated before kriya's own build begins:
 #   R1 (RETIRED 2026-08-04 by spike + session-long live use): roborev is
@@ -469,16 +468,20 @@ data:
         activated stamp), so a reopened ticket popped mid-retirement
         can never inherit an unactivated plan's not-yet-wired snapshot.
         (3) Otherwise the head has activated — even if it later entered
-        awaiting-operator — and the ticket binds to it: through the
-        head's own row when one exists, and otherwise through CHAIN
-        RESOLUTION — a ticket whose only membership is consumed rows on
-        superseded plans of this chain (e.g. completed under the
-        predecessor, omitted from the successor, reopened later) still
-        binds the activated head and its snapshot rather than falling
-        through as unplanned, so a once-planned ticket never silently
-        builds against a freshly pinned spec. Stamped superseded rows
-        are otherwise pure audit history: a reopened ticket popped
-        after activation always matches its then-current plan. Only a
+        awaiting-operator — and its own row, when one exists, binds:
+        a ticket the current decomposition lists was re-affirmed by it,
+        so the head's snapshot rightly governs. A ticket whose ONLY
+        membership is consumed rows on superseded plans of this chain
+        (e.g. completed under the predecessor, omitted from the
+        successor, reopened later) binds instead to the NEAREST such
+        row's plan — the most recent decomposition that actually
+        produced or re-affirmed the ticket's acceptance criteria — and
+        that plan's pinned snapshot: the pinned-spec invariant means a
+        ticket builds against the spec that produced its ACs, and a
+        plan that omitted the ticket never qualifies, head or not. (The
+        PM re-adopts such a ticket by including it in a new
+        decomposition, which gives it a current row.) Stamped
+        superseded rows are otherwise pure audit history. Only a
         ticket with no membership row anywhere — planned outside any
         plan — is unplanned. In every case the bound plan's pinned
         snapshot travels with the binding, honoring the
