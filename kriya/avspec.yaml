@@ -239,8 +239,11 @@ data:
         persisted predecessor reference, and supersession itself is a
         CAS: the predecessor moves active -> superseded with the
         successor's id stamped into superseded_by in the same transaction
-        — a concurrent would-be successor loses that CAS and goes
-        awaiting-operator, so exactly one replacement can ever activate.
+        — a concurrent would-be successor loses that CAS and durably moves
+        to plan state awaiting-operator with the error recorded, so
+        exactly one replacement can ever activate and the loser is
+        operator-visible, never a lingering indistinguishable pending
+        row.
         The retirement pass is then durable, ordered, and state-aware,
         touching ONLY unfinished, unclaimed tickets (completed tickets
         and tickets already claimed by builds are untouched — popped
@@ -248,7 +251,13 @@ data:
         ticket is set to status deferred (the pop fence lands before
         anything else), then its pending mutations are drained by
         persisted key, then it is unassigned, with a retired stamp
-        written per row so a crash resumes exactly where it stopped.
+        written per row so a crash resumes exactly where it stopped. A
+        row with no recorded ticket id yet is handled in a fixed order
+        that preserves the fence: replay the creation step ONLY (a
+        created ticket starts unassigned and is therefore unpoppable),
+        record the id, defer immediately, then drain labels and
+        relations — assignment steps are never replayed during
+        retirement.
         Only when every eligible predecessor row carries its stamp does
         the stamped successor transition pending -> active, and only an
         active plan's worker may run creation, wiring, or assignment
@@ -286,7 +295,8 @@ data:
         - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
-        - { name: state, type: enum, required: true, values: [pending, active, superseded] }  # pending until the predecessor's retirement completes; at most one active plan per (project, normalized target_spec)
+        - { name: state, type: enum, required: true, values: [pending, active, superseded, awaiting-operator] }  # pending until the predecessor's retirement completes; awaiting-operator records a lost supersession CAS or unrecoverable phase failure
+        - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
         - { name: predecessor, type: ref, ref: ENT-plan }  # the plan this one supersedes; persisted at creation so retirement is resumable
         - { name: superseded_by, type: ref, ref: ENT-plan }  # stamped by the supersession CAS — the one successor allowed to activate
         - { name: project_key, type: string, required: true }
