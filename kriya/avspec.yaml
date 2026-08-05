@@ -243,7 +243,12 @@ data:
         then binds ticket to the row transactionally. Plan is lineage,
         not an execution dependency: in the same transaction the ticket
         is matched against PlannedTicket rows (the authoritative
-        membership record — Plan holds no duplicate list) — exactly one
+        membership record — Plan holds no duplicate list). Before any
+        ticket may be classified as unplanned, every PlannedTicket row
+        with no recorded id is reconciled by replaying its idempotent
+        creation — the replay returns the already-created ticket's id and
+        fills the row — closing the window where sutra shows a ticket
+        whose id has not yet landed. Then: exactly one
         match binds the plan; no match (a ticket assigned outside any
         plan) or multiple matches leaves plan absent and the build
         proceeds regardless. The snapshot is stricter than the lineage:
