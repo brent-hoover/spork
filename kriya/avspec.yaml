@@ -222,6 +222,25 @@ requirements:
         test: verification/REQ-sa-agent.feature#direction resumes the loop and survives in history
   - id: REQ-context-assembly
     title: Context manager assembles each dev agent's context and toolset per ticket
+    acceptance:
+      - id: AC-context-assembled
+        statement: Starting a run assembles the dev agent's context from the bound snapshot — the ticket's ACs and the touched modules' boundaries, contracts, and constitution — never a whole-spec dump.
+        test: verification/REQ-context-assembly.feature#context is assembled from the bound snapshot
+      - id: AC-context-instructions
+        statement: The context includes the operator's hand-crafted project instructions (a CLAUDE.md-style file) and kriya's process playbook — how to drive roborev, the pair-loop protocol, commit conventions — alongside the spec-derived material.
+        test: verification/REQ-context-assembly.feature#hand-crafted instructions ride along
+      - id: AC-context-scoped
+        statement: "Modules outside the ticket's boundary set appear only as their contracts: the agent sees the interfaces it may call, not internals it may not import."
+        test: verification/REQ-context-assembly.feature#out-of-boundary modules appear as contracts only
+      - id: AC-context-tools
+        statement: The toolset is per ticket — the touched modules' snapshot-resolved commands are wired in; tools irrelevant to the ticket are absent.
+        test: verification/REQ-context-assembly.feature#the toolset matches the ticket
+      - id: AC-context-learnings
+        statement: Persistent learnings matching the ticket's modules and failure patterns are injected into the context.
+        test: verification/REQ-context-assembly.feature#relevant learnings are injected
+      - id: AC-context-recorded
+        statement: What the agent was given is recorded durably on the run, so a reviewer can reconstruct exactly what the agent knew when it acted.
+        test: verification/REQ-context-assembly.feature#the assembled context is recorded
   - id: REQ-learning-loop
     title: Mistakes become persistent learnings fed into future builds
     rationale: Project-specific and cross-project; captured as they happen, not post-mortem.
