@@ -212,7 +212,7 @@ data:
         - { name: retired, type: datetime }  # stamped by a successor plan's retirement pass once this ticket is drained, unassigned, and deferred
     - id: ENT-spec-snapshot
       name: SpecSnapshot
-      description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree. Alongside the raw content it stores each module's RESOLVED effective commands (override-per-field over project stack), exactly as intake validated them.
+      description: Content-addressed snapshot of the COMPLETE spec artifact set — the manifest plus every referenced verification feature file and contract document (equivalently, a pinned content tree) — stored when first pinned; builds and recovery read gate commands, ACs, scenarios, and contracts from here, never from the mutable working tree, so post-decomposition edits to any referenced file cannot change what a pinned build executes. Alongside the content it stores each module's RESOLVED effective commands (override-per-field over project stack), exactly as intake validated them.
       fields:
         - { name: hash, type: string, required: true, unique: true }
         - { name: content, type: json, required: true }
@@ -378,8 +378,13 @@ data:
         recovery replays the same pop_key and receives the same issue,
         then binds ticket to the row transactionally. Plan is lineage,
         not an execution dependency: in the same transaction the ticket
-        is matched against PlannedTicket rows (the authoritative
-        membership record — Plan holds no duplicate list). Matching uses
+        is matched against PlannedTicket rows of the plan that currently
+        heads its target (resolved through PlanHead) — superseded plans'
+        rows are audit history, never binding candidates, so a
+        carried-forward ticket present in both predecessor and
+        replacement matches exactly its current plan. (PlannedTicket
+        remains the authoritative membership record — Plan holds no
+        duplicate list.) Matching uses
         persisted ids directly: assignment-last guarantees any poppable
         ticket's id was durably recorded steps earlier, so no
         reconciliation sweep is needed at classification time — a
@@ -536,7 +541,7 @@ data:
         - { name: result_key, type: string, required: true, unique: true }  # derived hash of (build, module, gate, commit) — upserted, so reruns never duplicate and recovery can prove per-module completeness
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: module, type: string, required: true }  # the target spec's module id whose effective command ran
-        - { name: gate, type: enum, required: true, values: [test, structure, typing, branch-coverage, mutation] }
+        - { name: gate, type: enum, required: true, values: [test, structure, typing, branch-coverage, mutation, arch] }
         - { name: commit, type: string, required: true }  # full object id the gate ran against — stale results never satisfy the chain
         - { name: passed, type: boolean, required: true }
         - { name: detail, type: json }
