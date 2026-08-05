@@ -39,7 +39,8 @@ Feature: Status workflow
     When a pop by "claude" and a conditional transition to "deferred" expecting "open" are released together at a synchronization barrier so the server executes them overlapping
     Then exactly one mutation is applied to SUT-1
     And exactly one status event is recorded for SUT-1
-    And the losing operation receives an explicit conflict response reflecting the winner's committed status, never its stale client-side read
+    And if the pop won, the defer receives a conflict response reflecting the winner's committed status, never its stale client-side read
+    And if the defer won, the pop receives an explicit empty result and SUT-1 remains "deferred"
 
   Scenario: unknown statuses are rejected
     When issue SUT-1 is set to status "someday"
