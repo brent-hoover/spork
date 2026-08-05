@@ -343,6 +343,9 @@ requirements:
       - id: AC-submit-create
         statement: After the PO pass, kriya records a submission key scoped to the head commit AND the gate attempt with a write-ahead submitting state, then creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id, and records the returned id as submitted; a crash on either side of sutra's acceptance recovers by replaying the persisted request under the same idempotency key — sutra returns the original review if the request landed and creates it otherwise, exactly one either way — and the run then waits on review events.
         test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
+      - id: AC-submit-gated-diff
+        statement: Every code submission and resubmission carries expected_default_head and expected_base_commit equal to the run's frozen gated_base, so sutra atomically rejects anything whose diff was not gated — a moved default head and a stale-based branch alike — before any review, submission, or event exists.
+        test: verification/REQ-submit-review.feature#a stale-based branch is rejected even under an unchanged default head
       - id: AC-submit-rework
         statement: "A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, and it is write-ahead: the resubmitting state, its idempotency key, expected revision, and pinned commit persist transactionally before sutra's resubmit call, recovery replays under the same key on either side of acceptance, and the revision increments exactly once."
         test: verification/REQ-submit-review.feature#rework routes back by session
@@ -760,7 +763,7 @@ data:
         supersession installing a new head, or a completed ticket
         reopening, atomically advances the epoch and clears completed;
         whether an EXTERNAL reopen is owed depends on WHAT advanced the
-        epoch, and the durable advance cause is AUTHORITATIVE: every
+        epoch, and the durable advance cause is AUTHORITATIVE — persisted as last_advance_cause with last_advance_event in the advancing transaction, event consumption deduplicating on the event id so replays are no-ops: every
         sutra-cascade-driven advance — a ticket reopening, deferred
         work activating, an active subtree attached — NEVER calls
         sutra, regardless of prior completion state, because the
@@ -788,6 +791,8 @@ data:
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every event that reopens the epic (ticket reopen, deferred activation, active-subtree attachment)
+        - { name: last_advance_event, type: string }  # unique id of the consumed event that caused the latest epoch advance, recorded in the SAME transaction — advancing dedups on it, so a replayed event is a no-op and can never advance the epoch twice or invalidate a legitimate completion attempt
+        - { name: last_advance_cause, type: enum, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, compensation] }  # the durable advance cause the reopen discrimination reads; recorded with the advance, so recovery never infers it
         - { name: completion_rework_event, type: string }  # immutable id of the changes-requested event the pending rework answers; part of both rework keys, so each distinct rework attempt rotates them
         - { name: completion_resubmission_key, type: string }  # derived from (submission key, next revision, rework event); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
         - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key (and therefore rotating with the rework event); persisted before the doc call so a recovery replay returns the SAME version instead of appending
@@ -797,7 +802,7 @@ data:
         - { name: completion_approval_event, type: string }  # immutable id of the approval event the pending close acts on, recorded with the exact review and revision before the close key derives — a reapproval after a reversal-induced conflict is a NEW event and therefore a fresh close key, never a replay of the cached conflict
         - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is issued ONLY for supersession-driven advances where completion_state shows a close ever ran (and for stale-close compensation); every sutra-cascade-driven advance — ticket reopen, deferred activation, active-subtree attachment — skips it regardless of completion state, the cascade having already reopened the epic
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
-        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
+        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically by EVERY completion_epoch advance, whatever its cause — supersession, ticket reopen, deferred activation, subtree attachment, or compensation
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
       name: Plan

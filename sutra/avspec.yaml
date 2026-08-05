@@ -233,6 +233,9 @@ requirements:
       - id: AC-review-resolution-guard
         statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission; a supplied expected base commit that differs from the resolved base, or a supplied expected default head that differs from the current default-branch ref, is rejected the same way, atomically, before any review, submission, or event exists.
         test: verification/REQ-code-review.feature#unresolvable repository rejects submission
+      - id: AC-review-submission-fence
+        statement: A code submission or resubmission carrying expected_base_commit or expected_default_head is validated atomically against the resolved merge base and the current default-branch ref; a mismatch on either rejects with a conflict and creates no review, submission, or event.
+        test: verification/REQ-code-review.feature#a stale expected base rejects submission before the review exists
       - id: AC-review-reverdict
         statement: A verdict carrying the current revision always applies, including reversing an earlier verdict, UNTIL the approval is consumed; the latest verdict for the current revision is authoritative and every verdict is recorded, and a verdict on a consumed review is rejected with no mutation.
         test: verification/REQ-code-review.feature#verdicts can be revised for the current revision

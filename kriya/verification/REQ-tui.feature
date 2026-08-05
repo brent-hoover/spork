@@ -5,9 +5,11 @@ Feature: TUI overview
 
   Scenario: one screen shows the build's live state
     Given a build with two running BuildRuns, three queued tickets, one blocked ticket, and one run awaiting human review
+    And an unplanned queued ticket and a reopened ticket whose only plan membership is consumed history
     When the operator opens the TUI
     Then the running runs appear with their position in the gate chain
     And the queued and blocked tickets are distinguishable
+    And the unplanned and consumed-history tickets appear too — the live tracker queue is the universe, not the current plan's rows
     And the run awaiting human review is shown as such
 
   Scenario: everything needing the operator lands in one inbox
