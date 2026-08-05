@@ -321,6 +321,19 @@ requirements:
         test: verification/REQ-po-validation.feature#the verdict is durable and actionable
   - id: REQ-submit-review
     title: Submit a sutra Review, merge on approval, update ticket status
+    acceptance:
+      - id: AC-submit-create
+        statement: After the PO pass, kriya creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id; the run then waits on review events.
+        test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
+      - id: AC-submit-rework
+        statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission goes through sutra's resubmit path, incrementing the revision.
+        test: verification/REQ-submit-review.feature#rework routes back by session
+      - id: AC-submit-merge
+        statement: On the approved event kriya executes the merge — exactly once per approval; a replayed or duplicate event never double-merges.
+        test: verification/REQ-submit-review.feature#approval merges exactly once
+      - id: AC-submit-complete
+        statement: After a successful merge kriya transitions the ticket to complete through sutra, which itself enforces the approved-review gate; the workspace then becomes eligible for cleanup.
+        test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
   - id: REQ-tier-routing
