@@ -1333,7 +1333,9 @@ paths:
       description: >-
         Conditional on state approved at the expected current revision;
         stamps a durable consumption that permanently fences verdict changes
-        (AC-review-consume). Idempotent under its Idempotency-Key and on
+        and atomically records a `review.consumed` event carrying the actor,
+        review, and consumed revision — the audit trail shows who froze the
+        verdict and when (AC-review-consume). Idempotent under its Idempotency-Key and on
         replay of an already-consumed matching revision. Fails with a
         conflict — consuming nothing — if the verdict changed or the
         revision moved first. Subscribers call this before acting on an
@@ -2062,7 +2064,7 @@ components:
         comment.created, doc.version-saved, doc.linked, doc.unlinked,
         thread.imported, thread.anchor-changed, review.created,
         review.changes-requested, review.approved, review.resubmitted,
-        project.created, project.archived, project.imported.
+        review.consumed, project.created, project.archived, project.imported.
       required: [id, kind, subject, actor, created]
       properties:
         id: { type: string, format: uuid }
