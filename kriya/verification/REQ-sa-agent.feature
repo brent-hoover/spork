@@ -24,7 +24,8 @@ Feature: System architect agent
     When the SA resolves it
     Then a durable Intervention row records the trigger, the findings handed over, the direction, and its lifecycle state
     And resume and recovery read that row, never transient state
-    And no commit authored by the SA appears in the workspace
+    And the SA's toolset contains no workspace-mutation tools
+    And the worktree contents and branch head are identical before and after the SA's invocation
 
   Scenario: scope changes escalate to the operator
     Given an impasse whose resolution would change the ticket's acceptance criteria or the spec

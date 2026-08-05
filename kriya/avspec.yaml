@@ -195,7 +195,7 @@ requirements:
         statement: A resumed BuildRun reattaches to its existing workspace and branch when they exist and match the record; it never silently starts a second workspace for the same run.
         test: verification/REQ-workspaces.feature#a resumed run reattaches to its workspace
       - id: AC-workspace-cleanup
-        statement: Workspaces are removed only after their ticket completes or is terminally retired, and removal never deletes unmerged commits — the branch survives until merge or explicit operator disposal.
+        statement: Workspaces are removed only after their ticket completes or is terminally retired; removal never deletes unmerged commits — the branch survives until merge or explicit operator disposal — and a worktree with uncommitted changes refuses cleanup, surfacing to the operator instead of destroying dirty state.
         test: verification/REQ-workspaces.feature#cleanup never loses unmerged work
   - id: REQ-pair-loop
     title: Pair-programming loop — small commits, roborev reviews, fix, recommit until pass
@@ -224,7 +224,7 @@ requirements:
         statement: "The impasse trigger is deterministic: a per-run round limit — snapshotted onto the BuildRun at creation, so config changes and restarts never move a live run's threshold — counts consecutive finding-bearing rounds since the last clean pass, and reaching the limit — or the dev agent declaring an impasse — pauses the run and hands the SA agent the findings history, the ticket's ACs, and the bound snapshot. A clean pass resets the counter; the limit lives in configuration beside tier routing."
         test: verification/REQ-sa-agent.feature#an impasse pauses the run and reaches the architect
       - id: AC-sa-no-code
-        statement: The SA resolves by direction, recorded on a durable run-scoped Intervention row — trigger, findings handed over, direction, lifecycle state — which resume and recovery read; it never commits to the workspace.
+        statement: The SA resolves by direction, recorded on a durable run-scoped Intervention row — trigger, findings handed over, direction, lifecycle state — which resume and recovery read; its toolset carries no workspace-mutation tools, and the worktree contents and branch head are unchanged across its invocation.
         test: verification/REQ-sa-agent.feature#the architect directs but never codes
       - id: AC-sa-scope
         statement: "A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change. An approved spec change first cancels the paused run write-ahead: cancelling is recorded durably, the sutra ticket is conditionally transitioned out of in-progress to DEFERRED — never to open, so no agent can pop the obsolete ticket in the window before the supersession fence exists — and only then is the run stamped cancelled — terminal, never resuming, merging, or resubmitting; retirement and supersession classify a cancelled run's ticket as released work, never as issued work that will finish. Then the change takes the amended-spec path of re-intake and supersession, never a side channel."
@@ -561,12 +561,13 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-spec-mapping
       name: SpecMapping
-      description: The project-to-spec registry — operator-editable, the only trusted fallback for resolving an unplanned ticket's target spec. Plan seeding is INSERT-ONLY (a plan seeds a missing mapping with its own intake-pinned hash and never touches an existing row); only intake refreshes an existing mapping's spec_hash — so a delayed older plan can never regress a newer intake's snapshot.
+      description: The project-to-spec registry — operator-editable, the only trusted fallback for resolving an unplanned ticket's target spec. Plan seeding is INSERT-ONLY (a plan seeds a missing mapping with its own intake-pinned hash and never touches an existing row); only intake refreshes an existing mapping's spec_hash, and that refresh is a CAS on intake_generation captured when the intake began — so neither a delayed older plan nor a delayed older intake can ever regress a newer intake's snapshot.
       fields:
         - { name: mapping_key, type: string, required: true, unique: true }  # derived hash of (project_key, normalized target_spec) — seeding upserts, so replanning the same spec never duplicates a row
         - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot for this mapping — the ONLY snapshot an unplanned bind may use; written at insert (plan seeding) and thereafter refreshed exclusively by intake
+        - { name: intake_generation, type: integer, required: true }  # init 0; monotonic — an intake captures the current value when it begins validating and its refresh is a CAS expecting that value while incrementing it, so a delayed older intake loses the CAS and is refused (re-run intake); spec_hash can never regress under overlapping intakes
         - { name: updated, type: datetime, required: true }
     - id: ENT-pop-fence
       name: PopFence

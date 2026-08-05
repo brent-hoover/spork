@@ -50,7 +50,7 @@ Feature: Run to complete
     And every ticket of the activated head plan is complete
     Then kriya records review-submitting with a deterministic submission key and the completion-report doc version before calling sutra
     And kriya submits a build-completion review on the umbrella epic with the completion-report document as its deliverable
-    And a crash before the review id lands is recovered by querying sutra with the submission key and adopting the found review, never submitting twice
+    And a crash before the review id lands is recovered by replaying the persisted request under the same submission key — sutra returns the original review if it landed and creates it otherwise, never a second one
     And retired tickets resting deferred under the epic do not block its close
     When the human approves the review
     Then the epic close is attempted through sutra, whose no-open-children gate is the authoritative check

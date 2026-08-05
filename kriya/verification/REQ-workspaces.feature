@@ -32,3 +32,7 @@ Feature: Isolated workspaces
     Given a ticket is retired with unmerged commits on its branch
     Then the worktree may be removed but the branch survives
     And only merge or explicit operator disposal deletes the branch
+    Given a retired ticket's worktree holds uncommitted changes
+    When cleanup considers it
+    Then cleanup refuses and the dirty worktree surfaces to the operator
+    And no uncommitted state is destroyed
