@@ -193,6 +193,8 @@ data:
         - { name: payload, type: json, required: true }  # the full ordered mutation sequence: create, labels, relations, assignment — executed under the plan-wide phase barrier; each step keyed by (idempotency_key, step ordinal)
         - { name: idempotency_key, type: string, required: true, unique: true }  # derived from (decomposition_key, ordinal)
         - { name: ticket, type: string }  # tracker id, filled from the creation return
+        - { name: state, type: enum, required: true, values: [pending, in-progress, complete, awaiting-operator] }  # per-row progress through the phased sequence; failures land here durably
+        - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
     - id: ENT-spec-snapshot
       name: SpecSnapshot
       description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree.
@@ -257,8 +259,9 @@ data:
         ticket's id was durably recorded steps earlier, so no
         reconciliation sweep is needed at classification time — a
         permanently failing creation elsewhere can never block an
-        unrelated build; per-row replay failures surface on their own
-        rows as awaiting-operator. Then: exactly one
+        unrelated build; per-row replay failures set the row's own
+        state to awaiting-operator with the error recorded, and the TUI
+        surfaces those rows alongside escalations. Then: exactly one
         match binds the plan; no match (a ticket assigned outside any
         plan) or multiple matches leaves plan absent and the build
         proceeds regardless. The snapshot is stricter than the lineage:
