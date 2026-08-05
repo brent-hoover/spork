@@ -232,7 +232,14 @@ data:
         relations, assignment), and derived per-step idempotency keys,
         all persisted before any call, with returned ids filled per step
         — so recovery replays the exact sequence from durable state and
-        resumes mid-sequence. Execution runs in PLAN-WIDE phases, not
+        resumes mid-sequence. Plans have a lifecycle: at most one ACTIVE
+        plan exists per (project, normalized target_spec); a new
+        decomposition begins by atomically marking the previous plan
+        superseded and idempotently unassigning its still-assigned,
+        unfinished tickets — removing them from the work stack — before
+        its own phases run. Builds already popped finish under their
+        pinned snapshots; the superseded tickets stay in the tracker for
+        the PM to reconcile into the new plan. Execution runs in PLAN-WIDE phases, not
         merely per ticket: every creation completes, then every label and
         relation across all tickets, and only then any assignment.
         Because pop eligibility requires assignment, the phase barrier
@@ -244,6 +251,7 @@ data:
         - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
+        - { name: state, type: enum, required: true, values: [active, superseded] }  # at most one active plan per (project, normalized target_spec); superseding is phase 0 of the replacement decomposition
         - { name: project_key, type: string, required: true }
         - { name: created, type: datetime, required: true }
     - id: ENT-build-run
