@@ -390,7 +390,7 @@ requirements:
         statement: A run's dev-agent transcript auto-imports into sutra's thread catalog, stamped with the run's session id and tied to the ticket.
         test: verification/REQ-thread-capture.feature#transcripts land in the thread catalog
       - id: AC-thread-no-loss
-        statement: Import happens for every run outcome — completed, retired, or crashed; recovery imports whatever transcript exists, so no conversation is lost.
+        statement: Import happens for every run outcome — completed, retired, or crashed — and is write-ahead; the import key and immutable transcript reference persist before the call, recovery replays under the same key on either side of sutra's acceptance, and exactly one thread exists either way, so no conversation is lost and none is duplicated.
         test: verification/REQ-thread-capture.feature#no outcome loses its transcript
       - id: AC-thread-searchable
         statement: The imported thread is reachable through sutra's session-id search alongside the reviews the same session produced.
@@ -506,7 +506,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-build-run.state, ENT-build-run.error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
@@ -514,7 +514,7 @@ modules:
           name: Run detail
           invocation: kriya tui (run pane)
           purpose: One run's durable history — commits, review rounds, gate results, verdicts, escalations — read from the records recovery uses.
-          shows: [ENT-build-run.state, ENT-gate-result.gate, ENT-gate-result.passed, ENT-gate-result.commit, ENT-review-round.verdict, ENT-review-round.commit, ENT-escalation.question]
+          shows: [ENT-build-run.state, ENT-gate-result.gate, ENT-gate-result.passed, ENT-gate-result.commit, ENT-review-round.verdict, ENT-review-round.commit, ENT-validation.verdict, ENT-validation.commit, ENT-validation.notes, ENT-escalation.question]
           satisfies: [AC-tui-truth]
       actions:
         - id: ACT-plan-restore
@@ -1153,6 +1153,9 @@ data:
         - { name: tier, type: string, required: true }
         - { name: started, type: datetime, required: true }
         - { name: ended, type: datetime }
+        - { name: transcript_ref, type: string }  # immutable reference to the transcript content, persisted with the import key BEFORE the importThread call — replay reproduces the exact request
+        - { name: thread_import_key, type: string }  # deterministic per session; sent as the importThread call's Idempotency-Key — recovery replays under it, sutra returning the original thread for a landed import and creating otherwise, exactly one thread either way
+        - { name: thread_import_state, type: enum, required: true, values: [none, importing, imported] }  # write-ahead marker around the import; advanced before the call, stamped with thread_ref after
         - { name: thread_ref, type: string }  # sutra thread id once the transcript imports
     - id: ENT-review-round
       name: ReviewRound

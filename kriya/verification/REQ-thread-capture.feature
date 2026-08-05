@@ -14,6 +14,15 @@ Feature: Thread capture
     Then each run's transcript is imported
     And recovery imports whatever transcript exists for the crashed run
 
+  Scenario: an import crash recovers to exactly one thread
+    Given the import key and transcript reference were persisted with state "importing" and the crash hit before sutra accepted the import
+    When recovery replays the persisted request under the same key
+    Then sutra creates the thread and exactly one thread exists for the session
+    Given sutra accepted the import but the crash hit before the thread id was recorded
+    When recovery replays under the same key
+    Then sutra returns the original thread and the recorded id matches it
+    And exactly one thread exists for the session
+
   Scenario: threads surface in session search
     Given a thread imported from session "sess-42" that also produced a review
     When sutra is searched by session id "sess-42"
