@@ -336,6 +336,19 @@ requirements:
         test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
+    acceptance:
+      - id: AC-complete-loop
+        statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
+        test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
+      - id: AC-complete-defn
+        statement: The build is complete when every ticket of the activated head plan is complete and the umbrella epic can close; completion is declared durably and popping stops for that target.
+        test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
+      - id: AC-complete-supersede
+        statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
+        test: verification/REQ-run-to-complete.feature#supersession moves the finish line
+      - id: AC-complete-stall
+        statement: When nothing is workable, nothing is in flight, and the epic still cannot close, the stall surfaces to the operator with its cause — never silent spinning, never a false done.
+        test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
   - id: REQ-tier-routing
     title: Model-tier routing is configuration, not hardcoded
   - id: REQ-thread-capture
