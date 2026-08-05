@@ -67,10 +67,11 @@ mechanically:
    in — its stack override where present, the project stack otherwise:
    `test`, `lint`, `typecheck` (and `arch` if declared). Green before
    moving on.
-   `coverage` and `mutation` are the FINAL gates: run both after the
-   acceptance suite passes and before declaring any module or the build
-   done — they are slower, but skipping them is skipping the definition
-   of done.
+   `coverage` and `mutation`, where declared, are the FINAL gates: run
+   each declared one after the acceptance suite passes and before
+   declaring any module or the build done — they are slower, but
+   skipping a declared gate is skipping the definition of done. A spec
+   that declares neither simply has no final gate beyond the suite.
 4. Re-run `avspec verify <dir>` whenever you touch the spec directory
    itself (new contract operations, etc.). It must stay green.
 
@@ -78,7 +79,7 @@ mechanically:
 
 - Every scenario referenced by every `AC-*` passes under the declared
   runner.
-- Every module's EFFECTIVE stack commands exit 0 — including `coverage` and `mutation`.
+- Every module's EFFECTIVE stack commands exit 0 — every declared command, including `coverage` and `mutation` where present.
 - `avspec verify <dir>` exits 0.
 - No import violates a boundary; no entity is touched outside its owner.
 

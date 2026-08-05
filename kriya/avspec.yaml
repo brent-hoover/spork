@@ -239,7 +239,14 @@ data:
         unfinished tickets — removing them from the work stack — before
         its own phases run. Builds already popped finish under their
         pinned snapshots; the superseded tickets stay in the tracker for
-        the PM to reconcile into the new plan. Execution runs in PLAN-WIDE phases, not
+        the PM to reconcile into the new plan. Supersession is fenced the
+        same way claim resolution is: it proceeds only when the prior
+        plan's decomposition worker is not live (decidable in-process —
+        workers are the process's own tasks, and a crash kills them all),
+        and every decomposition worker re-checks that its plan is still
+        active in the same transaction that records each step, halting
+        when superseded — so no old-plan assignment can land after the
+        replacement's unassignment pass. Execution runs in PLAN-WIDE phases, not
         merely per ticket: every creation completes, then every label and
         relation across all tickets, and only then any assignment.
         Because pop eligibility requires assignment, the phase barrier
