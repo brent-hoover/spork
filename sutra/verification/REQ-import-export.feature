@@ -17,6 +17,14 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
+  Scenario: a malformed consumed review is rejected at import
+    Given an export payload whose consumed review — not close-used — is in state "changes-requested"
+    When it is imported
+    Then the import is rejected as malformed — consumption fences the verdict, in imports as in the API
+    Given an export payload whose consumed review's consumed revision lags its current revision
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
   Scenario: a malformed close-used review is rejected at import
     Given an export payload whose review is close-used but carries no consumption fields
     When it is imported

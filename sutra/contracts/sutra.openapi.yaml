@@ -2124,7 +2124,7 @@ components:
             - required: [close_used, consumed, consumed_revision]
             - not:
                 required: [close_used]
-          description: close_used implies both consumption fields. Beyond schema reach but enforced at import — a close-used review must be in state approved with consumed_revision equal to its current revision; importProject rejects violations as malformed, so a spent review's verdict can never be rewritten through import.
+          description: close_used implies both consumption fields. Beyond schema reach but enforced at import — EVERY consumed review, close-used or not, must be in state approved with consumed_revision equal to its current revision; importProject rejects violations as malformed, so a consumed review's verdict can never be rewritten through import and no state impossible through the API can be imported.
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }
@@ -2154,7 +2154,9 @@ components:
             Stamped by atomic approval consumption (AC-review-consume);
             present only once consumed. After this stamp the review's
             verdict can no longer change, and the stamp round-trips
-            through export/import.
+            through export/import — where it is valid only on a review in
+            state approved whose consumed_revision equals its current
+            revision, close-used or not.
         consumed_revision:
           type: integer
           description: The revision whose approval was consumed; present exactly when `consumed` is.
