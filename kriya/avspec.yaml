@@ -658,7 +658,14 @@ data:
         generation the claim is about (completed_generation), and
         completion_state advances around every sutra call — closing
         around the close, complete once the epic closed, reopening
-        around a reopen — so crash recovery resumes the exact step.
+        around a reopen — and each state records a deterministic
+        per-operation idempotency key (derived from the attempt's
+        submission key and the operation) in the same transaction, so
+        crash recovery resumes the exact step by REPLAYING under that
+        key: a close that landed before the crash replays to its
+        original success — never a close_used conflict, since this very
+        key stamped it — and a replayed reopen produces no second event
+        or revision increment.
         completion_state is also the per-target serializer: close and
         reopen are never issued while a prior close or reopen is
         unresolved — supersession or reopen first resolves an in-flight

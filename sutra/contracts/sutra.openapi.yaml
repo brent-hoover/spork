@@ -331,6 +331,12 @@ paths:
         additionally carry expected_subtree_revision: mismatch rejects with a
         conflict even when current state matches, fencing histories where a
         descendant reopened and recompleted since the caller's observation.
+        Replay semantics matter especially here (CON-idempotent-mutations):
+        a replayed successful close returns its original success — never a
+        close_used conflict, because close_used was stamped by THIS key's
+        original execution — and a replayed reopen returns the original
+        response with no second status event, cascade, or subtree_revision
+        increment.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
