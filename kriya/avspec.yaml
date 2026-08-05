@@ -48,7 +48,8 @@ constitution:
 # vs issued steps including id-less rows and the deferred-status fence;
 # carried-forward pop race: ticket claimed mid-supersession and listed by
 # both plans binds to the predecessor snapshot (deepest unstamped row),
-# and the consumed marker is cleared so a later reopen binds to the head;
+# and binding SETS and retains the consumed stamp on walked-past rows so
+# a later reopen binds to the head;
 # post-retirement reopen: a ticket bound or completed under a superseded
 # plan, later reopened and popped, binds to the current head because
 # retirement consumed the historical rows as stamped history.
@@ -269,18 +270,21 @@ data:
         head's current plan to be ACTIVE, marks that predecessor
         superseded with superseded_by stamped, installs the new pending
         plan as head.current, and increments the head generation — all
-        atomically. A racing request fails the whole transaction and
-        lands awaiting-operator without ever moving the head — unless the
-        head's current already IS its own candidate plan (a concurrent
-        retry of the same decomposition_key) — and that resumption is
-        state-aware: pending resumes its phases, active returns as
-        already complete, superseded returns as an idempotent HISTORICAL
-        result — the caller learns the plan and its replacement
-        (superseded_by) but the retry can never mutate PlanHead, revive
-        the old plan, or compete as a candidate — and awaiting-operator
-        is preserved and reported, never silently resumed past an
-        unrecoverable failure. Only a DISTINCT competing candidate
-        loses; a same-key retry is never a competitor in any state. Bootstrap is the degenerate case of the same
+        atomically. Every request FIRST resolves its decomposition_key against
+        existing Plan rows (the key is unique), BEFORE any PlanHead
+        logic runs: a row already present makes the request a same-key
+        retry whose result is state-aware and touches nothing —
+        pending resumes its phases, active returns as already complete,
+        superseded returns as an idempotent HISTORICAL result (the
+        caller learns the plan and its replacement via superseded_by;
+        the retry can never mutate PlanHead, revive the old plan, or
+        compete as a candidate — reachable regardless of where the head
+        has moved since), and awaiting-operator is preserved and
+        reported, never silently resumed past an unrecoverable failure.
+        Only a request whose key resolves to NO existing row proceeds
+        to the replacement CAS, so only a DISTINCT competing candidate
+        can lose it and land awaiting-operator; a same-key retry is
+        never a competitor in any state. Bootstrap is the degenerate case of the same
         transaction: a target with no head yet creates the pending plan
         and INSERTS its PlanHead row atomically — target_key's uniqueness
         makes the insert the CAS, so a concurrent first decomposition
@@ -352,6 +356,21 @@ data:
         same rule, replayed to a terminal result after the defer fence
         and before the unassign-and-stamp when issued, skipped when
         pending.
+        Claimed-but-unbound pops are bound WHENEVER discovered, not
+        only in the initial sweep: a defer conflict re-read that finds
+        a ticket claimed by a queued BuildRun with an unfilled ticket
+        replays that pop and binds the row (to the retiring
+        predecessor, per binding rule 2) before the ticket's row is
+        stamped, and the pre-activation recheck replays any remaining
+        unfilled queued BuildRuns the same way — the write-ahead row is
+        durable before sutra is ever called, so every in-flight claim
+        is visible to this fence. Activation therefore happens only
+        when NO claimed-but-unbound pop against a predecessor ticket
+        exists; a crashed build worker replaying its bind after
+        activation finds its BuildRun already bound (binding is
+        idempotent — the fence's binding and the worker's replay write
+        the same row), so a pre-activation claim can never re-resolve
+        through the activated successor.
         Only when every eligible predecessor row carries its stamp does
         the stamped successor transition pending -> active, and only an
         active plan's worker may run creation, wiring, or assignment
