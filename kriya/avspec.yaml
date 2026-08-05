@@ -349,6 +349,9 @@ requirements:
       - id: AC-complete-stall
         statement: When nothing is workable, nothing is in flight, and the epic still cannot close, the stall surfaces to the operator with its cause — never silent spinning, never a false done.
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
+      - id: AC-complete-status
+        statement: Build and run state — including the durable completion declaration — is inspectable from the CLI, machine-readably with --json, so agents and scripts can read kriya without the TUI.
+        test: verification/REQ-run-to-complete.feature#state is inspectable from the CLI
   - id: REQ-tier-routing
     title: Model-tier routing is configuration, not hardcoded
     acceptance:
@@ -445,10 +448,65 @@ modules:
     name: cli
     responsibility: Command surface — start a build, inspect state.
     boundaries: { may_import: [MOD-planner, MOD-orchestrator] }
+    ui:
+      kind: cli
+      entry: VIEW-cli-build
+      views:
+        - id: VIEW-cli-build
+          name: build
+          invocation: kriya build <project>
+          purpose: Start or resume a build — intake, decomposition, run to complete; a refusal prints the verify findings.
+          navigates_to: [VIEW-cli-status, VIEW-cli-learn]
+          satisfies: [AC-intake-refuse]
+        - id: VIEW-cli-status
+          name: status
+          invocation: kriya status [--json]
+          purpose: Inspect builds, runs, and gate positions; --json for agents.
+          shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.started]
+          satisfies: [AC-complete-status]
+        - id: VIEW-cli-learn
+          name: learn add
+          invocation: kriya learn add
+          purpose: The operator's manual-learning entry point — same scoping and tagging as captured learnings.
+          satisfies: [AC-learn-manual]
   - id: MOD-tui
     name: tui
     responsibility: Operator dashboard — live overview of running and queued work; where agents surface questions, escalations, and the review bridge's persisted orphan watch.
     boundaries: { may_import: [MOD-orchestrator, MOD-architect, MOD-review-bridge] }
+    ui:
+      kind: tui
+      entry: VIEW-tui-overview
+      views:
+        - id: VIEW-tui-overview
+          name: Overview
+          invocation: kriya tui
+          purpose: What is running now with its gate-chain position, what is queued or blocked, and what waits on human review.
+          shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.identity, ENT-build-run.started]
+          navigates_to: [VIEW-tui-inbox, VIEW-tui-run]
+          satisfies: [AC-tui-overview]
+        - id: VIEW-tui-inbox
+          name: Inbox
+          invocation: kriya tui (inbox pane)
+          purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-review-round.enqueue_state, ENT-review-round.claimed_at]
+          actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
+          navigates_to: [VIEW-tui-run]
+          satisfies: [AC-tui-inbox, AC-tui-act]
+        - id: VIEW-tui-run
+          name: Run detail
+          invocation: kriya tui (run pane)
+          purpose: One run's durable history — commits, review rounds, gate results, verdicts, escalations — read from the records recovery uses.
+          shows: [ENT-build-run.state, ENT-gate-result.gate, ENT-gate-result.passed, ENT-review-round.verdict, ENT-escalation.question]
+          satisfies: [AC-tui-truth]
+      actions:
+        - id: ACT-plan-restore
+          name: plan_restore
+        - id: ACT-plan-retry
+          name: plan_retry
+        - id: ACT-round-reconcile
+          name: round_reconcile
+        - id: ACT-scope-decide
+          name: scope_decide
 
 # Kriya's store is the observability plane: the TUI reads it live and it is
 # the post-mortem record of every build. The ENTIRE store is durable across

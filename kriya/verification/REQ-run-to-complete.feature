@@ -21,6 +21,13 @@ Feature: Run to complete
     Then completion is judged against the new head's ticket set
     And a superseded plan's ticket set never satisfies completion
 
+  Scenario: state is inspectable from the CLI
+    Given a build with runs in flight and a completed build alongside it
+    When the operator runs the status command
+    Then builds, runs, and their gate positions are shown, including the completed build's durable completion declaration
+    When the status command runs with --json
+    Then the same state is emitted machine-readably for agents and scripts
+
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close
     Then the stall surfaces to the operator naming its cause
