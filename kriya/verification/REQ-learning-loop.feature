@@ -31,7 +31,9 @@ Feature: Learning loop
     Then it is injected there too
 
   Scenario: every learning knows its origin
-    Given a captured learning
-    Then it records the run, commit, and the finding or event that produced it
+    Given a captured learning from a code-backed correction
+    Then it records the run, the triggering commit, and the finding or event that produced it
+    Given a captured learning from a research-backed correction
+    Then it records the run, the finding document version, and the event that produced it
     Given a manual learning
     Then it records the operator as its origin

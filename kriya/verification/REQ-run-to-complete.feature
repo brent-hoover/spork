@@ -124,6 +124,13 @@ Feature: Run to complete
     And recompletion runs under a new epoch-scoped key with a fresh review — the spent one cannot replay
     Given a completed target whose epic reopened because an active subtree was attached
     Then the same epoch advance, clear, and fresh-review requirement apply
+    And no cascade-driven advance issues an external reopen call — the cascade already reopened the epic, whatever the prior completion state
+
+  Scenario: a verdict ABA cannot poison the rework keys
+    Given a completion rework got a cached conflict, the review was then approved, and a later changes-requested arrived at the same revision
+    When the new rework begins
+    Then the new changes-requested event rotates both the resubmission and report keys
+    And the retried mutations issue under fresh keys — never replaying the stale document or the cached conflict
 
   Scenario: supersession moves the finish line
     Given a build mid-flight when a supersession activates a new head plan

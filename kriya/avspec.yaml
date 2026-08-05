@@ -270,7 +270,7 @@ requirements:
         statement: A learning captured in one run is injected into the next run whose ticket matches its module or pattern — including runs in a later build for cross-project learnings.
         test: verification/REQ-learning-loop.feature#learnings feed the next matching run
       - id: AC-learn-provenance
-        statement: "Every learning records where it came from: the run, commit, and finding or event that produced it — or the operator, for manual entries."
+        statement: "Every learning records where it came from: the run, the finding or event that produced it, and its trigger anchor — the triggering commit for code-backed corrections, the finding document version for research-backed ones — or the operator, for manual entries."
         test: verification/REQ-learning-loop.feature#every learning knows its origin
   - id: REQ-gate-structure
     title: Structural linting with hard limits on the target app, via each module's effective lint command
@@ -671,10 +671,16 @@ data:
         in-attempt exception: a changes-requested verdict on the
         completion review takes the rework path, itself write-ahead:
         review-resubmitting is recorded FIRST — persisting
+        completion_rework_event (the immutable id of the
+        changes-requested event this rework answers),
         completion_resubmission_key, derived from (submission key,
-        next revision), and completion_pending_report, the prepared
-        report content reference — before the new doc version or the
-        sutra resubmission exists;
+        next revision, rework event), and completion_pending_report,
+        the prepared report content reference — before the new doc
+        version or the sutra resubmission exists; the rework event in
+        the key means a verdict ABA (changes-requested -> approved ->
+        changes-requested at the same revision) is a NEW event and a
+        fresh key pair, so a cached conflict or stale document can
+        never replay against a later rework;
         the doc-version mutation carries its own deterministic key
         (completion_report_key) persisted in the same transaction, so a
         crash after document creation but before resubmission recovers
@@ -754,16 +760,18 @@ data:
         supersession installing a new head, or a completed ticket
         reopening, atomically advances the epoch and clears completed;
         whether an EXTERNAL reopen is owed depends on WHAT advanced the
-        epoch: a ticket-reopen-driven advance NEVER calls sutra — the
+        epoch, and the durable advance cause is AUTHORITATIVE: every
+        sutra-cascade-driven advance — a ticket reopening, deferred
+        work activating, an active subtree attached — NEVER calls
+        sutra, regardless of prior completion state, because the
         ancestor cascade already reopened the epic atomically in the
-        ticket's own transaction, and a second call would at best
-        conflict and at worst emit a redundant event and revision
-        increment — while a supersession-driven advance (no cascade
-        fired) consults the durable completion_state: closing or
-        complete records reopening and calls sutra under the keyed
-        reopen, never-closed records the advance and returns to none
-        with NO external call. Stale-close compensation is the only
-        other explicit reopen. Recovery never wonders which case it is
+        triggering transaction and a second call would at best conflict
+        and at worst emit a redundant event and revision increment; a
+        supersession-driven advance (no cascade fired) consults the
+        durable completion_state: closing or complete records reopening
+        and calls sutra under the keyed reopen, never-closed records
+        the advance and returns to none with NO external call.
+        Stale-close compensation is the only other explicit reopen. Recovery never wonders which case it is
         in — the advance's cause and completion_state are both durable
         — and popping resumes either way.
         Plans and runs reach the epic through their target key, never
@@ -780,13 +788,14 @@ data:
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every event that reopens the epic (ticket reopen, deferred activation, active-subtree attachment)
-        - { name: completion_resubmission_key, type: string }  # revision-scoped, derived from (submission key, next revision); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
-        - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key; persisted before the doc call so a recovery replay returns the SAME version instead of appending
+        - { name: completion_rework_event, type: string }  # immutable id of the changes-requested event the pending rework answers; part of both rework keys, so each distinct rework attempt rotates them
+        - { name: completion_resubmission_key, type: string }  # derived from (submission key, next revision, rework event); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
+        - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key (and therefore rotating with the rework event); persisted before the doc call so a recovery replay returns the SAME version instead of appending
         - { name: completion_pending_report, type: string }  # reference to the prepared report content, persisted BEFORE the doc version exists; reconciled into completion_report_doc on success
         - { name: completion_subtree_revision, type: integer }  # PRE-close: the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
         - { name: completion_closed_revision, type: integer }  # POST-close: the subtree_revision the close itself committed, taken from the close response and recorded atomically with the completed stamp — the mirror-trust comparison uses THIS, never the pre-close precondition
         - { name: completion_approval_event, type: string }  # immutable id of the approval event the pending close acts on, recorded with the exact review and revision before the close key derives — a reapproval after a reversal-induced conflict is a NEW event and therefore a fresh close key, never a replay of the cached conflict
-        - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is SKIPPED entirely when completion_state shows no close ever ran for the epoch
+        - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is issued ONLY for supersession-driven advances where completion_state shows a close ever ran (and for stale-close compensation); every sutra-cascade-driven advance — ticket reopen, deferred activation, active-subtree attachment — skips it regardless of completion state, the cascade having already reopened the epic
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
