@@ -1340,8 +1340,12 @@ paths:
         stamps a durable consumption that permanently fences verdict changes
         and atomically records a `review.consumed` event carrying the actor,
         review, and consumed revision — the audit trail shows who froze the
-        verdict and when (AC-review-consume). Idempotent under its Idempotency-Key and on
-        replay of an already-consumed matching revision. Fails with a
+        verdict and when (AC-review-consume). Idempotent ONLY under the original
+        Idempotency-Key — a replay under that key returns the original
+        success; a DISTINCT consumption attempt (different key, any actor)
+        against an already-consumed approval is rejected with a conflict,
+        so multiple subscribers can never each receive success and act on
+        the same approval. Fails with a
         conflict — consuming nothing — if the verdict changed or the
         revision moved first. Subscribers call this before acting on an
         approval (e.g. merging), so approval cannot be reversed mid-action.

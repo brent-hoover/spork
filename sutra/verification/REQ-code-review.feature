@@ -86,8 +86,9 @@ Feature: Review lifecycle
   Scenario: approval consumption fences reversal
     Given an approved review at revision 2
     When a subscriber consumes the approval expecting revision 2
-    Then the consumption is durably recorded and replaying it is idempotent
+    Then the consumption is durably recorded and replaying it under the same idempotency key returns the original success
     And a "review.consumed" event records the actor, the review, and revision 2
+    And a second subscriber's distinct consumption attempt against the consumed approval is rejected with a conflict
     And a later verdict on the review is rejected with no mutation
     Given an approved review whose verdict was reversed before consumption
     When the subscriber attempts consumption

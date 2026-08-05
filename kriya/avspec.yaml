@@ -211,7 +211,7 @@ requirements:
         statement: Kriya acts only on job ids recorded from its own enqueue returns — it never adopts, responds to, cancels, or closes a job it cannot prove it created; expired claims go to the operator per the claim-generation protocol, never auto-reclaimed.
         test: verification/REQ-pair-loop.feature#only provably owned jobs are touched
       - id: AC-pair-pass-gate
-        statement: The loop exits only on a clean review of the current branch head; a pass on an earlier commit does not count; the pass is recorded as the round's pass verdict at the head commit — the durable ReviewRound record the gate chain reads.
+        statement: The loop exits only on a clean review of the current branch head within the current gate attempt; a pass on an earlier commit — or from a prior attempt, even at the same commit — does not count; the pass is recorded as the round's pass verdict at the head commit and attempt, the durable ReviewRound record the gate chain reads.
         test: verification/REQ-pair-loop.feature#the exit is a clean pass on the head
       - id: AC-pair-trail
         statement: Before a round closes, kriya records its response on the job — comment, then close — through the round's write-ahead response lifecycle; a crash between the two re-issues the additive comment and completes the close, so the full conversation survives and no round is left open.
@@ -341,7 +341,7 @@ requirements:
     title: Submit a sutra Review, merge on approval, update ticket status
     acceptance:
       - id: AC-submit-create
-        statement: After the PO pass, kriya records a commit-scoped submission key with a write-ahead submitting state, then creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id, and records the returned id as submitted; a crash on either side of sutra's acceptance recovers by replaying the persisted request under the same idempotency key — sutra returns the original review if the request landed and creates it otherwise, exactly one either way — and the run then waits on review events.
+        statement: After the PO pass, kriya records a submission key scoped to the head commit AND the gate attempt with a write-ahead submitting state, then creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id, and records the returned id as submitted; a crash on either side of sutra's acceptance recovers by replaying the persisted request under the same idempotency key — sutra returns the original review if the request landed and creates it otherwise, exactly one either way — and the run then waits on review events.
         test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
       - id: AC-submit-rework
         statement: "A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, and it is write-ahead: the resubmitting state, its idempotency key, expected revision, and pinned commit persist transactionally before sutra's resubmit call, recovery replays under the same key on either side of acceptance, and the revision increments exactly once."
@@ -567,12 +567,19 @@ data:
         pending with the target and validated spec hash BEFORE a
         generation is allocated; the allocated generation is recorded on
         the row transactionally with the mapping upsert, and the row
-        stamps applied when intake completes. Recovery under the SAME
+        stamps applied when intake completes. The allocation itself is an atomic
+        RESERVATION — a CAS increment on the mapping row's
+        intake_generation (expected current value, write value+1),
+        executed in the transaction that records the result on this
+        attempt — so two overlapping, differently keyed intakes
+        serialize through the CAS: the loser re-reads and reserves the
+        next value, and no two attempts ever hold the same generation.
+        Recovery under the SAME
         key resumes this attempt and reuses its recorded generation —
         a crash between mapping update and plan creation can never
         allocate a second generation or trigger a duplicate
         supersession — while a deliberate same-hash re-intake arrives
-        under a NEW key and allocates the next generation. Plans copy
+        under a NEW key and reserves the next generation. Plans copy
         intake_generation from the attempt that authorized them.
       fields:
         - { name: intake_key, type: string, required: true, unique: true }  # the intake request's idempotency token
@@ -1226,7 +1233,9 @@ data:
       name: ReviewRound
       description: >-
         Restart-safe by write-ahead, grounded in the R1 spike facts. The
-        operation_key is derived deterministically from (build, commit), so
+        operation_key is derived deterministically from (build, commit,
+        gate attempt) — the attempt keeps a rerun after integration
+        distinct even at an unchanged commit — so
         its uniqueness makes the write-ahead insert idempotent — a
         concurrent or recovered replay collides instead of duplicating.
         Enqueue happens after the insert; roborev offers no caller

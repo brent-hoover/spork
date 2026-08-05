@@ -64,6 +64,12 @@ Feature: Spec intake
     Given a deliberate same-hash re-intake arrives under a new token
     Then it allocates the next generation
 
+  Scenario: overlapping intakes never share a generation
+    Given two differently keyed intakes for the same target run concurrently
+    When both attempt to reserve the next generation
+    Then the CAS increment serializes them — one reserves N, the loser re-reads and reserves N+1
+    And no two attempts ever hold the same generation
+
   Scenario: a delayed older plan can never regress the mapping
     Given intake generation 2 pinned the project's mapping snapshot
     When a delayed plan seed carrying generation 1 arrives
