@@ -48,7 +48,10 @@ constitution:
 # vs issued steps including id-less rows and the deferred-status fence;
 # carried-forward pop race: ticket claimed mid-supersession and listed by
 # both plans binds to the predecessor snapshot (deepest unstamped row),
-# and the consumed marker is cleared so a later reopen binds to the head.
+# and the consumed marker is cleared so a later reopen binds to the head;
+# post-retirement reopen: a ticket bound or completed under a superseded
+# plan, later reopened and popped, binds to the current head because
+# retirement consumed the historical rows as stamped history.
 #
 # Risk register — validated before kriya's own build begins:
 #   R1 (RETIRED 2026-08-04 by spike + session-long live use): roborev is
@@ -287,11 +290,19 @@ data:
         operator-visible, never a lingering indistinguishable pending
         row.
         The retirement pass is then durable, ordered, and state-aware,
-        touching ONLY unfinished, unclaimed tickets (completed tickets
-        and tickets already claimed by builds are untouched — popped
-        builds finish under their pinned snapshots): first each such
-        ticket is set to status deferred via the tracker's conditional
-        transition (expected status open). A conflict is NOT assumed to
+        acting in sutra ONLY on unfinished, unclaimed tickets (completed
+        tickets and tickets already claimed by builds get no server-side
+        action — popped builds finish under their pinned snapshots) but
+        stamping EVERY predecessor row before it completes: rows for
+        bound or completed builds are stamped consumed-as-history (the
+        build's own plan and spec_hash refs are its authority; membership
+        matching is never needed again), and the reconciliation pass
+        below runs first so no claimed-but-unbound pop exists when those
+        stamps land. Retirement therefore leaves NO unstamped predecessor
+        row behind, which is what makes a later reopen-and-pop of any of
+        its tickets bind cleanly to the then-current head. First each
+        unfinished, unclaimed ticket is set to status deferred via the
+        tracker's conditional transition (expected status open). A conflict is NOT assumed to
         mean a pop won: first every queued BuildRun with an unfilled
         ticket replays its idempotent pop so just-claimed tickets gain
         their matching rows, then the ticket is re-read and classified —
@@ -386,20 +397,21 @@ data:
         build binds to the FURTHEST-BACK plan on that chain holding an
         UNSTAMPED PlannedTicket row for the ticket, falling through to
         the current head's row only when no superseded plan holds one.
-        Unstamped-deepest-wins is deterministic because the markers are
-        exact: retirement stamps every row it retires (including
-        carried-forward unclaimed rows, stamped at their defer fence)
-        and skips claimed tickets, so the deepest unstamped superseded
-        row is precisely the plan that was head when the pop claimed
-        the ticket — every earlier plan stamped its row on carry-forward,
-        every later plan skipped the already-claimed ticket. Binding to
-        it (and its pinned snapshot) honors the
+        The fallback can only ever fire inside a retirement crash
+        window, and there it is exact: a completed retirement leaves no
+        unstamped row behind (it first binds every queued BuildRun with
+        an unfilled ticket via pop replay, then stamps every remaining
+        row — bound and completed builds' rows are consumed as history
+        since their plan and spec_hash refs are already authoritative),
+        so an unstamped superseded row exists only while its plan's
+        retirement is still resuming, and the deepest such row is
+        precisely the plan whose tickets were live when the pop claimed
+        this one. Binding to it (and its pinned snapshot) honors the
         popped-builds-finish-under-predecessor guarantee even when the
         current head also lists the ticket; the same transaction stamps
-        every unstamped superseded row it walked past, so the marker
-        clears and a later reopen-and-pop of the same ticket matches
-        its then-current plan normally. Stamped rows are audit history
-        and never bind. (PlannedTicket
+        every unstamped superseded row it walked past. Stamped rows are
+        audit history and never bind, so a reopened ticket popped after
+        supersession completes always matches its then-current plan. (PlannedTicket
         remains the authoritative membership record — Plan holds no
         duplicate list.) Matching uses
         persisted ids directly: assignment-last guarantees any poppable
