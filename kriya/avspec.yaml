@@ -300,7 +300,11 @@ data:
         existing Plan rows (the key is unique), BEFORE any PlanHead
         logic runs: a row already present makes the request a same-key
         retry whose result is state-aware and touches nothing —
-        pending resumes its phases, active returns as already complete,
+        pending resumes its phases; active WITHOUT the completed stamp
+        resumes its creation, wiring, and assignment phases from the
+        durable per-step states (activation precedes those phases, so a
+        crash can leave an active plan mid-decomposition) and only an
+        active plan bearing completed returns as already complete;
         superseded returns as an idempotent HISTORICAL result (the
         caller learns the plan and its replacement via superseded_by;
         the retry can never mutate PlanHead, revive the old plan, or
@@ -367,9 +371,14 @@ data:
         their matching rows, then the ticket is re-read and classified —
         actually claimed by a build (in-progress with a matching
         BuildRun) means
-        it is left untouched; still unfinished and unclaimed but moved
-        (blocked, deferred, or re-opened meanwhile) means the conditional
-        defer retries from the freshly observed status; anything whose
+        it is left untouched; still unfinished and unclaimed but already DEFERRED means the
+        fence is established (a prior attempt's effect landed) and
+        retirement continues with NO further transition — retrying
+        would at best duplicate a status mutation and at worst loop on
+        conflicts; still unfinished and unclaimed but moved elsewhere
+        (blocked, or re-opened meanwhile) means the conditional
+        defer retries from the freshly observed status under the next
+        defer_generation key; anything whose
         ownership cannot be determined goes to awaiting-operator. The
         pop fence thus lands before anything else without clobbering a
         live claim or stranding a merely-moved ticket; then its ISSUED
@@ -471,7 +480,8 @@ data:
         - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
         - { name: state, type: enum, required: true, values: [pending, active, superseded, awaiting-operator] }  # pending until the predecessor's retirement completes; awaiting-operator records a lost supersession CAS or unrecoverable phase failure
         - { name: activated, type: datetime }  # persisted at the pending -> active transition and never cleared; binding authority keys off this, not the state label, so a head parked awaiting-operator still resolves deterministically
-        - { name: abandoned, type: datetime }  # operator verdict on an unactivated awaiting-operator head: one atomic transaction stamps this, marks the plan superseded (superseded_by absent, error retained), rolls head.current back to the last activated predecessor with a generation bump, and decrements the fence's unactivated_heads — the counter can never stay positive indefinitely because the operator's only alternatives are resume (retirement completes, activation decrements) or abandon (this rollback decrements)
+        - { name: completed, type: datetime }  # stamped only after the final assignment-phase barrier finishes — activation precedes the creation/wiring/assignment phases, so active alone never means the decomposition is done
+        # Recovery of an unactivated awaiting-operator head is FORWARD-ONLY: the operator fixes the impediment and RESUMES the pending phase — retirement is idempotent and resumable, and activation decrements the fence, so the counter cannot stay positive indefinitely. There is deliberately no rollback verdict: rolling the head back to a superseded predecessor would require restoring its state and reversing partially completed retirement (re-opening deferred tickets, un-consuming rows) with no authority to do so safely. A decomposition that turns out to be semantically wrong still resumes to activation and is then corrected by a normal follow-up supersession.
         - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
         - { name: predecessor, type: ref, ref: ENT-plan }  # the plan this one supersedes; persisted at creation so retirement is resumable
         - { name: superseded_by, type: ref, ref: ENT-plan }  # stamped by the supersession CAS — the one successor allowed to activate
