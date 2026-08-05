@@ -40,6 +40,13 @@ constitution:
   - id: CON-risk-first
     statement: Planning orders work by risk; a risk item is validated by research or a spike before anything that depends on it is built, so we never code ourselves into a corner.
 
+# Story-phase coverage checklist (accumulated from range reviews — these
+# protocol branches need ACs and scenarios when kriya's requirements get
+# their stories): plan-head retries in each plan state (pending resumes,
+# active completes, awaiting-operator preserved); queued-pop-to-build
+# reconciliation before ownership classification; retirement of pending
+# vs issued steps including id-less rows and the deferred-status fence.
+#
 # Risk register — validated before kriya's own build begins:
 #   R1 (RETIRED 2026-08-04 by spike + session-long live use): roborev is
 #       drivable as-is — enqueue (review), poll (show), respond (comment),
@@ -65,9 +72,13 @@ requirements:
     title: Consume a ready avspec — verify it, refuse anything less
     rationale: >-
       Ready means buildable without further prompting; kriya holds the spec
-      to its own claim, and additionally requires non-empty test, lint,
-      typecheck, coverage, and mutation commands in the target's stack —
-      the gate chain cannot run without every one of them.
+      to its own claim, and additionally requires that EVERY module's
+      effective stack (its per-field override where present, the project
+      stack otherwise) carries non-empty test, lint, typecheck, coverage,
+      and mutation commands — the gate chain runs per module with these
+      resolved commands, which are persisted into the SpecSnapshot at
+      pin time so builds and recovery execute exactly what intake
+      validated.
   - id: REQ-decompose
     title: PM agent decomposes the spec into tracer-bullet tickets in sutra
     rationale: Thin end-to-end slices first; BDD acceptance criteria on every ticket; blocks/blocked-by wired for parallelism.
@@ -96,10 +107,10 @@ requirements:
     title: Typing everywhere on the target app
   - id: REQ-gate-branch-coverage
     title: Branch coverage — every conditional arm, not an overall percentage
-    rationale: Runs the target's stack.commands.coverage; targets that omit it are rejected at spec intake.
+    rationale: Runs each module's effective coverage command; targets where any module's effective stack omits it are rejected at spec intake.
   - id: REQ-gate-mutation
     title: Mutation testing proves the tests test
-    rationale: Runs the target's stack.commands.mutation; targets that omit it are rejected at spec intake.
+    rationale: Runs each module's effective mutation command; targets where any module's effective stack omits it are rejected at spec intake.
   - id: REQ-po-validation
     title: Product owner agent validates ACs are genuinely satisfied and tests are not gaming
     rationale: The PO holds the big picture the coding agent cannot have.
@@ -200,7 +211,7 @@ data:
         - { name: retired, type: datetime }  # stamped by a successor plan's retirement pass once this ticket is drained, unassigned, and deferred
     - id: ENT-spec-snapshot
       name: SpecSnapshot
-      description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree.
+      description: Content-addressed snapshot of a target spec, stored when first pinned — builds and recovery read gate commands and ACs from here, never from the mutable working tree. Alongside the raw content it stores each module's RESOLVED effective commands (override-per-field over project stack), exactly as intake validated them.
       fields:
         - { name: hash, type: string, required: true, unique: true }
         - { name: content, type: json, required: true }
