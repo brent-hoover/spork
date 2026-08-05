@@ -83,6 +83,15 @@ Feature: Review lifecycle
     Then the comment is rejected
     And no comment is created
 
+  Scenario: approval consumption fences reversal
+    Given an approved review at revision 2
+    When a subscriber consumes the approval expecting revision 2
+    Then the consumption is durably recorded and replaying it is idempotent
+    And a later verdict on the review is rejected with no mutation
+    Given an approved review whose verdict was reversed before consumption
+    When the subscriber attempts consumption
+    Then it fails with a conflict and consumes nothing
+
   Scenario: resubmission requires changes-requested
     Given an open review
     When the agent resubmits the deliverable

@@ -233,8 +233,11 @@ requirements:
         statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission.
         test: verification/REQ-code-review.feature#unresolvable repository rejects submission
       - id: AC-review-reverdict
-        statement: A verdict carrying the current revision always applies, including reversing an earlier verdict; the latest verdict for the current revision is authoritative and every verdict is recorded.
+        statement: A verdict carrying the current revision always applies, including reversing an earlier verdict, UNTIL the approval is consumed; the latest verdict for the current revision is authoritative and every verdict is recorded, and a verdict on a consumed review is rejected with no mutation.
         test: verification/REQ-code-review.feature#verdicts can be revised for the current revision
+      - id: AC-review-consume
+        statement: A subscriber atomically consumes an approved review's approval, conditional on state approved at the expected current revision; consumption is durable and idempotent, permanently fences verdict changes, and fails with a conflict — consuming nothing — if the verdict changed or the revision moved first.
+        test: verification/REQ-code-review.feature#approval consumption fences reversal
       - id: AC-review-resubmit-guard
         statement: Resubmission is valid only from changes-requested; open or approved reviews reject it with no mutation.
         test: verification/REQ-code-review.feature#resubmission requires changes-requested
@@ -496,6 +499,8 @@ data:
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
         - { name: revision, type: integer, required: true }  # 1 on creation, +1 per resubmission; server-managed
+        - { name: consumed, type: datetime }  # stamped by atomic approval consumption; a consumed approval's verdict can no longer change
+        - { name: consumed_revision, type: integer }  # the revision whose approval was consumed
         - { name: created, type: datetime, required: true }
     - id: ENT-review-submission
       name: ReviewSubmission

@@ -1262,7 +1262,9 @@ paths:
         current revision always applies, including changing an earlier
         verdict (approved -> changes-requested and vice versa); the latest
         verdict for the current revision is authoritative, and each verdict
-        is recorded as an event. Approval publishes an event a subscriber
+        is recorded as an event — until the approval is consumed
+        (AC-review-consume): a verdict on a consumed review is rejected with
+        a conflict and no mutation. Approval publishes an event a subscriber
         can act on (AC-review-approved-event);
         changes-requested carries the review's session id and issue ref so a
         resubmission routes back to the same agent instance
@@ -1281,6 +1283,44 @@ paths:
       responses:
         '200':
           description: Review with the new state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Review'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /reviews/{reviewId}/consume:
+    post:
+      operationId: consumeReviewApproval
+      summary: Atomically consume an approved review's approval
+      description: >-
+        Conditional on state approved at the expected current revision;
+        stamps a durable consumption that permanently fences verdict changes
+        (AC-review-consume). Idempotent under its Idempotency-Key and on
+        replay of an already-consumed matching revision. Fails with a
+        conflict — consuming nothing — if the verdict changed or the
+        revision moved first. Subscribers call this before acting on an
+        approval (e.g. merging), so approval cannot be reversed mid-action.
+      tags: [reviews]
+      parameters:
+        - $ref: '#/components/parameters/ReviewIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision, actor]
+              properties:
+                expected_revision: { type: integer }
+                actor: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Review with the consumption stamped.
           content:
             application/json:
               schema:

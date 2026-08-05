@@ -1,9 +1,11 @@
 Feature: Parallel build with deterministic pop binding
   Independent tickets build concurrently, one BuildRun each. Every pop
-  is write-ahead, admission is fenced while any head plan is
-  unactivated, and a popped ticket binds to exactly one plan and
-  snapshot by the state-aware precedence algorithm — across crashes,
-  supersessions, and reopens.
+  is write-ahead and admission is fenced while any head plan is
+  unactivated. A planned ticket binds to exactly one plan and snapshot
+  by the state-aware precedence algorithm — across crashes,
+  supersessions, and reopens; an unplanned ticket binds the mapping's
+  intake-pinned snapshot with no plan, and an ambiguous one parks
+  awaiting-operator.
 
   Scenario: independent tickets build in parallel
     Given two unblocked tickets with no relation between them
