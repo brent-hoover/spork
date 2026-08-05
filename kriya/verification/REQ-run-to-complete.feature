@@ -11,8 +11,24 @@ Feature: Run to complete
     When a ticket unblocks
     Then popping resumes
 
+  Scenario: completion never fires against a partial plan
+    Given an activated head plan still mid-phase, without its completed stamp
+    And every ticket created so far is complete
+    When completion detection runs
+    Then no completion attempt starts — the ticket set is not yet whole
+    When decomposition passes its final assignment barrier and stamps completed
+    Then completion detection arms
+
+  Scenario: a rejected completion review reworks within its attempt
+    Given a build-completion review receives changes-requested
+    When kriya regenerates the completion report
+    Then the resubmission goes through sutra's resubmit path with a new document version
+    And completion_report_doc and completion_revision update transactionally within the same attempt — key and epoch unchanged
+    And the epic closes on the new revision's approval, never stranding the target
+
   Scenario: completion is the head plan done and the epic closable
-    Given every ticket of the activated head plan is complete
+    Given the activated head plan bears its completed stamp
+    And every ticket of the activated head plan is complete
     Then kriya records review-submitting with a deterministic submission key and the completion-report doc version before calling sutra
     And kriya submits a build-completion review on the umbrella epic with the completion-report document as its deliverable
     And a crash before the review id lands is recovered by querying sutra with the submission key and adopting the found review, never submitting twice

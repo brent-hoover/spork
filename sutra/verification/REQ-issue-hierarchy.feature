@@ -20,6 +20,9 @@ Feature: Issue hierarchy
     Given the child moves to status "deferred"
     When SUT-1 is transitioned to "complete" with an approved review
     Then the transition succeeds — deferred children are parked, not open
+    Given a deferred child of SUT-1 itself has a descendant in status "open"
+    When SUT-1 is transitioned to "complete"
+    Then the transition is rejected naming the active descendant — deferred nodes cannot hide active work
 
   Scenario: reopening a child reopens a complete parent
     Given SUT-1 is "complete" and its child SUT-2 is "complete"

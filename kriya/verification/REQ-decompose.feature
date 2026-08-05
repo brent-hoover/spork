@@ -57,7 +57,8 @@ Feature: Spec decomposition
   Scenario: retirement distinguishes pending from issued work
     Given predecessor rows with a pending ticket, an issued ticket, and a row whose ticket was never created
     When retirement runs
-    Then the pending ticket is deferred in sutra via an expected-status "open" conditional transition with a generation-scoped defer key
+    Then the pending ticket is deferred in sutra via a conditional transition expecting its freshly observed status, with a generation-scoped defer key
+    And a pending ticket observed in status "blocked" defers the same way on the first attempt, never conflicting forever against an "open" expectation
     And a fresh read showing the ticket already deferred counts as fence established with no retry
     And the row whose ticket was never created retires with no sutra call
     And the issued ticket is carried forward, not deferred

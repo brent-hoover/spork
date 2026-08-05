@@ -143,7 +143,7 @@ requirements:
         statement: Decomposing against an existing head atomically creates a superseding candidate — predecessor pointed at the head it beat, head marked superseded, fence incremented, PlanHead moved with a generation bump — then retires the predecessor, stamping every predecessor row consumed with its state-appropriate disposition — retired, carried-forward, bound, or completed — before the new plan activates.
         test: verification/REQ-decompose.feature#supersession retires the predecessor before activating
       - id: AC-decompose-retirement
-        statement: Retirement distinguishes pending from issued work — pending tickets are retired in sutra via expected_status=open conditional transitions with generation-scoped defer keys, an already-deferred fresh read counts as fence established with no retry, and rows whose ticket was never created retire with no sutra call. Retired tickets rest deferred under the shared epic, and sutra's close gate does not count deferred children, so retired work never blocks build completion.
+        statement: Retirement distinguishes pending from issued work — pending tickets are retired in sutra via conditional transitions whose expected status is the freshly observed unfinished status, open or blocked, with generation-scoped defer keys, an already-deferred fresh read counts as fence established with no retry, and rows whose ticket was never created retire with no sutra call. Retired tickets rest deferred under the shared epic, and sutra's close gate does not count deferred children, so retired work never blocks build completion.
         test: verification/REQ-decompose.feature#retirement distinguishes pending from issued work
       - id: AC-decompose-operator-recovery
         statement: "Each awaiting-operator state has a defined forward-only recovery: an unactivated head restores to pending with predecessor-row resets and retirement resumes; an activated head restores to active with ticket-row states recomputed from step progress; a parked non-head candidate retries by re-entering the replacement CAS, repointing its predecessor to the head it beats."
@@ -344,7 +344,7 @@ requirements:
         statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review and requires the branch head to still equal the still-approved current revision's pinned commit — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
-        statement: "After a successful merge kriya re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra, which itself enforces the approved-review gate, and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop and resubmission path for them instead of completing, so no work is stranded on a terminal run."
+        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra, which itself enforces the approved-review gate, and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop and resubmission path for them instead of completing, so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
         test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
@@ -353,7 +353,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: "When every ticket of the activated head plan is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every ticket reopen — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history."
+        statement: "Completion detection arms only once the activated head plan bears its completed stamp — decomposition's final assignment barrier has passed, so the ticket set is whole, and a mid-phase plan can never present an empty or partial set as done. When that plan's every ticket is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every ticket reopen — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history."
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -619,7 +619,14 @@ data:
         is a NEW attempt with a new key, a new review, and fresh human
         approval — an old approval never authorizes newly added work.
         The fields are immutable within an attempt and rotated only by
-        the next attempt's review-submitting transaction.
+        the next attempt's review-submitting transaction — with ONE
+        in-attempt exception: a changes-requested verdict on the
+        completion review takes the rework path, regenerating the
+        report and resubmitting through sutra's resubmit path while
+        transactionally updating completion_report_doc and
+        completion_revision within the SAME attempt (key and epoch
+        unchanged); the epic closes on the new revision's approval, so
+        a rejected completion review can never strand the target.
         The recorded review's id and revision land with the PlanHead
         generation the claim is about (completed_generation), and
         completion_state advances around every sutra call — closing
@@ -766,7 +773,10 @@ data:
         the successor omitted instead retains its AC-producing plan's
         snapshot via consumed-history resolution (binding rule 3). First each
         unfinished, unclaimed ticket is set to status deferred via the
-        tracker's conditional transition (expected status open). Each
+        tracker's conditional transition, whose expected status is the
+        FRESHLY OBSERVED unfinished status — open or blocked alike, so
+        a blocked ticket defers on the first attempt instead of
+        conflicting forever. Each
         defer attempt carries a deterministic GENERATION-SCOPED
         idempotency key — (row's idempotency_key, 'defer', attempt
         generation), with the generation persisted on the row and

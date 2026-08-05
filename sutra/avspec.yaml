@@ -151,7 +151,7 @@ requirements:
         statement: Whenever an issue enters open, in-progress, or blocked — by reopening from complete, by leaving deferred, or by being attached as a child beneath a complete parent — every complete ancestor reopens atomically in the same transaction, with status events recorded on each; no complete issue ever has a descendant in open, in-progress, or blocked.
         test: verification/REQ-issue-hierarchy.feature#reopening a child reopens a complete parent
       - id: AC-parent-close-gate
-        statement: Transitioning a parent to complete while any child is open, in-progress, or blocked is rejected; deferred children — intentionally parked work — do not hold the parent open.
+        statement: Transitioning a parent to complete is rejected while any descendant — at any depth, including beneath deferred children — is open, in-progress, or blocked; deferred nodes whose whole subtree is deferred or complete do not hold the parent open.
         test: verification/REQ-issue-hierarchy.feature#open children hold the parent open
   - id: REQ-issue-blocking
     title: Blocks / is-blocked-by relationships between issues
