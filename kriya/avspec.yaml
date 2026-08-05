@@ -498,7 +498,7 @@ modules:
         - id: VIEW-tui-overview
           name: Overview
           invocation: kriya tui
-          purpose: What is running now with its gate-chain position, what is queued or blocked — anchored on the head plan's PlannedTicket rows, with workability read live from the tracker through the orchestrator — and what waits on human review.
+          purpose: What is running now with its gate-chain position, what is queued or blocked — the live tracker queue is the work universe, so unplanned tickets and reopened tickets living only in consumed history appear too, joined with PlannedTicket rows for plan metadata — and what waits on human review.
           shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.identity, ENT-build-run.started, ENT-planned-ticket.ticket, ENT-planned-ticket.state]
           navigates_to: [VIEW-tui-inbox, VIEW-tui-run]
           satisfies: [AC-tui-overview]
@@ -691,8 +691,10 @@ data:
         completion_state advances around every sutra call — closing
         around the close, complete once the epic closed, reopening
         around a reopen — and each state records a deterministic
-        per-operation idempotency key (derived from the attempt's
-        submission key and the operation) in the same transaction, so
+        per-operation idempotency key — derived from (target_key,
+        completion_epoch, operation), data that always exists, since a
+        supersession or reopen can occur before any completion attempt
+        ever created a submission key — in the same transaction, so
         crash recovery resumes the exact step by REPLAYING under that
         key: a close that landed before the crash replays to its
         original success — never a close_used conflict, since this very
@@ -767,7 +769,7 @@ data:
         - { name: completion_pending_report, type: string }  # reference to the prepared report content, persisted BEFORE the doc version exists; reconciled into completion_report_doc on success
         - { name: completion_subtree_revision, type: integer }  # PRE-close: the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
         - { name: completion_closed_revision, type: integer }  # POST-close: the subtree_revision the close itself committed, taken from the close response and recorded atomically with the completed stamp — the mirror-trust comparison uses THIS, never the pre-close precondition
-        - { name: completion_operation_key, type: string }  # deterministic per (submission key, operation) — written atomically with the closing or reopening state; the key recovery replays the close or reopen under
+        - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; written atomically with the closing or reopening state, and the external reopen is SKIPPED entirely when completion_state shows no close ever ran for the epoch
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
@@ -799,7 +801,11 @@ data:
         target_spec). Every (project, normalized target_spec) has ONE
         durable PlanHead row, and replacement is a SINGLE store
         transaction (one durable store makes this free): it requires the
-        head's current plan to be ACTIVE, marks that predecessor
+        head's current plan to be ACTIVE and the candidate's
+        intake_generation to be STRICTLY NEWER than the head's — a
+        generation-1 intake recovering after generation 2 installed its
+        plan loses here and parks awaiting-operator rather than
+        superseding the newer head — then marks that predecessor
         superseded with superseded_by stamped, installs the new pending
         plan as head.current, and increments the head generation — all
         atomically. Every request FIRST resolves its decomposition_key against
@@ -845,10 +851,14 @@ data:
         acting in sutra ONLY on unfinished, unclaimed tickets (completed
         tickets and tickets claimed by LIVE builds get no server-side
         action — popped builds finish under their pinned snapshots; a
-        ticket whose only matching run is terminally cancelled or
-        cancelling is RELEASED work, already deferred by the
-        cancellation protocol, and its row stamps disposition retired —
-        never carried forward as work that will finish) but
+        ticket whose only matching run is terminally CANCELLED is
+        RELEASED work, already deferred by the cancellation protocol,
+        and its row stamps disposition retired — never carried forward
+        as work that will finish; a run still in CANCELLING first has
+        its conditional defer replayed to its terminal result, and only
+        once the ticket is verifiably deferred and the run stamped
+        cancelled does the row stamp retired — a crash mid-cancellation
+        can never consume a row over an in-progress ticket) but
         stamping EVERY predecessor row before it completes: rows for
         bound or completed LIVE builds are stamped consumed with disposition
         bound or completed (the
@@ -1155,8 +1165,10 @@ data:
       description: >-
         Durable entry in the per-target merge queue. Created when an
         approval event arrives (attempt_key — target, build, review id,
-        and revision — makes replays collide instead of duplicating,
-        and the persisted review and revision tell recovery exactly
+        revision, AND the immutable approval-event id — makes replays
+        collide instead of duplicating while re-approval after reversal
+        at the same revision still enqueues its own attempt, and the
+        persisted review and revision tell recovery exactly
         which approval to consume), ordered by created; the queue head
         acquires the target's merge lock by CAS on
         BuildTarget.merge_lock (absent -> this attempt), and ONLY the lock
