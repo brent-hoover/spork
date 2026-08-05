@@ -43,6 +43,18 @@ the backlog of record.)
    `verification/architecture-rules.yaml` still uses `CMP-` vocabulary;
    wellformed unit tests assert codes but not severities.
 
+### Prepared reviews (Crucible-style, sutra)
+
+Submitter pre-annotates the review diff so human review is quick and
+focused. Sketch agreed in conversation (2026-08-05), deferred by choice:
+`ENT-review-annotation` (review, revision, anchor, kind: focus|routine,
+optional note, author, created) owned by MOD-review; `AC-review-prepare`
+(annotations attach at submit/resubmit, revision-scoped, immutable,
+stale-revision rejected) and `AC-review-guided-web` (routine spans
+collapsed, focus spans expanded with notes inline, unannotated spans
+normal) under REQ-code-review; VIEW-review shows kind/note. Preparation
+stays optional; no reviewer-side read-tracking for now.
+
 ## Sutra contract polish (non-blocking, from the final review rounds)
 
 9. 400-response enumeration is asymmetric across mutations that take
