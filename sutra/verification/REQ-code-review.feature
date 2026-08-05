@@ -61,6 +61,8 @@ Feature: Review lifecycle
     Then that event carries session "sess-43", the session of revision 2
     When the agent resubmits the deliverable pinned at commit "0123abcd0123abcd0123abcd0123abcd0123abcd" with no session
     Then submission 3 carries no session
+    And the review returns to state "open" at revision 3
+    And the review's pinned commit is "0123abcd0123abcd0123abcd0123abcd0123abcd"
     And the review's session is absent, mirroring the latest submission
     And submissions 1 and 2 retain "sess-42" and "sess-43"
     And the earlier comment remains associated with revision 1

@@ -324,8 +324,10 @@ data:
         or not) remain what a pop binds against, so a reopened ticket
         popped mid-retirement can never inherit the pending plan's
         not-yet-wired snapshot. Once the successor activates, a later
-        reopen-and-pop of any predecessor ticket binds cleanly to the
-        then-current active head. First each
+        reopen-and-pop of a predecessor ticket the successor CARRIED
+        FORWARD binds cleanly to the then-current active head; a ticket
+        the successor omitted instead retains its AC-producing plan's
+        snapshot via consumed-history resolution (binding rule 3). First each
         unfinished, unclaimed ticket is set to status deferred via the
         tracker's conditional transition (expected status open). A conflict is NOT assumed to
         mean a pop won: first every queued BuildRun with an unfilled
@@ -462,7 +464,13 @@ data:
         superseded row it walked past. (2) Otherwise, while the head has
         NOT YET ACTIVATED (activated absent — a pending head, or one
         parked awaiting-operator before it ever activated), the
-        immediate predecessor's row — stamped or not — binds: an
+        NEAREST predecessor row on the chain — stamped or not — binds:
+        usually the immediate predecessor's, but when that plan omitted
+        the ticket the search continues through consumed history down
+        the activated-predecessor chain to the nearest plan that
+        actually included it (a pop admitted just before replacement
+        can claim a reopened ticket that only an earlier plan
+        produced, and it must not be misclassified as unplanned). An
         unactivated head's rows NEVER bind, because activation is the
         atomic switch of binding authority (persisted as the plan's
         activated stamp), so a reopened ticket popped mid-retirement
