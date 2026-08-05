@@ -263,9 +263,26 @@ requirements:
   - id: REQ-gate-structure
     title: Structural linting with hard limits on the target app, via each module's effective lint command
     rationale: Google-style-guide strictness — max module size and kin; agents love god modules and do not mind strict rules.
+    acceptance:
+      - id: AC-structure-per-module
+        statement: The gate runs each touched module's snapshot-resolved lint command at the run's head commit; any nonzero exit fails the gate for that module.
+        test: verification/REQ-gate-structure.feature#the lint command runs per touched module
+      - id: AC-structure-hard-fail
+        statement: "Structural findings are hard failures: no waiver at gate time — the remedy is code, or an operator-approved config change in the target project, which is a spec amendment and re-intake. A result from an older commit never satisfies the gate."
+        test: verification/REQ-gate-structure.feature#structural findings cannot be waived
+      - id: AC-structure-feedback
+        statement: A failure hands the tool's findings back to the dev agent and the loop continues; pass or fail, the result is upserted as a GateResult with detail, so reruns never duplicate.
+        test: verification/REQ-gate-structure.feature#failures feed back and results upsert
   - id: REQ-gate-typing
     title: Typing everywhere on the target app
     rationale: Runs each module's effective typecheck command.
+    acceptance:
+      - id: AC-typing-per-module
+        statement: The gate runs each touched module's snapshot-resolved typecheck command at the run's head commit; any nonzero exit fails that module's gate.
+        test: verification/REQ-gate-typing.feature#the typecheck command runs per touched module
+      - id: AC-typing-recorded
+        statement: Results are upserted as GateResults pinned to the commit; a stale pass never satisfies the chain, and failures return the tool's output to the dev agent.
+        test: verification/REQ-gate-typing.feature#typing results pin to the commit
   - id: REQ-gate-branch-coverage
     title: Branch coverage — every conditional arm, not an overall percentage
     rationale: Runs each module's effective coverage command; targets where any module's effective stack omits it are rejected at spec intake.
