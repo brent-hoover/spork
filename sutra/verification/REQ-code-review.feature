@@ -97,6 +97,13 @@ Feature: Review lifecycle
     When the subscriber attempts consumption expecting the previous revision
     Then it fails with a conflict and no consumption is stamped
 
+  Scenario: a verdict ABA fences delayed operations
+    Given a review whose verdict went changes-requested, then approved, then changes-requested again at the same revision
+    When a delayed resubmission arrives naming the FIRST changes-requested event
+    Then it is rejected with a conflict — that event is no longer the review's latest verdict
+    Given a delayed consumption names an approval event that a later verdict superseded
+    Then it too is rejected with a conflict and consumes nothing
+
   Scenario: a stale resubmission cannot land on a newer revision
     Given a review at revision 3 in state "changes-requested"
     When a delayed resubmission arrives expecting revision 2

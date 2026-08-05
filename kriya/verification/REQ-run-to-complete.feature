@@ -126,6 +126,12 @@ Feature: Run to complete
     Then the same epoch advance, clear, and fresh-review requirement apply
     And no cascade-driven advance issues an external reopen call — the cascade already reopened the epic, whatever the prior completion state
 
+  Scenario: replayed advance events are no-ops in any order
+    Given advance events "E1" then "E2" were consumed, each inserting its keyed CompletionAdvance record
+    When "E1" is replayed after "E2"
+    Then the insert collides on the (target, event) key and the epoch does not advance
+    And no valid completion is cleared and no recorded cause is overwritten
+
   Scenario: a verdict ABA cannot poison the rework keys
     Given a completion rework got a cached conflict, the review was then approved, and a later changes-requested arrived at the same revision
     When the new rework begins

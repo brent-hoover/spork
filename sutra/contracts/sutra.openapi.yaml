@@ -356,7 +356,7 @@ paths:
               oneOf:
                 - title: CompleteTransition
                   type: object
-                  required: [status, review, review_revision, actor]
+                  required: [status, review, review_revision, review_verdict_event, actor]
                   properties:
                     status: { type: string, enum: [complete] }
                     expected_status: { $ref: '#/components/schemas/IssueStatus' }
@@ -370,6 +370,10 @@ paths:
                     review_revision:
                       type: integer
                       description: The approved revision the caller expects to spend; validated atomically with ownership, approval state, and close_used — a delayed close intended for revision N can never spend a later revision's approval.
+                    review_verdict_event:
+                      type: string
+                      format: uuid
+                      description: The approval's verdict event; must still be the review's latest — a verdict ABA rejects the delayed close atomically.
                     actor: { type: string, format: uuid }
                   additionalProperties: false
                 - title: NonCompleteTransition
@@ -1359,9 +1363,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [expected_revision, actor]
+              required: [expected_revision, expected_verdict_event, actor]
               properties:
                 expected_revision: { type: integer }
+                expected_verdict_event:
+                  type: string
+                  format: uuid
+                  description: The approval's verdict event; rejected with a conflict if it is no longer the review's latest — a verdict ABA invalidates delayed consumptions even at a matching revision and state.
                 actor: { type: string, format: uuid }
       responses:
         '200':
@@ -2161,6 +2169,10 @@ components:
             1 on creation, +1 per resubmission; server-managed. Feedback
             left on an earlier revision stays associated with that
             revision — it does not move forward.
+        latest_verdict_event:
+          type: string
+          format: uuid
+          description: Id of the review's most recent verdict event; replaced by every verdict change. Delayed close, consume, and resubmit requests name it and are rejected when it moved — the verdict-ABA fence. Round-trips through export/import.
         consumed:
           type: string
           format: date-time
@@ -2284,8 +2296,12 @@ components:
         Replacement deliverable for a review returning to open — same
         exactly-one shape as NewReview: a branch pinned at an immutable
         commit, or a doc version.
-      required: [author, expected_revision]
+      required: [author, expected_revision, expected_verdict_event]
       properties:
+        expected_verdict_event:
+          type: string
+          format: uuid
+          description: The changes-requested verdict event this rework answers; rejected with a conflict if it is no longer the review's latest — stale rework can never replace a deliverable without addressing the latest feedback.
         expected_base_commit:
           type: string
           description: Code deliverables only — validated atomically against the newly resolved base_commit before the resubmission lands; mismatch rejects 409 with no mutation.

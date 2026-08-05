@@ -350,10 +350,10 @@ requirements:
         statement: "A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, and it is write-ahead: the resubmitting state, its idempotency key, expected revision, and pinned commit persist transactionally before sutra's resubmit call, recovery replays under the same key on either side of acceptance, and the revision increments exactly once."
         test: verification/REQ-submit-review.feature#rework routes back by session
       - id: AC-submit-merge
-        statement: "An approval event is a signal, not an authority, and merges are SERIALIZED per target through the durable merge queue — MergeAttempt rows ordered by arrival, the head holding BuildTarget.merge_lock; only the lock holder proceeds. Inside the critical section kriya first PREFLIGHTS: the branch head must still equal the approved revision's pinned commit, the default-branch head must still equal the gated_base the run's chain ran against, the reviewed diff must be exactly what the chain gated — enforced ATOMICALLY BY SUTRA at submission: every code submission and resubmission carries BOTH expected_default_head = the frozen gated_base (the default branch must not have moved — the merge base alone is no proxy, a fast-forwarded default keeps the old one) AND expected_base_commit = the frozen gated_base (the branch must actually be based on what the gates ran against — a stale-based branch passes the head check while its diff base was never gated), both derived from the durable gated_base so replay reproduces them, and a mismatch on either rejects 409 with no review, submission, or event ever existing, so nothing ungated can reach a human; the preflight recheck of head, base, and conflict-freedom is defense in depth, so an ABA move of the default branch cannot slip a differently-based reviewed diff past the gates — (a mismatch on either means the combined result was never gated — the run integrates the current base, reruns the full chain, and submits a fresh review instead), and the deterministic merge result must be conflict-free. Only a clean preflight atomically CONSUMES the approval through sutra — conditional on state approved at the expected current revision, durably fencing any later verdict change — and the merge then commits under a CAS on the default-branch head — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges; a reversal landing before consumption fails the consumption and nothing merges. A CAS failure after consumption — an out-of-band push inside the window — never strands the run: the consumed approval stays spent in history, and the run takes the same integrate-rerun-fresh-review path, so consumption is never a dead end."
+        statement: "An approval event is a signal, not an authority, and merges are SERIALIZED per target through the durable merge queue — MergeAttempt rows ordered by arrival, the head holding BuildTarget.merge_lock; only the lock holder proceeds. Inside the critical section kriya first PREFLIGHTS: the branch head must still equal the approved revision's pinned commit, the default-branch head must still equal the gated_base the run's chain ran against, the reviewed diff must be exactly what the chain gated — enforced ATOMICALLY BY SUTRA at submission: every code submission and resubmission carries BOTH expected_default_head = the frozen gated_base (the default branch must not have moved — the merge base alone is no proxy, a fast-forwarded default keeps the old one) AND expected_base_commit = the frozen gated_base (the branch must actually be based on what the gates ran against — a stale-based branch passes the head check while its diff base was never gated), both derived from the durable gated_base so replay reproduces them, and a mismatch on either rejects 409 with no review, submission, or event ever existing, so nothing ungated can reach a human; the preflight recheck of head, base, and conflict-freedom is defense in depth, so an ABA move of the default branch cannot slip a differently-based reviewed diff past the gates — (a mismatch on either means the combined result was never gated — the run integrates the current base, reruns the full chain, and submits a fresh review instead), and the deterministic merge result must be conflict-free. Only a clean preflight atomically CONSUMES the approval through sutra — conditional on state approved at the expected current revision AND naming the persisted approval event as the expected verdict event, so sutra rejects it if any later verdict superseded that event, durably fencing any later verdict change — and the merge then commits under a CAS on the default-branch head — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges; a reversal landing before consumption fails the consumption and nothing merges. A CAS failure after consumption — an out-of-band push inside the window — never strands the run: the consumed approval stays spent in history, and the run takes the same integrate-rerun-fresh-review path, so consumption is never a dead end."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
-        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra NAMING the merged review and its approved revision (from the merge attempt) as the close's authorizer (sutra stamps it close-used; a stale revision rejects; the merge-time consumption never blocks it), and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop instead of completing, and once the gates pass again the new head is submitted as a FRESH review durably recorded on the run (sutra forbids resubmitting an approved review; the consumed one stays in history), so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
+        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra NAMING the merged review, its approved revision, and its approval's verdict event (all from the merge attempt) as the close's authorizer (sutra stamps it close-used; a stale revision rejects; the merge-time consumption never blocks it), and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop instead of completing, and once the gates pass again the new head is submitted as a FRESH review durably recorded on the run (sutra forbids resubmitting an approved review; the consumed one stays in history), so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
         test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
@@ -419,7 +419,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence, ENT-build-target, ENT-intake-attempt]
+    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence, ENT-build-target, ENT-intake-attempt, ENT-completion-advance]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -637,6 +637,22 @@ data:
         - { name: current, type: ref, ref: ENT-plan, required: true }
         - { name: generation, type: integer, required: true }
         - { name: updated, type: datetime, required: true }
+    - id: ENT-completion-advance
+      name: CompletionAdvance
+      description: >-
+        Insert-once record of one consumed epoch-advancing event. The
+        advancing transaction inserts it keyed by (target, event), so a
+        replayed event — however stale, in whatever order — collides on
+        the key and advances nothing: every event is consumed at most
+        once, a valid completion is never cleared twice, and the cause
+        needed to recover an explicit reopen is never overwritten.
+      fields:
+        - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id)
+        - { name: target_key, type: string, required: true }
+        - { name: event, type: string, required: true }
+        - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, compensation] }
+        - { name: epoch, type: integer, required: true }  # the epoch value this advance produced
+        - { name: created, type: datetime, required: true }
     - id: ENT-build-target
       name: BuildTarget
       description: >-
@@ -731,7 +747,8 @@ data:
         The submission records completion_claim_epoch — an immutable
         copy of the epoch at that moment — beside the review id and
         revision; the epic close names the attempt's completion_review
-        at completion_revision as its authorizer, so sutra spends
+        at completion_revision, with completion_approval_event as the
+        expected verdict event, as its authorizer, so sutra spends
         exactly that approval at exactly that revision — a delayed
         close carrying a stale revision rejects, and a prior epoch's
         spent review can never close a reopened epic; and
@@ -763,7 +780,7 @@ data:
         supersession installing a new head, or a completed ticket
         reopening, atomically advances the epoch and clears completed;
         whether an EXTERNAL reopen is owed depends on WHAT advanced the
-        epoch, and the durable advance cause is AUTHORITATIVE — persisted as last_advance_cause with last_advance_event in the advancing transaction, event consumption deduplicating on the event id so replays are no-ops: every
+        epoch, and the durable advance cause is AUTHORITATIVE — every advance INSERTS a CompletionAdvance record keyed uniquely by (target, event) in the advancing transaction, so any replayed event, in any order, collides and is a no-op; the record carries the cause recovery reads: every
         sutra-cascade-driven advance — a ticket reopening, deferred
         work activating, an active subtree attached — NEVER calls
         sutra, regardless of prior completion state, because the
@@ -791,8 +808,8 @@ data:
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every event that reopens the epic (ticket reopen, deferred activation, active-subtree attachment)
-        - { name: last_advance_event, type: string }  # unique id of the consumed event that caused the latest epoch advance, recorded in the SAME transaction — advancing dedups on it, so a replayed event is a no-op and can never advance the epoch twice or invalidate a legitimate completion attempt
-        - { name: last_advance_cause, type: enum, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, compensation] }  # the durable advance cause the reopen discrimination reads; recorded with the advance, so recovery never infers it
+        - { name: last_advance_event, type: string }  # convenience mirror of the newest CompletionAdvance record's event; the record set, not this field, is the dedup authority
+        - { name: last_advance_cause, type: enum, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, compensation] }  # convenience mirror of the newest CompletionAdvance record's cause; the durable per-event records are what recovery reads
         - { name: completion_rework_event, type: string }  # immutable id of the changes-requested event the pending rework answers; part of both rework keys, so each distinct rework attempt rotates them
         - { name: completion_resubmission_key, type: string }  # derived from (submission key, next revision, rework event); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
         - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key (and therefore rotating with the rework event); persisted before the doc call so a recovery replay returns the SAME version instead of appending

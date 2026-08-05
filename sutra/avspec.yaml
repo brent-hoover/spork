@@ -192,7 +192,7 @@ requirements:
     rationale: Work — code or docs, docs especially — is not done until a human has approved the deliverable.
     acceptance:
       - id: AC-close-approved
-        statement: A transition to complete NAMES its authorizing review AND the approved revision it expects to spend; the review must belong to the issue, be approved at exactly that current revision, and not already have authorized an earlier close; success atomically stamps it close-used and freezes its verdict (consuming if not already consumed — a merge-time consumption never blocks the close). A reversal committed first, a spent review, or a review of another issue each rejects the close, and a reopened issue can close again only under a fresh approval.
+        statement: A transition to complete NAMES its authorizing review, the approved revision it expects to spend, AND the approval's verdict event, which must still be the review's latest; the review must belong to the issue, be approved at exactly that current revision, and not already have authorized an earlier close; success atomically stamps it close-used and freezes its verdict (consuming if not already consumed — a merge-time consumption never blocks the close). A reversal committed first, a spent review, or a review of another issue each rejects the close, and a reopened issue can close again only under a fresh approval.
         test: verification/REQ-close-requires-review.feature#approved review allows close
       - id: AC-close-blocked-without
         statement: Given an issue with no Review in state approved, a transition to complete is rejected with an error naming the missing approval.
@@ -240,10 +240,10 @@ requirements:
         statement: A verdict carrying the current revision always applies, including reversing an earlier verdict, UNTIL the approval is consumed; the latest verdict for the current revision is authoritative and every verdict is recorded, and a verdict on a consumed review is rejected with no mutation.
         test: verification/REQ-code-review.feature#verdicts can be revised for the current revision
       - id: AC-review-consume
-        statement: A subscriber atomically consumes an approved review's approval, conditional on state approved at the expected current revision; consumption is durable and idempotent only under its original idempotency key — a distinct attempt against an already-consumed approval is rejected, so exactly one subscriber ever holds the success — permanently fences verdict changes, atomically records a review.consumed event carrying the actor, review, and consumed revision, and fails with a conflict — consuming nothing, recording nothing — if the verdict changed or the revision moved first.
+        statement: A subscriber atomically consumes an approved review's approval, conditional on state approved at the expected current revision AND on the named expected verdict event still being the review's latest — a verdict ABA invalidates delayed consumptions even though revision and state match; consumption is durable and idempotent only under its original idempotency key — a distinct attempt against an already-consumed approval is rejected, so exactly one subscriber ever holds the success — permanently fences verdict changes, atomically records a review.consumed event carrying the actor, review, and consumed revision, and fails with a conflict — consuming nothing, recording nothing — if the verdict changed or the revision moved first.
         test: verification/REQ-code-review.feature#approval consumption fences reversal
       - id: AC-review-resubmit-guard
-        statement: Resubmission is valid only from changes-requested and only at the expected current revision the caller names; open or approved reviews, and revision mismatches, reject it with no mutation.
+        statement: Resubmission is valid only from changes-requested, only at the expected current revision the caller names, and only while the named changes-requested verdict event is still the review's latest — a verdict ABA at the same revision rejects the stale rework; open or approved reviews, and revision or verdict-event mismatches, reject it with no mutation.
         test: verification/REQ-code-review.feature#resubmission requires changes-requested
   - id: REQ-comments
     title: Unlimited comments on issues
@@ -503,6 +503,7 @@ data:
         - { name: author, type: ref, ref: ENT-identity, required: true }
         - { name: state, type: enum, required: true, values: [open, changes-requested, approved] }
         - { name: revision, type: integer, required: true }  # 1 on creation, +1 per resubmission; server-managed
+        - { name: latest_verdict_event, type: string }  # id of the review's most recent verdict event; every verdict change replaces it — the fence delayed operations must name
         - { name: consumed, type: datetime }  # verdict fence — stamped by atomic approval consumption (merge-time, or by a close if not already stamped; idempotent); a consumed approval's verdict can no longer change
         - { name: consumed_revision, type: integer }  # the revision whose approval was consumed
         - { name: close_used, type: datetime }  # single-use close authorization — stamped atomically by the successful completion this review authorized; a spent review can never authorize another close, so a reopened issue needs a fresh approval
