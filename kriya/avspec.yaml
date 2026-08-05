@@ -306,6 +306,19 @@ requirements:
   - id: REQ-po-validation
     title: Product owner agent validates ACs are genuinely satisfied and tests are not gaming
     rationale: The PO holds the big picture the coding agent cannot have.
+    acceptance:
+      - id: AC-po-position
+        statement: PO validation runs only after the review and mutation gates passed at the head commit; it cannot be skipped or reordered.
+        test: verification/REQ-po-validation.feature#the PO validates after review and mutation
+      - id: AC-po-genuine
+        statement: "The PO checks every AC on the ticket against actual behavior: each AC has a test that genuinely exercises it, and the implementation satisfies the AC's intent — in the context of the whole spec, which only the PO holds."
+        test: verification/REQ-po-validation.feature#every AC is checked against real behavior
+      - id: AC-po-anti-gaming
+        statement: The PO hunts gaming explicitly — tautological assertions, implementations special-casing test inputs, weakened or deleted assertions — and a gaming finding fails validation naming the evidence.
+        test: verification/REQ-po-validation.feature#gaming fails validation with evidence
+      - id: AC-po-verdict
+        statement: "The verdict is durable: pass advances the run to review submission; fail returns the findings to the dev agent and the pair loop resumes. Either way the verdict and its reasons survive in the run's history."
+        test: verification/REQ-po-validation.feature#the verdict is durable and actionable
   - id: REQ-submit-review
     title: Submit a sutra Review, merge on approval, update ticket status
   - id: REQ-run-to-complete
