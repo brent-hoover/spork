@@ -317,9 +317,9 @@ data:
         PlannedTicket's sequence carries a durable step state — pending
         (never sent), issued (written in the same transaction that
         precedes the call), complete (written on return) — and draining
-        replays ONLY steps at issued or later: a pending step was
-        provably never sent and is skipped, resolving any ambiguity
-        about what "pending mutations" means. Assignment follows the
+        replays ONLY steps whose state is exactly issued: pending was
+        provably never sent and is skipped, complete already has its
+        terminal result and is never rerun. Assignment follows the
         same rule, replayed to a terminal result after the defer fence
         and before the unassign-and-stamp when issued, skipped when
         pending.
@@ -531,7 +531,9 @@ data:
     - id: ENT-gate-result
       name: GateResult
       fields:
+        - { name: result_key, type: string, required: true, unique: true }  # derived hash of (build, module, gate, commit) — upserted, so reruns never duplicate and recovery can prove per-module completeness
         - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: module, type: string, required: true }  # the target spec's module id whose effective command ran
         - { name: gate, type: enum, required: true, values: [structure, typing, branch-coverage, mutation] }
         - { name: commit, type: string, required: true }  # full object id the gate ran against — stale results never satisfy the chain
         - { name: passed, type: boolean, required: true }
