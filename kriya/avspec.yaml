@@ -10,6 +10,18 @@ project:
     testing, product-owner validation, and a sutra Review for human
     approval. Loops until the app is complete. Kriya: Sanskrit, a
     deliberate, practiced sequence of actions.
+  stack:
+    languages: [{ name: python, version: "3.13" }]
+    package_manager: uv
+    bdd: pytest-bdd
+    commands:
+      install: uv sync
+      test: uv run pytest
+      lint: uv run ruff check .
+      typecheck: uv run ty check
+      arch: uv run lint-imports  # enforces the declared may_import boundaries in code
+      coverage: uv run pytest --cov=kriya --cov-branch --cov-fail-under=100  # 100% branch = no uncovered conditional arm (REQ-gate-branch-coverage)
+      mutation: uv run pytest-gremlins  # R2 open — the spike validates incremental per-ticket speed; invocation may be amended
   status: draft
 
 constitution:
