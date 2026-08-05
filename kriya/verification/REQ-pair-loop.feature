@@ -32,5 +32,14 @@ Feature: Pair-programming loop
   Scenario: the review trail is complete
     Given a round's findings have been addressed
     When kriya closes the round
-    Then its response is recorded on the job as a comment before the close
+    Then the response lifecycle advances write-ahead around each call — commenting before the comment, closing before the close
+    And the response is recorded on the job as a comment before the close
     And the job's history holds the full conversation
+
+  Scenario: a crash between comment and close recovers
+    Given a round crashed in state "commenting"
+    When recovery runs
+    Then the additive comment is re-issued — a rare duplicate is benign, a missing response is not — and the close completes
+    Given a round crashed in state "closing"
+    Then recovery re-issues the close, treating already-closed as success
+    And no round is ever left open by the crash window

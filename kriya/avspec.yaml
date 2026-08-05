@@ -214,14 +214,14 @@ requirements:
         statement: The loop exits only on a clean review of the current branch head; a pass on an earlier commit does not count; the pass is recorded as the round's pass verdict at the head commit — the durable ReviewRound record the gate chain reads.
         test: verification/REQ-pair-loop.feature#the exit is a clean pass on the head
       - id: AC-pair-trail
-        statement: Before a round closes, kriya records its response on the job — comment, then close — so the full conversation survives in roborev's history.
+        statement: Before a round closes, kriya records its response on the job — comment, then close — through the round's write-ahead response lifecycle; a crash between the two re-issues the additive comment and completes the close, so the full conversation survives and no round is left open.
         test: verification/REQ-pair-loop.feature#the review trail is complete
   - id: REQ-sa-agent
     title: System architect agent resolves impasses and escalates scope to the operator
     rationale: Highest-tier agent; writes no code; the escape valve when dev and review cannot converge.
     acceptance:
       - id: AC-sa-impasse
-        statement: When the pair loop stops converging — bounded rounds without progress, or the dev agent declares an impasse — the run pauses and the impasse reaches the SA agent with the findings history, the ticket's ACs, and the bound snapshot.
+        statement: "The impasse trigger is deterministic: a configured per-run round limit counts consecutive finding-bearing rounds since the last clean pass, and reaching the limit — or the dev agent declaring an impasse — pauses the run and hands the SA agent the findings history, the ticket's ACs, and the bound snapshot. A clean pass resets the counter; the limit lives in configuration beside tier routing."
         test: verification/REQ-sa-agent.feature#an impasse pauses the run and reaches the architect
       - id: AC-sa-no-code
         statement: The SA resolves by direction; its decision is recorded durably on the run; it never commits to the workspace.
@@ -374,7 +374,7 @@ requirements:
         statement: A role with no configured tier fails loudly at startup; there is no silent default.
         test: verification/REQ-tier-routing.feature#a missing tier fails loudly
       - id: AC-tier-observed
-        statement: Changing the config changes the model a role uses on its next run with no code change, and every run records which model each agent actually ran on.
+        statement: Changing the config changes the model a role uses on its next invocation with no code change, and every agent invocation — plan-scoped PM work included — records its role, the configured tier, and the resolved model that actually ran.
         test: verification/REQ-tier-routing.feature#config changes take effect and runs record models
   - id: REQ-thread-capture
     title: Dev-agent transcripts auto-import into sutra's thread catalog, session-stamped
@@ -415,7 +415,7 @@ modules:
   - id: MOD-orchestrator
     name: orchestrator
     responsibility: The outer loop as a deterministic state machine — pops tickets, advances BuildRun states from an explicit state table, delegates every stage; no judgment, no agent conversations.
-    owns: [ENT-build-run]
+    owns: [ENT-build-run, ENT-agent-invocation]
     boundaries: { may_import: [MOD-planner, MOD-workspace, MOD-dev-loop, MOD-gates, MOD-owner, MOD-tracker-client] }
   - id: MOD-workspace
     name: workspace
@@ -615,12 +615,19 @@ data:
         counter this row advances atomically on EVERY supersession and
         EVERY ticket reopen (reopens do not move the PlanHead
         generation, so the generation alone cannot fence them).
-        Stamping completed is a CAS that requires completion_epoch to
-        still equal the epoch recorded at review submission, and before
-        closing and stamping kriya revalidates that every ticket of the
-        activated head plan is still complete: a delayed approval
-        earned before a reopen or supersession can never stamp an
-        unfinished target complete — it surfaces instead. A
+        The submission records completion_claim_epoch — an immutable
+        copy of the epoch at that moment — beside the review id and
+        revision, and stamping completed is a CAS that requires
+        completion_epoch to still equal completion_claim_epoch, so the
+        comparison survives any number of later advances. The
+        client-side read of ticket states is advisory only; the FENCE
+        against a ticket reopening between that read and the stamp is
+        sutra's own close gate — an issue cannot complete with open
+        children, so the epic close is refused server-atomically if any
+        child reopened, and kriya stamps ONLY after a successful close:
+        a delayed approval earned before a reopen or supersession can
+        never stamp an unfinished target complete — it surfaces
+        instead. A
         supersession installing a new head, or a completed ticket
         reopening, atomically advances the epoch, clears completed,
         records the reopening state, and reopens the epic through
@@ -635,7 +642,8 @@ data:
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
-        - { name: completion_epoch, type: integer, required: true }  # init 0; advanced atomically on every supersession and every ticket reopen; the completed CAS requires the epoch recorded at review submission to still be current
+        - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every ticket reopen
+        - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
@@ -984,6 +992,26 @@ data:
         - { name: ticket, type: string, required: true }
         - { name: created, type: datetime, required: true }
         - { name: removed_at, type: datetime }
+    - id: ENT-agent-invocation
+      name: AgentInvocation
+      description: >-
+        Role-neutral record of every agent execution — PM, SA, PO, or
+        dev — created when the invocation starts. Records the tier the
+        routing configuration named AND the resolved model actually
+        used, so AC-tier-observed is provable for agents that run
+        before any BuildRun exists: plan-scoped invocations (the PM
+        decomposing) carry plan and no build; run-scoped invocations
+        carry build. DevSession remains the dev-loop's transcript
+        anchor; this is the execution ledger.
+      fields:
+        - { name: role, type: enum, required: true, values: [pm, sa, po, dev] }
+        - { name: tier, type: string, required: true }  # what the routing configuration named
+        - { name: model, type: string, required: true }  # the resolved model that actually ran
+        - { name: session, type: string, required: true }
+        - { name: build, type: ref, ref: ENT-build-run }  # run-scoped invocations
+        - { name: plan, type: ref, ref: ENT-plan }  # plan-scoped invocations (PM)
+        - { name: started, type: datetime, required: true }
+        - { name: ended, type: datetime }
     - id: ENT-dev-session
       name: DevSession
       fields:
@@ -1064,6 +1092,7 @@ data:
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
+        - { name: response_state, type: enum, required: true, values: [none, commenting, commented, closing, closed] }  # write-ahead around the comment and close calls; advanced BEFORE each external mutation, stamped after. Recovery from `commenting` re-issues the comment — comments are additive and append-only, so a rare duplicate is benign, while a silently missing response is not; recovery from `closing` re-issues the close, treating already-closed as success. A round is therefore never left open by a crash between comment and close.
         - { name: created, type: datetime, required: true }
     - id: ENT-enqueue-attempt
       name: EnqueueAttempt

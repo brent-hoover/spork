@@ -4,10 +4,16 @@ Feature: System architect agent
   every impasse and its resolution survive in the run's history.
 
   Scenario: an impasse pauses the run and reaches the architect
-    Given a pair loop that has run its bounded rounds without progress
+    Given a configured round limit of 4 consecutive finding-bearing rounds
+    And three consecutive rounds have returned findings since the last clean pass
+    When the fourth consecutive round returns findings
     Then the run pauses and the impasse reaches the SA agent
     And the SA receives the findings history, the ticket's acceptance criteria, and the bound snapshot
-    Given a dev agent declares an impasse before the bound
+    Given only two consecutive rounds have returned findings
+    Then the loop continues without pausing
+    Given a clean pass lands mid-count
+    Then the counter resets
+    Given a dev agent declares an impasse before the limit
     Then the same pause and handoff occur
 
   Scenario: the architect directs but never codes

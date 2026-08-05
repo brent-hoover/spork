@@ -18,4 +18,5 @@ Feature: Model-tier routing
     Given the dev role is routed to tier "fast"
     When the operator changes the dev role to tier "deep" and a new run starts
     Then the dev agent runs on tier "deep" with no code change
-    And the run durably records which model each agent actually ran on
+    And every agent invocation durably records its role, configured tier, and the resolved model that actually ran
+    And a plan-scoped PM invocation is recorded even though no BuildRun exists yet

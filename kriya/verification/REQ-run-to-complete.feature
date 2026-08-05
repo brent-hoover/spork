@@ -15,15 +15,21 @@ Feature: Run to complete
     Given every ticket of the activated head plan is complete
     Then kriya submits a build-completion review on the umbrella epic with a completion-report document as its deliverable
     When the human approves the review
-    Then kriya revalidates that every ticket of the activated head plan is still complete
-    And the epic closes through sutra's approved-review gate
-    And completion is stamped on the BuildTarget row — a CAS requiring the completion epoch recorded at submission to still be current — and popping stops for that target
+    Then the epic close is attempted through sutra, whose no-open-children gate is the authoritative check
+    And after the close succeeds, completion is stamped on the BuildTarget row — a CAS requiring the current epoch to still equal the immutable claim epoch recorded at submission — and popping stops for that target
 
   Scenario: a stale approval never stamps an unfinished target
-    Given a build-completion review submitted at completion epoch 3
-    And a supersession or a ticket reopen has since advanced the epoch to 4
+    Given a build-completion review recorded with claim epoch 3
+    And a supersession or a ticket reopen has since advanced the current epoch to 4
     When the approval event arrives
     Then the completion CAS fails, nothing is stamped, and the stale approval surfaces to the operator
+
+  Scenario: a reopen between validation and stamping cannot slip through
+    Given kriya's advisory read saw every head-plan ticket complete
+    And a child ticket reopens in sutra before the epic close executes
+    When kriya attempts the epic close
+    Then sutra refuses it server-atomically under its no-open-children gate
+    And nothing is stamped and the epoch advances when kriya observes the reopen
 
   Scenario: completion clears when work returns
     Given a build target whose completion is stamped
