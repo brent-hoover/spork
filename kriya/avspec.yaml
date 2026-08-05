@@ -111,6 +111,31 @@ requirements:
   - id: REQ-decompose
     title: PM agent decomposes the spec into tracer-bullet tickets in sutra
     rationale: Thin end-to-end slices first; BDD acceptance criteria on every ticket; blocks/blocked-by wired for parallelism.
+    acceptance:
+      - id: AC-decompose-tracer
+        statement: Tickets are thin end-to-end slices ordered so a walking skeleton lands first; every ticket carries BDD acceptance criteria traceable to the snapshot's REQ/AC ids.
+        test: verification/REQ-decompose.feature#tracer bullets carry traceable acceptance criteria
+      - id: AC-decompose-epic
+        statement: Decomposition ensures an umbrella epic per build target exists and parents every created ticket under it; the epic persists across supersessions with no re-parenting and closes only when the build completes.
+        test: verification/REQ-decompose.feature#one epic umbrellas the build target
+      - id: AC-decompose-relations
+        statement: blocks/blocked-by relations are wired — spike and risk tickets block their dependents, independent tickets stay unblocked for parallel work.
+        test: verification/REQ-decompose.feature#relations wire risk ordering and parallelism
+      - id: AC-decompose-phased
+        statement: Decomposition runs in plan-wide phases — create all tickets, wire relations, assign last — with barriers between phases so no ticket is workable before its relations exist; completed is stamped only after the final barrier.
+        test: verification/REQ-decompose.feature#phases run behind plan-wide barriers
+      - id: AC-decompose-idempotent
+        statement: "Every request resolves its decomposition key against existing plans before any PlanHead logic, and the resolution is state-aware: active-without-completed resumes remaining phases, pending resumes, completed and superseded return the historical result, awaiting-operator is preserved untouched."
+        test: verification/REQ-decompose.feature#same-key retries are state-aware
+      - id: AC-decompose-supersede
+        statement: Decomposing against an existing head atomically creates a superseding candidate — predecessor pointed at the head it beat, head marked superseded, fence incremented, PlanHead moved with a generation bump — then retires the predecessor, stamping every predecessor row consumed with disposition retired or carried-forward before the new plan activates.
+        test: verification/REQ-decompose.feature#supersession retires the predecessor before activating
+      - id: AC-decompose-retirement
+        statement: Retirement distinguishes pending from issued work — pending tickets are retired in sutra via expected_status=open conditional transitions with generation-scoped defer keys, an already-deferred fresh read counts as fence established with no retry, and rows whose ticket was never created retire with no sutra call.
+        test: verification/REQ-decompose.feature#retirement distinguishes pending from issued work
+      - id: AC-decompose-operator-recovery
+        statement: "Each awaiting-operator state has a defined forward-only recovery: an unactivated head restores to pending with predecessor-row resets and retirement resumes; an activated head restores to active with ticket-row states recomputed from step progress; a parked non-head candidate retries by re-entering the replacement CAS, repointing its predecessor to the head it beats."
+        test: verification/REQ-decompose.feature#every parked state recovers forward
   - id: REQ-risk-first
     title: Risk items are identified and retired first via spike/research tickets
     rationale: Risk and spike labels plus blocking relations ensure nothing dependent starts before its risk is retired.
