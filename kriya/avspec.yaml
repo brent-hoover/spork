@@ -92,6 +92,22 @@ requirements:
       resolved commands, which are persisted into the SpecSnapshot at
       pin time so builds and recovery execute exactly what intake
       validated.
+    acceptance:
+      - id: AC-intake-ready
+        statement: Pointing kriya at a project whose avspec verifies status ready with zero errors succeeds; a SpecSnapshot is pinned containing the full artifact set and every module's resolved effective commands.
+        test: verification/REQ-spec-intake.feature#ready spec is pinned
+      - id: AC-intake-refuse
+        statement: A project that verifies draft, or with any error finding, is refused with the verify findings; no snapshot is pinned and nothing is enqueued.
+        test: verification/REQ-spec-intake.feature#draft spec is refused
+      - id: AC-intake-commands
+        statement: A module whose effective stack (module override where present, project stack otherwise) is missing or blank on any of test, lint, typecheck, coverage, or mutation is refused, naming the module and the missing command — even when avspec verify alone reports ready.
+        test: verification/REQ-spec-intake.feature#missing module command refuses intake
+      - id: AC-intake-snapshot-authority
+        statement: Working-tree edits to the spec never change what a build or recovery executes; both read the bound snapshot's pinned artifacts and resolved commands. A spec change enters the pipeline only through a new intake.
+        test: verification/REQ-spec-intake.feature#working tree edits do not change a pinned build
+      - id: AC-intake-reintake
+        statement: Intake of an amended ready spec for a project with an existing snapshot pins a new snapshot — prior snapshots stay immutable and referenced by their builds — and hands it to decomposition through the supersession path, not a fresh start.
+        test: verification/REQ-spec-intake.feature#amended spec pins a new snapshot
   - id: REQ-decompose
     title: PM agent decomposes the spec into tracer-bullet tickets in sutra
     rationale: Thin end-to-end slices first; BDD acceptance criteria on every ticket; blocks/blocked-by wired for parallelism.

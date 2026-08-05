@@ -1,0 +1,58 @@
+Feature: Spec intake
+  Kriya builds only from a spec that is provably ready, and only from
+  exactly the spec it validated. Intake verifies the avspec, resolves
+  every module's effective commands, and pins both into an immutable
+  SpecSnapshot. A spec change enters the pipeline only through a new
+  intake, which feeds the plan-supersession path.
+
+  Scenario: ready spec is pinned
+    Given a project "shorty" whose avspec verifies status "ready" with zero errors
+    And every module's effective stack resolves non-empty test, lint, typecheck, coverage, and mutation commands
+    When the operator points kriya at the project
+    Then intake succeeds and a SpecSnapshot is pinned
+    And the snapshot holds the full artifact set and every module's resolved commands
+
+  Scenario: draft spec is refused
+    Given a project whose avspec verifies status "draft"
+    When the operator points kriya at the project
+    Then intake is refused and the response carries the verify findings
+    And no snapshot is pinned and nothing is enqueued
+
+  Scenario: erroring spec is refused
+    Given a project whose avspec claims status "ready" but verify reports an error finding
+    When the operator points kriya at the project
+    Then intake is refused and the response carries the error finding
+    And no snapshot is pinned and nothing is enqueued
+
+  Scenario: missing module command refuses intake
+    Given a project whose avspec verifies status "ready" with zero errors
+    And module "web" resolves a blank effective "mutation" command
+    When the operator points kriya at the project
+    Then intake is refused naming module "web" and command "mutation"
+    And no snapshot is pinned and nothing is enqueued
+
+  Scenario: complete module override resolves to the module's own commands
+    Given a ready spec whose module "web" overrides every stack command
+    When intake pins the SpecSnapshot
+    Then the snapshot records module "web" with exactly its own commands
+    And no field of module "web" falls back to the project stack
+
+  Scenario: partial module override falls back per field
+    Given a ready spec whose module "web" overrides only the "test" command
+    When intake pins the SpecSnapshot
+    Then the snapshot records module "web" with its own "test" command
+    And every other command for module "web" is the project stack's
+
+  Scenario: working tree edits do not change a pinned build
+    Given intake pinned SpecSnapshot "S1" for a project and a build bound to "S1"
+    When the working-tree spec's lint command is edited
+    And the build runs its gate chain and recovery later replays a step
+    Then every executed command is the one resolved into "S1"
+    And the working-tree edit is never consulted
+
+  Scenario: amended spec pins a new snapshot
+    Given SpecSnapshot "S1" exists for a project with builds referencing it
+    And the spec is amended and verifies status "ready" again
+    When the operator re-runs intake
+    Then a new SpecSnapshot "S2" is pinned and handed to decomposition through the supersession path
+    And "S1" is unchanged and still referenced by its builds
