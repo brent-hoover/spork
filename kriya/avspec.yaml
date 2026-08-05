@@ -273,9 +273,13 @@ data:
         head's current already IS its own candidate plan (a concurrent
         retry of the same decomposition_key) — and that resumption is
         state-aware: pending resumes its phases, active returns as
-        already complete, and awaiting-operator is preserved and
-        reported, never silently resumed past an unrecoverable failure. Only a DISTINCT competing
-        candidate loses. Bootstrap is the degenerate case of the same
+        already complete, superseded returns as an idempotent HISTORICAL
+        result — the caller learns the plan and its replacement
+        (superseded_by) but the retry can never mutate PlanHead, revive
+        the old plan, or compete as a candidate — and awaiting-operator
+        is preserved and reported, never silently resumed past an
+        unrecoverable failure. Only a DISTINCT competing candidate
+        loses; a same-key retry is never a competitor in any state. Bootstrap is the degenerate case of the same
         transaction: a target with no head yet creates the pending plan
         and INSERTS its PlanHead row atomically — target_key's uniqueness
         makes the insert the CAS, so a concurrent first decomposition
@@ -420,12 +424,18 @@ data:
         permanently failing creation elsewhere can never block an
         unrelated build; per-row replay failures set the row's own
         state to awaiting-operator with the error recorded, and the TUI
-        surfaces those rows alongside escalations. Then: exactly one
-        match binds the plan; no match (a ticket assigned outside any
-        plan) or multiple matches leaves plan absent and the build
-        proceeds regardless. The snapshot is stricter than the lineage:
-        one match inherits its plan's spec_hash; multiple matches inherit
-        only when every matching plan agrees on spec_hash, project, and
+        surfaces those rows alongside escalations. Then: the chain-precedence rule above runs FIRST and collapses
+        each head's predecessor chain to at most one candidate (deepest
+        unstamped row, else the current head's row) — rows within one
+        chain are never counted as multiple matches, so a
+        carried-forward ticket is unambiguous by construction. Exactly
+        one surviving candidate binds the plan; no candidate (a ticket
+        assigned outside any plan) or candidates surviving from
+        DISTINCT head chains leaves plan absent and the build proceeds
+        regardless. The snapshot is stricter than the lineage:
+        one candidate inherits its plan's spec_hash; distinct-chain
+        candidates inherit
+        only when every candidate plan agrees on spec_hash, project, and
         normalized target_spec path, and any disagreement routes to
         awaiting-operator rather than fresh-pinning — a planned ticket never silently builds against a spec
         other than the one that produced its ACs. The build otherwise
