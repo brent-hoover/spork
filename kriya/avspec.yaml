@@ -188,6 +188,22 @@ requirements:
   - id: REQ-pair-loop
     title: Pair-programming loop — small commits, roborev reviews, fix, recommit until pass
     rationale: Kriya drives the actual roborev tool (enqueue on commit, poll verdicts, respond, close) per CON-buy-over-build.
+    acceptance:
+      - id: AC-pair-small-commits
+        statement: Work moves in small commits; each commit enqueues a roborev round through the write-ahead ReviewRound protocol — never one end-stage review.
+        test: verification/REQ-pair-loop.feature#every commit gets its own review round
+      - id: AC-pair-fix-loop
+        statement: A round returning findings hands them to the dev agent, which fixes and recommits; the new commit starts a new round; the loop repeats until the branch head passes clean.
+        test: verification/REQ-pair-loop.feature#findings are fixed and recommitted until clean
+      - id: AC-pair-own-jobs
+        statement: Kriya acts only on job ids recorded from its own enqueue returns — it never adopts, responds to, cancels, or closes a job it cannot prove it created; expired claims go to the operator per the claim-generation protocol, never auto-reclaimed.
+        test: verification/REQ-pair-loop.feature#only provably owned jobs are touched
+      - id: AC-pair-pass-gate
+        statement: The loop exits only on a clean review of the current branch head; a pass on an earlier commit does not count; the pass is recorded as the review GateResult feeding the gate chain.
+        test: verification/REQ-pair-loop.feature#the exit is a clean pass on the head
+      - id: AC-pair-trail
+        statement: Before a round closes, kriya records its response on the job — comment, then close — so the full conversation survives in roborev's history.
+        test: verification/REQ-pair-loop.feature#the review trail is complete
   - id: REQ-sa-agent
     title: System architect agent resolves impasses and escalates scope to the operator
     rationale: Highest-tier agent; writes no code; the escape valve when dev and review cannot converge.
