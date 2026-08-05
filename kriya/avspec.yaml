@@ -329,7 +329,15 @@ data:
         the successor omitted instead retains its AC-producing plan's
         snapshot via consumed-history resolution (binding rule 3). First each
         unfinished, unclaimed ticket is set to status deferred via the
-        tracker's conditional transition (expected status open). A conflict is NOT assumed to
+        tracker's conditional transition (expected status open). Each
+        defer attempt carries a deterministic GENERATION-SCOPED
+        idempotency key — (row's idempotency_key, 'defer', attempt
+        generation), with the generation persisted on the row and
+        advanced durably after every conflict-and-fresh-read — because
+        sutra replays a reused key verbatim: retrying a 409 under the
+        original key would return the cached conflict forever, so each
+        re-read-then-retry issues under the next generation's key while
+        every individual attempt stays exactly-once. A conflict is NOT assumed to
         mean a pop won: first every queued BuildRun with an unfilled
         ticket replays its idempotent pop so just-claimed tickets gain
         their matching rows, then the ticket is re-read and classified —
@@ -376,14 +384,20 @@ data:
         unfilled queued BuildRuns the same way — the write-ahead row is
         durable before sutra is ever called, so every in-flight claim
         is visible to this fence. New pops cannot originate inside the window at all:
-        BuildRun write-ahead creation lives in the same durable store
-        as PlanHead, and the creating transaction is REFUSED (the
-        worker retries after activation) while ANY head in the store
-        holds an unactivated current plan — the fence is deliberately
-        GLOBAL because sutra's pop is identity-wide and accepts no
-        project filter, so the eventual ticket's project is unknowable
-        before the pop returns; unactivated windows are rare and short
-        (one replacement in flight), making the coarse fence cheap. So
+        admission is serialized with head transitions through ONE
+        durable global fence row holding an unactivated-heads counter
+        and a version. Replacement increments the counter and
+        activation decrements it IN THE SAME transaction that moves the
+        head, and BuildRun write-ahead creation asserts counter == 0
+        against the fence row's version (CAS) in its own creating
+        transaction — so an admission that observed a stale fence
+        cannot commit: any interleaved replacement bumps the version
+        and forces the admission to retry after activation, and
+        vice versa. The fence is deliberately GLOBAL because sutra's
+        pop is identity-wide and accepts no project filter, so the
+        eventual ticket's project is unknowable before the pop
+        returns; unactivated windows are rare and short (one
+        replacement in flight), making the coarse fence cheap. So
         every claim is either created before the window and drained by
         the recheck, or created after activation and resolved by rule
         3; no claim can straddle activation. Activation therefore happens only
