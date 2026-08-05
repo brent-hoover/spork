@@ -40,15 +40,25 @@ Feature: Issue hierarchy
     When SUT-2 is reopened to "open"
     Then SUT-1 returns to "open" in the same transaction
     And a status event is recorded for both SUT-1 and SUT-2
-    Given a complete grandparent above SUT-1
-    When a nested child of SUT-1 reopens
-    Then every complete ancestor up the chain reopens in the same transaction
-    Given SUT-1 is "complete" with a child in status "deferred"
-    When the deferred child transitions to "in-progress"
-    Then SUT-1 reopens in the same transaction
-    Given SUT-1 is "complete"
-    When an open issue is attached as a child of SUT-1
-    Then SUT-1 reopens in the same transaction
-    Given SUT-1 is "complete"
-    When a deferred issue whose subtree contains an issue in status "open" is attached as a child of SUT-1
-    Then SUT-1 reopens in the same transaction — a deferred root cannot hide active work it carries in
+
+  Scenario: a nested reopen cascades to every complete ancestor
+    Given a fresh hierarchy where grandparent SUT-10, parent SUT-11, and leaf SUT-12 are all "complete"
+    When SUT-12 is reopened to "open"
+    Then SUT-11 and SUT-10 both return to "open" in the same transaction
+    And a status event is recorded for each reopened ancestor
+
+  Scenario: a deferred child activating reopens its complete parent
+    Given a fresh hierarchy where SUT-20 is "complete" with a child SUT-21 in status "deferred"
+    When SUT-21 transitions to "in-progress"
+    Then SUT-20 reopens in the same transaction
+
+  Scenario: attaching an open child reopens a complete parent
+    Given a fresh issue SUT-30 in status "complete" and an unrelated issue SUT-31 in status "open"
+    When SUT-31 is attached as a child of SUT-30
+    Then SUT-30 reopens in the same transaction
+
+  Scenario: an attached deferred subtree carrying active work reopens the parent
+    Given a fresh issue SUT-40 in status "complete"
+    And a deferred issue SUT-41 whose own subtree contains an issue in status "open"
+    When SUT-41 is attached as a child of SUT-40
+    Then SUT-40 reopens in the same transaction — a deferred root cannot hide active work it carries in

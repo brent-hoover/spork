@@ -5,7 +5,9 @@ Feature: System architect agent
 
   Scenario: an impasse pauses the run and reaches the architect
     Given a round limit of 4 was snapshotted onto the BuildRun at its creation
-    And the operator has since changed the configured limit to 2, which does not affect this run
+    And the operator has since changed the configured limit to 2
+    When kriya restarts and recovers the run
+    Then the persisted limit of 4 still governs it — the config change affects only future runs
     And three consecutive rounds have returned findings since the last clean pass
     When the fourth consecutive round returns findings
     Then the run pauses and the impasse reaches the SA agent
