@@ -207,6 +207,19 @@ requirements:
   - id: REQ-sa-agent
     title: System architect agent resolves impasses and escalates scope to the operator
     rationale: Highest-tier agent; writes no code; the escape valve when dev and review cannot converge.
+    acceptance:
+      - id: AC-sa-impasse
+        statement: When the pair loop stops converging — bounded rounds without progress, or the dev agent declares an impasse — the run pauses and the impasse reaches the SA agent with the findings history, the ticket's ACs, and the bound snapshot.
+        test: verification/REQ-sa-agent.feature#an impasse pauses the run and reaches the architect
+      - id: AC-sa-no-code
+        statement: The SA resolves by direction; its decision is recorded durably on the run; it never commits to the workspace.
+        test: verification/REQ-sa-agent.feature#the architect directs but never codes
+      - id: AC-sa-scope
+        statement: A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change, and an approved spec change takes the amended-spec path of re-intake and supersession, never a side channel.
+        test: verification/REQ-sa-agent.feature#scope changes escalate to the operator
+      - id: AC-sa-resume
+        statement: After direction the run resumes the pair loop with the SA's guidance in context; the impasse, direction, and outcome survive as part of the run's history.
+        test: verification/REQ-sa-agent.feature#direction resumes the loop and survives in history
   - id: REQ-context-assembly
     title: Context manager assembles each dev agent's context and toolset per ticket
   - id: REQ-learning-loop
