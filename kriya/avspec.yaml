@@ -45,7 +45,10 @@ constitution:
 # their stories): plan-head retries in each plan state (pending resumes,
 # active completes, awaiting-operator preserved); queued-pop-to-build
 # reconciliation before ownership classification; retirement of pending
-# vs issued steps including id-less rows and the deferred-status fence.
+# vs issued steps including id-less rows and the deferred-status fence;
+# carried-forward pop race: ticket claimed mid-supersession and listed by
+# both plans binds to the predecessor snapshot (deepest unstamped row),
+# and the consumed marker is cleared so a later reopen binds to the head.
 #
 # Risk register — validated before kriya's own build begins:
 #   R1 (RETIRED 2026-08-04 by spike + session-long live use): roborev is
@@ -378,17 +381,25 @@ data:
         recovery replays the same pop_key and receives the same issue,
         then binds ticket to the row transactionally. Plan is lineage,
         not an execution dependency: in the same transaction the ticket
-        is matched against PlannedTicket rows of the plan that currently
-        heads its target (resolved through PlanHead); when no current-head
-        row matches, an UNSTAMPED row on a superseded plan is the one
-        sanctioned fallback — an unstamped superseded membership means
-        precisely that the ticket was claimed in flight during
-        supersession (retirement stamps everything it retires and skips
-        claimed tickets), so the build binds to that plan and its pinned
-        snapshot, honoring the popped-builds-finish-under-predecessor
-        guarantee. Stamped rows are audit history and never bind, so a
-        carried-forward ticket present in both predecessor and
-        replacement matches exactly its current plan. (PlannedTicket
+        is matched by walking the predecessor chain from the plan that
+        currently heads its target (resolved through PlanHead): the
+        build binds to the FURTHEST-BACK plan on that chain holding an
+        UNSTAMPED PlannedTicket row for the ticket, falling through to
+        the current head's row only when no superseded plan holds one.
+        Unstamped-deepest-wins is deterministic because the markers are
+        exact: retirement stamps every row it retires (including
+        carried-forward unclaimed rows, stamped at their defer fence)
+        and skips claimed tickets, so the deepest unstamped superseded
+        row is precisely the plan that was head when the pop claimed
+        the ticket — every earlier plan stamped its row on carry-forward,
+        every later plan skipped the already-claimed ticket. Binding to
+        it (and its pinned snapshot) honors the
+        popped-builds-finish-under-predecessor guarantee even when the
+        current head also lists the ticket; the same transaction stamps
+        every unstamped superseded row it walked past, so the marker
+        clears and a later reopen-and-pop of the same ticket matches
+        its then-current plan normally. Stamped rows are audit history
+        and never bind. (PlannedTicket
         remains the authoritative membership record — Plan holds no
         duplicate list.) Matching uses
         persisted ids directly: assignment-last guarantees any poppable
