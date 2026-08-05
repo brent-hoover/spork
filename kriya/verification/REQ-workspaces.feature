@@ -42,5 +42,6 @@ Feature: Isolated workspaces
     And only merge or explicit operator disposal deletes the branch
     Given a retired ticket's worktree holds uncommitted changes
     When cleanup considers it
-    Then cleanup refuses and the dirty worktree surfaces to the operator
+    Then cleanup refuses, recording the cause on the workspace row for the operator inbox
+    And the run keeps its terminal state — closed or cancelled — untouched
     And no uncommitted state is destroyed

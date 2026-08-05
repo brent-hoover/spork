@@ -4,55 +4,57 @@
 # Package layout mirrors module names: one package directory per module.
 # A module may import only the packages listed here (its own package is
 # always allowed); modules with an empty rule import no domain packages.
+# Patterns match the LEAF package per module ("**.issues", not
+# "**.issues.**") — add descendant patterns only if subpackages appear.
 version: 1
 dependenciesRules:
-  - package: "**.issues.**"
+  - package: "**.issues"
     shouldOnlyDependsOn:
       internal:
-        - "**.projects.**"
-        - "**.identity.**"
-        - "**.review.**"
-        - "**.events.**"
-  - package: "**.projects.**"
+        - "**.projects"
+        - "**.identity"
+        - "**.review"
+        - "**.events"
+  - package: "**.projects"
     shouldOnlyDependsOn:
       internal: []
-  - package: "**.docs.**"
+  - package: "**.docs"
     shouldOnlyDependsOn:
       internal:
-        - "**.projects.**"
-        - "**.issues.**"
-        - "**.identity.**"
-        - "**.events.**"
-  - package: "**.threads.**"
+        - "**.projects"
+        - "**.issues"
+        - "**.identity"
+        - "**.events"
+  - package: "**.threads"
     shouldOnlyDependsOn:
       internal:
-        - "**.projects.**"
-        - "**.issues.**"
-        - "**.events.**"
-  - package: "**.identity.**"
+        - "**.projects"
+        - "**.issues"
+        - "**.events"
+  - package: "**.identity"
     shouldOnlyDependsOn:
       internal: []
-  - package: "**.events.**"
+  - package: "**.events"
     shouldOnlyDependsOn:
       internal: []
-  - package: "**.review.**"
+  - package: "**.review"
     shouldOnlyDependsOn:
       internal:
-        - "**.identity.**"
-        - "**.events.**"
-  - package: "**.api.**"
+        - "**.identity"
+        - "**.events"
+  - package: "**.api"
     shouldOnlyDependsOn:
       internal:
-        - "**.issues.**"
-        - "**.projects.**"
-        - "**.docs.**"
-        - "**.threads.**"
-        - "**.identity.**"
-        - "**.events.**"
-        - "**.review.**"
-  - package: "**.cli.**"
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.events"
+        - "**.review"
+  - package: "**.cli"
     shouldOnlyDependsOn:
       internal: []
-  - package: "**.web.**"
+  - package: "**.web"
     shouldOnlyDependsOn:
       internal: []

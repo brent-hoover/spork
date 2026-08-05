@@ -6,7 +6,7 @@ Feature: Review submission and merge
   Scenario: a PO pass becomes a sutra Review
     Given a run that passed PO validation at head commit "C2"
     When kriya submits the work
-    Then the commit-scoped submission key and state "submitting" are persisted before sutra is called
+    Then the submission key — scoped to the commit and the gate attempt — and state "submitting" are persisted before sutra is called
     And a sutra Review exists naming the ticket's branch pinned at "C2"
     And it is stamped with the run's session id
     And the state records "submitted" with the returned review id
@@ -147,7 +147,7 @@ Feature: Review submission and merge
     Given the close landed in sutra but the crash hit before kriya recorded it
     When recovery replays the complete transition under the persisted ticket-close key
     Then sutra returns the original success — never a close-used conflict — and the run advances to closed
-    And a spike's document-backed close recovers identically under its own persisted key
+    And a spike's document-backed close recovers identically under its own persisted key, review, and revision — research runs persist them directly, having no merge attempt
     And the completed head commit is durably recorded
     And the run's workspace becomes eligible for cleanup
 

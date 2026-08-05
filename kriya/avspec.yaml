@@ -195,7 +195,7 @@ requirements:
         statement: A resumed BuildRun reattaches to its existing workspace and branch when they exist and match the record; it never silently starts a second workspace for the same run.
         test: verification/REQ-workspaces.feature#a resumed run reattaches to its workspace
       - id: AC-workspace-cleanup
-        statement: Workspaces are removed only after their ticket completes or is terminally retired; removal never deletes unmerged commits — the branch survives until merge or explicit operator disposal — and a worktree with uncommitted changes refuses cleanup, surfacing to the operator instead of destroying dirty state.
+        statement: Workspaces are removed only after their ticket completes or is terminally retired; removal never deletes unmerged commits — the branch survives until merge or explicit operator disposal — and a worktree with uncommitted changes refuses cleanup, recording the cause on the Workspace row for the operator inbox while the run's terminal state stays untouched.
         test: verification/REQ-workspaces.feature#cleanup never loses unmerged work
   - id: REQ-pair-loop
     title: Pair-programming loop — small commits, roborev reviews, fix, recommit until pass
@@ -403,7 +403,7 @@ requirements:
         statement: "The TUI shows live: running BuildRuns with their position in the gate chain, queued and blocked tickets, and runs waiting on human review."
         test: verification/REQ-tui.feature#one screen shows the build's live state
       - id: AC-tui-inbox
-        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, awaiting-operator BuildRuns with their durable error cause — binding ambiguity, missing mappings, vanished worktrees, dirty-cleanup refusals — expired review-round claims, unresolved enqueue attempts — pending ones and completed ones whose id is not their round's accepted external id — and unresolved orphans, and build stalls."
+        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, awaiting-operator BuildRuns with their durable error cause — binding ambiguity, missing mappings, vanished worktrees — workspace cleanup refusals with their dirty state (from the Workspace row, the run's terminal state untouched), expired review-round claims, unresolved enqueue attempts — pending ones and completed ones whose id is not their round's accepted external id — and unresolved orphans, and build stalls."
         test: verification/REQ-tui.feature#everything needing the operator lands in one inbox
       - id: AC-tui-act
         statement: "The protocol's operator actions are executable from the TUI, not just visible: restore or retry a parked plan, reconcile and reset a review round, approve or reject an escalated scope change."
@@ -506,7 +506,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-enqueue-attempt.external_id, ENT-enqueue-attempt.created, ENT-enqueue-attempt.resolved, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-workspace.cleanup_error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-enqueue-attempt.external_id, ENT-enqueue-attempt.created, ENT-enqueue-attempt.resolved, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
@@ -1120,7 +1120,9 @@ data:
         - { name: review_submission_key, type: string }  # deterministic per (run, head commit, gate attempt) — an integration that leaves the commit unchanged still yields a fresh key, so replay can never return a prior (possibly consumed) review when a fresh one is required — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: gate_attempt, type: integer, required: true }  # init 0; incremented atomically each time a new gate-chain attempt freezes its gated_base — chain satisfaction requires every result to carry THIS attempt, so an integration that leaves the branch head unchanged still invalidates prior passes
         - { name: gated_base, type: string }  # FROZEN per gate-chain attempt: captured once when the attempt starts, and every gate of the attempt validates against exactly this base — a gate observing a different default head ABORTS the attempt, forcing integration and a complete rerun, so no chain ever mixes bases; the merge preflight requires the default branch to still equal this frozen value, and the merge itself CASes against it
-        - { name: ticket_close_key, type: string }  # deterministic per (run, review, approved revision — read from the merge attempt) — persisted when the run enters completing; the close names the review AND that revision, sent as the ticket-complete transition's Idempotency-Key; a close that landed before a crash replays to its original success, never a close-used conflict, and the run advances to closed
+        - { name: ticket_close_key, type: string }  # deterministic per (run, review, approved revision) — persisted when the run enters completing; the close names the review AND that revision
+        - { name: close_review, type: string }  # the review the close names, persisted atomically with the key and completing state — code runs copy it from the merge attempt, research runs from the approved finding review
+        - { name: close_revision, type: integer }  # the approved revision the close expects, persisted with the key — recovery reproduces the exact revision-fenced request for code and research runs alike, never a later revision under the old key, sent as the ticket-complete transition's Idempotency-Key; a close that landed before a crash replays to its original success, never a close-used conflict, and the run advances to closed
         - { name: review_submission_commit, type: string }  # immutable — the pinned head commit the pending submission names, persisted atomically with the key and submitting state; replay reproduces the ORIGINAL request from the persisted fields, so a branch that moved after the crash can never smuggle an ungated commit under the old key
         - { name: review_submission_session, type: string }  # immutable — the session id the pending submission stamps, persisted with the key; recovery terminates crashed DevSessions and starts fresh ones, so replay MUST read the session from here, never from the current session — feedback routing stays intact
         - { name: finding_doc_key, type: string }  # research runs — deterministic per (run, finding); persisted with finding_pending_ref BEFORE the doc-version mutation, so keyed replay recovers the same version, never a duplicate
@@ -1133,7 +1135,7 @@ data:
         - { name: review_resubmission_session, type: string }  # immutable — the session id the pending resubmission records, persisted with the key; replay stamps this, never a fresh recovery session, so feedback routing survives recovery
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }
-        - { name: error, type: string }  # durable cause whenever the run parks awaiting-operator — binding ambiguity, unresolvable or snapshot-less mapping, a created worktree gone missing, a dirty-cleanup refusal — exactly what the operator inbox displays
+        - { name: error, type: string }  # durable cause whenever the run parks awaiting-operator — binding ambiguity, unresolvable or snapshot-less mapping, a created worktree gone missing, exactly what the operator inbox displays (cleanup refusals live on the Workspace row instead — cleanup runs after the run is terminal, and surfacing them there preserves closed and cancelled states)
         - { name: started, type: datetime }
         - { name: finished, type: datetime }
     - id: ENT-workspace
@@ -1159,6 +1161,7 @@ data:
         - { name: state, type: enum, required: true, values: [pending, created] }
         - { name: ticket, type: string, required: true }
         - { name: created, type: datetime, required: true }
+        - { name: cleanup_error, type: string }  # durable cause when cleanup refuses — a dirty worktree — listed by the operator inbox without touching the run's terminal state
         - { name: removed_at, type: datetime }
     - id: ENT-merge-attempt
       name: MergeAttempt
@@ -1301,8 +1304,10 @@ data:
         polling external_id; unclaimed -> claim and enqueue; expired
         claim -> operator. Orphan jobs are never touched and are
         surfaced in the TUI.
-        Rounds are unique per (build, commit) via the derived key, so a
-        rebuilt commit gets its own round.
+        Rounds are unique per (build, commit, gate attempt) via the
+        derived key, so a rebuilt commit gets its own round and a new
+        attempt at an unchanged commit gets a fresh one — a prior
+        attempt's clean round never satisfies the new attempt.
       fields:
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: commit, type: string, required: true }  # canonical full object id
