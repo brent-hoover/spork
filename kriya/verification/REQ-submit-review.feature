@@ -56,6 +56,21 @@ Feature: Review submission and merge
     When the same approval event is replayed
     Then no second merge occurs
 
+  Scenario: simultaneous approvals for one target serialize
+    Given two runs for the same target both enter approved and both enqueue merge attempts
+    When the queue head acquires the target's merge lock
+    Then only the lock holder preflights, consumes, and merges
+    And the second attempt waits queued, consuming nothing
+    When the first merge completes and moves the default head
+    Then the second attempt's preflight fails against the moved base
+    And it takes the integrate-rerun-fresh-review path with its approval unconsumed
+
+  Scenario: a base moving mid-chain aborts the attempt
+    Given a gate-chain attempt froze its gated base at "D1"
+    When the default branch moves to "D2" while later gates are still running
+    Then the attempt aborts rather than recording a mixed-base pass
+    And the run integrates "D2" and the complete chain reruns against the new frozen base
+
   Scenario: a moved default branch forces integration before merge
     Given a run gated against default-branch head "D1" while another run merged, moving the head to "D2"
     When the approval event is processed

@@ -23,6 +23,13 @@ Feature: Thread capture
     Then sutra returns the original thread and the recorded id matches it
     And exactly one thread exists for the session
 
+  Scenario: a resumed run continues under a fresh session
+    Given a run crashed mid-session and recovery terminated the DevSession, importing its transcript
+    When the run resumes
+    Then it continues under a fresh DevSession with its own session id and import key
+    And post-recovery conversation imports as the new session's thread
+    And the crashed session's thread is never appended to or overwritten
+
   Scenario: threads surface in session search
     Given a thread imported from session "sess-42" that also produced a review
     When sutra is searched by session id "sess-42"
