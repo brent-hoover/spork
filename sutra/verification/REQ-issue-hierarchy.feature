@@ -17,3 +17,6 @@ Feature: Issue hierarchy
     Given SUT-1 has a child in status "in-progress"
     When SUT-1 is transitioned to "complete"
     Then the transition is rejected naming the open child
+    Given the child moves to status "deferred"
+    When SUT-1 is transitioned to "complete" with an approved review
+    Then the transition succeeds — deferred children are parked, not open

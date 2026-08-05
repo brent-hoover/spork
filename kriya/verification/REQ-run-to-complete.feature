@@ -13,7 +13,10 @@ Feature: Run to complete
 
   Scenario: completion is the head plan done and the epic closable
     Given every ticket of the activated head plan is complete
-    Then kriya submits a build-completion review on the umbrella epic with a completion-report document as its deliverable
+    Then kriya records review-submitting with a deterministic submission key and the completion-report doc version before calling sutra
+    And kriya submits a build-completion review on the umbrella epic with the completion-report document as its deliverable
+    And a crash before the review id lands is recovered by querying sutra with the submission key and adopting the found review, never submitting twice
+    And retired tickets resting deferred under the epic do not block its close
     When the human approves the review
     Then the epic close is attempted through sutra, whose no-open-children gate is the authoritative check
     And after the close succeeds, completion is stamped on the BuildTarget row — a CAS requiring the current epoch to still equal the immutable claim epoch recorded at submission — and popping stops for that target
@@ -30,6 +33,13 @@ Feature: Run to complete
     When kriya attempts the epic close
     Then sutra refuses it server-atomically under its no-open-children gate
     And nothing is stamped and the epoch advances when kriya observes the reopen
+
+  Scenario: a stale close is serialized or compensated, never left standing
+    Given an epic close is in flight for claim epoch 3
+    When a supersession advances the epoch to 4
+    Then the supersession first resolves the in-flight close's outcome before issuing its reopen
+    And if the stale close landed, a durable compensating reopen is driven through the same lifecycle
+    And the current target's epic is never left closed by a claim whose CAS failed
 
   Scenario: completion clears when work returns
     Given a build target whose completion is stamped

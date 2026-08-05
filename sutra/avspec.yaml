@@ -148,7 +148,7 @@ requirements:
         statement: A parent shows progress over its children, e.g. 3 of 5 complete.
         test: verification/REQ-issue-hierarchy.feature#parent rolls up child progress
       - id: AC-parent-close-gate
-        statement: Transitioning a parent to complete while any child is not complete is rejected.
+        statement: Transitioning a parent to complete while any child is open, in-progress, or blocked is rejected; deferred children — intentionally parked work — do not hold the parent open.
         test: verification/REQ-issue-hierarchy.feature#open children hold the parent open
   - id: REQ-issue-blocking
     title: Blocks / is-blocked-by relationships between issues
@@ -261,7 +261,7 @@ requirements:
     title: "Issue statuses: open, in-progress, blocked, deferred, complete"
     acceptance:
       - id: AC-status-set
-        statement: Transitions among open, in-progress, blocked, and deferred are free and recorded as events; only complete is gated (approved review, no open children). The blocked status is a judgment, independent of the blocks-relation workability machinery.
+        statement: Transitions among open, in-progress, blocked, and deferred are free and recorded as events; only complete is gated (approved review, and no child in open, in-progress, or blocked — deferred children do not block). The blocked status is a judgment, independent of the blocks-relation workability machinery.
         test: verification/REQ-status-workflow.feature#free transitions are recorded
       - id: AC-status-reopen
         statement: A complete issue can be reopened to open, recorded as an event; its closing review stays in history.

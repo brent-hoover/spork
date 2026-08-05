@@ -23,9 +23,12 @@ Feature: Review submission and merge
     Given a review enters approved and the event is published
     When kriya consumes the event
     Then it re-reads the review before acting
-    And what merges is the immutable commit pinned by the still-approved current revision, never the mutable branch reference
+    And the merge requires the branch head to still equal the still-approved current revision's pinned commit
+    And what merges is that immutable pinned commit, never the mutable branch reference
     And commits pushed to the branch after the check cannot change what lands
     And the merge happens exactly once
+    Given the branch head moved past the pinned commit before processing
+    Then nothing merges and the unreviewed-commits mismatch surfaces
     When the same approval event is replayed
     Then no second merge occurs
     Given the verdict was reversed since the event was published

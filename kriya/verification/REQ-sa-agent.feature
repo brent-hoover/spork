@@ -26,8 +26,11 @@ Feature: System architect agent
     Given an impasse whose resolution would change the ticket's acceptance criteria or the spec
     Then the SA does not decide it and escalates to the operator naming the change
     When the operator approves a spec change
-    Then the paused run is cancelled through a durable, terminal BuildRun transition before replacement work proceeds
+    Then cancelling is recorded durably on the paused run before any external call
+    And the run's sutra ticket is conditionally released out of in-progress
+    And only then is the run stamped cancelled — terminal, before replacement work proceeds
     And the cancelled run never resumes, merges, or resubmits
+    And retirement classifies the released ticket as released work, never issued work that will finish
     And the change enters the pipeline through re-intake and supersession
     And no ticket or spec content is changed through a side channel
 

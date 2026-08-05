@@ -143,7 +143,7 @@ requirements:
         statement: Decomposing against an existing head atomically creates a superseding candidate — predecessor pointed at the head it beat, head marked superseded, fence incremented, PlanHead moved with a generation bump — then retires the predecessor, stamping every predecessor row consumed with its state-appropriate disposition — retired, carried-forward, bound, or completed — before the new plan activates.
         test: verification/REQ-decompose.feature#supersession retires the predecessor before activating
       - id: AC-decompose-retirement
-        statement: Retirement distinguishes pending from issued work — pending tickets are retired in sutra via expected_status=open conditional transitions with generation-scoped defer keys, an already-deferred fresh read counts as fence established with no retry, and rows whose ticket was never created retire with no sutra call.
+        statement: Retirement distinguishes pending from issued work — pending tickets are retired in sutra via expected_status=open conditional transitions with generation-scoped defer keys, an already-deferred fresh read counts as fence established with no retry, and rows whose ticket was never created retire with no sutra call. Retired tickets rest deferred under the shared epic, and sutra's close gate does not count deferred children, so retired work never blocks build completion.
         test: verification/REQ-decompose.feature#retirement distinguishes pending from issued work
       - id: AC-decompose-operator-recovery
         statement: "Each awaiting-operator state has a defined forward-only recovery: an unactivated head restores to pending with predecessor-row resets and retirement resumes; an activated head restores to active with ticket-row states recomputed from step progress; a parked non-head candidate retries by re-entering the replacement CAS, repointing its predecessor to the head it beats."
@@ -227,7 +227,7 @@ requirements:
         statement: The SA resolves by direction; its decision is recorded durably on the run; it never commits to the workspace.
         test: verification/REQ-sa-agent.feature#the architect directs but never codes
       - id: AC-sa-scope
-        statement: A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change, and an approved spec change first cancels the paused run through a durable, terminal BuildRun transition — a cancelled run never resumes, merges, or resubmits — then takes the amended-spec path of re-intake and supersession, never a side channel.
+        statement: "A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change. An approved spec change first cancels the paused run write-ahead: cancelling is recorded durably, the sutra ticket is conditionally released (expected-status transition out of in-progress), and only then is the run stamped cancelled — terminal, never resuming, merging, or resubmitting; retirement and supersession classify a cancelled run's ticket as released work, never as issued work that will finish. Then the change takes the amended-spec path of re-intake and supersession, never a side channel."
         test: verification/REQ-sa-agent.feature#scope changes escalate to the operator
       - id: AC-sa-resume
         statement: After direction the run resumes the pair loop with the SA's guidance in context; the impasse, direction, and outcome survive as part of the run's history.
@@ -341,7 +341,7 @@ requirements:
         statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review pass, mutation, PO validation — passes again at the new head commit, going through sutra's resubmit path and incrementing the revision.
         test: verification/REQ-submit-review.feature#rework routes back by session
       - id: AC-submit-merge
-        statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review, and what merges is the immutable commit pinned by the still-approved current revision — never the mutable branch reference — so the branch advancing after the check cannot change what lands; the merge happens exactly once, a replayed or duplicate event never double-merges, and any mismatch surfaces instead of merging."
+        statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review and requires the branch head to still equal the still-approved current revision's pinned commit — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
         statement: After a successful merge kriya transitions the ticket to complete through sutra, which itself enforces the approved-review gate; the workspace then becomes eligible for cleanup.
@@ -605,13 +605,24 @@ data:
         this row, which is why tickets never re-parent. Build-level
         completion lives here as a write-ahead lifecycle, not a bare
         timestamp: when every ticket of the activated head plan is
-        complete, kriya records the submitted build-completion review's
-        id and revision together with the PlanHead generation the claim
-        is about (completed_generation), and advances completion_state
-        around every sutra call — review-submitted before the epic
-        close, closing around the close call, complete once the epic
-        closed, reopening around a reopen — so crash recovery resumes
-        the exact step. The claim binds to a completion_epoch — a
+        complete, kriya first records review-submitting — carrying a
+        deterministic completion submission key and the completion-report
+        doc version — BEFORE the review-create call; sutra reviews are
+        session-searchable, so recovery from review-submitting queries by
+        that key and ADOPTS an already-created review instead of
+        submitting twice, and only a proven-absent review is resubmitted.
+        The recorded review's id and revision land with the PlanHead
+        generation the claim is about (completed_generation), and
+        completion_state advances around every sutra call — closing
+        around the close, complete once the epic closed, reopening
+        around a reopen — so crash recovery resumes the exact step.
+        completion_state is also the per-target serializer: close and
+        reopen are never issued while a prior close or reopen is
+        unresolved — supersession or reopen first resolves an in-flight
+        closing outcome, and a close that lands for a stale claim (its
+        CAS already failed) is compensated by a durable reopen driven
+        through the same lifecycle, so a stale close can never leave the
+        current target's epic closed. The claim binds to a completion_epoch — a
         counter this row advances atomically on EVERY supersession and
         EVERY ticket reopen (reopens do not move the PlanHead
         generation, so the generation alone cannot fence them).
@@ -638,7 +649,7 @@ data:
         - { name: target_key, type: string, required: true, unique: true }
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
-        - { name: completion_state, type: enum, required: true, values: [none, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step
+        - { name: completion_state, type: enum, required: true, values: [none, review-submitting, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step; also the per-target SERIALIZER — a new close or reopen is issued only after the in-flight operation's outcome is durably resolved
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
@@ -967,7 +978,7 @@ data:
         - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets pinned fresh at bind — builds and recovery always execute against the stored SpecSnapshot, so later edits never change a running or planned build
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
-        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelled] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
+        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }
