@@ -35,4 +35,14 @@ Feature: Risk-first planning
     When the agent records the finding
     Then the spike is not completed and its dependents stay blocked
     And the escalation reaches the operator naming the invalidated approach
+    And the spike's run records cancelling, conditionally defers its ticket — never to open — and lands terminal cancelled before any supersession
+    And retirement classifies the released spike ticket as released work, never issued work that will finish
     And the remedy offered is spec amendment, re-intake, and supersession
+
+  Scenario: a finding submission crash recovers exactly once
+    Given the finding doc key and pending reference were persisted and the crash hit before the document version existed
+    When recovery runs
+    Then the keyed doc mutation replays and creates the version, and the finding review follows through the ordinary submission machinery
+    Given the document version was created and the crash hit before the review-create call
+    When recovery replays the keyed doc mutation
+    Then sutra returns the same version — no duplicate finding — and the keyed review creation runs exactly once
