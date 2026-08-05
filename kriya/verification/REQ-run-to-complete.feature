@@ -14,7 +14,7 @@ Feature: Run to complete
   Scenario: completion is the head plan done and the epic closable
     Given every ticket of the activated head plan is complete
     Then the umbrella epic can close
-    And kriya durably declares the build complete and stops popping for that target
+    And kriya declares completion durably on the BuildTarget row, exactly once, and stops popping for that target
 
   Scenario: supersession moves the finish line
     Given a build mid-flight when a supersession activates a new head plan

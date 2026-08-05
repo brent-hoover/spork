@@ -6,7 +6,7 @@ Feature: Spec intake
   intake, which feeds the plan-supersession path.
 
   Scenario: ready spec is pinned
-    Given a project "shorty" whose avspec verifies status "ready" with zero errors
+    Given a project "shorty" whose avspec verifies status "ready" with zero errors and zero todo findings
     And every module's effective stack resolves non-empty test, lint, typecheck, coverage, and mutation commands
     When the operator points kriya at the project
     Then intake succeeds and a SpecSnapshot is pinned
@@ -22,6 +22,12 @@ Feature: Spec intake
     Given a project whose avspec claims status "ready" but verify reports an error finding
     When the operator points kriya at the project
     Then intake is refused and the response carries the error finding
+    And no snapshot is pinned and nothing is enqueued
+
+  Scenario: a ready claim with todo findings is refused
+    Given a project whose avspec claims status "ready" but verify reports a todo finding
+    When the operator points kriya at the project
+    Then intake is refused and the response carries the todo finding
     And no snapshot is pinned and nothing is enqueued
 
   Scenario: missing module command refuses intake

@@ -9,14 +9,16 @@ Feature: Spec decomposition
   Scenario: tracer bullets carry traceable acceptance criteria
     Given a pinned SpecSnapshot for project "shorty"
     When the PM agent decomposes it
-    Then every created ticket is a thin end-to-end slice
-    And the first workable ticket is a walking skeleton touching every layer
+    Then every implementation ticket is a thin end-to-end slice
+    And spike and research tickets are exempt from the slice rule
+    And the walking skeleton — an implementation ticket touching every layer — is the first implementation ticket workable once blocking risks retire
     And every ticket's acceptance criteria cite REQ and AC ids present in the snapshot
 
   Scenario: one epic umbrellas the build target
     Given no epic exists yet for the build target
     When the first decomposition runs
-    Then an umbrella epic is created and every ticket is parented under it
+    Then a BuildTarget row is written ahead of the epic's creation and records the epic id when it returns
+    And an umbrella epic is created exactly once — a recovered replay reuses the recorded row — and every ticket is parented under it
     When a later decomposition supersedes the plan
     Then carried-forward and new tickets sit under the same epic with no re-parenting
     And the epic can close only when the build completes
@@ -49,7 +51,7 @@ Feature: Spec decomposition
     Given an activated head plan "P1" and an amended snapshot
     When decomposition runs with a new key producing candidate "P2"
     Then one atomic transaction points "P2" predecessor at "P1", marks "P1" superseded, increments the pop fence, and moves PlanHead with a generation bump
-    And every "P1" row is stamped consumed with disposition "retired" or "carried-forward" before "P2" activates
+    And every "P1" row is stamped consumed with its state-appropriate disposition — "retired", "carried-forward", "bound", or "completed" — before "P2" activates
     And activation decrements the pop fence in the head-moving transaction
 
   Scenario: retirement distinguishes pending from issued work

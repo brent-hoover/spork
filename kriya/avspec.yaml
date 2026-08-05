@@ -106,10 +106,10 @@ requirements:
       validated.
     acceptance:
       - id: AC-intake-ready
-        statement: Pointing kriya at a project whose avspec verifies status ready with zero errors succeeds; a SpecSnapshot is pinned containing the full artifact set and every module's resolved effective commands.
+        statement: Pointing kriya at a project whose avspec verifies status ready with zero errors and zero todo findings succeeds; a SpecSnapshot is pinned containing the full artifact set and every module's resolved effective commands.
         test: verification/REQ-spec-intake.feature#ready spec is pinned
       - id: AC-intake-refuse
-        statement: A project that verifies draft, or with any error finding, is refused with the verify findings; no snapshot is pinned and nothing is enqueued.
+        statement: A project that verifies draft, or with any error or todo finding, is refused with the verify findings; no snapshot is pinned and nothing is enqueued.
         test: verification/REQ-spec-intake.feature#draft spec is refused
       - id: AC-intake-commands
         statement: A module whose effective stack (module override where present, project stack otherwise) is missing or blank on any of test, lint, typecheck, coverage, or mutation is refused, naming the module and the missing command — even when avspec verify alone reports ready.
@@ -125,10 +125,10 @@ requirements:
     rationale: Thin end-to-end slices first; BDD acceptance criteria on every ticket; blocks/blocked-by wired for parallelism.
     acceptance:
       - id: AC-decompose-tracer
-        statement: Tickets are thin end-to-end slices ordered so a walking skeleton lands first; every ticket carries BDD acceptance criteria traceable to the snapshot's REQ/AC ids.
+        statement: Implementation tickets are thin end-to-end slices; spike and research tickets are exempt, and the walking skeleton is the first implementation ticket workable once blocking risks retire. Every ticket carries BDD acceptance criteria traceable to the snapshot's REQ/AC ids.
         test: verification/REQ-decompose.feature#tracer bullets carry traceable acceptance criteria
       - id: AC-decompose-epic
-        statement: Decomposition ensures an umbrella epic per build target exists and parents every created ticket under it; the epic persists across supersessions with no re-parenting and closes only when the build completes.
+        statement: Decomposition ensures an umbrella epic per build target exists — created write-ahead and idempotently through the durable BuildTarget row, which records the epic id — and parents every created ticket under it; the epic persists across supersessions with no re-parenting and closes only when the build completes.
         test: verification/REQ-decompose.feature#one epic umbrellas the build target
       - id: AC-decompose-relations
         statement: blocks/blocked-by relations are wired — spike and risk tickets block their dependents, independent tickets stay unblocked for parallel work.
@@ -140,7 +140,7 @@ requirements:
         statement: "Every request resolves its decomposition key against existing plans before any PlanHead logic, and the resolution is state-aware: active-without-completed resumes remaining phases, pending resumes, completed and superseded return the historical result, awaiting-operator is preserved untouched."
         test: verification/REQ-decompose.feature#same-key retries are state-aware
       - id: AC-decompose-supersede
-        statement: Decomposing against an existing head atomically creates a superseding candidate — predecessor pointed at the head it beat, head marked superseded, fence incremented, PlanHead moved with a generation bump — then retires the predecessor, stamping every predecessor row consumed with disposition retired or carried-forward before the new plan activates.
+        statement: Decomposing against an existing head atomically creates a superseding candidate — predecessor pointed at the head it beat, head marked superseded, fence incremented, PlanHead moved with a generation bump — then retires the predecessor, stamping every predecessor row consumed with its state-appropriate disposition — retired, carried-forward, bound, or completed — before the new plan activates.
         test: verification/REQ-decompose.feature#supersession retires the predecessor before activating
       - id: AC-decompose-retirement
         statement: Retirement distinguishes pending from issued work — pending tickets are retired in sutra via expected_status=open conditional transitions with generation-scoped defer keys, an already-deferred fresh read counts as fence established with no retry, and rows whose ticket was never created retire with no sutra call.
@@ -353,7 +353,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: The build is complete when every ticket of the activated head plan is complete and the umbrella epic can close; completion is declared durably and popping stops for that target.
+        statement: The build is complete when every ticket of the activated head plan is complete and the umbrella epic can close; completion is declared durably on the BuildTarget row, exactly once, and popping stops for that target.
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -410,7 +410,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence]
+    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence, ENT-build-target]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -592,12 +592,34 @@ data:
         - { name: current, type: ref, ref: ENT-plan, required: true }
         - { name: generation, type: integer, required: true }
         - { name: updated, type: datetime, required: true }
+    - id: ENT-build-target
+      name: BuildTarget
+      description: >-
+        Durable, target-scoped anchor for a build — one row per
+        (project, normalized target_spec), keyed exactly as PlanHead.
+        Owns the umbrella epic exactly once: the row is inserted
+        write-ahead with epic_state pending before any tracker call,
+        creation is idempotent on target_key, and the returned epic id
+        is recorded transactionally with epic_state created — recovery
+        replays into the same epic, and supersessions reuse it through
+        this row, which is why tickets never re-parent. Build-level
+        completion is declared here exactly once: completed is stamped
+        when every ticket of the activated head plan is complete and
+        the epic can close; plans and runs reach the epic through
+        their target key, never a second copy of it.
+      fields:
+        - { name: target_key, type: string, required: true, unique: true }
+        - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
+        - { name: epic_state, type: enum, required: true, values: [pending, created] }
+        - { name: completed, type: datetime }  # build-level completion, declared exactly once
+        - { name: created, type: datetime, required: true }
     - id: ENT-plan
       name: Plan
       description: >-
         The decomposition record tying an avspec to the tickets it
-        produced. The SpecSnapshot is created at decomposition and pinned
-        here — every ticket of a plan builds against the exact spec
+        produced. The SpecSnapshot is pinned at intake — the authoritative
+        creation point — and decomposition receives and references it
+        here, so every ticket of a plan builds against the exact spec
         version that produced its acceptance criteria. Decomposition is
         write-ahead and idempotent: the plan row (decomposition_key
         derived from project_key, normalized target_spec, and spec_hash;
@@ -801,7 +823,7 @@ data:
       fields:
         - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
-        - { name: spec_hash, type: string, required: true }  # snapshot pinned at decomposition; plan-matched builds inherit it
+        - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot this decomposition ran against; plan-matched builds inherit it
         - { name: state, type: enum, required: true, values: [pending, active, superseded, awaiting-operator] }  # pending until the predecessor's retirement completes; awaiting-operator records a lost supersession CAS or unrecoverable phase failure
         - { name: activated, type: datetime }  # persisted at the pending -> active transition and never cleared; binding authority keys off this, not the state label, so a head parked awaiting-operator still resolves deterministically
         - { name: completed, type: datetime }  # stamped only after the final assignment-phase barrier finishes — activation precedes the creation/wiring/assignment phases, so active alone never means the decomposition is done
@@ -909,7 +931,7 @@ data:
         - { name: pop_key, type: string, required: true, unique: true }  # deterministic idempotency key persisted before the pop; replayed on recovery
         - { name: identity, type: string, required: true }  # the agent identity popped as — persisted pre-pop so replay hits the same stack even if configuration changes
         - { name: target_spec, type: string }  # gate-chain context, persisted at bind — from the plan, else the project-to-spec registry; unresolvable or ambiguous -> awaiting-operator
-        - { name: spec_hash, type: string }  # inherited from the matched plan's decomposition-time snapshot; for unplanned tickets pinned fresh at bind — builds and recovery always execute against the stored SpecSnapshot, so later edits never change a running or planned build
+        - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets pinned fresh at bind — builds and recovery always execute against the stored SpecSnapshot, so later edits never change a running or planned build
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
