@@ -303,8 +303,14 @@ data:
         matching is never needed again), and the reconciliation pass
         below runs first so no claimed-but-unbound pop exists when those
         stamps land. Retirement therefore leaves NO unstamped predecessor
-        row behind, which is what makes a later reopen-and-pop of any of
-        its tickets bind cleanly to the then-current head. First each
+        row behind; the stamps consume the rows as history, but the
+        binding AUTHORITY only switches at successor activation — while
+        the successor is still pending, the predecessor's rows (stamped
+        or not) remain what a pop binds against, so a reopened ticket
+        popped mid-retirement can never inherit the pending plan's
+        not-yet-wired snapshot. Once the successor activates, a later
+        reopen-and-pop of any predecessor ticket binds cleanly to the
+        then-current active head. First each
         unfinished, unclaimed ticket is set to status deferred via the
         tracker's conditional transition (expected status open). A conflict is NOT assumed to
         mean a pop won: first every queued BuildRun with an unfilled
@@ -425,9 +431,13 @@ data:
         unrelated build; per-row replay failures set the row's own
         state to awaiting-operator with the error recorded, and the TUI
         surfaces those rows alongside escalations. Then: the chain-precedence rule above runs FIRST and collapses
-        each head's predecessor chain to at most one candidate (deepest
-        unstamped row, else the current head's row) — rows within one
-        chain are never counted as multiple matches, so a
+        each head's predecessor chain to at most one candidate: a
+        PENDING head's rows never bind (activation is the atomic
+        membership switch); the deepest unstamped row on the chain wins
+        (a claimed-in-flight pop); else, while the head is pending, the
+        immediate predecessor's rows — stamped or not — remain the
+        binding authority; else the ACTIVE head's row binds. Rows
+        within one chain are never counted as multiple matches, so a
         carried-forward ticket is unambiguous by construction. Exactly
         one surviving candidate binds the plan; no candidate (a ticket
         assigned outside any plan) or candidates surviving from
