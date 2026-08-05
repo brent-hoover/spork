@@ -118,6 +118,12 @@ Feature: Review lifecycle
     When the submission is processed
     Then it is rejected with a conflict and no review, submission, or event exists
 
+  Scenario: a moved default head rejects submission even when the merge base is unchanged
+    Given a caller submits a code deliverable expecting default head "D1"
+    And the default branch fast-forwarded to "D2" while the merge base remains "D1"
+    When the submission is processed
+    Then it is rejected with a conflict and nothing is created — the fence is the head, not the merge base
+
   Scenario Outline: unresolvable repository rejects submission
     Given a project with <failure>
     When an agent <operation>s a code deliverable for SUT-1

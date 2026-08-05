@@ -89,8 +89,9 @@ Feature: Review submission and merge
   Scenario: an ABA base move cannot smuggle a differently-based review
     Given the run's chain was gated at default head "D1"
     And the default branch moved to "D2" by the time the review was submitted
-    When the submission carries expected base "D1" and sutra resolves the base as "D2"
-    Then sutra rejects it atomically — no review, submission, or event exists, and no human can review the mismatched diff
+    When the submission carries expected default head "D1" and the default branch now stands at "D2"
+    Then sutra rejects it atomically — no review, submission, or event exists, and no human can review the ungated diff
+    And a fast-forwarded default branch sharing the old merge base is still caught — the fence is the head, not the merge base
     And the run integrates, reruns the full chain, and submits a fresh review
     And the merge preflight rechecks the same base equality as defense in depth
 
@@ -149,6 +150,8 @@ Feature: Review submission and merge
     When recovery replays the complete transition under the persisted ticket-close key
     Then sutra returns the original success — never a close-used conflict — and the run advances to closed
     And a spike's document-backed close recovers identically under its own persisted key, review, and revision — research runs persist them directly, having no merge attempt
+    Given a close conflicted because its approval was reversed, and the review was later reapproved at the same revision
+    Then the new approval event yields a fresh ticket-close key and the retried close issues under it, never replaying the cached conflict
     And the completed head commit is durably recorded
     And the run's workspace becomes eligible for cleanup
 
