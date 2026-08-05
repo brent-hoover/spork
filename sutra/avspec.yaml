@@ -266,6 +266,9 @@ requirements:
       - id: AC-status-reopen
         statement: A complete issue can be reopened to open, recorded as an event; its closing review stays in history.
         test: verification/REQ-status-workflow.feature#complete can reopen
+      - id: AC-status-conditional
+        statement: A status transition carrying expected_status is rejected with a conflict when the issue's current status differs — racing writers cannot clobber each other's transitions.
+        test: verification/REQ-status-workflow.feature#conditional transitions guard racing writers
       - id: AC-status-invalid
         statement: A status outside the five is rejected.
         test: verification/REQ-status-workflow.feature#unknown statuses are rejected

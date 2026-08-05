@@ -13,6 +13,12 @@ Feature: Status workflow
     And the reopening is recorded
     And the approved review remains in history
 
+  Scenario: conditional transitions guard racing writers
+    Given issue SUT-1 has status "in-progress"
+    When a transition to "deferred" with expected status "open" is attempted
+    Then it is rejected with a conflict
+    And SUT-1 still has status "in-progress"
+
   Scenario: unknown statuses are rejected
     When issue SUT-1 is set to status "someday"
     Then the operation is rejected

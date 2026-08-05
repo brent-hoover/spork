@@ -310,7 +310,11 @@ paths:
         recorded as events; complete is gated on an approved Review and no open
         children (AC-status-set, AC-status-reopen, AC-parent-close-gate,
         AC-close-approved, AC-close-blocked-without). Invoked by the kanban board's
-        drag-to-move action (ACT-move-card).
+        drag-to-move action (ACT-move-card). The request may carry
+        expected_status: when present and the issue's current status
+        differs, the transition is rejected with a conflict — optimistic
+        concurrency for racing writers, e.g. a deferral racing a
+        work-stack pop (AC-status-conditional).
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -324,6 +328,7 @@ paths:
               required: [status, actor]
               properties:
                 status: { $ref: '#/components/schemas/IssueStatus' }
+                expected_status: { $ref: '#/components/schemas/IssueStatus' }
                 actor: { type: string, format: uuid }
       responses:
         '200':
