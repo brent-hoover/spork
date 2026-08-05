@@ -478,10 +478,11 @@ paths:
       description: >-
         Creates a parent_of or blocks relation from this issue. Ancestry cycles
         (AC-parent-create) and blocking cycles, direct or transitive
-        (AC-block-no-cycles), are rejected. Attaching a child in open,
-        in-progress, or blocked beneath a complete parent atomically reopens
-        every complete ancestor in the same transaction, records a status event
-        on each, and increments their subtree_revision
+        (AC-block-no-cycles), are rejected. An attachment that places active work beneath a complete
+        parent — the attached child itself, or any descendant of its subtree,
+        being open, in-progress, or blocked — atomically reopens every
+        complete ancestor in the same transaction, records a status event on
+        each, and increments their subtree_revision
         (AC-parent-reopen-cascade, AC-subtree-revision). Records an
         `issue.relation-added` event (subject: the relation's `from` issue).
       tags: [issues]

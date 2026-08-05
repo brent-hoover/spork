@@ -15,7 +15,7 @@ Feature: Review submission and merge
     Then the feedback reaches the run identified by the review's session id — the same agent instance where possible
     And the pair loop resumes
     When the agent finishes rework at a new head commit
-    And the review, mutation, and PO-validation gates pass again at the new head commit
+    And every machine gate — review, test, structure, typing, arch, branch coverage, mutation — and PO validation pass again at the new head commit
     Then resubmission goes through sutra's resubmit path and the review's revision increments
     And no resubmission happens before those gates pass
 
@@ -54,7 +54,8 @@ Feature: Review submission and merge
     Given the branch merged successfully
     And a commit landed on the branch before kriya's completion check
     When kriya re-reads the branch head
-    Then the ticket is not completed and the run returns to the pair loop and resubmission path for the unreviewed commits
+    Then the ticket is not completed and the run returns to the pair loop for the unreviewed commits
+    And once the gates pass again the new head is submitted as a fresh review, durably recorded on the run — the approved review is never resubmitted
     And no work is stranded on a terminal run
 
   Scenario: a post-completion advance surfaces to the operator

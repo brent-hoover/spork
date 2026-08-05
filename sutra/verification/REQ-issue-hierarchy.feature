@@ -46,3 +46,6 @@ Feature: Issue hierarchy
     Given SUT-1 is "complete"
     When an open issue is attached as a child of SUT-1
     Then SUT-1 reopens in the same transaction
+    Given SUT-1 is "complete"
+    When a deferred issue whose subtree contains an issue in status "open" is attached as a child of SUT-1
+    Then SUT-1 reopens in the same transaction — a deferred root cannot hide active work it carries in
