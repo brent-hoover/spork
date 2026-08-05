@@ -18,27 +18,27 @@ Feature: Closing requires an approved review
 
   Scenario: a reversed approval cannot authorize a close
     Given issue SUT-2 has an approved review whose verdict is reversed to "changes-requested" before the close commits
-    When SUT-2 is transitioned to "complete" naming that review
+    When SUT-2 is transitioned to "complete" naming that review at its last approved revision
     Then the transition is rejected naming the missing approval
 
   Scenario: a merge-consumed approval still closes its issue
     Given issue SUT-3 has an approved review whose approval was consumed by a subscriber before merging
-    When SUT-3 is transitioned to "complete" naming that review
+    When SUT-3 is transitioned to "complete" naming that review at its consumed revision
     Then the transition succeeds — verdict consumption is a fence, not a spend
 
   Scenario: a spent review cannot close a reopened issue
     Given issue SUT-4 closed under its approved review and was later reopened
-    When SUT-4 is transitioned to "complete" naming the same review
+    When SUT-4 is transitioned to "complete" naming the same review at its approved revision
     Then the transition is rejected — the review is already close-used
     Given a fresh review of SUT-4 is approved
-    When SUT-4 is transitioned to "complete" naming the fresh review
+    When SUT-4 is transitioned to "complete" naming the fresh review at its approved revision
     Then the transition succeeds
 
   Scenario: naming the wrong review cannot close
     Given issue SUT-5 has a changes-requested review and issue SUT-6 has an approved one
-    When SUT-5 is transitioned to "complete" naming its changes-requested review
+    When SUT-5 is transitioned to "complete" naming its changes-requested review at its current revision
     Then the transition is rejected
-    When SUT-5 is transitioned to "complete" naming SUT-6's review
+    When SUT-5 is transitioned to "complete" naming SUT-6's review at its approved revision
     Then the transition is rejected — the review belongs to another issue
 
   Scenario: no approval no close
