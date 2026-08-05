@@ -52,7 +52,10 @@ constitution:
 # a later reopen binds to the head;
 # post-retirement reopen: a ticket bound or completed under a superseded
 # plan, later reopened and popped, binds to the current head because
-# retirement consumed the historical rows as stamped history.
+# retirement consumed the historical rows as stamped history — including
+# when the successor omitted the ticket (chain resolution binds the
+# activated head with no successor row); pop write-ahead refusal while a
+# project head is unactivated, and retry after activation.
 #
 # Risk register — validated before kriya's own build begins:
 #   R1 (RETIRED 2026-08-04 by spike + session-long live use): roborev is
@@ -364,7 +367,14 @@ data:
         stamped, and the pre-activation recheck replays any remaining
         unfilled queued BuildRuns the same way — the write-ahead row is
         durable before sutra is ever called, so every in-flight claim
-        is visible to this fence. Activation therefore happens only
+        is visible to this fence. New pops cannot originate inside the window at all:
+        BuildRun write-ahead creation lives in the same durable store
+        as PlanHead, and the creating transaction is REFUSED (the
+        worker retries after activation) while any head of the pop's
+        project holds an unactivated current plan — so every claim is
+        either created before the window and drained by the recheck, or
+        created after activation and resolved by rule 3; no claim can
+        straddle activation. Activation therefore happens only
         when NO claimed-but-unbound pop against a predecessor ticket
         exists; a crashed build worker replaying its bind after
         activation finds its BuildRun already bound (binding is
@@ -448,9 +458,18 @@ data:
         activated stamp), so a reopened ticket popped mid-retirement
         can never inherit an unactivated plan's not-yet-wired snapshot.
         (3) Otherwise the head has activated — even if it later entered
-        awaiting-operator — and its row binds, with stamped superseded
-        rows pure audit history: a reopened ticket popped after
-        activation always matches its then-current plan. In every case the bound plan's pinned
+        awaiting-operator — and the ticket binds to it: through the
+        head's own row when one exists, and otherwise through CHAIN
+        RESOLUTION — a ticket whose only membership is consumed rows on
+        superseded plans of this chain (e.g. completed under the
+        predecessor, omitted from the successor, reopened later) still
+        binds the activated head and its snapshot rather than falling
+        through as unplanned, so a once-planned ticket never silently
+        builds against a freshly pinned spec. Stamped superseded rows
+        are otherwise pure audit history: a reopened ticket popped
+        after activation always matches its then-current plan. Only a
+        ticket with no membership row anywhere — planned outside any
+        plan — is unplanned. In every case the bound plan's pinned
         snapshot travels with the binding, honoring the
         popped-builds-finish-under-predecessor guarantee. (PlannedTicket
         remains the authoritative membership record — Plan holds no
