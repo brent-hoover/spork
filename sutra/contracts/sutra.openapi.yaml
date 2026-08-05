@@ -2207,6 +2207,9 @@ components:
       required: [issue, author]
       properties:
         issue: { type: string, format: uuid }
+        expected_base_commit:
+          type: string
+          description: Code deliverables only — the merge base the caller expects. Validated atomically against the resolved base_commit BEFORE the review is created; a mismatch rejects 409 and no review, submission, or event exists. Lets gate-driven callers guarantee the reviewed diff shares the base their gates ran against.
         branch: { type: string }
         commit:
           type: string
@@ -2280,6 +2283,9 @@ components:
         commit, or a doc version.
       required: [author, expected_revision]
       properties:
+        expected_base_commit:
+          type: string
+          description: Code deliverables only — validated atomically against the newly resolved base_commit before the resubmission lands; mismatch rejects 409 with no mutation.
         expected_revision:
           type: integer
           description: The current revision the caller believes it is replacing; the resubmission is rejected with a conflict if the review's revision differs — a delayed request can never apply stale content to a newer revision.

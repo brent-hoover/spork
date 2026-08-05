@@ -23,6 +23,8 @@ Feature: TUI overview
     Then the operator can reconcile and reset it from the TUI
     Given a pending enqueue attempt, and a completed attempt whose id is not its round's accepted external id
     Then both appear in the inbox with their round, and the operator can inspect and reconcile each — stamping resolved after checking roborev
+    Given an enqueue attempt whose claimant is still live
+    Then reconciliation and reset are refused until the claimant is conclusively dead
     Given an escalated scope change
     Then the operator can approve or reject it from the TUI
 

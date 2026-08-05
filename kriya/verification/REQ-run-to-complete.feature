@@ -77,6 +77,12 @@ Feature: Run to complete
     Then sutra rejects the close — history moved even though current state matches
     And kriya advances its epoch and a fresh attempt with fresh approval is required
 
+  Scenario: reapproval after a conflicted close gets a fresh key
+    Given an epic close conflicted because the completion approval was reversed mid-flight
+    When the review is reapproved
+    Then the new approval event yields a fresh close key
+    And the retried close issues under it — never replaying the cached conflict
+
   Scenario: a stale approval never stamps an unfinished target
     Given a build-completion review recorded with claim epoch 3
     And a supersession or a ticket reopen has since advanced the current epoch to 4

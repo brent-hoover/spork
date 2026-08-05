@@ -112,6 +112,12 @@ Feature: Review lifecycle
     Then the resubmission is rejected with a conflict
     And no submission, state change, or event results
 
+  Scenario: a stale expected base rejects submission before the review exists
+    Given a caller submits a code deliverable expecting base "D1"
+    And sutra resolves the merge base as "D2"
+    When the submission is processed
+    Then it is rejected with a conflict and no review, submission, or event exists
+
   Scenario Outline: unresolvable repository rejects submission
     Given a project with <failure>
     When an agent <operation>s a code deliverable for SUT-1
