@@ -359,7 +359,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: "Completion detection arms only once the activated head plan bears its completed stamp — decomposition's final assignment barrier has passed, so the ticket set is whole, and a mid-phase plan can never present an empty or partial set as done. When that plan's every ticket is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every ticket reopen — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket advances the epoch and clears the stamp as its event is consumed; in the window before consumption sutra is already authoritative — the reopen cascade has reopened the epic server-side — so anything gating on completion trusts the stamp only while its recorded subtree revision still matches sutra's, and consults the live epic otherwise. Completion is a claim about the current head as of its recorded revision, never history."
+        statement: "Completion detection arms only once the activated head plan bears its completed stamp — decomposition's final assignment barrier has passed, so the ticket set is whole, and a mid-phase plan can never present an empty or partial set as done. When that plan's every ticket is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every ticket reopen — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket advances the epoch and clears the stamp as its event is consumed; in the window before consumption sutra is already authoritative — the reopen cascade has reopened the epic server-side — so anything gating on completion trusts the stamp only while sutra's current subtree revision still equals completion_closed_revision — the post-close revision recorded atomically with the stamp (the close itself increments the revision, so the pre-close precondition value would mismatch immediately) — and consults the live epic otherwise. Completion is a claim about the current head as of its recorded revision, never history."
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -561,12 +561,12 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-spec-mapping
       name: SpecMapping
-      description: The project-to-spec registry — seeded by every plan at decomposition, operator-editable; the only trusted fallback for resolving an unplanned ticket's target spec.
+      description: The project-to-spec registry — operator-editable, the only trusted fallback for resolving an unplanned ticket's target spec. Plan seeding is INSERT-ONLY (a plan seeds a missing mapping with its own intake-pinned hash and never touches an existing row); only intake refreshes an existing mapping's spec_hash — so a delayed older plan can never regress a newer intake's snapshot.
       fields:
         - { name: mapping_key, type: string, required: true, unique: true }  # derived hash of (project_key, normalized target_spec) — seeding upserts, so replanning the same spec never duplicates a row
         - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
-        - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot for this mapping, refreshed by each intake and each plan's seeding — the ONLY snapshot an unplanned bind may use
+        - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot for this mapping — the ONLY snapshot an unplanned bind may use; written at insert (plan seeding) and thereafter refreshed exclusively by intake
         - { name: updated, type: datetime, required: true }
     - id: ENT-pop-fence
       name: PopFence
@@ -634,9 +634,14 @@ data:
         next revision), and completion_pending_report, the prepared
         report content reference — before the new doc version or the
         sutra resubmission exists;
-        recovery from review-resubmitting reads the review's current
-        revision and reconciles (a landed resubmission is adopted, an
-        absent one replayed under the same key), and only then are
+        the doc-version mutation carries its own deterministic key
+        (completion_report_key) persisted in the same transaction, so a
+        crash after document creation but before resubmission recovers
+        the exact version rather than appending another; recovery from
+        review-resubmitting first resolves the keyed doc mutation, then
+        reads the review's current revision and reconciles (a landed
+        resubmission is adopted, an absent one replayed under the same
+        key), and only then are
         completion_report_doc and completion_revision updated
         transactionally within the SAME attempt (key and epoch
         unchanged); the epic closes on the new revision's approval, so
@@ -702,8 +707,10 @@ data:
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every ticket reopen
         - { name: completion_resubmission_key, type: string }  # revision-scoped, derived from (submission key, next revision); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
+        - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key; persisted before the doc call so a recovery replay returns the SAME version instead of appending
         - { name: completion_pending_report, type: string }  # reference to the prepared report content, persisted BEFORE the doc version exists; reconciled into completion_report_doc on success
-        - { name: completion_subtree_revision, type: integer }  # the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
+        - { name: completion_subtree_revision, type: integer }  # PRE-close: the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
+        - { name: completion_closed_revision, type: integer }  # POST-close: the subtree_revision the close itself committed, taken from the close response and recorded atomically with the completed stamp — the mirror-trust comparison uses THIS, never the pre-close precondition
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }

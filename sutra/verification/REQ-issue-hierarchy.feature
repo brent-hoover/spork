@@ -31,6 +31,9 @@ Feature: Issue hierarchy
     Then the transition is rejected with a conflict — current state matches but history moved
     When the caller re-reads and retries with expected_subtree_revision 9
     Then the transition succeeds under its ordinary gates
+    Given a complete-free hierarchy where nothing can reopen
+    When a child is attached beneath a parent
+    Then subtree_revision still increments on the parent and every ancestor
 
   Scenario: reopening a child reopens a complete parent
     Given SUT-1 is "complete" and its child SUT-2 is "complete"
