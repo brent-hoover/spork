@@ -10,9 +10,13 @@ Feature: Isolated workspaces
     And uncommitted changes in one worktree are invisible to the other
 
   Scenario: the workspace is durably recorded
-    Given a BuildRun starts and its worktree is created
-    Then the BuildRun durably records the workspace path, branch, and base commit
-    And recovery and the TUI locate the run's work from the record alone
+    Given a BuildRun is about to create its worktree
+    Then the workspace row — deterministic path, branch, and base commit — is persisted in state "pending" before git creates anything
+    When creation succeeds
+    Then the row flips to "created" transactionally
+    Given a crash between the pending write and creation
+    Then recovery probes the recorded path, adopts a matching worktree or recreates an absent one, and verifies the recorded base
+    And no orphaned worktree is undiscoverable
 
   Scenario: a resumed run reattaches to its workspace
     Given a BuildRun crashed with an existing worktree matching its record

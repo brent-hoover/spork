@@ -12,15 +12,18 @@ Feature: Risk-first planning
     And tickets not depending on the risk are not blocked by it
 
   Scenario: spikes surface ahead of ordinary work
-    Given an open spike ticket and an unblocked ordinary ticket of the same age
-    When an agent pops work
-    Then it receives the spike first
+    Given decomposition created every spike ticket before any implementation ticket
+    When an agent pops work under the tracker's FIFO ordering
+    Then an open spike is strictly older than the work it gates and is received first
+    And no tracker-side priority mechanism is assumed
 
   Scenario: a finding retires the risk and unblocks dependents
-    Given an in-progress spike ticket
-    When the agent attaches a documented finding to the ticket and completes it
-    Then the dependent tickets become workable
-    And a spike completing without an attached finding is rejected
+    Given an in-progress spike ticket with a documented finding attached
+    When the finding is submitted as a document-deliverable Review on the spike ticket
+    And a human approves it
+    Then the spike closes through sutra's approved-review gate
+    And the dependent tickets become workable
+    And a spike with no approved finding review cannot close
 
   Scenario: an invalidating finding escalates instead of proceeding
     Given a spike whose documented finding invalidates the planned approach

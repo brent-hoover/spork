@@ -20,7 +20,9 @@ Feature: System architect agent
     Given an impasse whose resolution would change the ticket's acceptance criteria or the spec
     Then the SA does not decide it and escalates to the operator naming the change
     When the operator approves a spec change
-    Then it enters the pipeline through re-intake and supersession
+    Then the paused run is cancelled through a durable, terminal BuildRun transition before replacement work proceeds
+    And the cancelled run never resumes, merges, or resubmits
+    And the change enters the pipeline through re-intake and supersession
     And no ticket or spec content is changed through a side channel
 
   Scenario: direction resumes the loop and survives in history

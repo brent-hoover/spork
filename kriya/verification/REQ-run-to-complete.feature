@@ -16,7 +16,13 @@ Feature: Run to complete
     Then kriya submits a build-completion review on the umbrella epic with a completion-report document as its deliverable
     When the human approves the review
     Then the epic closes through sutra's approved-review gate
-    And completion is stamped on the BuildTarget row and popping stops for that target
+    And completion is stamped on the BuildTarget row — a CAS requiring the head generation recorded at submission to still be current — and popping stops for that target
+
+  Scenario: a stale approval never stamps a newer head
+    Given a build-completion review submitted under head generation 3
+    And a supersession has since moved the head to generation 4
+    When the approval event arrives
+    Then the completion CAS fails, nothing is stamped, and the stale approval surfaces to the operator
 
   Scenario: completion clears when work returns
     Given a build target whose completion is stamped

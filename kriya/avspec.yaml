@@ -156,10 +156,10 @@ requirements:
         statement: Decomposition creates a spike/research ticket per identified risk, labeled with the risk/spike convention, blocking every ticket that depends on the risk's answer.
         test: verification/REQ-risk-first.feature#each risk becomes a blocking spike
       - id: AC-risk-order
-        statement: "Spike tickets are immediately workable and surface first: an agent popping work receives an open spike ahead of non-blocking work of the same age."
+        statement: "Spike tickets are immediately workable and surface first by construction: decomposition creates every spike ticket before any implementation ticket, so under the tracker's FIFO pop an open spike is always strictly older than the work it gates — no tracker-side priority is assumed."
         test: verification/REQ-risk-first.feature#spikes surface ahead of ordinary work
       - id: AC-risk-retire
-        statement: A spike completes with a documented finding attached to the ticket; its completion unblocks dependents — the risk is retired by evidence, not assertion.
+        statement: A spike closes through sutra's own gate — its documented finding is submitted as a document-deliverable Review on the spike ticket, and approval closes the spike and unblocks dependents; the risk is retired by approved evidence, not assertion.
         test: verification/REQ-risk-first.feature#a finding retires the risk and unblocks dependents
       - id: AC-risk-escalate
         statement: A spike whose finding invalidates the planned approach does not let dependent work proceed; it escalates to the operator, and the remedy is the amended-spec path — re-intake and supersession, never a silent workaround.
@@ -189,7 +189,7 @@ requirements:
         statement: Starting a BuildRun creates a dedicated worktree on a ticket-named branch cut from the project's default branch; concurrent runs never share a working tree, and one run's uncommitted state is invisible to every other.
         test: verification/REQ-workspaces.feature#each run gets an isolated worktree
       - id: AC-workspace-recorded
-        statement: The workspace's path, branch, and base commit are recorded durably on the BuildRun, so recovery and the TUI can always locate a run's work.
+        statement: The workspace's deterministic path, branch, and base commit are persisted in a pending state BEFORE the worktree is created and flipped to created transactionally after, so recovery can always locate a run's work, verify its base, and adopt or recreate a crash-window worktree — none is ever undiscoverable.
         test: verification/REQ-workspaces.feature#the workspace is durably recorded
       - id: AC-workspace-resume
         statement: A resumed BuildRun reattaches to its existing workspace and branch when they exist and match the record; it never silently starts a second workspace for the same run.
@@ -227,7 +227,7 @@ requirements:
         statement: The SA resolves by direction; its decision is recorded durably on the run; it never commits to the workspace.
         test: verification/REQ-sa-agent.feature#the architect directs but never codes
       - id: AC-sa-scope
-        statement: A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change, and an approved spec change takes the amended-spec path of re-intake and supersession, never a side channel.
+        statement: A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change, and an approved spec change first cancels the paused run through a durable, terminal BuildRun transition — a cancelled run never resumes, merges, or resubmits — then takes the amended-spec path of re-intake and supersession, never a side channel.
         test: verification/REQ-sa-agent.feature#scope changes escalate to the operator
       - id: AC-sa-resume
         statement: After direction the run resumes the pair loop with the SA's guidance in context; the impasse, direction, and outcome survive as part of the run's history.
@@ -353,7 +353,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: When every ticket of the activated head plan is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history.
+        statement: When every ticket of the activated head plan is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the head generation it was earned under, and the stamp is a CAS against that generation still being current — a delayed approval from an older head surfaces instead of stamping. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history.
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -603,19 +603,31 @@ data:
         is recorded transactionally with epic_state created — recovery
         replays into the same epic, and supersessions reuse it through
         this row, which is why tickets never re-parent. Build-level
-        completion lives here: completed is stamped when every ticket
-        of the activated head plan is complete and the build-completion
-        review on the epic is approved — and it is a claim about the
-        CURRENT head only. A supersession installing a new head, or a
-        completed ticket reopening, atomically CLEARS completed and
-        reopens the epic through sutra, so popping resumes; the stamp
-        can therefore be set at most once per head generation, never
-        left standing over live work. Plans and runs reach the epic
-        through their target key, never a second copy of it.
+        completion lives here as a write-ahead lifecycle, not a bare
+        timestamp: when every ticket of the activated head plan is
+        complete, kriya records the submitted build-completion review's
+        id and revision together with the PlanHead generation the claim
+        is about (completed_generation), and advances completion_state
+        around every sutra call — review-submitted before the epic
+        close, closing around the close call, complete once the epic
+        closed, reopening around a reopen — so crash recovery resumes
+        the exact step. Stamping completed is a CAS that requires the
+        PlanHead generation to still equal completed_generation: a
+        delayed approval earned under an older head can never stamp a
+        newer, unfinished head complete — it surfaces instead. A
+        supersession installing a new head, or a completed ticket
+        reopening, atomically clears completed, records the reopening
+        state, and reopens the epic through sutra, so popping resumes.
+        Plans and runs reach the epic through their target key, never
+        a second copy of it.
       fields:
         - { name: target_key, type: string, required: true, unique: true }
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
+        - { name: completion_state, type: enum, required: true, values: [none, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step
+        - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
+        - { name: completion_revision, type: integer }  # the review revision the approval must still carry
+        - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about; the completed CAS requires it to still be current
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
@@ -939,16 +951,28 @@ data:
         - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets pinned fresh at bind — builds and recovery always execute against the stored SpecSnapshot, so later edits never change a running or planned build
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
-        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
+        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelled] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }
         - { name: finished, type: datetime }
     - id: ENT-workspace
       name: Workspace
+      description: >-
+        Write-ahead like every other side effect: the row — with its
+        deterministic path, branch, and the default-branch base commit
+        the branch is cut from — is persisted in state pending BEFORE
+        git creates anything; creation flips it to created
+        transactionally. Recovery therefore always discovers a
+        crash-window worktree from the pending row (probe the recorded
+        path, adopt what matches, recreate what is absent) and can
+        verify the promised base — no orphaned worktree is ever
+        undiscoverable.
       fields:
         - { name: path, type: string, required: true }
         - { name: branch, type: string, required: true }
+        - { name: base_commit, type: string, required: true }  # full object id of the default-branch commit the branch is cut from; persisted pre-creation
+        - { name: state, type: enum, required: true, values: [pending, created] }
         - { name: ticket, type: string, required: true }
         - { name: created, type: datetime, required: true }
         - { name: removed_at, type: datetime }
