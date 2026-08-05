@@ -316,7 +316,7 @@ requirements:
     rationale: Runs each module's effective mutation command; targets where any module's effective stack omits it are rejected at spec intake.
     acceptance:
       - id: AC-mutation-after-review
-        statement: Mutation runs only after the review gate passed at the same head commit, executing each touched module's snapshot-resolved mutation command.
+        statement: Mutation runs only after the review, test, structure, typing, arch, and branch-coverage gates have all passed at the same head commit, executing each touched module's snapshot-resolved mutation command.
         test: verification/REQ-gate-mutation.feature#mutation waits for the review pass
       - id: AC-mutation-kill-all
         statement: Any surviving mutant fails the gate; survivors are returned to the dev agent as named test gaps to kill, and results upsert as GateResults pinned to the commit.
@@ -731,6 +731,7 @@ data:
         - { name: completion_pending_report, type: string }  # reference to the prepared report content, persisted BEFORE the doc version exists; reconciled into completion_report_doc on success
         - { name: completion_subtree_revision, type: integer }  # PRE-close: the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
         - { name: completion_closed_revision, type: integer }  # POST-close: the subtree_revision the close itself committed, taken from the close response and recorded atomically with the completed stamp — the mirror-trust comparison uses THIS, never the pre-close precondition
+        - { name: completion_operation_key, type: string }  # deterministic per (submission key, operation) — written atomically with the closing or reopening state; the key recovery replays the close or reopen under
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
@@ -889,8 +890,11 @@ data:
         is visible to this fence. New pops cannot originate inside the window at all:
         admission is serialized with head transitions through the
         PopFence singleton (ENT-pop-fence, planner-owned). Replacement
-        increments its unactivated_heads counter and activation
-        decrements it IN THE SAME transaction that moves the head, and
+        increments its unactivated_heads counter in the same
+        transaction that moves the head; activation decrements it in
+        its own atomic transaction after retirement completes — never
+        during the head move, which would admit pops before
+        predecessor retirement finished — and
         BuildRun write-ahead creation invokes the planner's admission
         guard, which asserts counter == 0 against the fence's version
         (CAS) inside the creating transaction — so an admission that

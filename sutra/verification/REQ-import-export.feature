@@ -9,13 +9,13 @@ Feature: Import and export
     Given an export of project "SUT"
     When it is imported into an empty server
     Then the project's content matches the original, excluding the import audit event
+    And every record keeps its original UUID
     And the consumed review's consumption stamp and revision survive the round-trip
 
   Scenario: a half-consumed review is rejected at import
     Given an export payload whose review carries a consumption stamp without its consumed revision
     When it is imported
     Then the import is rejected as malformed and nothing is created
-    And every record keeps its original UUID
 
   Scenario: colliding import is rejected whole
     Given project "SUT" already exists on the server
