@@ -359,7 +359,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: "Completion detection arms only once the activated head plan bears its completed stamp — decomposition's final assignment barrier has passed, so the ticket set is whole, and a mid-phase plan can never present an empty or partial set as done. When that plan's every ticket is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every ticket reopen — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket advances the epoch and clears the stamp as its event is consumed; in the window before consumption sutra is already authoritative — the reopen cascade has reopened the epic server-side — so anything gating on completion trusts the stamp only while sutra's current subtree revision still equals completion_closed_revision — the post-close revision recorded atomically with the stamp (the close itself increments the revision, so the pre-close precondition value would mismatch immediately) — and consults the live epic otherwise. Completion is a claim about the current head as of its recorded revision, never history."
+        statement: "Completion detection arms only once the activated head plan bears its completed stamp — decomposition's final assignment barrier has passed, so the ticket set is whole, and a mid-phase plan can never present an empty or partial set as done. When that plan's every ticket is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. The claim records the review's id and revision and the completion epoch it was earned under — the epoch advances on every supersession and every event that reopens the epic: a ticket reopening, deferred work activating, or an active subtree attached — and the stamp is a CAS against that epoch still being current, with ticket completion revalidated before the close: a delayed approval from an older epoch surfaces instead of stamping. A later supersession or a reopened ticket advances the epoch and clears the stamp as its event is consumed; in the window before consumption sutra is already authoritative — the reopen cascade has reopened the epic server-side — so anything gating on completion trusts the stamp only while sutra's current subtree revision still equals completion_closed_revision — the post-close revision recorded atomically with the stamp (the close itself increments the revision, so the pre-close precondition value would mismatch immediately) — and consults the live epic otherwise. Completion is a claim about the current head as of its recorded revision, never history."
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -677,8 +677,12 @@ data:
         through the same lifecycle, so a stale close can never leave the
         current target's epic closed. The claim binds to a completion_epoch — a
         counter this row advances atomically on EVERY supersession and
-        EVERY ticket reopen (reopens do not move the PlanHead
-        generation, so the generation alone cannot fence them).
+        EVERY event that reopens the epic: a ticket reopening, deferred
+        work activating, or an active subtree being attached (none of
+        which move the PlanHead generation, so the generation alone
+        cannot fence them). Because the submission key embeds the
+        epoch, any such reopen forces recompletion onto a NEW key and a
+        fresh review — the old close-used review can never be replayed.
         The submission records completion_claim_epoch — an immutable
         copy of the epoch at that moment — beside the review id and
         revision; the epic close names the attempt's completion_review
@@ -725,7 +729,7 @@ data:
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
-        - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every ticket reopen
+        - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every event that reopens the epic (ticket reopen, deferred activation, active-subtree attachment)
         - { name: completion_resubmission_key, type: string }  # revision-scoped, derived from (submission key, next revision); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
         - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key; persisted before the doc call so a recovery replay returns the SAME version instead of appending
         - { name: completion_pending_report, type: string }  # reference to the prepared report content, persisted BEFORE the doc version exists; reconciled into completion_report_doc on success

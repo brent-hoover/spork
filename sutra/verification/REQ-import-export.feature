@@ -17,6 +17,14 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
+  Scenario: a malformed close-used review is rejected at import
+    Given an export payload whose review is close-used but carries no consumption fields
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+    Given an export payload whose close-used review is in state "changes-requested" or whose consumed revision lags its current revision
+    When it is imported
+    Then the import is rejected as malformed — a spent review's verdict cannot be rewritten through import
+
   Scenario: colliding import is rejected whole
     Given project "SUT" already exists on the server
     When the same export is imported again

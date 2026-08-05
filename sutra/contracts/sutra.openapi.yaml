@@ -2114,6 +2114,11 @@ components:
                   - required: [consumed]
                   - required: [consumed_revision]
           description: consumed and consumed_revision appear together or not at all — a half-consumed review is malformed, in responses and importProject payloads alike.
+        - anyOf:
+            - required: [close_used, consumed, consumed_revision]
+            - not:
+                required: [close_used]
+          description: close_used implies both consumption fields. Beyond schema reach but enforced at import — a close-used review must be in state approved with consumed_revision equal to its current revision; importProject rejects violations as malformed, so a spent review's verdict can never be rewritten through import.
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }
@@ -2150,7 +2155,7 @@ components:
         close_used:
           type: string
           format: date-time
-          description: Stamped atomically by the completion this review authorized; a spent review can never authorize another close. Round-trips through export/import.
+          description: Stamped atomically by the completion this review authorized; a spent review can never authorize another close. Round-trips through export/import, where it is valid only on an approved review carrying both consumption fields with consumed_revision equal to the current revision.
         submissions:
           type: array
           description: >-

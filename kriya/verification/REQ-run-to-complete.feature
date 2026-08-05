@@ -110,6 +110,13 @@ Feature: Run to complete
     And the epic reopens through sutra
     And popping resumes for the target
 
+  Scenario: any epic reopen forces a fresh completion
+    Given a completed target whose epic reopened because deferred work activated
+    Then the completion epoch advances and the stamp clears when the reopen event is consumed
+    And recompletion runs under a new epoch-scoped key with a fresh review — the spent one cannot replay
+    Given a completed target whose epic reopened because an active subtree was attached
+    Then the same epoch advance, clear, and fresh-review requirement apply
+
   Scenario: supersession moves the finish line
     Given a build mid-flight when a supersession activates a new head plan
     Then completion is judged against the new head's ticket set
