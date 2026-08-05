@@ -139,6 +139,19 @@ requirements:
   - id: REQ-risk-first
     title: Risk items are identified and retired first via spike/research tickets
     rationale: Risk and spike labels plus blocking relations ensure nothing dependent starts before its risk is retired.
+    acceptance:
+      - id: AC-risk-identify
+        statement: Decomposition creates a spike/research ticket per identified risk, labeled with the risk/spike convention, blocking every ticket that depends on the risk's answer.
+        test: verification/REQ-risk-first.feature#each risk becomes a blocking spike
+      - id: AC-risk-order
+        statement: "Spike tickets are immediately workable and surface first: an agent popping work receives an open spike ahead of non-blocking work of the same age."
+        test: verification/REQ-risk-first.feature#spikes surface ahead of ordinary work
+      - id: AC-risk-retire
+        statement: A spike completes with a documented finding attached to the ticket; its completion unblocks dependents — the risk is retired by evidence, not assertion.
+        test: verification/REQ-risk-first.feature#a finding retires the risk and unblocks dependents
+      - id: AC-risk-escalate
+        statement: A spike whose finding invalidates the planned approach does not let dependent work proceed; it escalates to the operator, and the remedy is the amended-spec path — re-intake and supersession, never a silent workaround.
+        test: verification/REQ-risk-first.feature#an invalidating finding escalates instead of proceeding
   - id: REQ-parallel-build
     title: Pop tickets off sutra work stacks and run parallel dev agents where relations allow
   - id: REQ-workspaces
