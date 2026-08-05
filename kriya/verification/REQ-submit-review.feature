@@ -56,6 +56,12 @@ Feature: Review submission and merge
     When the same approval event is replayed
     Then no second merge occurs
 
+  Scenario: successive fresh reviews never collide in the queue
+    Given a run whose first review was approved at revision 1 and merged, and whose later fresh review is also approved at revision 1
+    When the later approval enqueues its merge attempt
+    Then its attempt key differs — the review id is part of the identity
+    And recovery reads the persisted review id and revision to consume exactly the intended approval
+
   Scenario: simultaneous approvals for one target serialize
     Given two runs for the same target both enter approved and both enqueue merge attempts
     When the queue head acquires the target's merge lock

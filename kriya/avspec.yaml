@@ -1116,8 +1116,10 @@ data:
       name: MergeAttempt
       description: >-
         Durable entry in the per-target merge queue. Created when an
-        approval event arrives (attempt_key makes replays collide
-        instead of duplicating), ordered by created; the queue head
+        approval event arrives (attempt_key — target, build, review id,
+        and revision — makes replays collide instead of duplicating,
+        and the persisted review and revision tell recovery exactly
+        which approval to consume), ordered by created; the queue head
         acquires the target's merge lock by CAS on
         BuildTarget.merge_lock (absent -> this run), and ONLY the lock
         holder preflights, consumes, and merges — two simultaneous
@@ -1128,9 +1130,11 @@ data:
         merged or aborted; recovery inspects the holder's durable state
         and either resumes its exact step or releases the lock.
       fields:
-        - { name: attempt_key, type: string, required: true, unique: true }  # deterministic per (target_key, build, approved revision)
+        - { name: attempt_key, type: string, required: true, unique: true }  # deterministic per (target_key, build, review, revision) — the review id disambiguates successive fresh reviews for the same build, whose revisions each restart at 1
         - { name: target_key, type: string, required: true }
         - { name: build, type: ref, ref: ENT-build-run, required: true }
+        - { name: review, type: string, required: true }  # opaque tracker review id whose approval this attempt consumes; recovery reads it and the revision from the row, never inferring which approval was meant
+        - { name: revision, type: integer, required: true }  # the approved revision the attempt expects at consumption
         - { name: state, type: enum, required: true, values: [queued, holding, merged, aborted] }
         - { name: created, type: datetime, required: true }
         - { name: resolved, type: datetime }
