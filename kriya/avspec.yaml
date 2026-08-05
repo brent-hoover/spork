@@ -350,7 +350,7 @@ requirements:
         statement: "An approval event is a signal, not an authority, and merges are SERIALIZED per target through the durable merge queue — MergeAttempt rows ordered by arrival, the head holding BuildTarget.merge_lock; only the lock holder proceeds. Inside the critical section kriya first PREFLIGHTS: the branch head must still equal the approved revision's pinned commit, the default-branch head must still equal the gated_base the run's chain ran against, the approved revision's sutra-pinned base_commit must equal that same gated_base — validated once when the submission returned, so an ABA move of the default branch cannot slip a differently-based reviewed diff past the gates — (a mismatch on either means the combined result was never gated — the run integrates the current base, reruns the full chain, and submits a fresh review instead), and the deterministic merge result must be conflict-free. Only a clean preflight atomically CONSUMES the approval through sutra — conditional on state approved at the expected current revision, durably fencing any later verdict change — and the merge then commits under a CAS on the default-branch head — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges; a reversal landing before consumption fails the consumption and nothing merges. A CAS failure after consumption — an out-of-band push inside the window — never strands the run: the consumed approval stays spent in history, and the run takes the same integrate-rerun-fresh-review path, so consumption is never a dead end."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
-        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra NAMING the merged review as the close's authorizer (sutra stamps it close-used; the merge-time consumption never blocks it), and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop instead of completing, and once the gates pass again the new head is submitted as a FRESH review durably recorded on the run (sutra forbids resubmitting an approved review; the consumed one stays in history), so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
+        statement: "After a successful merge kriya quiesces the branch's only in-protocol writer — the run's dev session is terminated before the check — then re-reads the branch head before completing: a head still equal to the merged commit completes the ticket through sutra NAMING the merged review and its approved revision (from the merge attempt) as the close's authorizer (sutra stamps it close-used; a stale revision rejects; the merge-time consumption never blocks it), and the workspace becomes eligible for cleanup; a head that moved past the merged commit means unreviewed commits landed — the run returns to the pair loop instead of completing, and once the gates pass again the new head is submitted as a FRESH review durably recorded on the run (sutra forbids resubmitting an approved review; the consumed one stays in history), so no work is stranded on a terminal run. The completed head commit is durably recorded, and an out-of-band advance observed after completion is detected against that record and surfaces to the operator with sutra's reopen path."
         test: verification/REQ-submit-review.feature#merge completes the ticket through sutra
   - id: REQ-run-to-complete
     title: Loop until every ticket of the spec is complete
@@ -416,7 +416,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence, ENT-build-target]
+    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence, ENT-build-target, ENT-intake-attempt]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -559,6 +559,28 @@ data:
         - { name: content, type: json, required: true }
         - { name: resolved_commands, type: json, required: true }  # per-module effective commands (override-per-field over project stack), exactly as intake validated them
         - { name: created, type: datetime, required: true }
+    - id: ENT-intake-attempt
+      name: IntakeAttempt
+      description: >-
+        Write-ahead record of one intake invocation. The row — keyed by
+        the request's client-supplied idempotency token — is inserted
+        pending with the target and validated spec hash BEFORE a
+        generation is allocated; the allocated generation is recorded on
+        the row transactionally with the mapping upsert, and the row
+        stamps applied when intake completes. Recovery under the SAME
+        key resumes this attempt and reuses its recorded generation —
+        a crash between mapping update and plan creation can never
+        allocate a second generation or trigger a duplicate
+        supersession — while a deliberate same-hash re-intake arrives
+        under a NEW key and allocates the next generation. Plans copy
+        intake_generation from the attempt that authorized them.
+      fields:
+        - { name: intake_key, type: string, required: true, unique: true }  # the intake request's idempotency token
+        - { name: target_key, type: string, required: true }
+        - { name: spec_hash, type: string, required: true }
+        - { name: generation, type: integer }  # absent until allocated; recorded transactionally with the mapping upsert
+        - { name: state, type: enum, required: true, values: [pending, applied] }
+        - { name: created, type: datetime, required: true }
     - id: ENT-spec-mapping
       name: SpecMapping
       description: "The project-to-spec registry — operator-editable, the only trusted fallback for resolving an unplanned ticket's target spec. EVERY write — an intake pinning or refreshing, a plan seeding — is an UPSERT ordered by intake generation: the writer carries its target-scoped generation (intakes the one they allocate on the mapping row; plans the intake_generation copied onto them at decomposition — never anything read from the content-addressed, target-agnostic snapshot), a strictly newer generation wins the CAS, and an equal or older one is a no-op. Insert races resolve identically — a delayed older plan arriving after a newer intake inserted, or inserting first and being overwritten by it, converges on the newest generation either way, so no path can ever leave unplanned binds on a stale snapshot."
@@ -686,8 +708,10 @@ data:
         The submission records completion_claim_epoch — an immutable
         copy of the epoch at that moment — beside the review id and
         revision; the epic close names the attempt's completion_review
-        as its authorizer, so sutra spends exactly that approval and a
-        prior epoch's spent review can never close a reopened epic; and
+        at completion_revision as its authorizer, so sutra spends
+        exactly that approval at exactly that revision — a delayed
+        close carrying a stale revision rejects, and a prior epoch's
+        spent review can never close a reopened epic; and
         stamping completed is a CAS that requires
         completion_epoch to still equal completion_claim_epoch, so the
         comparison survives any number of later advances. The
@@ -812,10 +836,14 @@ data:
         row.
         The retirement pass is then durable, ordered, and state-aware,
         acting in sutra ONLY on unfinished, unclaimed tickets (completed
-        tickets and tickets already claimed by builds get no server-side
-        action — popped builds finish under their pinned snapshots) but
+        tickets and tickets claimed by LIVE builds get no server-side
+        action — popped builds finish under their pinned snapshots; a
+        ticket whose only matching run is terminally cancelled or
+        cancelling is RELEASED work, already deferred by the
+        cancellation protocol, and its row stamps disposition retired —
+        never carried forward as work that will finish) but
         stamping EVERY predecessor row before it completes: rows for
-        bound or completed builds are stamped consumed with disposition
+        bound or completed LIVE builds are stamped consumed with disposition
         bound or completed (the
         build's own plan and spec_hash refs are its authority; membership
         matching is never needed again), and the reconciliation pass
@@ -1075,7 +1103,7 @@ data:
         - { name: review_submission_key, type: string }  # deterministic per (run, head commit, gate attempt) — an integration that leaves the commit unchanged still yields a fresh key, so replay can never return a prior (possibly consumed) review when a fresh one is required — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: gate_attempt, type: integer, required: true }  # init 0; incremented atomically each time a new gate-chain attempt freezes its gated_base — chain satisfaction requires every result to carry THIS attempt, so an integration that leaves the branch head unchanged still invalidates prior passes
         - { name: gated_base, type: string }  # FROZEN per gate-chain attempt: captured once when the attempt starts, and every gate of the attempt validates against exactly this base — a gate observing a different default head ABORTS the attempt, forcing integration and a complete rerun, so no chain ever mixes bases; the merge preflight requires the default branch to still equal this frozen value, and the merge itself CASes against it
-        - { name: ticket_close_key, type: string }  # deterministic per (run, review) — persisted when the run enters completing, sent as the ticket-complete transition's Idempotency-Key; a close that landed before a crash replays to its original success, never a close-used conflict, and the run advances to closed
+        - { name: ticket_close_key, type: string }  # deterministic per (run, review, approved revision — read from the merge attempt) — persisted when the run enters completing; the close names the review AND that revision, sent as the ticket-complete transition's Idempotency-Key; a close that landed before a crash replays to its original success, never a close-used conflict, and the run advances to closed
         - { name: review_submission_commit, type: string }  # immutable — the pinned head commit the pending submission names, persisted atomically with the key and submitting state; replay reproduces the ORIGINAL request from the persisted fields, so a branch that moved after the crash can never smuggle an ungated commit under the old key
         - { name: review_submission_session, type: string }  # immutable — the session id the pending submission stamps, persisted with the key; recovery terminates crashed DevSessions and starts fresh ones, so replay MUST read the session from here, never from the current session — feedback routing stays intact
         - { name: finding_doc_key, type: string }  # research runs — deterministic per (run, finding); persisted with finding_pending_ref BEFORE the doc-version mutation, so keyed replay recovers the same version, never a duplicate
@@ -1085,6 +1113,7 @@ data:
         - { name: review_resubmission_key, type: string }  # deterministic per (run, review, expected revision); sent as the resubmit call's Idempotency-Key — recovery replays under it, sutra returning the original response if the resubmission landed and performing it otherwise, so the revision advances exactly once
         - { name: review_resubmission_revision, type: integer }  # the current revision the pending resubmission expects; the response's revision reconciles against expected+1
         - { name: review_resubmission_commit, type: string }  # immutable — the fully-gated head commit the pending resubmission names; replay reproduces the original request even if the branch moved after the crash
+        - { name: review_resubmission_session, type: string }  # immutable — the session id the pending resubmission records, persisted with the key; replay stamps this, never a fresh recovery session, so feedback routing survives recovery
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: error, type: string }  # durable cause whenever the run parks awaiting-operator — binding ambiguity, unresolvable or snapshot-less mapping, a created worktree gone missing, a dirty-cleanup refusal — exactly what the operator inbox displays

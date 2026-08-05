@@ -139,8 +139,8 @@ Feature: Review submission and merge
     Given the branch merged successfully
     When kriya terminates the run's dev session — the branch's only in-protocol writer — before the check
     And kriya re-reads the branch head and it still equals the merged commit
-    And kriya enters completing, persisting the per-review ticket-close key, and transitions the ticket to complete naming the merged review as the authorizer
-    Then the transition goes through sutra under that key, which stamps the review close-used — the merge-time consumption never blocks it
+    And kriya enters completing, persisting the ticket-close key scoped to the review and its approved revision, and transitions the ticket to complete naming both
+    Then the transition goes through sutra under that key, which stamps the review close-used — the merge-time consumption never blocks it, and a stale revision would reject
     And the run advances to closed
 
   Scenario: a crash after the ticket close recovers cleanly

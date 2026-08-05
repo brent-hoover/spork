@@ -56,6 +56,14 @@ Feature: Spec intake
     Then every executed command is the one resolved into "S1"
     And the working-tree edit is never consulted
 
+  Scenario: an intake crash never allocates a second generation
+    Given an intake attempt was recorded pending under its idempotency token and its generation landed on the mapping
+    And the crash hit before the plan was created
+    When the intake retries under the same token
+    Then it resumes the recorded attempt and reuses its generation — no duplicate supersession
+    Given a deliberate same-hash re-intake arrives under a new token
+    Then it allocates the next generation
+
   Scenario: a delayed older plan can never regress the mapping
     Given intake generation 2 pinned the project's mapping snapshot
     When a delayed plan seed carrying generation 1 arrives

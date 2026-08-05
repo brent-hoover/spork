@@ -1,0 +1,58 @@
+# Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
+# checked against real imports by the stack's arch command:
+#   go run github.com/arch-go/arch-go@v1.6.4
+# Package layout mirrors module names: one package directory per module.
+# A module may import only the packages listed here (its own package is
+# always allowed); modules with an empty rule import no domain packages.
+version: 1
+dependenciesRules:
+  - package: "**.issues.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.projects.**"
+        - "**.identity.**"
+        - "**.review.**"
+        - "**.events.**"
+  - package: "**.projects.**"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.docs.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.projects.**"
+        - "**.issues.**"
+        - "**.identity.**"
+        - "**.events.**"
+  - package: "**.threads.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.projects.**"
+        - "**.issues.**"
+        - "**.events.**"
+  - package: "**.identity.**"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.events.**"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.review.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.identity.**"
+        - "**.events.**"
+  - package: "**.api.**"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.issues.**"
+        - "**.projects.**"
+        - "**.docs.**"
+        - "**.threads.**"
+        - "**.identity.**"
+        - "**.events.**"
+        - "**.review.**"
+  - package: "**.cli.**"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.web.**"
+    shouldOnlyDependsOn:
+      internal: []
