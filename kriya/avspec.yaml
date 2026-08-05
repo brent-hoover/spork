@@ -215,7 +215,8 @@ data:
         - { name: ticket, type: string }  # tracker id, filled from the creation return
         - { name: state, type: enum, required: true, values: [pending, in-progress, complete, awaiting-operator] }  # per-row progress through the phased sequence; failures land here durably
         - { name: error, type: string }  # what failed, for the operator; set with awaiting-operator
-        - { name: retired, type: datetime }  # stamped by a successor plan's retirement pass once this ticket is drained, unassigned, and deferred
+        - { name: consumed, type: datetime }  # neutral consumption stamp written by a successor plan's retirement pass (or by the bind transaction for walked-past rows); a consumed row no longer participates in binding rule (1)
+        - { name: disposition, type: enum, values: [retired, carried-forward, bound, completed] }  # written with consumed: retired = drained, unassigned, and deferred; carried-forward = unclaimed and re-listed by the successor; bound = a build had already bound this ticket (the build's own refs are authoritative); completed = the ticket was already done
     - id: ENT-spec-snapshot
       name: SpecSnapshot
       description: Content-addressed snapshot of the COMPLETE spec artifact set — the manifest plus every referenced verification feature file and contract document (equivalently, a pinned content tree) — stored when first pinned; builds and recovery read gate commands, ACs, scenarios, and contracts from here, never from the mutable working tree, so post-decomposition edits to any referenced file cannot change what a pinned build executes. Alongside the content it stores each module's RESOLVED effective commands (override-per-field over project stack), exactly as intake validated them.
@@ -298,7 +299,8 @@ data:
         tickets and tickets already claimed by builds get no server-side
         action — popped builds finish under their pinned snapshots) but
         stamping EVERY predecessor row before it completes: rows for
-        bound or completed builds are stamped consumed-as-history (the
+        bound or completed builds are stamped consumed with disposition
+        bound or completed (the
         build's own plan and spec_hash refs are its authority; membership
         matching is never needed again), and the reconciliation pass
         below runs first so no claimed-but-unbound pop exists when those
@@ -325,16 +327,17 @@ data:
         pop fence thus lands before anything else without clobbering a
         live claim or stranding a merely-moved ticket; then its ISSUED
         mutations (and only those) are drained by persisted key, then it
-        is unassigned, with a retired stamp written per row so a crash
-        resumes exactly where it stopped. The retirement pass is executed
+        is unassigned, with a consumed stamp (disposition retired or
+        carried-forward) written per row so a crash resumes exactly
+        where it stopped. The retirement pass is executed
         by the successor's fenced pending-phase worker, which is
         EXPLICITLY authorized to replay issued predecessor steps even
         though neither plan is active — completing an already-sent
         request is finishing the past, not new work; creating
         never-issued work remains active-only. Id-less rows therefore
         split on their creation step's state: pending means nothing was
-        ever sent — the row is stamped retired with no server-side
-        action at all; issued means the creation is replayed to a
+        ever sent — the row is stamped consumed (disposition retired)
+        with no server-side action at all; issued means the creation is replayed to a
         terminal result, the id recorded, the ticket deferred, and then
         that row's issued labels and relations drained. The plan-wide
         phase barrier guarantees an issued relation never targets an
@@ -405,12 +408,15 @@ data:
         is matched by ONE state-aware precedence algorithm that walks
         the predecessor chain from the plan currently heading its
         target (resolved through PlanHead) and yields at most one
-        candidate: (1) the FURTHEST-BACK plan on the chain holding an
-        UNSTAMPED PlannedTicket row for the ticket binds — such a row
+        candidate: (1) among SUPERSEDED plans ONLY — the current head,
+        pending or active, is excluded from this rule and handled by
+        (2) and (3) — the FURTHEST-BACK plan on the chain holding an
+        UNSTAMPED PlannedTicket row for the ticket binds; such a row
         exists only while that plan's retirement is still resuming
         (retirement binds every queued BuildRun with an unfilled ticket
         via pop replay BEFORE stamping the remaining rows, so unstamped
-        means exactly claimed-in-flight), and the deepest such row is
+        means exactly claimed-in-flight), and the deepest such
+        superseded row is
         precisely the plan whose tickets were live when the pop claimed
         this one; the same transaction stamps every unstamped
         superseded row it walked past. (2) Otherwise, while the head is
