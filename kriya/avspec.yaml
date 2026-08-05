@@ -141,7 +141,7 @@ modules:
   - id: MOD-planner
     name: planner
     responsibility: PM agent — spec intake, tracer-bullet decomposition, risk-first ticketing.
-    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot]
+    owns: [ENT-plan, ENT-plan-head, ENT-planned-ticket, ENT-spec-mapping, ENT-spec-snapshot, ENT-pop-fence]
     boundaries: { may_import: [MOD-tracker-client] }
   - id: MOD-orchestrator
     name: orchestrator
@@ -236,6 +236,27 @@ data:
         - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
         - { name: updated, type: datetime, required: true }
+    - id: ENT-pop-fence
+      name: PopFence
+      description: >-
+        The singleton durable row that serializes BuildRun admission
+        with head transitions. Written ONLY by its owner, the planner:
+        replacement increments unactivated_heads and activation
+        decrements it in the same transaction that moves the PlanHead,
+        each write bumping version. The orchestrator never writes it;
+        the planner exposes an admission guard that the orchestrator
+        invokes inside its BuildRun-creating transaction, CAS-asserting
+        unactivated_heads == 0 against an unchanged version — so an
+        admission that observed a stale fence and any concurrent head
+        transition conflict on version and exactly one commits.
+        Ownership is respected: the guard only reads and asserts;
+        every write happens in planner head-transition transactions,
+        and the orchestrator reaches the guard through its existing
+        planner import.
+      fields:
+        - { name: singleton_key, type: string, required: true, unique: true }  # constant — exactly one row, created at store bootstrap
+        - { name: unactivated_heads, type: integer, required: true }
+        - { name: version, type: integer, required: true }
     - id: ENT-plan-head
       name: PlanHead
       description: The single durable head per decomposition target — successor creation and activation move it by CAS, making the one-active-plan invariant enforceable rather than aspirational.
@@ -384,16 +405,16 @@ data:
         unfilled queued BuildRuns the same way — the write-ahead row is
         durable before sutra is ever called, so every in-flight claim
         is visible to this fence. New pops cannot originate inside the window at all:
-        admission is serialized with head transitions through ONE
-        durable global fence row holding an unactivated-heads counter
-        and a version. Replacement increments the counter and
-        activation decrements it IN THE SAME transaction that moves the
-        head, and BuildRun write-ahead creation asserts counter == 0
-        against the fence row's version (CAS) in its own creating
-        transaction — so an admission that observed a stale fence
-        cannot commit: any interleaved replacement bumps the version
-        and forces the admission to retry after activation, and
-        vice versa. The fence is deliberately GLOBAL because sutra's
+        admission is serialized with head transitions through the
+        PopFence singleton (ENT-pop-fence, planner-owned). Replacement
+        increments its unactivated_heads counter and activation
+        decrements it IN THE SAME transaction that moves the head, and
+        BuildRun write-ahead creation invokes the planner's admission
+        guard, which asserts counter == 0 against the fence's version
+        (CAS) inside the creating transaction — so an admission that
+        observed a stale fence cannot commit: any interleaved
+        replacement bumps the version and forces the admission to
+        retry after activation, and vice versa. The fence is deliberately GLOBAL because sutra's
         pop is identity-wide and accepts no project filter, so the
         eventual ticket's project is unknowable before the pop
         returns; unactivated windows are rare and short (one
