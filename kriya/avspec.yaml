@@ -192,7 +192,7 @@ data:
       fields:
         - { name: plan, type: ref, ref: ENT-plan, required: true }
         - { name: ordinal, type: integer, required: true }
-        - { name: payload, type: json, required: true }  # the full ordered mutation sequence: create, labels, relations, assignment — executed under the plan-wide phase barrier; each step keyed by (idempotency_key, step ordinal)
+        - { name: payload, type: json, required: true }  # the full ordered mutation sequence: create, labels, relations, assignment — executed under the plan-wide phase barrier; each step keyed by (idempotency_key, step ordinal) and carrying a durable step state (pending/issued/complete) updated transactionally around its call
         - { name: idempotency_key, type: string, required: true, unique: true }  # derived from (decomposition_key, ordinal)
         - { name: ticket, type: string }  # tracker id, filled from the creation return
         - { name: state, type: enum, required: true, values: [pending, in-progress, complete, awaiting-operator] }  # per-row progress through the phased sequence; failures land here durably
@@ -252,8 +252,10 @@ data:
         atomically. A racing request fails the whole transaction and
         lands awaiting-operator without ever moving the head — unless the
         head's current already IS its own candidate plan (a concurrent
-        retry of the same decomposition_key), which is idempotent success:
-        it resumes rather than self-defeats. Only a DISTINCT competing
+        retry of the same decomposition_key) — and that resumption is
+        state-aware: pending resumes its phases, active returns as
+        already complete, and awaiting-operator is preserved and
+        reported, never silently resumed past an unrecoverable failure. Only a DISTINCT competing
         candidate loses. Bootstrap is the degenerate case of the same
         transaction: a target with no head yet creates the pending plan
         and INSERTS its PlanHead row atomically — target_key's uniqueness
@@ -274,8 +276,11 @@ data:
         builds finish under their pinned snapshots): first each such
         ticket is set to status deferred via the tracker's conditional
         transition (expected status open). A conflict is NOT assumed to
-        mean a pop won: the ticket is re-read and classified — actually
-        claimed by a build (in-progress with a matching BuildRun) means
+        mean a pop won: first every queued BuildRun with an unfilled
+        ticket replays its idempotent pop so just-claimed tickets gain
+        their matching rows, then the ticket is re-read and classified —
+        actually claimed by a build (in-progress with a matching
+        BuildRun) means
         it is left untouched; still unfinished and unclaimed but moved
         (blocked, deferred, or re-opened meanwhile) means the conditional
         defer retries from the freshly observed status; anything whose
@@ -289,13 +294,16 @@ data:
         start unassigned and unpoppable), its id recorded, and it is
         deferred; only when all ids exist are labels and relations
         drained, so a relation targeting a later-created ticket always
-        has its tracker id. Assignment handling during the drain is
-        issuance-aware: an assignment step durably recorded as ISSUED is
-        replayed to a terminal result after the defer and before the
-        unassign-and-stamp (its in-flight request must reach a known
-        state first — the deferred status keeps the ticket unpoppable
-        throughout); an assignment durable state proves was never issued
-        is skipped entirely.
+        has its tracker id. Every step in a
+        PlannedTicket's sequence carries a durable step state — pending
+        (never sent), issued (written in the same transaction that
+        precedes the call), complete (written on return) — and draining
+        replays ONLY steps at issued or later: a pending step was
+        provably never sent and is skipped, resolving any ambiguity
+        about what "pending mutations" means. Assignment follows the
+        same rule, replayed to a terminal result after the defer fence
+        and before the unassign-and-stamp when issued, skipped when
+        pending.
         Only when every eligible predecessor row carries its stamp does
         the stamped successor transition pending -> active, and only an
         active plan's worker may run creation, wiring, or assignment

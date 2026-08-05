@@ -19,13 +19,19 @@ Feature: Status workflow
     Then it is rejected with a conflict
     And SUT-1 still has status "in-progress"
 
-  Scenario: racing pop and defer resolve to one winner
+  Scenario: pop wins the race over a conditional defer
     Given issue SUT-1 is assigned to "claude" with status "open"
-    When a pop by "claude" and a transition to "deferred" with expected status "open" race
-    Then exactly one operation mutates SUT-1
-    And if the pop wins the deferral receives a conflict
-    And if the deferral wins the pop receives an explicit empty result
-    And SUT-1's status reflects only the winner's mutation
+    And a pop by "claude" claims SUT-1 first
+    When a transition to "deferred" with expected status "open" is attempted
+    Then it is rejected with a conflict
+    And SUT-1 still has status "in-progress"
+
+  Scenario: conditional defer wins the race over a pop
+    Given issue SUT-1 is assigned to "claude" with status "open"
+    And a transition to "deferred" with expected status "open" lands first
+    When "claude" pops its work stack
+    Then it receives an explicit empty result
+    And SUT-1 still has status "deferred"
 
   Scenario: unknown statuses are rejected
     When issue SUT-1 is set to status "someday"
