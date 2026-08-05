@@ -35,6 +35,7 @@ Feature: Risk-first planning
     Then the run returns from finding-submitted to its research loop
     When the agent revises the finding
     Then a new document version is created under a fresh revision-scoped doc key
+    And the new version is recorded as the pending resubmission document under its rotated doc key before the resubmit replays
     And the resubmission rides the write-ahead resubmitting machinery, incrementing the review's revision
     And the run never rests in finding-submitted with a rejected review
 

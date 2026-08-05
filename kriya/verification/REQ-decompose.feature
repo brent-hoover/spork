@@ -68,13 +68,15 @@ Feature: Spec decomposition
     And after retirement completes, a separate atomic activation transaction decrements the pop fence — never the head-moving transaction, which would admit pops before retirement ran
 
   Scenario: retirement distinguishes pending from issued work
-    Given predecessor rows with a pending ticket, an issued ticket, and a row whose ticket was never created
+    Given predecessor rows with a pending ticket, an issued creation step, a ticket claimed by a live build, and a row whose ticket was never created
     When retirement runs
     Then the pending ticket is deferred in sutra via a conditional transition expecting its freshly observed status, with a generation-scoped defer key
     And a pending ticket observed in status "blocked" defers the same way on the first attempt, never conflicting forever against an "open" expectation
     And a fresh read showing the ticket already deferred counts as fence established with no retry
     And the row whose ticket was never created retires with no sutra call
-    And the issued ticket is carried forward, not deferred
+    And an issued mutation step is replayed to its terminal result first — an unclaimed outcome is then deferred and stamped retired, never assumed carried forward
+    And the ticket claimed by a live build stamps disposition bound — its run finishes under its pinned snapshot
+    And carried-forward is stamped only for tickets the successor plan selected to carry
 
   Scenario: every parked state recovers forward
     Given a head plan parked awaiting-operator before activation
