@@ -361,6 +361,7 @@ paths:
                       format: uuid
                       description: The authorizing review — must belong to the issue, be approved at its current revision, and not be close-used.
                     actor: { type: string, format: uuid }
+                  additionalProperties: false
                 - title: NonCompleteTransition
                   type: object
                   required: [status, actor]
@@ -368,6 +369,7 @@ paths:
                     status: { type: string, enum: [open, in-progress, blocked, deferred] }
                     expected_status: { $ref: '#/components/schemas/IssueStatus' }
                     actor: { type: string, format: uuid }
+                  additionalProperties: false
       responses:
         '200':
           description: Issue transitioned.
@@ -2104,6 +2106,14 @@ components:
         pinned as of that revision. These top-level fields mirror the latest
         submission; `submissions` holds the immutable history.
       required: [id, issue, author, state, revision, submissions, created]
+      allOf:
+        - anyOf:
+            - required: [consumed, consumed_revision]
+            - not:
+                anyOf:
+                  - required: [consumed]
+                  - required: [consumed_revision]
+          description: consumed and consumed_revision appear together or not at all — a half-consumed review is malformed, in responses and importProject payloads alike.
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }

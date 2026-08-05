@@ -344,7 +344,7 @@ requirements:
         statement: After the PO pass, kriya records a commit-scoped submission key with a write-ahead submitting state, then creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id, and records the returned id as submitted; a crash on either side of sutra's acceptance recovers by replaying the persisted request under the same idempotency key — sutra returns the original review if the request landed and creates it otherwise, exactly one either way — and the run then waits on review events.
         test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
       - id: AC-submit-rework
-        statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, going through sutra's resubmit path and incrementing the revision.
+        statement: "A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, and it is write-ahead: the resubmitting state, its idempotency key, expected revision, and pinned commit persist transactionally before sutra's resubmit call, recovery replays under the same key on either side of acceptance, and the revision increments exactly once."
         test: verification/REQ-submit-review.feature#rework routes back by session
       - id: AC-submit-merge
         statement: "An approval event is a signal, not an authority: before merging, kriya atomically CONSUMES the approval through sutra — conditional on state approved at the expected current revision, durably fencing any later verdict change — and requires the branch head to still equal that revision's pinned commit — a moved head means unreviewed commits exist, so nothing merges and the mismatch surfaces; what merges is that immutable pinned commit, never the mutable branch reference, so a branch advancing mid-merge cannot change what lands; the merge happens exactly once, and a replayed or duplicate event never double-merges; a reversal landing before consumption fails the consumption and nothing merges."
@@ -574,9 +574,12 @@ data:
       description: >-
         The singleton durable row that serializes BuildRun admission
         with head transitions. Written ONLY by its owner, the planner:
-        replacement increments unactivated_heads and activation
-        decrements it in the same transaction that moves the PlanHead,
-        each write bumping version. The orchestrator never writes it;
+        replacement increments unactivated_heads in the same
+        transaction that moves the PlanHead; activation decrements it
+        in its own atomic transaction — after retirement completes,
+        when the pending head becomes active — never during head
+        movement, which would admit pops before retirement ran. Each
+        write bumps version. The orchestrator never writes it;
         the planner exposes an admission guard that the orchestrator
         invokes inside its BuildRun-creating transaction, and the guard
         WRITES: it CAS-increments version conditional on
@@ -1059,7 +1062,10 @@ data:
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: review_submission_key, type: string }  # deterministic per (run, head commit) — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: review_submission_commit, type: string }  # immutable — the pinned head commit the pending submission names, persisted atomically with the key and submitting state; replay reproduces the ORIGINAL request from this and the run's other immutable inputs (ticket, branch, session), so a branch that moved after the crash can never smuggle an ungated commit under the old key
-        - { name: review_submission_state, type: enum, required: true, values: [none, submitting, submitted] }  # write-ahead marker around review creation; resubmissions of an existing review ride the review's own revision-scoped keys
+        - { name: review_submission_state, type: enum, required: true, values: [none, submitting, submitted, resubmitting] }  # write-ahead marker around review creation AND resubmission; resubmitting is entered transactionally with its key, expected revision, and pinned commit before sutra's resubmit call
+        - { name: review_resubmission_key, type: string }  # deterministic per (run, review, expected revision); sent as the resubmit call's Idempotency-Key — recovery replays under it, sutra returning the original response if the resubmission landed and performing it otherwise, so the revision advances exactly once
+        - { name: review_resubmission_revision, type: integer }  # the current revision the pending resubmission expects; the response's revision reconciles against expected+1
+        - { name: review_resubmission_commit, type: string }  # immutable — the fully-gated head commit the pending resubmission names; replay reproduces the original request even if the branch moved after the crash
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }

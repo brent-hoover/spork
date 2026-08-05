@@ -52,7 +52,7 @@ Feature: Spec decomposition
     When decomposition runs with a new key producing candidate "P2"
     Then one atomic transaction points "P2" predecessor at "P1", marks "P1" superseded, increments the pop fence, and moves PlanHead with a generation bump
     And every "P1" row is stamped consumed with its state-appropriate disposition — "retired", "carried-forward", "bound", or "completed" — before "P2" activates
-    And activation decrements the pop fence in the head-moving transaction
+    And after retirement completes, a separate atomic activation transaction decrements the pop fence — never the head-moving transaction, which would admit pops before retirement ran
 
   Scenario: retirement distinguishes pending from issued work
     Given predecessor rows with a pending ticket, an issued ticket, and a row whose ticket was never created
