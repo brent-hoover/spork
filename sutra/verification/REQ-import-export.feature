@@ -1,7 +1,7 @@
 Feature: Import and export
 
   Scenario: export captures the whole project
-    Given project "SUT" has identities, issues, comments, docs with versions, threads, reviews, and events
+    Given project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval — and events
     When "SUT" is exported
     Then the export contains every one of those records
 
@@ -9,6 +9,7 @@ Feature: Import and export
     Given an export of project "SUT"
     When it is imported into an empty server
     Then the project's content matches the original, excluding the import audit event
+    And the consumed review's consumption stamp and revision survive the round-trip
     And every record keeps its original UUID
 
   Scenario: colliding import is rejected whole

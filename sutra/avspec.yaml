@@ -191,7 +191,7 @@ requirements:
     rationale: Work — code or docs, docs especially — is not done until a human has approved the deliverable.
     acceptance:
       - id: AC-close-approved
-        statement: Given an issue with a Review in state approved, transitioning the issue to complete succeeds.
+        statement: Given an issue with a Review in state approved, transitioning the issue to complete succeeds and atomically consumes that review's current-revision approval in the same transaction — after the close its verdict can no longer change, and a reversal committed first makes the close reject on the missing approval.
         test: verification/REQ-close-requires-review.feature#approved review allows close
       - id: AC-close-blocked-without
         statement: Given an issue with no Review in state approved, a transition to complete is rejected with an error naming the missing approval.

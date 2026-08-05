@@ -27,6 +27,18 @@ Feature: Run to complete
     And completion_report_doc and completion_revision update transactionally within the same attempt — key and epoch unchanged — and the pending fields reconcile
     And the epic closes on the new revision's approval, never stranding the target
 
+  Scenario: an initial submission crash before the report document recovers exactly once
+    Given review-submitting rotated the claim set with its doc key and pending report, and the crash hit before the document version existed
+    When recovery runs
+    Then the keyed doc mutation replays and creates the version, records it, and the keyed review creation follows
+    And exactly one document version and one review exist
+
+  Scenario: an initial submission crash between document and review recovers exactly once
+    Given the report document was created under its key and the crash hit before the review-create call
+    When recovery replays the keyed doc mutation
+    Then sutra returns the same version — no second version appends
+    And the keyed review creation then runs, exactly once
+
   Scenario: a rework crash before the document version recovers exactly once
     Given review-resubmitting was recorded with its keys and the crash hit before the new document version existed
     When recovery runs

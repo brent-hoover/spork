@@ -36,7 +36,9 @@ Feature: Review submission and merge
     Given a review enters approved and the event is published
     And the branch head still equals the approved current revision's pinned commit
     When kriya consumes the event
-    Then it re-reads the review before acting
+    Then it calls sutra's keyed approval consumption at the expected current revision before merging
+    And the consumption is durably recorded on the review
+    And a verdict reversal attempted after consumption is rejected by sutra
     And what merges is that immutable pinned commit, never the mutable branch reference
     And the merge happens exactly once
     When the same approval event is replayed

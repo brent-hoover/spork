@@ -7,6 +7,11 @@ Feature: Closing requires an approved review
     When SUT-1 is transitioned to "complete"
     Then the transition succeeds
     And the recorded approval names commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+    And the review's approval is consumed in the same transaction
+    And a later verdict on that review is rejected with no mutation
+    Given the approval was reversed to "changes-requested" before the close committed
+    When SUT-1 is transitioned to "complete"
+    Then the transition is rejected naming the missing approval
 
   Scenario: no approval no close
     Given issue SUT-1 has no review in state "approved"

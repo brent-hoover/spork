@@ -307,7 +307,10 @@ paths:
       summary: Transition an issue's status
       description: >-
         Transitions among open, in-progress, blocked, and deferred are free and
-        recorded as events; complete is gated on an approved Review and a
+        recorded as events; complete is gated on an approved Review — whose
+        current-revision approval is atomically CONSUMED by the successful
+        transition in the same transaction (AC-close-approved), so the
+        authorizing verdict can never be reversed after the close — and a
         DESCENDANT-AWARE check — rejected while any descendant at any depth,
         including beneath deferred children, is open, in-progress, or blocked
         (AC-status-set, AC-status-reopen, AC-parent-close-gate,
@@ -2100,6 +2103,17 @@ components:
             1 on creation, +1 per resubmission; server-managed. Feedback
             left on an earlier revision stays associated with that
             revision — it does not move forward.
+        consumed:
+          type: string
+          format: date-time
+          description: >-
+            Stamped by atomic approval consumption (AC-review-consume);
+            present only once consumed. After this stamp the review's
+            verdict can no longer change, and the stamp round-trips
+            through export/import.
+        consumed_revision:
+          type: integer
+          description: The revision whose approval was consumed; present exactly when `consumed` is.
         submissions:
           type: array
           description: >-

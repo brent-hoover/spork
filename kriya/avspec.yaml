@@ -614,11 +614,16 @@ data:
         completion lives here as a write-ahead lifecycle, not a bare
         timestamp: when every ticket of the activated head plan is
         complete, kriya first records review-submitting — rotating the
-        ENTIRE claim-field set (submission key, report doc, review id and
-        revision, claim epoch, and the epic's observed subtree_revision) transactionally as one unit for THIS
+        ENTIRE claim-field set (submission key, doc key, pending report
+        reference, review id and revision, claim epoch, and the epic's
+        observed subtree_revision) transactionally as one unit for THIS
         attempt; the submission key is derived deterministically from
         (target_key, completion_epoch), so it is epoch-scoped — BEFORE
-        the review-create call; the key rides the
+        any external call. The report document is then created under
+        completion_report_key exactly as in rework: the keyed doc
+        mutation replays to the same version on recovery, its returned
+        version is recorded into completion_report_doc, and only then
+        does the review-create call run; the key rides the
         request as its Idempotency-Key, so recovery from review-submitting
         REPLAYS the persisted request under the same key — sutra returns
         the original response for a landed request and creates otherwise,
