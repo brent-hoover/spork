@@ -154,6 +154,22 @@ requirements:
         test: verification/REQ-risk-first.feature#an invalidating finding escalates instead of proceeding
   - id: REQ-parallel-build
     title: Pop tickets off sutra work stacks and run parallel dev agents where relations allow
+    acceptance:
+      - id: AC-pop-parallel
+        statement: Agents pop only unblocked tickets; tickets with no relation between them run concurrently, each in its own BuildRun; sutra's conditional claim guarantees no ticket is in two runs.
+        test: verification/REQ-parallel-build.feature#independent tickets build in parallel
+      - id: AC-pop-write-ahead
+        statement: Every pop durably writes its BuildRun record before any side effect; a claimed-but-unbound pop discovered later is bound by replaying the binding rules — no orphaned claims.
+        test: verification/REQ-parallel-build.feature#pops are written ahead and never orphaned
+      - id: AC-pop-fence
+        statement: While any head plan is unactivated, admission is refused by the global pop fence via a CAS write, never a read-assert; once the head activates, a retried pop succeeds.
+        test: verification/REQ-parallel-build.feature#the pop fence holds until activation
+      - id: AC-pop-binding
+        statement: "A popped ticket binds by the state-aware precedence algorithm: the deepest unstamped superseded row mid-retirement; the nearest predecessor row while the head is unactivated (an unactivated head never binds); the activated head's own row; a ticket living only in consumed rows binds the nearest consumed row's plan — the decomposition that produced its ACs, never a head that omitted it. Binding stamps every walked-past row."
+        test: verification/REQ-parallel-build.feature#binding follows the state-aware precedence
+      - id: AC-pop-reconcile
+        statement: Recovery reconciles every queued BuildRun with an unfilled ticket by pop replay before any ownership classification, so retirement never misclassifies an in-flight claim.
+        test: verification/REQ-parallel-build.feature#queued pops reconcile before classification
   - id: REQ-workspaces
     title: Isolated workspace (worktree/branch) per ticket
   - id: REQ-pair-loop
