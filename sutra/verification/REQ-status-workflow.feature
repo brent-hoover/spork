@@ -22,8 +22,9 @@ Feature: Status workflow
   Scenario: racing pop and defer resolve to one winner
     Given issue SUT-1 is assigned to "claude" with status "open"
     When a pop by "claude" and a transition to "deferred" with expected status "open" race
-    Then exactly one operation succeeds
-    And the loser receives a conflict
+    Then exactly one operation mutates SUT-1
+    And if the pop wins the deferral receives a conflict
+    And if the deferral wins the pop receives an explicit empty result
     And SUT-1's status reflects only the winner's mutation
 
   Scenario: unknown statuses are rejected

@@ -346,6 +346,8 @@ paths:
             The transition is rejected: closing without an approved review, an
             open child holding the parent open, or the issue's project being
             archived.
+            An expected_status precondition that does not match the issue's
+            current status also conflicts (AC-status-conditional).
           content:
             application/json:
               schema:

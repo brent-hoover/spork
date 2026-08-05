@@ -250,9 +250,12 @@ data:
         superseded with superseded_by stamped, installs the new pending
         plan as head.current, and increments the head generation — all
         atomically. A racing request fails the whole transaction and
-        lands awaiting-operator without ever moving the head, so the head
-        can never point at a losing plan and there is no window between
-        head-move and supersession
+        lands awaiting-operator without ever moving the head — unless the
+        head's current already IS its own candidate plan (a concurrent
+        retry of the same decomposition_key), which is idempotent success:
+        it resumes rather than self-defeats. Only a DISTINCT competing
+        candidate loses. The head can never point at a losing plan and
+        there is no window between head-move and supersession
         — a concurrent would-be successor loses that CAS and durably moves
         to plan state awaiting-operator with the error recorded, so
         exactly one replacement can ever activate and the loser is
@@ -274,8 +277,13 @@ data:
         start unassigned and unpoppable), its id recorded, and it is
         deferred; only when all ids exist are labels and relations
         drained, so a relation targeting a later-created ticket always
-        has its tracker id. Assignment steps are never replayed during
-        retirement.
+        has its tracker id. Assignment handling during the drain is
+        issuance-aware: an assignment step durably recorded as ISSUED is
+        replayed to a terminal result after the defer and before the
+        unassign-and-stamp (its in-flight request must reach a known
+        state first — the deferred status keeps the ticket unpoppable
+        throughout); an assignment durable state proves was never issued
+        is skipped entirely.
         Only when every eligible predecessor row carries its stamp does
         the stamped successor transition pending -> active, and only an
         active plan's worker may run creation, wiring, or assignment
