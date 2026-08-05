@@ -22,7 +22,7 @@ project:
       arch: uv run lint-imports  # enforces the declared may_import boundaries in code
       coverage: uv run pytest --cov=kriya --cov-branch --cov-fail-under=100  # 100% branch = no uncovered conditional arm (REQ-gate-branch-coverage)
       mutation: uv run pytest-gremlins  # R2 open — the spike validates incremental per-ticket speed; invocation may be amended
-  status: draft
+  status: ready
 
 constitution:
   - id: CON-test-first
