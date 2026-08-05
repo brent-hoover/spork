@@ -480,7 +480,7 @@ modules:
           name: status
           invocation: kriya status [--json]
           purpose: Inspect builds, runs, and gate positions; --json for agents.
-          shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.started]
+          shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.started, ENT-build-target.completed]
           satisfies: [AC-complete-status]
         - id: VIEW-cli-learn
           name: learn add
@@ -506,7 +506,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-stall.cause, ENT-stall.state]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
@@ -514,7 +514,7 @@ modules:
           name: Run detail
           invocation: kriya tui (run pane)
           purpose: One run's durable history — commits, review rounds, gate results, verdicts, escalations — read from the records recovery uses.
-          shows: [ENT-build-run.state, ENT-gate-result.gate, ENT-gate-result.passed, ENT-review-round.verdict, ENT-escalation.question]
+          shows: [ENT-build-run.state, ENT-gate-result.gate, ENT-gate-result.passed, ENT-gate-result.commit, ENT-review-round.verdict, ENT-review-round.commit, ENT-escalation.question]
           satisfies: [AC-tui-truth]
       actions:
         - id: ACT-plan-restore
@@ -1051,6 +1051,7 @@ data:
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged; research runs traverse research-loop -> finding-submitted -> closed (the document path CON-gate-chain carves out — no code gates apply)
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: review_submission_key, type: string }  # deterministic per (run, head commit) — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
+        - { name: review_submission_commit, type: string }  # immutable — the pinned head commit the pending submission names, persisted atomically with the key and submitting state; replay reproduces the ORIGINAL request from this and the run's other immutable inputs (ticket, branch, session), so a branch that moved after the crash can never smuggle an ungated commit under the old key
         - { name: review_submission_state, type: enum, required: true, values: [none, submitting, submitted] }  # write-ahead marker around review creation; resubmissions of an existing review ride the review's own revision-scoped keys
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }

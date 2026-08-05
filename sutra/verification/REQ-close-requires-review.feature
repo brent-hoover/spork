@@ -44,5 +44,5 @@ Feature: Closing requires an approved review
   Scenario: doc deliverables gate like code
     Given issue SUT-2 has a review whose deliverable is a document version
     And that review is in state "approved"
-    When SUT-2 is transitioned to "complete"
+    When SUT-2 is transitioned to "complete" naming that review
     Then the transition succeeds

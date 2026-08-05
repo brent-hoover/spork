@@ -340,19 +340,28 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [status, actor]
-              properties:
-                status: { $ref: '#/components/schemas/IssueStatus' }
-                expected_status: { $ref: '#/components/schemas/IssueStatus' }
-                expected_subtree_revision:
-                  type: integer
-                  description: Valid only when status is complete; rejected with a conflict if the issue's subtree_revision differs — a history-aware fence.
-                review:
-                  type: string
-                  format: uuid
-                  description: Required exactly when status is complete — the authorizing review; must belong to the issue, be approved at its current revision, and not be close-used.
-                actor: { type: string, format: uuid }
+              oneOf:
+                - title: CompleteTransition
+                  type: object
+                  required: [status, review, actor]
+                  properties:
+                    status: { type: string, enum: [complete] }
+                    expected_status: { $ref: '#/components/schemas/IssueStatus' }
+                    expected_subtree_revision:
+                      type: integer
+                      description: Rejected with a conflict if the issue's subtree_revision differs — a history-aware fence.
+                    review:
+                      type: string
+                      format: uuid
+                      description: The authorizing review — must belong to the issue, be approved at its current revision, and not be close-used.
+                    actor: { type: string, format: uuid }
+                - title: NonCompleteTransition
+                  type: object
+                  required: [status, actor]
+                  properties:
+                    status: { type: string, enum: [open, in-progress, blocked, deferred] }
+                    expected_status: { $ref: '#/components/schemas/IssueStatus' }
+                    actor: { type: string, format: uuid }
       responses:
         '200':
           description: Issue transitioned.
