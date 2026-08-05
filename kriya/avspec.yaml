@@ -341,7 +341,7 @@ requirements:
     title: Submit a sutra Review, merge on approval, update ticket status
     acceptance:
       - id: AC-submit-create
-        statement: After the PO pass, kriya records a commit-scoped submission key with a write-ahead submitting state, then creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id, and records the returned id as submitted; a crash on either side of sutra's acceptance recovers by the key — adopt if landed, replay if absent — and the run then waits on review events.
+        statement: After the PO pass, kriya records a commit-scoped submission key with a write-ahead submitting state, then creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id, and records the returned id as submitted; a crash on either side of sutra's acceptance recovers by replaying the persisted request under the same idempotency key — sutra returns the original review if the request landed and creates it otherwise, exactly one either way — and the run then waits on review events.
         test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
       - id: AC-submit-rework
         statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, going through sutra's resubmit path and incrementing the revision.
@@ -617,10 +617,11 @@ data:
         revision, claim epoch, and the epic's observed subtree_revision) transactionally as one unit for THIS
         attempt; the submission key is derived deterministically from
         (target_key, completion_epoch), so it is epoch-scoped — BEFORE
-        the review-create call; sutra reviews are session-searchable, so
-        recovery from review-submitting queries by that key and ADOPTS an
-        already-created review instead of submitting twice, and only a
-        proven-absent review is resubmitted. Because the key embeds the
+        the review-create call; the key rides the
+        request as its Idempotency-Key, so recovery from review-submitting
+        REPLAYS the persisted request under the same key — sutra returns
+        the original response for a landed request and creates otherwise,
+        never a second review. Because the key embeds the
         epoch, recovery can never adopt a PRIOR epoch's approved review:
         after a reopen or supersession advances the epoch, recompletion
         is a NEW attempt with a new key, a new review, and fresh human
@@ -638,10 +639,10 @@ data:
         (completion_report_key) persisted in the same transaction, so a
         crash after document creation but before resubmission recovers
         the exact version rather than appending another; recovery from
-        review-resubmitting first resolves the keyed doc mutation, then
-        reads the review's current revision and reconciles (a landed
-        resubmission is adopted, an absent one replayed under the same
-        key), and only then are
+        review-resubmitting first replays the keyed doc mutation, then
+        replays the keyed resubmission — sutra returns each original
+        response if the call landed and performs it otherwise — and only
+        then are
         completion_report_doc and completion_revision updated
         transactionally within the SAME attempt (key and epoch
         unchanged); the epic closes on the new revision's approval, so
@@ -1040,7 +1041,7 @@ data:
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged; research runs traverse research-loop -> finding-submitted -> closed (the document path CON-gate-chain carves out — no code gates apply)
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
-        - { name: review_submission_key, type: string }  # deterministic per (run, head commit) — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra; sutra reviews are session-searchable, so recovery reconciles by key: a landed review is adopted into `review`, an absent one is replayed under the same key — never orphaned, never duplicated
+        - { name: review_submission_key, type: string }  # deterministic per (run, head commit) — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: review_submission_state, type: enum, required: true, values: [none, submitting, submitted] }  # write-ahead marker around review creation; resubmissions of an existing review ride the review's own revision-scoped keys
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }

@@ -538,7 +538,10 @@ paths:
       summary: Remove a relation
       description: >-
         Removal clears both sides (AC-block-create) and records an
-        `issue.relation-removed` event.
+        `issue.relation-removed` event. Removing a parent_of relation
+        atomically increments subtree_revision on the former parent and each
+        of its ancestors (AC-subtree-revision) — a detached-then-reopened
+        child cannot leave a stale revision satisfying a close fence.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'

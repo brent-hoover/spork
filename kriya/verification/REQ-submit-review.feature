@@ -6,9 +6,22 @@ Feature: Review submission and merge
   Scenario: a PO pass becomes a sutra Review
     Given a run that passed PO validation at head commit "C2"
     When kriya submits the work
-    Then a sutra Review exists naming the ticket's branch pinned at "C2"
+    Then the commit-scoped submission key and state "submitting" are persisted before sutra is called
+    And a sutra Review exists naming the ticket's branch pinned at "C2"
     And it is stamped with the run's session id
+    And the state records "submitted" with the returned review id
     And the run waits on review events
+
+  Scenario: a crash before sutra accepts the submission recovers to one review
+    Given the submission key and state "submitting" were persisted and the crash hit before sutra accepted the request
+    When recovery replays the persisted request under the same idempotency key
+    Then sutra creates the review and exactly one review exists for the run
+
+  Scenario: a crash after sutra accepts the submission recovers to one review
+    Given sutra accepted the review but the crash hit before the id was recorded
+    When recovery replays the persisted request under the same idempotency key
+    Then sutra returns the original response and the recorded id matches the review sutra already holds
+    And exactly one review exists for the run
 
   Scenario: rework routes back by session
     Given a review receives a changes-requested verdict

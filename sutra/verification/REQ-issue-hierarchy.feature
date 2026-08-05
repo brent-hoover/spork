@@ -35,6 +35,12 @@ Feature: Issue hierarchy
     When a child is attached beneath a parent
     Then subtree_revision still increments on the parent and every ancestor
 
+  Scenario: detaching a child cannot leave a stale close fence
+    Given a caller observed parent SUT-50's subtree_revision while its child SUT-51 was complete
+    When SUT-51 is detached from SUT-50 and then reopened
+    Then the removal incremented SUT-50's subtree_revision at detach time
+    And completing SUT-50 with the previously observed expected_subtree_revision is rejected with a conflict
+
   Scenario: reopening a child reopens a complete parent
     Given SUT-1 is "complete" and its child SUT-2 is "complete"
     When SUT-2 is reopened to "open"

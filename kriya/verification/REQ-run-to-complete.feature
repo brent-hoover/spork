@@ -27,13 +27,23 @@ Feature: Run to complete
     And completion_report_doc and completion_revision update transactionally within the same attempt — key and epoch unchanged — and the pending fields reconcile
     And the epic closes on the new revision's approval, never stranding the target
 
-  Scenario: rework crash windows recover exactly once
-    Given review-resubmitting was recorded and the crash hit before the new document version existed
+  Scenario: a rework crash before the document version recovers exactly once
+    Given review-resubmitting was recorded with its keys and the crash hit before the new document version existed
     When recovery runs
-    Then the pending report reference replays document creation and the resubmission under the persisted key
-    Given the crash hit after sutra accepted the resubmission but before the fields updated
-    When recovery reads the review's current revision
-    Then the landed resubmission is adopted and the fields reconcile — nothing double-submits, nothing is lost
+    Then the keyed doc mutation replays and creates the version, and the keyed resubmission follows
+    And exactly one document version and one resubmission exist
+
+  Scenario: a rework crash between document and resubmission recovers exactly once
+    Given the document version was created under its key and the crash hit before the review resubmission
+    When recovery replays the keyed doc mutation
+    Then sutra returns the same version — no second version appends
+    And the keyed resubmission then runs, exactly once
+
+  Scenario: a rework crash after resubmission recovers exactly once
+    Given sutra accepted the resubmission and the crash hit before completion_report_doc and completion_revision updated
+    When recovery replays the keyed resubmission
+    Then sutra returns the original response and the fields reconcile from it
+    And nothing double-submits and nothing is lost
 
   Scenario: completion is the head plan done and the epic closable
     Given the activated head plan bears its completed stamp
