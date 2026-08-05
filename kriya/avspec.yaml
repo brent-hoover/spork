@@ -172,6 +172,19 @@ requirements:
         test: verification/REQ-parallel-build.feature#queued pops reconcile before classification
   - id: REQ-workspaces
     title: Isolated workspace (worktree/branch) per ticket
+    acceptance:
+      - id: AC-workspace-isolated
+        statement: Starting a BuildRun creates a dedicated worktree on a ticket-named branch cut from the project's default branch; concurrent runs never share a working tree, and one run's uncommitted state is invisible to every other.
+        test: verification/REQ-workspaces.feature#each run gets an isolated worktree
+      - id: AC-workspace-recorded
+        statement: The workspace's path, branch, and base commit are recorded durably on the BuildRun, so recovery and the TUI can always locate a run's work.
+        test: verification/REQ-workspaces.feature#the workspace is durably recorded
+      - id: AC-workspace-resume
+        statement: A resumed BuildRun reattaches to its existing workspace and branch when they exist and match the record; it never silently starts a second workspace for the same run.
+        test: verification/REQ-workspaces.feature#a resumed run reattaches to its workspace
+      - id: AC-workspace-cleanup
+        statement: Workspaces are removed only after their ticket completes or is terminally retired, and removal never deletes unmerged commits — the branch survives until merge or explicit operator disposal.
+        test: verification/REQ-workspaces.feature#cleanup never loses unmerged work
   - id: REQ-pair-loop
     title: Pair-programming loop — small commits, roborev reviews, fix, recommit until pass
     rationale: Kriya drives the actual roborev tool (enqueue on commit, poll verdicts, respond, close) per CON-buy-over-build.
