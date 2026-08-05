@@ -351,9 +351,29 @@ requirements:
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
   - id: REQ-tier-routing
     title: Model-tier routing is configuration, not hardcoded
+    acceptance:
+      - id: AC-tier-config
+        statement: Every agent role — PM, SA, PO, dev — maps to a model tier in configuration; no model identifier is hardcoded in kriya's source.
+        test: verification/REQ-tier-routing.feature#roles map to tiers in configuration
+      - id: AC-tier-explicit
+        statement: A role with no configured tier fails loudly at startup; there is no silent default.
+        test: verification/REQ-tier-routing.feature#a missing tier fails loudly
+      - id: AC-tier-observed
+        statement: Changing the config changes the model a role uses on its next run with no code change, and every run records which model each agent actually ran on.
+        test: verification/REQ-tier-routing.feature#config changes take effect and runs record models
   - id: REQ-thread-capture
     title: Dev-agent transcripts auto-import into sutra's thread catalog, session-stamped
     rationale: Auditability plus fuel for the learning loop.
+    acceptance:
+      - id: AC-thread-import
+        statement: A run's dev-agent transcript auto-imports into sutra's thread catalog, stamped with the run's session id and tied to the ticket.
+        test: verification/REQ-thread-capture.feature#transcripts land in the thread catalog
+      - id: AC-thread-no-loss
+        statement: Import happens for every run outcome — completed, retired, or crashed; recovery imports whatever transcript exists, so no conversation is lost.
+        test: verification/REQ-thread-capture.feature#no outcome loses its transcript
+      - id: AC-thread-searchable
+        statement: The imported thread is reachable through sutra's session-id search alongside the reviews the same session produced.
+        test: verification/REQ-thread-capture.feature#threads surface in session search
   - id: REQ-tui
     title: TUI overview — what is running now, what is queued, and where agents surface things to the operator
     rationale: The operator's most critical surface; escalations land here, not in a log file.
