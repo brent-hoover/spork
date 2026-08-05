@@ -244,6 +244,22 @@ requirements:
   - id: REQ-learning-loop
     title: Mistakes become persistent learnings fed into future builds
     rationale: Project-specific and cross-project; captured as they happen, not post-mortem.
+    acceptance:
+      - id: AC-learn-capture
+        statement: A learning is captured at the moment of correction — a review finding fixed, a gate failure diagnosed, an SA direction, a PO rejection — stating what went wrong and how to avoid it, tagged with module and failure pattern; never reconstructed post-mortem.
+        test: verification/REQ-learning-loop.feature#learnings are captured at the moment of correction
+      - id: AC-learn-manual
+        statement: The operator can add learnings by hand at any time, with the same scoping and tagging as captured ones; manual learnings are first-class and indistinguishable to the feed-forward path.
+        test: verification/REQ-learning-loop.feature#the operator adds learnings by hand
+      - id: AC-learn-scoped
+        statement: Every learning carries its scope, project-specific or cross-project, and persists durably beyond the run and the build that produced it.
+        test: verification/REQ-learning-loop.feature#learnings outlive their build
+      - id: AC-learn-fed-forward
+        statement: A learning captured in one run is injected into the next run whose ticket matches its module or pattern — including runs in a later build for cross-project learnings.
+        test: verification/REQ-learning-loop.feature#learnings feed the next matching run
+      - id: AC-learn-provenance
+        statement: "Every learning records where it came from: the run, commit, and finding or event that produced it — or the operator, for manual entries."
+        test: verification/REQ-learning-loop.feature#every learning knows its origin
   - id: REQ-gate-structure
     title: Structural linting with hard limits on the target app, via each module's effective lint command
     rationale: Google-style-guide strictness — max module size and kin; agents love god modules and do not mind strict rules.
