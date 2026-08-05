@@ -21,6 +21,7 @@ Feature: Review submission and merge
     Given sutra accepted the review but the crash hit before the id was recorded
     When recovery replays the persisted request under the same idempotency key
     Then sutra returns the original response and the recorded id matches the review sutra already holds
+    And the replayed request stamps the session persisted with the key, not the fresh recovery session
     And exactly one review exists for the run
 
   Scenario: rework routes back by session
@@ -70,6 +71,19 @@ Feature: Review submission and merge
     When the first merge completes and moves the default head
     Then the second attempt's preflight fails against the moved base
     And it takes the integrate-rerun-fresh-review path with its approval unconsumed
+
+  Scenario: an ABA base move cannot smuggle a differently-based review
+    Given the run's chain was gated at default head "D1"
+    And the default branch moved to "D2" when the review was submitted, pinning base commit "D2", then moved back to "D1"
+    When the approval event is processed
+    Then the preflight fails — the approved revision's pinned base "D2" does not equal the gated base "D1"
+    And the run integrates, reruns the full chain, and submits a fresh review
+
+  Scenario: an attempt rerun never reuses stale passes
+    Given integration of a new base left the branch head unchanged
+    When the new gate-chain attempt starts and increments the run's attempt counter
+    Then every prior round, gate result, and PO verdict carries the old attempt and satisfies nothing
+    And the full chain reruns and records results under the new attempt
 
   Scenario: a base moving mid-chain aborts the attempt
     Given a gate-chain attempt froze its gated base at "D1"
