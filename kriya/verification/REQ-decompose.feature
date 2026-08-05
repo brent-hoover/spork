@@ -47,6 +47,13 @@ Feature: Spec decomposition
     And a superseded plan returns the historical result with no mutation
     And an awaiting-operator plan is preserved untouched for the operator
 
+  Scenario: reverting to a previously seen spec is a fresh plan, not a replay
+    Given the target moved from snapshot "H1" to "H2" and the operator re-intakes "H1" under a new intake generation
+    When decomposition runs for the reverted spec
+    Then the decomposition key differs from the old "H1" plan's key — the generation is part of the identity
+    And a fresh plan is created that supersedes the "H2" head through the ordinary replacement path
+    And a same-generation retry of that request still resolves its own key idempotently
+
   Scenario: supersession retires the predecessor before activating
     Given an activated head plan "P1" and an amended snapshot
     When decomposition runs with a new key producing candidate "P2"

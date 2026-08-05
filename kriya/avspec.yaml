@@ -748,8 +748,10 @@ data:
         here, so every ticket of a plan builds against the exact spec
         version that produced its acceptance criteria. Decomposition is
         write-ahead and idempotent: the plan row (decomposition_key
-        derived from project_key, normalized target_spec, and spec_hash;
-        unique) and its planned
+        derived from project_key, normalized target_spec, spec_hash, and
+        the intake_generation the snapshot was pinned under — so
+        re-intaking a previously seen hash yields a fresh key, never a
+        replay of a superseded plan; unique) and its planned
         ticket definitions are persisted BEFORE any tracker call; each
         ticket-creation request carries a deterministic idempotency key
         derived from (decomposition_key, ticket ordinal), so a crash or
@@ -953,7 +955,7 @@ data:
         runnable ticket whose blocking relation lives in another ticket's
         sequence.
       fields:
-        - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
+        - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash, intake_generation) — the write-ahead idempotency handle for the whole decomposition; the generation makes a REVERT distinct: re-intaking a previously seen hash allocates a new generation, so the request creates a fresh plan that supersedes the current head instead of replaying the old superseded plan's historical result, while same-intake retries keep the same key and stay idempotent
         - { name: target_spec, type: string, required: true }
         - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot this decomposition ran against; plan-matched builds inherit it
         - { name: intake_generation, type: integer, required: true }  # target-scoped, copied at decomposition from the intake that authorized this plan; every mapping upsert this plan issues is ordered by exactly this value — re-intaking the same content hash allocates a fresh generation, so an old plan reusing a shared snapshot still carries its own older token and loses
