@@ -286,9 +286,23 @@ requirements:
   - id: REQ-gate-branch-coverage
     title: Branch coverage — every conditional arm, not an overall percentage
     rationale: Runs each module's effective coverage command; targets where any module's effective stack omits it are rejected at spec intake.
+    acceptance:
+      - id: AC-coverage-every-arm
+        statement: The gate runs each touched module's snapshot-resolved coverage command at the head commit and fails on any uncovered conditional arm; there is no threshold to slip under.
+        test: verification/REQ-gate-branch-coverage.feature#any uncovered arm fails the gate
+      - id: AC-coverage-recorded
+        statement: Results upsert as GateResults pinned to the commit, uncovered arms named in detail for the dev agent; stale passes never satisfy the chain.
+        test: verification/REQ-gate-branch-coverage.feature#coverage results pin to the commit
   - id: REQ-gate-mutation
     title: Mutation testing proves the tests test
     rationale: Runs each module's effective mutation command; targets where any module's effective stack omits it are rejected at spec intake.
+    acceptance:
+      - id: AC-mutation-after-review
+        statement: Mutation runs only after the review gate passed at the same head commit, executing each touched module's snapshot-resolved mutation command.
+        test: verification/REQ-gate-mutation.feature#mutation waits for the review pass
+      - id: AC-mutation-kill-all
+        statement: Any surviving mutant fails the gate; survivors are returned to the dev agent as named test gaps to kill, and results upsert as GateResults pinned to the commit.
+        test: verification/REQ-gate-mutation.feature#surviving mutants are named test gaps
   - id: REQ-po-validation
     title: Product owner agent validates ACs are genuinely satisfied and tests are not gaming
     rationale: The PO holds the big picture the coding agent cannot have.
