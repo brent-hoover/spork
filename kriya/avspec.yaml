@@ -101,10 +101,11 @@ requirements:
     title: Mistakes become persistent learnings fed into future builds
     rationale: Project-specific and cross-project; captured as they happen, not post-mortem.
   - id: REQ-gate-structure
-    title: Structural linting with hard limits on the target app, via the target's stack.commands.lint
+    title: Structural linting with hard limits on the target app, via each module's effective lint command
     rationale: Google-style-guide strictness — max module size and kin; agents love god modules and do not mind strict rules.
   - id: REQ-gate-typing
     title: Typing everywhere on the target app
+    rationale: Runs each module's effective typecheck command.
   - id: REQ-gate-branch-coverage
     title: Branch coverage — every conditional arm, not an overall percentage
     rationale: Runs each module's effective coverage command; targets where any module's effective stack omits it are rejected at spec intake.
@@ -215,6 +216,7 @@ data:
       fields:
         - { name: hash, type: string, required: true, unique: true }
         - { name: content, type: json, required: true }
+        - { name: resolved_commands, type: json, required: true }  # per-module effective commands (override-per-field over project stack), exactly as intake validated them
         - { name: created, type: datetime, required: true }
     - id: ENT-spec-mapping
       name: SpecMapping
@@ -534,7 +536,7 @@ data:
         - { name: result_key, type: string, required: true, unique: true }  # derived hash of (build, module, gate, commit) — upserted, so reruns never duplicate and recovery can prove per-module completeness
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: module, type: string, required: true }  # the target spec's module id whose effective command ran
-        - { name: gate, type: enum, required: true, values: [structure, typing, branch-coverage, mutation] }
+        - { name: gate, type: enum, required: true, values: [test, structure, typing, branch-coverage, mutation] }
         - { name: commit, type: string, required: true }  # full object id the gate ran against — stale results never satisfy the chain
         - { name: passed, type: boolean, required: true }
         - { name: detail, type: json }
