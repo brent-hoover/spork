@@ -190,7 +190,7 @@ data:
       fields:
         - { name: plan, type: ref, ref: ENT-plan, required: true }
         - { name: ordinal, type: integer, required: true }
-        - { name: payload, type: json, required: true }
+        - { name: payload, type: json, required: true }  # the full ordered mutation sequence: create, labels, relations, assignment last — each step keyed by (idempotency_key, step ordinal)
         - { name: idempotency_key, type: string, required: true, unique: true }  # derived from (decomposition_key, ordinal)
         - { name: ticket, type: string }  # tracker id, filled from the creation return
     - id: ENT-spec-snapshot
@@ -223,10 +223,16 @@ data:
         derived from (decomposition_key, ticket ordinal), so a crash or
         concurrent retry replays into the same sutra tickets instead of
         duplicating them, per CON-idempotent-mutations. The write-ahead
-        payload lives in PlannedTicket rows — ordinal, full creation
-        payload, and derived key persisted before any call, with the
-        returned tracker id filled per row — so recovery replays the
-        exact requests from durable state.
+        payload lives in PlannedTicket rows — ordinal, the ticket's FULL
+        ordered mutation sequence (creation, risk/spike labels, blocking
+        relations, and assignment LAST), and derived per-step idempotency
+        keys, all persisted before any call, with returned ids filled per
+        step — so recovery replays the exact sequence from durable state
+        and resumes mid-sequence. Because pop eligibility requires
+        assignment, deferring assignment to the final step keeps every
+        ticket unpoppable until its dependency graph is completely wired:
+        a crash mid-decomposition can never expose a runnable ticket
+        without its relations.
       fields:
         - { name: decomposition_key, type: string, required: true, unique: true }  # deterministic hash of (project_key, normalized target_spec, spec_hash) — the write-ahead idempotency handle for the whole decomposition
         - { name: target_spec, type: string, required: true }
