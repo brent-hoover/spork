@@ -221,13 +221,13 @@ requirements:
     rationale: Highest-tier agent; writes no code; the escape valve when dev and review cannot converge.
     acceptance:
       - id: AC-sa-impasse
-        statement: "The impasse trigger is deterministic: a configured per-run round limit counts consecutive finding-bearing rounds since the last clean pass, and reaching the limit — or the dev agent declaring an impasse — pauses the run and hands the SA agent the findings history, the ticket's ACs, and the bound snapshot. A clean pass resets the counter; the limit lives in configuration beside tier routing."
+        statement: "The impasse trigger is deterministic: a per-run round limit — snapshotted onto the BuildRun at creation, so config changes and restarts never move a live run's threshold — counts consecutive finding-bearing rounds since the last clean pass, and reaching the limit — or the dev agent declaring an impasse — pauses the run and hands the SA agent the findings history, the ticket's ACs, and the bound snapshot. A clean pass resets the counter; the limit lives in configuration beside tier routing."
         test: verification/REQ-sa-agent.feature#an impasse pauses the run and reaches the architect
       - id: AC-sa-no-code
         statement: The SA resolves by direction; its decision is recorded durably on the run; it never commits to the workspace.
         test: verification/REQ-sa-agent.feature#the architect directs but never codes
       - id: AC-sa-scope
-        statement: "A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change. An approved spec change first cancels the paused run write-ahead: cancelling is recorded durably, the sutra ticket is conditionally released (expected-status transition out of in-progress), and only then is the run stamped cancelled — terminal, never resuming, merging, or resubmitting; retirement and supersession classify a cancelled run's ticket as released work, never as issued work that will finish. Then the change takes the amended-spec path of re-intake and supersession, never a side channel."
+        statement: "A resolution that would change scope — a ticket's ACs or the spec itself — is never decided below the operator; the SA escalates naming the change. An approved spec change first cancels the paused run write-ahead: cancelling is recorded durably, the sutra ticket is conditionally transitioned out of in-progress to DEFERRED — never to open, so no agent can pop the obsolete ticket in the window before the supersession fence exists — and only then is the run stamped cancelled — terminal, never resuming, merging, or resubmitting; retirement and supersession classify a cancelled run's ticket as released work, never as issued work that will finish. Then the change takes the amended-spec path of re-intake and supersession, never a side channel."
         test: verification/REQ-sa-agent.feature#scope changes escalate to the operator
       - id: AC-sa-resume
         statement: After direction the run resumes the pair loop with the SA's guidance in context; the impasse, direction, and outcome survive as part of the run's history.
@@ -638,7 +638,15 @@ data:
         child reopened, and kriya stamps ONLY after a successful close:
         a delayed approval earned before a reopen or supersession can
         never stamp an unfinished target complete — it surfaces
-        instead. A
+        instead. For a reopen landing AFTER a successful close, sutra's
+        reopen cascade is the invariant: reopening a child of a complete
+        parent reopens the parent in the same sutra transaction, so the
+        epic is never closed over an open child; kriya's stamp is a
+        MIRROR of that authoritative state — a stamp landed in the
+        window between close success and the reopen event is cleared
+        (epoch advanced) when the event arrives, and popping resumes
+        from the epic reopen itself, never gated on the mirror healing
+        first. A
         supersession installing a new head, or a completed ticket
         reopening, atomically advances the epoch, clears completed,
         records the reopening state, and reopens the epic through
@@ -650,6 +658,8 @@ data:
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
         - { name: completion_state, type: enum, required: true, values: [none, review-submitting, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step; also the per-target SERIALIZER — a new close or reopen is issued only after the in-flight operation's outcome is durably resolved
+        - { name: completion_submission_key, type: string }  # immutable deterministic idempotency key; populated transactionally on entering review-submitting — recovery reconstructs and reconciles the exact request from it
+        - { name: completion_report_doc, type: string }  # opaque doc-version id of the completion report; populated with the submission key
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
@@ -980,6 +990,7 @@ data:
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled] }  # one state per gate-chain stage — deterministic crash recovery, no skippable gates
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
+        - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }
         - { name: started, type: datetime }
         - { name: finished, type: datetime }
@@ -1103,7 +1114,8 @@ data:
         - { name: external_id, type: string, unique: true }  # roborev job/review id recorded from our own enqueue return — the only ids kriya ever acts on
         - { name: verdict, type: enum, required: true, values: [pending, pass, findings] }
         - { name: findings, type: json }
-        - { name: response_state, type: enum, required: true, values: [none, commenting, commented, closing, closed] }  # write-ahead around the comment and close calls; advanced BEFORE each external mutation, stamped after. Recovery from `commenting` re-issues the comment — comments are additive and append-only, so a rare duplicate is benign, while a silently missing response is not; recovery from `closing` re-issues the close, treating already-closed as success. A round is therefore never left open by a crash between comment and close.
+        - { name: response_body, type: string }  # immutable prepared response payload, persisted in the same transaction that enters `commenting`; recovery replays exactly this stored payload
+        - { name: response_state, type: enum, required: true, values: [none, commenting, commented, closing, closed] }  # write-ahead around the comment and close calls; advanced BEFORE each external mutation, stamped after. Recovery from `commenting` re-issues the stored response_body — comments are additive and append-only, so a rare duplicate is benign, while a silently missing response is not; recovery from `closing` re-issues the close, treating already-closed as success. A round is therefore never left open by a crash between comment and close.
         - { name: created, type: datetime, required: true }
     - id: ENT-enqueue-attempt
       name: EnqueueAttempt

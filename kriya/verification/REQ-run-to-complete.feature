@@ -34,6 +34,13 @@ Feature: Run to complete
     Then sutra refuses it server-atomically under its no-open-children gate
     And nothing is stamped and the epoch advances when kriya observes the reopen
 
+  Scenario: a reopen after the close heals the stamp
+    Given the epic close succeeded and the completion stamp has not yet landed
+    When a child ticket reopens in sutra
+    Then sutra's cascade reopens the epic in the same transaction — the epic is never closed over an open child
+    And a stamp that lands in the window is cleared and the epoch advanced when the reopen event arrives
+    And popping resumes from the epic reopen itself, not from the mirror healing
+
   Scenario: a stale close is serialized or compensated, never left standing
     Given an epic close is in flight for claim epoch 3
     When a supersession advances the epoch to 4

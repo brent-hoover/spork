@@ -20,3 +20,9 @@ Feature: Issue hierarchy
     Given the child moves to status "deferred"
     When SUT-1 is transitioned to "complete" with an approved review
     Then the transition succeeds — deferred children are parked, not open
+
+  Scenario: reopening a child reopens a complete parent
+    Given SUT-1 is "complete" and its child SUT-2 is "complete"
+    When SUT-2 is reopened to "open"
+    Then SUT-1 returns to "open" in the same transaction
+    And a status event is recorded for both SUT-1 and SUT-2

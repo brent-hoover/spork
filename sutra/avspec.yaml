@@ -147,6 +147,9 @@ requirements:
       - id: AC-parent-rollup
         statement: A parent shows progress over its children, e.g. 3 of 5 complete.
         test: verification/REQ-issue-hierarchy.feature#parent rolls up child progress
+      - id: AC-parent-reopen-cascade
+        statement: Reopening a child whose parent is complete reopens the parent in the same transaction, with status events recorded on both — a parent is never complete while a child is open, before or after its close.
+        test: verification/REQ-issue-hierarchy.feature#reopening a child reopens a complete parent
       - id: AC-parent-close-gate
         statement: Transitioning a parent to complete while any child is open, in-progress, or blocked is rejected; deferred children — intentionally parked work — do not hold the parent open.
         test: verification/REQ-issue-hierarchy.feature#open children hold the parent open

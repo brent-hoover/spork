@@ -37,9 +37,9 @@ Feature: Pair-programming loop
     And the job's history holds the full conversation
 
   Scenario: a crash between comment and close recovers
-    Given a round crashed in state "commenting"
+    Given a round crashed in state "commenting" with its prepared response payload persisted in the same transaction
     When recovery runs
-    Then the additive comment is re-issued — a rare duplicate is benign, a missing response is not — and the close completes
+    Then exactly the stored payload is re-issued as the comment — a rare duplicate is benign, a missing or differing response is not — and the close completes
     Given a round crashed in state "closing"
     Then recovery re-issues the close, treating already-closed as success
     And no round is ever left open by the crash window

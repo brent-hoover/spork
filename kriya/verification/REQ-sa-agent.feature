@@ -4,7 +4,8 @@ Feature: System architect agent
   every impasse and its resolution survive in the run's history.
 
   Scenario: an impasse pauses the run and reaches the architect
-    Given a configured round limit of 4 consecutive finding-bearing rounds
+    Given a round limit of 4 was snapshotted onto the BuildRun at its creation
+    And the operator has since changed the configured limit to 2, which does not affect this run
     And three consecutive rounds have returned findings since the last clean pass
     When the fourth consecutive round returns findings
     Then the run pauses and the impasse reaches the SA agent
@@ -27,7 +28,8 @@ Feature: System architect agent
     Then the SA does not decide it and escalates to the operator naming the change
     When the operator approves a spec change
     Then cancelling is recorded durably on the paused run before any external call
-    And the run's sutra ticket is conditionally released out of in-progress
+    And the run's sutra ticket is conditionally transitioned out of in-progress to "deferred", never to "open"
+    And an agent popping in the window before the supersession fence cannot claim the obsolete ticket — deferred is not poppable
     And only then is the run stamped cancelled — terminal, before replacement work proceeds
     And the cancelled run never resumes, merges, or resubmits
     And retirement classifies the released ticket as released work, never issued work that will finish
