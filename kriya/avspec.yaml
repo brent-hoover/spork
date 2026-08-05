@@ -377,6 +377,19 @@ requirements:
   - id: REQ-tui
     title: TUI overview — what is running now, what is queued, and where agents surface things to the operator
     rationale: The operator's most critical surface; escalations land here, not in a log file.
+    acceptance:
+      - id: AC-tui-overview
+        statement: "The TUI shows live: running BuildRuns with their position in the gate chain, queued and blocked tickets, and runs waiting on human review."
+        test: verification/REQ-tui.feature#one screen shows the build's live state
+      - id: AC-tui-inbox
+        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, expired review-round claims and unresolved orphans, and build stalls."
+        test: verification/REQ-tui.feature#everything needing the operator lands in one inbox
+      - id: AC-tui-act
+        statement: "The protocol's operator actions are executable from the TUI, not just visible: restore or retry a parked plan, reconcile and reset a review round, approve or reject an escalated scope change."
+        test: verification/REQ-tui.feature#operator actions run from the TUI
+      - id: AC-tui-truth
+        statement: Drilling into a run shows its durable history — commits, rounds, gate results, verdicts, escalations — read from the same records recovery uses; the TUI holds no second source of truth.
+        test: verification/REQ-tui.feature#the TUI reads the records recovery reads
 
 modules:
   - id: MOD-planner

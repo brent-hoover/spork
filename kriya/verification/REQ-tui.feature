@@ -1,0 +1,32 @@
+Feature: TUI overview
+  The operator's most critical surface. One screen shows what runs,
+  what waits, and what needs a human — and every protocol path that
+  says "surfaces to the operator" surfaces here.
+
+  Scenario: one screen shows the build's live state
+    Given a build with two running BuildRuns, three queued tickets, one blocked ticket, and one run awaiting human review
+    When the operator opens the TUI
+    Then the running runs appear with their position in the gate chain
+    And the queued and blocked tickets are distinguishable
+    And the run awaiting human review is shown as such
+
+  Scenario: everything needing the operator lands in one inbox
+    Given an SA scope escalation, an invalidating spike finding, an awaiting-operator plan, an expired review-round claim, and a build stall all exist
+    When the operator opens the inbox
+    Then each item appears with its cause
+    And no such item is discoverable only in a log file
+
+  Scenario: operator actions run from the TUI
+    Given an awaiting-operator plan in the inbox
+    Then the operator can restore or retry it from the TUI
+    Given an unresolved review round
+    Then the operator can reconcile and reset it from the TUI
+    Given an escalated scope change
+    Then the operator can approve or reject it from the TUI
+
+  Scenario: the TUI reads the records recovery reads
+    Given a completed run
+    When the operator drills into it
+    Then its commits, review rounds, gate results, verdicts, and escalations are shown
+    And every displayed fact comes from the durable records recovery uses
+    And no state exists only in the TUI
