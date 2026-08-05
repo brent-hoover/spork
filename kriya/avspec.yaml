@@ -240,8 +240,14 @@ data:
         pop eligibility requires status open, the deferred status is the
         durable fence — even an in-flight assignment from a crashed
         worker that lands afterwards cannot make a deferred ticket
-        poppable. The PM's reconciliation reopens exactly what the new
-        plan carries forward, before its own phases run. Builds already popped finish under their
+        poppable. Before retirement, every pending predecessor
+        mutation is drained by replaying its persisted idempotency key —
+        bringing any in-flight request to a known completed state — and
+        carried-forward tickets stay deferred through the replacement's
+        creation and wiring phases: reopening happens in the final
+        assignment phase, after the plan-wide relation barrier, so a
+        ticket regains status open only when its full new dependency
+        graph is durable. Builds already popped finish under their
         pinned snapshots; the superseded tickets stay in the tracker for
         the PM to reconcile into the new plan. Supersession is fenced the
         same way claim resolution is: it proceeds only when the prior
