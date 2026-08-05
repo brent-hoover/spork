@@ -379,8 +379,14 @@ data:
         then binds ticket to the row transactionally. Plan is lineage,
         not an execution dependency: in the same transaction the ticket
         is matched against PlannedTicket rows of the plan that currently
-        heads its target (resolved through PlanHead) — superseded plans'
-        rows are audit history, never binding candidates, so a
+        heads its target (resolved through PlanHead); when no current-head
+        row matches, an UNSTAMPED row on a superseded plan is the one
+        sanctioned fallback — an unstamped superseded membership means
+        precisely that the ticket was claimed in flight during
+        supersession (retirement stamps everything it retires and skips
+        claimed tickets), so the build binds to that plan and its pinned
+        snapshot, honoring the popped-builds-finish-under-predecessor
+        guarantee. Stamped rows are audit history and never bind, so a
         carried-forward ticket present in both predecessor and
         replacement matches exactly its current plan. (PlannedTicket
         remains the authoritative membership record — Plan holds no
