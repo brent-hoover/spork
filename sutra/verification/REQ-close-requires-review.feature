@@ -4,11 +4,17 @@ Feature: Closing requires an approved review
 
   Scenario: approved review allows close
     Given issue SUT-1 has a review of branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4" in state "approved"
-    When SUT-1 is transitioned to "complete" naming that review
+    When SUT-1 is transitioned to "complete" naming that review at its approved revision
     Then the transition succeeds
     And the recorded approval names commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
     And the review is stamped close-used and its verdict frozen in the same transaction
     And a later verdict on that review is rejected with no mutation
+
+  Scenario: a stale revision cannot authorize a close
+    Given issue SUT-7 has a review approved at revision 2 after an earlier revision was reviewed
+    When SUT-7 is transitioned to "complete" naming that review at revision 1
+    Then the transition is rejected with a conflict
+    And the approval is not consumed and SUT-7 is not complete
 
   Scenario: a reversed approval cannot authorize a close
     Given issue SUT-2 has an approved review whose verdict is reversed to "changes-requested" before the close commits
@@ -44,5 +50,5 @@ Feature: Closing requires an approved review
   Scenario: doc deliverables gate like code
     Given issue SUT-2 has a review whose deliverable is a document version
     And that review is in state "approved"
-    When SUT-2 is transitioned to "complete" naming that review
+    When SUT-2 is transitioned to "complete" naming that review at its approved revision
     Then the transition succeeds

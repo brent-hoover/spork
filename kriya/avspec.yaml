@@ -137,7 +137,7 @@ requirements:
         statement: Decomposition runs in plan-wide phases — create all tickets, wire relations, assign last — with barriers between phases so no ticket is workable before its relations exist; completed is stamped only after the final barrier.
         test: verification/REQ-decompose.feature#phases run behind plan-wide barriers
       - id: AC-decompose-idempotent
-        statement: "Every request resolves its decomposition key against existing plans before any PlanHead logic, and the resolution is state-aware: active-without-completed resumes remaining phases, pending resumes, completed and superseded return the historical result, awaiting-operator is preserved untouched."
+        statement: "Every request resolves its decomposition key against existing plans before any PlanHead logic, and the resolution is state-aware: active-without-completed resumes remaining phases, pending resumes, completed and superseded return the historical result, awaiting-operator is preserved untouched, and a plan in terminal historical returns that terminal result with no mutation — never re-exposed as retryable."
         test: verification/REQ-decompose.feature#same-key retries are state-aware
       - id: AC-decompose-supersede
         statement: Decomposing against an existing head atomically creates a superseding candidate — predecessor pointed at the head it beat, head marked superseded, fence incremented, PlanHead moved with a generation bump — then retires the predecessor, stamping every predecessor row consumed with its state-appropriate disposition — retired, carried-forward, bound, or completed — before the new plan activates.
@@ -811,8 +811,9 @@ data:
         head's current plan to be ACTIVE and the candidate's
         intake_generation to be STRICTLY NEWER than the head's — a
         generation-1 intake recovering after generation 2 installed its
-        plan loses here and parks awaiting-operator rather than
-        superseding the newer head — then marks that predecessor
+        plan loses here and — being already generation-ineligible —
+        transitions DIRECTLY to terminal historical rather than parking
+        awaiting-operator or superseding the newer head — then marks that predecessor
         superseded with superseded_by stamped, installs the new pending
         plan as head.current, and increments the head generation — all
         atomically. Every request FIRST resolves its decomposition_key against
@@ -824,6 +825,8 @@ data:
         durable per-step states (activation precedes those phases, so a
         crash can leave an active plan mid-decomposition) and only an
         active plan bearing completed returns as already complete;
+        a plan in terminal historical state returns that terminal
+        result with no mutation — never revived, never re-parked;
         superseded returns as an idempotent HISTORICAL result (the
         caller learns the plan and its replacement via superseded_by;
         the retry can never mutate PlanHead, revive the old plan, or
@@ -1124,7 +1127,7 @@ data:
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, completing, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged -> completing -> closed; research runs traverse research-loop -> finding-submitted -> completing -> closed, returning finding-submitted -> research-loop on a changes-requested verdict (the document path CON-gate-chain carves out — no code gates apply); the finding's doc mutation, its review creation, and its rework resubmission are each write-ahead and keyed-replayed exactly like code and completion submissions
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
-        - { name: review_submission_key, type: string }  # deterministic per (run, head commit, gate attempt) — an integration that leaves the commit unchanged still yields a fresh key, so replay can never return a prior (possibly consumed) review when a fresh one is required — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
+        - { name: review_submission_key, type: string }  # discriminated by run kind: code reviews derive from (run, head commit, gate attempt) — an integration that leaves the commit unchanged still yields a fresh key, so replay can never return a prior (possibly consumed) review when a fresh one is required — while research reviews derive from (run, finding document version), the document being their deliverable and the research path having no commits or gate attempts — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: gate_attempt, type: integer, required: true }  # init 0; incremented atomically each time a new gate-chain attempt freezes its gated_base — chain satisfaction requires every result to carry THIS attempt, so an integration that leaves the branch head unchanged still invalidates prior passes
         - { name: gated_base, type: string }  # FROZEN per gate-chain attempt: captured once when the attempt starts, and every gate of the attempt validates against exactly this base — a gate observing a different default head ABORTS the attempt, forcing integration and a complete rerun, so no chain ever mixes bases; the merge preflight requires the default branch to still equal this frozen value, and the merge itself CASes against it
         - { name: ticket_close_key, type: string }  # deterministic per (run, review, approved revision) — persisted when the run enters completing; the close names the review AND that revision

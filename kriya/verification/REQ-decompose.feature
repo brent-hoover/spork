@@ -46,12 +46,13 @@ Feature: Spec decomposition
     And a completed plan returns the historical result with no mutation
     And a superseded plan returns the historical result with no mutation
     And an awaiting-operator plan is preserved untouched for the operator
+    And a plan in terminal historical returns that terminal result with no mutation
 
   Scenario: a stale intake recovering late cannot supersede a newer head
     Given a generation-1 intake crashed before decomposition while a generation-2 intake installed its plan as head
     When the generation-1 intake recovers and its candidate enters the replacement CAS
     Then the CAS rejects it — the candidate's intake generation is not strictly newer than the head's
-    And the candidate parks awaiting-operator as a historical record instead of superseding newer work
+    And being already ineligible, the candidate transitions directly to terminal historical instead of parking awaiting-operator
 
   Scenario: reverting to a previously seen spec is a fresh plan, not a replay
     Given the target moved from snapshot "H1" to "H2" and the operator re-intakes "H1" under a new intake generation
