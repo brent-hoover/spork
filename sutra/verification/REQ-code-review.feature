@@ -91,6 +91,9 @@ Feature: Review lifecycle
     Given an approved review whose verdict was reversed before consumption
     When the subscriber attempts consumption
     Then it fails with a conflict and consumes nothing
+    Given a review that advanced to a newer approved revision since the subscriber's read
+    When the subscriber attempts consumption expecting the previous revision
+    Then it fails with a conflict and no consumption is stamped
 
   Scenario: resubmission requires changes-requested
     Given an open review

@@ -56,6 +56,15 @@ Feature: Spec intake
     Then every executed command is the one resolved into "S1"
     And the working-tree edit is never consulted
 
+  Scenario: a delayed older plan can never regress the mapping
+    Given intake generation 2 pinned the project's mapping snapshot
+    When a delayed plan seed carrying generation 1 arrives
+    Then the mapping is untouched — the older generation loses the upsert
+    Given no mapping exists yet
+    When a generation-1 plan seed inserts first and the generation-2 intake write arrives after
+    Then the mapping converges on generation 2
+    And unplanned binds always read the newest intake's snapshot
+
   Scenario: amended spec pins a new snapshot
     Given SpecSnapshot "S1" exists for a project with builds referencing it
     And the spec is amended and verifies status "ready" again

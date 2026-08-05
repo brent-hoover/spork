@@ -553,7 +553,7 @@ data:
         - { name: disposition, type: enum, values: [retired, carried-forward, bound, completed] }  # written with consumed: retired = drained, unassigned, and deferred; carried-forward = unclaimed and re-listed by the successor; bound = a build had already bound this ticket (the build's own refs are authoritative); completed = the ticket was already done
     - id: ENT-spec-snapshot
       name: SpecSnapshot
-      description: Content-addressed snapshot of the COMPLETE spec artifact set — the manifest plus every referenced verification feature file and contract document (equivalently, a pinned content tree) — stored when first pinned; builds and recovery read gate commands, ACs, scenarios, and contracts from here, never from the mutable working tree, so post-decomposition edits to any referenced file cannot change what a pinned build executes. Alongside the content it stores each module's RESOLVED effective commands (override-per-field over project stack), exactly as intake validated them.
+      description: Content-addressed snapshot of the COMPLETE spec artifact set — the manifest plus every referenced verification feature file and contract document (equivalently, a pinned content tree) — stored when first pinned; builds and recovery read gate commands, ACs, scenarios, and contracts from here, never from the mutable working tree, so post-decomposition edits to any referenced file cannot change what a pinned build executes. Alongside the content it stores each module's RESOLVED effective commands (override-per-field over project stack), exactly as intake validated them, and the intake generation it was pinned under — the ordering token every mapping write derived from this snapshot carries.
       fields:
         - { name: hash, type: string, required: true, unique: true }
         - { name: content, type: json, required: true }
@@ -561,13 +561,13 @@ data:
         - { name: created, type: datetime, required: true }
     - id: ENT-spec-mapping
       name: SpecMapping
-      description: The project-to-spec registry — operator-editable, the only trusted fallback for resolving an unplanned ticket's target spec. Plan seeding is INSERT-ONLY (a plan seeds a missing mapping with its own intake-pinned hash and never touches an existing row); only intake refreshes an existing mapping's spec_hash, and that refresh is a CAS on intake_generation captured when the intake began — so neither a delayed older plan nor a delayed older intake can ever regress a newer intake's snapshot.
+      description: "The project-to-spec registry — operator-editable, the only trusted fallback for resolving an unplanned ticket's target spec. EVERY write — an intake pinning or refreshing, a plan seeding — is an UPSERT ordered by intake generation: the writer carries the generation its snapshot was pinned under (intakes their own, plans the generation recorded on their snapshot), a strictly newer generation wins the CAS, and an equal or older one is a no-op. Insert races resolve identically — a delayed older plan arriving after a newer intake inserted, or inserting first and being overwritten by it, converges on the newest generation either way, so no path can ever leave unplanned binds on a stale snapshot."
       fields:
         - { name: mapping_key, type: string, required: true, unique: true }  # derived hash of (project_key, normalized target_spec) — seeding upserts, so replanning the same spec never duplicates a row
         - { name: project_key, type: string, required: true }  # NOT unique — a project may hold several distinct specs; the fallback binds only when exactly one mapping exists
         - { name: target_spec, type: string, required: true }
-        - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot for this mapping — the ONLY snapshot an unplanned bind may use; written at insert (plan seeding) and thereafter refreshed exclusively by intake
-        - { name: intake_generation, type: integer, required: true }  # init 0; monotonic — an intake captures the current value when it begins validating and its refresh is a CAS expecting that value while incrementing it, so a delayed older intake loses the CAS and is refused (re-run intake); spec_hash can never regress under overlapping intakes
+        - { name: spec_hash, type: string, required: true }  # the intake-pinned snapshot for this mapping — the ONLY snapshot an unplanned bind may use; every write is the generation-ordered upsert described above
+        - { name: intake_generation, type: integer, required: true }  # monotonic per target, allocated by intake; every mapping upsert carries its writer's generation and wins only when strictly newer — delayed older intakes and delayed older plan seeds are no-ops alike
         - { name: updated, type: datetime, required: true }
     - id: ENT-pop-fence
       name: PopFence
