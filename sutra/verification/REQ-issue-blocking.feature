@@ -13,7 +13,7 @@ Feature: Blocking relationships
   Scenario: blocker completion unblocks
     Given SUT-2 is blocked by open issue SUT-1, both assigned to "claude"
     And SUT-1 has an approved review
-    When SUT-1 is transitioned to "complete" naming that review
+    When SUT-1 is transitioned to "complete" naming that review at its approved revision
     Then popping "claude"'s stack can return SUT-2
 
   Scenario: cycles are rejected

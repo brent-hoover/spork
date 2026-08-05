@@ -114,7 +114,8 @@ Feature: Run to complete
     Given a build target whose completion is stamped
     When a supersession installs a new head plan or a completed ticket reopens
     Then the completion epoch advances and the completion stamp is atomically cleared
-    And the epic reopens through sutra
+    And a ticket-reopen advance issues no sutra call — the ancestor cascade already reopened the epic in the ticket's own transaction
+    And a supersession advance calls the keyed reopen only when the durable lifecycle shows a close ever ran
     And popping resumes for the target
 
   Scenario: any epic reopen forces a fresh completion

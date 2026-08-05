@@ -15,19 +15,19 @@ Feature: Issue hierarchy
 
   Scenario: open children hold the parent open
     Given SUT-1 has an approved review and a child in status "in-progress"
-    When SUT-1 is transitioned to "complete" naming its approved review
+    When SUT-1 is transitioned to "complete" naming its approved review at its current revision
     Then the transition is rejected naming the open child, not the review gate
     Given the child moves to status "deferred"
-    When SUT-1 is transitioned to "complete" naming its approved review
+    When SUT-1 is transitioned to "complete" naming its approved review at its current revision
     Then the transition succeeds — deferred children are parked, not open
     Given a deferred child of SUT-1 itself has a descendant in status "open"
-    When SUT-1 is transitioned to "complete" naming a fresh approved review
+    When SUT-1 is transitioned to "complete" naming a fresh approved review at its current revision
     Then the transition is rejected naming the active descendant — deferred nodes cannot hide active work
 
   Scenario: subtree revision fences history, not just state
     Given SUT-1's subtree_revision is 7 as observed by a caller
     And a child of SUT-1 reopens and recompletes — two API transactions, each moving SUT-1's revision exactly once, to 9
-    And SUT-1 has an unspent approved review named on every attempt
+    And SUT-1 has an unspent approved review named, with its current revision, on every attempt
     When SUT-1 is transitioned to "complete" with expected_subtree_revision 7
     Then the transition is rejected with a conflict — current state matches but history moved
     When the caller re-reads and retries with expected_subtree_revision 9
@@ -67,7 +67,7 @@ Feature: Issue hierarchy
 
   Scenario: a blocked descendant holds the parent open
     Given a fresh hierarchy where SUT-27 has an approved review and a descendant in status "blocked" beneath a deferred child
-    When SUT-27 is transitioned to "complete" naming its approved review
+    When SUT-27 is transitioned to "complete" naming its approved review at its current revision
     Then the transition is rejected naming the blocked descendant
 
   Scenario: attaching an open child reopens a complete parent

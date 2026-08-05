@@ -92,6 +92,12 @@ Feature: Review submission and merge
     When the submission carries expected default head "D1" and the default branch now stands at "D2"
     Then sutra rejects it atomically — no review, submission, or event exists, and no human can review the ungated diff
     And a fast-forwarded default branch sharing the old merge base is still caught — the fence is the head, not the merge base
+
+  Scenario: a stale-based branch is rejected even under an unchanged default head
+    Given the default branch still stands at the gated base "D1"
+    And the run's branch is based on the older commit "D0"
+    When the submission carries expected base commit "D1" and sutra resolves the branch's base as "D0"
+    Then sutra rejects it atomically — the diff's base was never gated, and nothing is created
     And the run integrates, reruns the full chain, and submits a fresh review
     And the merge preflight rechecks the same base equality as defense in depth
 
