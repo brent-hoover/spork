@@ -96,6 +96,11 @@ Feature: Review lifecycle
     When the subscriber attempts consumption expecting the previous revision
     Then it fails with a conflict and no consumption is stamped
 
+  Scenario: a stale resubmission cannot land on a newer revision
+    Given a review at revision 3 in state "changes-requested"
+    When a delayed resubmission arrives expecting revision 2
+    Then it is rejected with a conflict and no mutation
+
   Scenario: resubmission requires changes-requested
     Given an open review
     When the agent resubmits the deliverable

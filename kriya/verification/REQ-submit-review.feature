@@ -57,6 +57,20 @@ Feature: Review submission and merge
     When the same approval event is replayed
     Then no second merge occurs
 
+  Scenario: re-approval after reversal enqueues its own attempt
+    Given an approval whose merge attempt aborted after the verdict was reversed
+    When the review is re-approved at the same revision
+    Then the new approval event enqueues a fresh attempt — the event id is part of the identity
+    And the aborted attempt remains a terminal historical record
+
+  Scenario: merge recovery resumes the exact step
+    Given the lock-holding attempt recorded consuming with its consume key and crashed
+    When recovery replays the keyed consumption
+    Then sutra returns the original result and the attempt advances to consumed
+    Given the attempt recorded merging against its expected base and crashed before recording the merge commit
+    When recovery inspects the branch
+    Then a landed CAS push is recognized and recorded as merged; an unlanded one is retried against the expected base
+
   Scenario: successive fresh reviews never collide in the queue
     Given a run whose first review was approved at revision 1 and merged, and whose later fresh review is also approved at revision 1
     When the later approval enqueues its merge attempt

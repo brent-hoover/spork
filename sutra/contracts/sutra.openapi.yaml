@@ -356,7 +356,7 @@ paths:
               oneOf:
                 - title: CompleteTransition
                   type: object
-                  required: [status, review, actor]
+                  required: [status, review, review_revision, actor]
                   properties:
                     status: { type: string, enum: [complete] }
                     expected_status: { $ref: '#/components/schemas/IssueStatus' }
@@ -367,6 +367,9 @@ paths:
                       type: string
                       format: uuid
                       description: The authorizing review — must belong to the issue, be approved at its current revision, and not be close-used.
+                    review_revision:
+                      type: integer
+                      description: The approved revision the caller expects to spend; validated atomically with ownership, approval state, and close_used — a delayed close intended for revision N can never spend a later revision's approval.
                     actor: { type: string, format: uuid }
                   additionalProperties: false
                 - title: NonCompleteTransition
@@ -1374,7 +1377,10 @@ paths:
       summary: Resubmit a review with a replacement deliverable
       description: >-
         Valid only from state changes-requested; resubmitting an open or
-        approved review is rejected with a conflict. After
+        approved review is rejected with a conflict, as is an
+        expected_revision that does not match the review's current revision
+        — atomically, so a delayed resubmission that never originally landed
+        cannot apply stale content after the review advanced. After
         changes-requested, the agent resubmits a replacement deliverable —
         the same exactly-one shape as creation, a branch pinned at an
         immutable commit or a doc version — and the review returns to state
@@ -2268,8 +2274,11 @@ components:
         Replacement deliverable for a review returning to open — same
         exactly-one shape as NewReview: a branch pinned at an immutable
         commit, or a doc version.
-      required: [author]
+      required: [author, expected_revision]
       properties:
+        expected_revision:
+          type: integer
+          description: The current revision the caller believes it is replacing; the resubmission is rejected with a conflict if the review's revision differs — a delayed request can never apply stale content to a newer revision.
         branch: { type: string }
         commit:
           type: string

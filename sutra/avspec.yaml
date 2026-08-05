@@ -192,7 +192,7 @@ requirements:
     rationale: Work — code or docs, docs especially — is not done until a human has approved the deliverable.
     acceptance:
       - id: AC-close-approved
-        statement: A transition to complete NAMES its authorizing review, which must belong to the issue, be approved at its current revision, and not already have authorized an earlier close; success atomically stamps it close-used and freezes its verdict (consuming if not already consumed — a merge-time consumption never blocks the close). A reversal committed first, a spent review, or a review of another issue each rejects the close, and a reopened issue can close again only under a fresh approval.
+        statement: A transition to complete NAMES its authorizing review AND the approved revision it expects to spend; the review must belong to the issue, be approved at exactly that current revision, and not already have authorized an earlier close; success atomically stamps it close-used and freezes its verdict (consuming if not already consumed — a merge-time consumption never blocks the close). A reversal committed first, a spent review, or a review of another issue each rejects the close, and a reopened issue can close again only under a fresh approval.
         test: verification/REQ-close-requires-review.feature#approved review allows close
       - id: AC-close-blocked-without
         statement: Given an issue with no Review in state approved, a transition to complete is rejected with an error naming the missing approval.
@@ -240,7 +240,7 @@ requirements:
         statement: A subscriber atomically consumes an approved review's approval, conditional on state approved at the expected current revision; consumption is durable and idempotent, permanently fences verdict changes, atomically records a review.consumed event carrying the actor, review, and consumed revision, and fails with a conflict — consuming nothing, recording nothing — if the verdict changed or the revision moved first.
         test: verification/REQ-code-review.feature#approval consumption fences reversal
       - id: AC-review-resubmit-guard
-        statement: Resubmission is valid only from changes-requested; open or approved reviews reject it with no mutation.
+        statement: Resubmission is valid only from changes-requested and only at the expected current revision the caller names; open or approved reviews, and revision mismatches, reject it with no mutation.
         test: verification/REQ-code-review.feature#resubmission requires changes-requested
   - id: REQ-comments
     title: Unlimited comments on issues

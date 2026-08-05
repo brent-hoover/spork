@@ -723,7 +723,7 @@ data:
         - { name: target_key, type: string, required: true, unique: true }
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
-        - { name: merge_lock, type: ref, ref: ENT-build-run }  # holder of the target's serialized merge section — CAS-acquired by the queue's head MergeAttempt, released transactionally with the attempt's terminal state
+        - { name: merge_lock, type: ref, ref: ENT-merge-attempt }  # the EXACT attempt holding the target's serialized merge section — CAS-acquired by the queue head, released transactionally with the attempt's terminal state; identifying the attempt, not just its run, keeps recovery from conflating multiple attempts for one run
         - { name: completion_state, type: enum, required: true, values: [none, review-submitting, review-submitted, review-resubmitting, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step; also the per-target SERIALIZER — a new close or reopen is issued only after the in-flight operation's outcome is durably resolved
         - { name: completion_submission_key, type: string }  # deterministic per (target_key, completion_epoch) — epoch-scoped; immutable within an attempt, rotated with the whole claim-field set when a new epoch's attempt enters review-submitting
         - { name: completion_report_doc, type: string }  # opaque doc-version id of the completion report; populated with the submission key
@@ -1072,7 +1072,7 @@ data:
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
         - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, completing, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged -> completing -> closed; research runs traverse research-loop -> finding-submitted -> completing -> closed, returning finding-submitted -> research-loop on a changes-requested verdict (the document path CON-gate-chain carves out — no code gates apply); the finding's doc mutation, its review creation, and its rework resubmission are each write-ahead and keyed-replayed exactly like code and completion submissions
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
-        - { name: review_submission_key, type: string }  # deterministic per (run, head commit) — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
+        - { name: review_submission_key, type: string }  # deterministic per (run, head commit, gate attempt) — an integration that leaves the commit unchanged still yields a fresh key, so replay can never return a prior (possibly consumed) review when a fresh one is required — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: gate_attempt, type: integer, required: true }  # init 0; incremented atomically each time a new gate-chain attempt freezes its gated_base — chain satisfaction requires every result to carry THIS attempt, so an integration that leaves the branch head unchanged still invalidates prior passes
         - { name: gated_base, type: string }  # FROZEN per gate-chain attempt: captured once when the attempt starts, and every gate of the attempt validates against exactly this base — a gate observing a different default head ABORTS the attempt, forcing integration and a complete rerun, so no chain ever mixes bases; the merge preflight requires the default branch to still equal this frozen value, and the merge itself CASes against it
         - { name: ticket_close_key, type: string }  # deterministic per (run, review) — persisted when the run enters completing, sent as the ticket-complete transition's Idempotency-Key; a close that landed before a crash replays to its original success, never a close-used conflict, and the run advances to closed
@@ -1123,7 +1123,7 @@ data:
         and the persisted review and revision tell recovery exactly
         which approval to consume), ordered by created; the queue head
         acquires the target's merge lock by CAS on
-        BuildTarget.merge_lock (absent -> this run), and ONLY the lock
+        BuildTarget.merge_lock (absent -> this attempt), and ONLY the lock
         holder preflights, consumes, and merges — two simultaneous
         approvals can never both consume: the loser waits queued, then
         preflights against the moved base and takes the
@@ -1132,12 +1132,16 @@ data:
         merged or aborted; recovery inspects the holder's durable state
         and either resumes its exact step or releases the lock.
       fields:
-        - { name: attempt_key, type: string, required: true, unique: true }  # deterministic per (target_key, build, review, revision) — the review id disambiguates successive fresh reviews for the same build, whose revisions each restart at 1
+        - { name: attempt_key, type: string, required: true, unique: true }  # deterministic per (target_key, build, review, revision, approval event id) — the review id disambiguates successive fresh reviews, and the immutable approval-event id disambiguates re-approval after reversal at the same revision, so an aborted attempt never blocks a later approval from enqueueing
         - { name: target_key, type: string, required: true }
         - { name: build, type: ref, ref: ENT-build-run, required: true }
         - { name: review, type: string, required: true }  # opaque tracker review id whose approval this attempt consumes; recovery reads it and the revision from the row, never inferring which approval was meant
         - { name: revision, type: integer, required: true }  # the approved revision the attempt expects at consumption
-        - { name: state, type: enum, required: true, values: [queued, holding, merged, aborted] }
+        - { name: approval_event, type: string, required: true }  # immutable id of the approval event that created this attempt
+        - { name: expected_base, type: string }  # the frozen gated_base the preflight validated; the merge CAS targets exactly this
+        - { name: consume_key, type: string }  # Idempotency-Key for the consumption call, persisted on entering consuming — keyed replay on recovery
+        - { name: merge_commit, type: string }  # the resulting merge commit, recorded when the CAS push lands
+        - { name: state, type: enum, required: true, values: [queued, holding, consuming, consumed, merging, merged, aborted] }  # write-ahead around each side effect: consuming before the keyed sutra consumption, consumed after; merging before the CAS push, merged with merge_commit after — recovery reads the exact step and resumes it, never conflating attempts
         - { name: created, type: datetime, required: true }
         - { name: resolved, type: datetime }
     - id: ENT-stall
