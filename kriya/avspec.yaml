@@ -266,10 +266,15 @@ data:
         and tickets already claimed by builds are untouched — popped
         builds finish under their pinned snapshots): first each such
         ticket is set to status deferred via the tracker's conditional
-        transition (expected status open — a concurrent pop that already
-        claimed the ticket makes the defer fail, and the ticket is then
-        treated as claimed and left untouched), so the pop fence lands
-        before anything else without ever clobbering a live claim; then its pending mutations are drained by
+        transition (expected status open). A conflict is NOT assumed to
+        mean a pop won: the ticket is re-read and classified — actually
+        claimed by a build (in-progress with a matching BuildRun) means
+        it is left untouched; still unfinished and unclaimed but moved
+        (blocked, deferred, or re-opened meanwhile) means the conditional
+        defer retries from the freshly observed status; anything whose
+        ownership cannot be determined goes to awaiting-operator. The
+        pop fence thus lands before anything else without clobbering a
+        live claim or stranding a merely-moved ticket; then its pending mutations are drained by
         persisted key, then it is unassigned, with a retired stamp
         written per row so a crash resumes exactly where it stopped. Id-less
         rows are handled plan-wide in fence-preserving phases: FIRST
