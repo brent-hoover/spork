@@ -269,6 +269,9 @@ requirements:
       - id: AC-status-conditional
         statement: A status transition carrying expected_status is rejected with a conflict when the issue's current status differs — racing writers cannot clobber each other's transitions.
         test: verification/REQ-status-workflow.feature#conditional transitions guard racing writers
+      - id: AC-status-race
+        statement: When a conditional transition and a work-stack pop race on the same open issue, exactly one succeeds atomically — the loser receives a conflict and the issue reflects only the winner's mutation.
+        test: verification/REQ-status-workflow.feature#racing pop and defer resolve to one winner
       - id: AC-status-invalid
         statement: A status outside the five is rejected.
         test: verification/REQ-status-workflow.feature#unknown statuses are rejected

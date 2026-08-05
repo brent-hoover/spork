@@ -19,6 +19,13 @@ Feature: Status workflow
     Then it is rejected with a conflict
     And SUT-1 still has status "in-progress"
 
+  Scenario: racing pop and defer resolve to one winner
+    Given issue SUT-1 is assigned to "claude" with status "open"
+    When a pop by "claude" and a transition to "deferred" with expected status "open" race
+    Then exactly one operation succeeds
+    And the loser receives a conflict
+    And SUT-1's status reflects only the winner's mutation
+
   Scenario: unknown statuses are rejected
     When issue SUT-1 is set to status "someday"
     Then the operation is rejected
