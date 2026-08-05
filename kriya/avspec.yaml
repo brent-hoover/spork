@@ -498,8 +498,8 @@ modules:
         - id: VIEW-tui-overview
           name: Overview
           invocation: kriya tui
-          purpose: What is running now with its gate-chain position, what is queued or blocked, and what waits on human review.
-          shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.identity, ENT-build-run.started]
+          purpose: What is running now with its gate-chain position, what is queued or blocked — anchored on the head plan's PlannedTicket rows, with workability read live from the tracker through the orchestrator — and what waits on human review.
+          shows: [ENT-build-run.ticket, ENT-build-run.state, ENT-build-run.identity, ENT-build-run.started, ENT-planned-ticket.ticket, ENT-planned-ticket.state]
           navigates_to: [VIEW-tui-inbox, VIEW-tui-run]
           satisfies: [AC-tui-overview]
         - id: VIEW-tui-inbox

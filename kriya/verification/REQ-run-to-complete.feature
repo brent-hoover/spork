@@ -60,8 +60,9 @@ Feature: Run to complete
   Scenario: completion is the head plan done and the epic closable
     Given the activated head plan bears its completed stamp
     And every ticket of the activated head plan is complete
-    Then kriya records review-submitting with a deterministic submission key and the completion-report doc version before calling sutra
-    And kriya submits a build-completion review on the umbrella epic with the completion-report document as its deliverable
+    Then kriya records review-submitting with the deterministic submission key, the doc key, and the pending report reference before any sutra call
+    And the keyed doc mutation creates the report document and its returned version is persisted before the review-create call
+    And kriya submits a build-completion review on the umbrella epic with that recorded document version as its deliverable
     And a crash before the review id lands is recovered by replaying the persisted request under the same submission key — sutra returns the original review if it landed and creates it otherwise, never a second one
     And retired tickets resting deferred under the epic do not block its close
     When the human approves the review
