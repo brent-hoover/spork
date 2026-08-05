@@ -42,7 +42,7 @@ Feature: Risk-first planning
   Scenario: a finding submission crash recovers exactly once
     Given the finding doc key and pending reference were persisted and the crash hit before the document version existed
     When recovery runs
-    Then the keyed doc mutation replays and creates the version, and the finding review follows through the ordinary submission machinery
+    Then the keyed doc mutation replays and creates the version, records it as the run's finding doc, and the finding review names exactly that deliverable through the ordinary submission machinery
     Given the document version was created and the crash hit before the review-create call
     When recovery replays the keyed doc mutation
     Then sutra returns the same version — no duplicate finding — and the keyed review creation runs exactly once

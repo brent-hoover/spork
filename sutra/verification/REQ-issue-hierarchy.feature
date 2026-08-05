@@ -60,6 +60,16 @@ Feature: Issue hierarchy
     When SUT-21 transitions to "in-progress"
     Then SUT-20 reopens in the same transaction
 
+  Scenario: a child becoming blocked reopens its complete parent
+    Given a fresh hierarchy where SUT-25 is "complete" with a child SUT-26 in status "deferred"
+    When SUT-26 transitions to "blocked"
+    Then SUT-25 reopens in the same transaction — blocked is active work
+
+  Scenario: a blocked descendant holds the parent open
+    Given a fresh hierarchy where SUT-27 has an approved review and a descendant in status "blocked" beneath a deferred child
+    When SUT-27 is transitioned to "complete" naming its approved review
+    Then the transition is rejected naming the blocked descendant
+
   Scenario: attaching an open child reopens a complete parent
     Given a fresh issue SUT-30 in status "complete" and an unrelated issue SUT-31 in status "open"
     When SUT-31 is attached as a child of SUT-30
