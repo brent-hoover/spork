@@ -27,7 +27,7 @@ Feature: Pair-programming loop
     Given commit "C1" passed review but the branch head is now "C2"
     Then the pair loop is not satisfied
     When a round on "C2" returns no findings
-    Then the loop exits and the pass is recorded as the review GateResult for the run
+    Then the loop exits and the round records verdict "pass" at "C2" — the durable record the gate chain reads
 
   Scenario: the review trail is complete
     Given a round's findings have been addressed

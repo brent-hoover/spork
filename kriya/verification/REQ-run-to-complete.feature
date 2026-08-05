@@ -13,8 +13,16 @@ Feature: Run to complete
 
   Scenario: completion is the head plan done and the epic closable
     Given every ticket of the activated head plan is complete
-    Then the umbrella epic can close
-    And kriya declares completion durably on the BuildTarget row, exactly once, and stops popping for that target
+    Then kriya submits a build-completion review on the umbrella epic with a completion-report document as its deliverable
+    When the human approves the review
+    Then the epic closes through sutra's approved-review gate
+    And completion is stamped on the BuildTarget row and popping stops for that target
+
+  Scenario: completion clears when work returns
+    Given a build target whose completion is stamped
+    When a supersession installs a new head plan or a completed ticket reopens
+    Then the completion stamp is atomically cleared and the epic reopens through sutra
+    And popping resumes for the target
 
   Scenario: supersession moves the finish line
     Given a build mid-flight when a supersession activates a new head plan

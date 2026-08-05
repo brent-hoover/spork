@@ -128,7 +128,7 @@ requirements:
         statement: Implementation tickets are thin end-to-end slices; spike and research tickets are exempt, and the walking skeleton is the first implementation ticket workable once blocking risks retire. Every ticket carries BDD acceptance criteria traceable to the snapshot's REQ/AC ids.
         test: verification/REQ-decompose.feature#tracer bullets carry traceable acceptance criteria
       - id: AC-decompose-epic
-        statement: Decomposition ensures an umbrella epic per build target exists — created write-ahead and idempotently through the durable BuildTarget row, which records the epic id — and parents every created ticket under it; the epic persists across supersessions with no re-parenting and closes only when the build completes.
+        statement: Decomposition ensures an umbrella epic per build target exists — created write-ahead and idempotently through the durable BuildTarget row, which records the epic id — and parents every created ticket under it; the epic persists across supersessions with no re-parenting and closes only through the approved build-completion review when the build completes.
         test: verification/REQ-decompose.feature#one epic umbrellas the build target
       - id: AC-decompose-relations
         statement: blocks/blocked-by relations are wired — spike and risk tickets block their dependents, independent tickets stay unblocked for parallel work.
@@ -211,7 +211,7 @@ requirements:
         statement: Kriya acts only on job ids recorded from its own enqueue returns — it never adopts, responds to, cancels, or closes a job it cannot prove it created; expired claims go to the operator per the claim-generation protocol, never auto-reclaimed.
         test: verification/REQ-pair-loop.feature#only provably owned jobs are touched
       - id: AC-pair-pass-gate
-        statement: The loop exits only on a clean review of the current branch head; a pass on an earlier commit does not count; the pass is recorded as the review GateResult feeding the gate chain.
+        statement: The loop exits only on a clean review of the current branch head; a pass on an earlier commit does not count; the pass is recorded as the round's pass verdict at the head commit — the durable ReviewRound record the gate chain reads.
         test: verification/REQ-pair-loop.feature#the exit is a clean pass on the head
       - id: AC-pair-trail
         statement: Before a round closes, kriya records its response on the job — comment, then close — so the full conversation survives in roborev's history.
@@ -338,10 +338,10 @@ requirements:
         statement: After the PO pass, kriya creates a sutra Review naming the ticket's branch pinned at the head commit, stamped with the run's session id; the run then waits on review events.
         test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
       - id: AC-submit-rework
-        statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission goes through sutra's resubmit path, incrementing the revision.
+        statement: A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review pass, mutation, PO validation — passes again at the new head commit, going through sutra's resubmit path and incrementing the revision.
         test: verification/REQ-submit-review.feature#rework routes back by session
       - id: AC-submit-merge
-        statement: On the approved event kriya executes the merge — exactly once per approval; a replayed or duplicate event never double-merges.
+        statement: "An approval event is a signal, not an authority: before merging, kriya re-reads the review and merges only when the current revision's verdict is still approved and its pinned commit equals the branch head — then exactly once; a replayed or duplicate event never double-merges, and any mismatch surfaces instead of merging."
         test: verification/REQ-submit-review.feature#approval merges exactly once
       - id: AC-submit-complete
         statement: After a successful merge kriya transitions the ticket to complete through sutra, which itself enforces the approved-review gate; the workspace then becomes eligible for cleanup.
@@ -353,7 +353,7 @@ requirements:
         statement: Kriya keeps popping and building while workable tickets remain under the current head plan; when everything is blocked or in flight it idles and resumes as tickets unblock — it never exits early.
         test: verification/REQ-run-to-complete.feature#the loop runs until nothing is workable
       - id: AC-complete-defn
-        statement: The build is complete when every ticket of the activated head plan is complete and the umbrella epic can close; completion is declared durably on the BuildTarget row, exactly once, and popping stops for that target.
+        statement: When every ticket of the activated head plan is complete, kriya submits a build-completion review on the umbrella epic — a completion-report document as the deliverable, satisfying sutra's approved-review close gate; on approval the epic closes and completion is stamped on the BuildTarget row. A later supersession or a reopened ticket atomically clears the stamp, reopens the epic, and popping resumes — completion is a claim about the current head, never history.
         test: verification/REQ-run-to-complete.feature#completion is the head plan done and the epic closable
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
@@ -603,15 +603,20 @@ data:
         is recorded transactionally with epic_state created — recovery
         replays into the same epic, and supersessions reuse it through
         this row, which is why tickets never re-parent. Build-level
-        completion is declared here exactly once: completed is stamped
-        when every ticket of the activated head plan is complete and
-        the epic can close; plans and runs reach the epic through
-        their target key, never a second copy of it.
+        completion lives here: completed is stamped when every ticket
+        of the activated head plan is complete and the build-completion
+        review on the epic is approved — and it is a claim about the
+        CURRENT head only. A supersession installing a new head, or a
+        completed ticket reopening, atomically CLEARS completed and
+        reopens the epic through sutra, so popping resumes; the stamp
+        can therefore be set at most once per head generation, never
+        left standing over live work. Plans and runs reach the epic
+        through their target key, never a second copy of it.
       fields:
         - { name: target_key, type: string, required: true, unique: true }
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
-        - { name: completed, type: datetime }  # build-level completion, declared exactly once
+        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
       name: Plan

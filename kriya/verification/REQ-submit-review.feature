@@ -15,14 +15,19 @@ Feature: Review submission and merge
     Then the feedback reaches the run identified by the review's session id — the same agent instance where possible
     And the pair loop resumes
     When the agent finishes rework at a new head commit
+    And the review, mutation, and PO-validation gates pass again at the new head commit
     Then resubmission goes through sutra's resubmit path and the review's revision increments
+    And no resubmission happens before those gates pass
 
   Scenario: approval merges exactly once
     Given a review enters approved and the event is published
     When kriya consumes the event
-    Then the branch is merged exactly once
+    Then it re-reads the review before acting
+    And the branch is merged exactly once when the current revision's verdict is still approved and its pinned commit equals the branch head
     When the same approval event is replayed
     Then no second merge occurs
+    Given the verdict was reversed or the branch head moved past the pinned commit
+    Then no merge happens and the mismatch surfaces
 
   Scenario: merge completes the ticket through sutra
     Given the branch merged successfully
