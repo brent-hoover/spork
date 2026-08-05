@@ -254,7 +254,14 @@ data:
         head's current already IS its own candidate plan (a concurrent
         retry of the same decomposition_key), which is idempotent success:
         it resumes rather than self-defeats. Only a DISTINCT competing
-        candidate loses. The head can never point at a losing plan and
+        candidate loses. Bootstrap is the degenerate case of the same
+        transaction: a target with no head yet creates the pending plan
+        and INSERTS its PlanHead row atomically — target_key's uniqueness
+        makes the insert the CAS, so a concurrent first decomposition
+        either resumes idempotently (same decomposition_key already
+        heads the target) or loses and lands awaiting-operator; with no
+        predecessor the retirement set is empty and the plan activates
+        immediately. The head can never point at a losing plan and
         there is no window between head-move and supersession
         — a concurrent would-be successor loses that CAS and durably moves
         to plan state awaiting-operator with the error recorded, so
