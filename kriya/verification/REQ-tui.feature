@@ -11,7 +11,7 @@ Feature: TUI overview
     And the run awaiting human review is shown as such
 
   Scenario: everything needing the operator lands in one inbox
-    Given an SA scope escalation, an invalidating spike finding, an awaiting-operator plan, an expired review-round claim, and a build stall all exist
+    Given an SA scope escalation, an invalidating spike finding, an awaiting-operator plan, an awaiting-operator BuildRun carrying its durable error cause, an expired review-round claim, and a build stall all exist
     When the operator opens the inbox
     Then each item appears with its cause
     And no such item is discoverable only in a log file

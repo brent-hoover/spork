@@ -159,7 +159,7 @@ requirements:
         statement: "The ordering guarantee is scoped to the plan's own tickets: the assignment phase assigns every spike before any implementation ticket, so among a plan's workable tickets a spike pops ahead of the plan's implementation work under sutra's FIFO; pre-existing assignments from other plans may pop between them, which is safe because they do not depend on this plan's risks — and work that DOES depend on a risk is blocked by relation regardless, so queue position alone can never start it early. No tracker-side priority is assumed."
         test: verification/REQ-risk-first.feature#spikes surface ahead of ordinary work
       - id: AC-risk-retire
-        statement: A spike closes through sutra's own gate — its documented finding is submitted as a document-deliverable Review on the spike ticket, and approval closes the spike and unblocks dependents; the risk is retired by approved evidence, not assertion.
+        statement: "A spike closes through sutra's own gate — its documented finding is submitted as a document-deliverable Review on the spike ticket, and approval closes the spike and unblocks dependents; the risk is retired by approved evidence, not assertion. A changes-requested verdict returns the run to its research loop: the revised finding is a new document version under a fresh revision-scoped doc key, and the resubmission rides the same write-ahead resubmitting machinery as code reviews — the run never rests in finding-submitted with a rejected review."
         test: verification/REQ-risk-first.feature#a finding retires the risk and unblocks dependents
       - id: AC-risk-escalate
         statement: A spike whose finding invalidates the planned approach does not let dependent work proceed; it escalates to the operator, its own run takes the write-ahead cancellation protocol — cancelling recorded, the spike ticket conditionally deferred (never open), then the terminal cancelled state — BEFORE any supersession, so retirement classifies it as released work rather than issued work that will finish, and the remedy is the amended-spec path — re-intake and supersession, never a silent workaround.
@@ -186,7 +186,7 @@ requirements:
     title: Isolated workspace (worktree/branch) per ticket
     acceptance:
       - id: AC-workspace-isolated
-        statement: Starting a BuildRun creates a dedicated worktree on a ticket-named branch cut from the project's default branch; concurrent runs never share a working tree, and one run's uncommitted state is invisible to every other.
+        statement: Starting a BuildRun creates a dedicated worktree on a RUN-SCOPED branch — named by ticket and run — cut from the project's default branch; concurrent runs never share a working tree, one run's uncommitted state is invisible to every other, and a later run for the same reopened or carried-forward ticket gets its own branch and worktree, never colliding with a predecessor's preserved, quarantined branch.
         test: verification/REQ-workspaces.feature#each run gets an isolated worktree
       - id: AC-workspace-recorded
         statement: The workspace's deterministic path, branch, and base commit are persisted in a pending state BEFORE the worktree is created and flipped to created transactionally after, so recovery can always locate a run's work, verify its base, and adopt or recreate a crash-window worktree — none is ever undiscoverable.
@@ -403,7 +403,7 @@ requirements:
         statement: "The TUI shows live: running BuildRuns with their position in the gate chain, queued and blocked tickets, and runs waiting on human review."
         test: verification/REQ-tui.feature#one screen shows the build's live state
       - id: AC-tui-inbox
-        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, expired review-round claims and unresolved orphans, and build stalls."
+        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, awaiting-operator BuildRuns with their durable error cause — binding ambiguity, missing mappings, vanished worktrees, dirty-cleanup refusals — expired review-round claims and unresolved orphans, and build stalls."
         test: verification/REQ-tui.feature#everything needing the operator lands in one inbox
       - id: AC-tui-act
         statement: "The protocol's operator actions are executable from the TUI, not just visible: restore or retry a parked plan, reconcile and reset a review round, approve or reject an escalated scope change."
@@ -506,7 +506,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-build-run.state, ENT-build-run.error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
@@ -1067,7 +1067,7 @@ data:
         - { name: spec_hash, type: string }  # inherited from the matched plan's intake-pinned snapshot; for unplanned tickets taken from the mapping's intake-pinned spec_hash — NEVER read fresh from the working tree, and a mapping without one parks the run awaiting-operator (explicit intake is the remedy) — so builds and recovery always execute against a stored, intake-approved SpecSnapshot
         - { name: ticket, type: string }  # opaque tracker id; absent until the pop returns, bound transactionally
         - { name: plan, type: ref, ref: ENT-plan }  # lineage only — bound when exactly one plan records the ticket; absent pre-pop, on no-work rows, and for unplanned or ambiguous tickets
-        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged; research runs traverse research-loop -> finding-submitted -> closed (the document path CON-gate-chain carves out — no code gates apply); the finding's doc mutation and its review creation are each write-ahead and keyed-replayed exactly like code and completion submissions
+        - { name: state, type: enum, required: true, values: [queued, no-work, dev-loop, gates, po-validation, review-submitted, awaiting-operator, merging, merged, failed, cancelling, cancelled, research-loop, finding-submitted, closed] }  # one state per stage — deterministic crash recovery, no skippable gates. Code runs traverse dev-loop -> gates -> po-validation -> review-submitted -> merging -> merged; research runs traverse research-loop -> finding-submitted -> closed, returning finding-submitted -> research-loop on a changes-requested verdict (the document path CON-gate-chain carves out — no code gates apply); the finding's doc mutation, its review creation, and its rework resubmission are each write-ahead and keyed-replayed exactly like code and completion submissions
         - { name: review, type: string }  # opaque tracker review id once submitted — restart-safe polling, resubmission, and merge
         - { name: review_submission_key, type: string }  # deterministic per (run, head commit) — every review-creating call (initial submission, post-merge fresh review) persists this key with state submitting BEFORE calling sutra and sends it as the request's Idempotency-Key; recovery REPLAYS the persisted request under the same key — sutra returns the original response for a landed request and creates otherwise — so exactly one review exists either way, never orphaned, never duplicated
         - { name: gated_base, type: string }  # the default-branch head the gate chain ran against at the run's head commit, updated as gates run; the merge preflight requires the default branch to still equal exactly this, and the merge itself CASes against it
@@ -1081,6 +1081,7 @@ data:
         - { name: review_resubmission_commit, type: string }  # immutable — the fully-gated head commit the pending resubmission names; replay reproduces the original request even if the branch moved after the crash
         - { name: round_limit, type: integer, required: true }  # impasse limit snapshotted from configuration at run creation and used for the run's lifetime — a config change or restart never moves a live run's threshold
         - { name: workspace, type: ref, ref: ENT-workspace }
+        - { name: error, type: string }  # durable cause whenever the run parks awaiting-operator — binding ambiguity, unresolvable or snapshot-less mapping, a created worktree gone missing, a dirty-cleanup refusal — exactly what the operator inbox displays
         - { name: started, type: datetime }
         - { name: finished, type: datetime }
     - id: ENT-workspace

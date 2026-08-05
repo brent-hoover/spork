@@ -5,9 +5,15 @@ Feature: Isolated workspaces
 
   Scenario: each run gets an isolated worktree
     Given two BuildRuns start for tickets "KRI-1" and "KRI-2"
-    Then each run has its own worktree on a branch named for its ticket
+    Then each run has its own worktree on a run-scoped branch — named by ticket and run
     And each branch is cut from the project's default branch
     And uncommitted changes in one worktree are invisible to the other
+
+  Scenario: a successor run for the same ticket never collides
+    Given a retired run for ticket "KRI-7" whose branch survives with unmerged commits
+    When a new BuildRun starts for the reopened "KRI-7"
+    Then it gets its own run-scoped branch and worktree
+    And the predecessor's branch remains quarantined and untouched until merge or operator disposal
 
   Scenario: the workspace is durably recorded
     Given a BuildRun is about to create its worktree

@@ -30,6 +30,14 @@ Feature: Risk-first planning
     And the dependent tickets become workable
     And a spike with no approved finding review cannot close
 
+  Scenario: a rejected finding is revised and resubmitted
+    Given a finding review receives changes-requested
+    Then the run returns from finding-submitted to its research loop
+    When the agent revises the finding
+    Then a new document version is created under a fresh revision-scoped doc key
+    And the resubmission rides the write-ahead resubmitting machinery, incrementing the review's revision
+    And the run never rests in finding-submitted with a rejected review
+
   Scenario: an invalidating finding escalates instead of proceeding
     Given a spike whose documented finding invalidates the planned approach
     When the agent records the finding
