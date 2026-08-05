@@ -403,7 +403,7 @@ requirements:
         statement: "The TUI shows live: running BuildRuns with their position in the gate chain, queued and blocked tickets, and runs waiting on human review."
         test: verification/REQ-tui.feature#one screen shows the build's live state
       - id: AC-tui-inbox
-        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, awaiting-operator BuildRuns with their durable error cause — binding ambiguity, missing mappings, vanished worktrees, dirty-cleanup refusals — expired review-round claims and unresolved orphans, and build stalls."
+        statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, awaiting-operator BuildRuns with their durable error cause — binding ambiguity, missing mappings, vanished worktrees, dirty-cleanup refusals — expired review-round claims, unresolved enqueue attempts — pending ones and completed ones whose id is not their round's accepted external id — and unresolved orphans, and build stalls."
         test: verification/REQ-tui.feature#everything needing the operator lands in one inbox
       - id: AC-tui-act
         statement: "The protocol's operator actions are executable from the TUI, not just visible: restore or retry a parked plan, reconcile and reset a review round, approve or reject an escalated scope change."
@@ -506,7 +506,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-enqueue-attempt.external_id, ENT-enqueue-attempt.created, ENT-enqueue-attempt.resolved, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
