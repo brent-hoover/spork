@@ -25,6 +25,12 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed — a spent review's verdict cannot be rewritten through import
 
+  Scenario: an invariant-violating hierarchy is rejected at import
+    Given an export payload containing a complete parent whose deferred child hides a descendant in status "open"
+    When it is imported
+    Then the import is rejected whole as malformed — imported state gets no cascade to repair it
+    And nothing is written
+
   Scenario: colliding import is rejected whole
     Given project "SUT" already exists on the server
     When the same export is imported again

@@ -45,14 +45,34 @@ Feature: Review submission and merge
   Scenario: approval merges exactly once
     Given a review enters approved and the event is published
     And the branch head still equals the approved current revision's pinned commit
-    When kriya consumes the event
-    Then it calls sutra's keyed approval consumption at the expected current revision before merging
+    And the default-branch head still equals the gated_base the run's chain ran against
+    When kriya consumes the event inside the serialized merge section
+    Then the preflight computes a conflict-free deterministic merge result before anything is consumed
+    And kriya calls sutra's keyed approval consumption at the expected current revision before merging
     And the consumption is durably recorded on the review
     And a verdict reversal attempted after consumption is rejected by sutra
-    And what merges is that immutable pinned commit, never the mutable branch reference
+    And what merges is that immutable pinned commit, never the mutable branch reference, committed under a CAS on the default-branch head
     And the merge happens exactly once
     When the same approval event is replayed
     Then no second merge occurs
+
+  Scenario: a moved default branch forces integration before merge
+    Given a run gated against default-branch head "D1" while another run merged, moving the head to "D2"
+    When the approval event is processed
+    Then the preflight fails without consuming the approval — the combined result was never gated
+    And the run integrates "D2" into its branch, reruns the full gate chain, and submits a fresh review
+
+  Scenario: a conflicting preflight consumes nothing
+    Given the deterministic merge of the pinned commit into the current default head conflicts
+    When the approval event is processed
+    Then no approval is consumed and nothing merges
+    And the run integrates the current default head, reruns the gates, and submits a fresh review
+
+  Scenario: a post-consumption CAS failure never strands the run
+    Given the approval was consumed and an out-of-band push moved the default head before the merge committed
+    When the merge CAS fails
+    Then the consumed approval stays spent in history
+    And the run integrates the new head, reruns the full chain, and submits a fresh review — never stranded
 
   Scenario: a moved head refuses the merge
     Given a review enters approved and the event is published

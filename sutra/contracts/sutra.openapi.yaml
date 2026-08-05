@@ -140,7 +140,12 @@ paths:
         recomputed. Import deliberately targets empty servers: rejected as a
         whole, naming the conflict, if any UUID already exists on this
         server (AC-import-collision) — any pre-existing UUID is a
-        collision, including identity ids; no partial imports. Imported
+        collision, including identity ids; no partial imports. Hierarchies
+        are validated against the completion invariant: a complete issue
+        with any descendant in open, in-progress, or blocked — at any depth,
+        including beneath deferred children — rejects the import whole as
+        malformed (AC-parent-reopen-cascade holds for imported state, which
+        arrives with no cascade to repair it). Imported
         events are preserved verbatim, and import appends exactly one
         `project.imported` event, stamped with `actor`, that never re-stamps
         per-record creation events. `actor` is the identity performing the
@@ -383,11 +388,12 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            The transition is rejected: closing without naming a review that
-            belongs to the issue, is approved at its current revision, and is
-            not already close-used; an active descendant at any depth —
-            including beneath deferred children — holding the issue open; or
-            the issue's project being archived.
+            The transition is rejected: closing with a NAMED review that does
+            not belong to the issue, is not approved at its current revision,
+            or is already close-used (omitting review entirely on a complete
+            transition fails schema validation as 400, never 409); an active
+            descendant at any depth — including beneath deferred children —
+            holding the issue open; or the issue's project being archived.
             An expected_status precondition that does not match the issue's
             current status also conflicts (AC-status-conditional), as does an
             expected_subtree_revision that does not match the issue's current
