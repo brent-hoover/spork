@@ -99,8 +99,8 @@ requirements:
       Ready means buildable without further prompting; kriya holds the spec
       to its own claim, and additionally requires that EVERY module's
       effective stack (its per-field override where present, the project
-      stack otherwise) carries non-empty test, lint, typecheck, coverage,
-      and mutation commands — the gate chain runs per module with these
+      stack otherwise) carries non-empty test, lint, typecheck, arch,
+      coverage, and mutation commands — the gate chain runs per module with these
       resolved commands, which are persisted into the SpecSnapshot at
       pin time so builds and recovery execute exactly what intake
       validated.
@@ -112,7 +112,7 @@ requirements:
         statement: A project that verifies draft, or with any error or todo finding, is refused with the verify findings; no snapshot is pinned and nothing is enqueued.
         test: verification/REQ-spec-intake.feature#draft spec is refused
       - id: AC-intake-commands
-        statement: A module whose effective stack (module override where present, project stack otherwise) is missing or blank on any of test, lint, typecheck, coverage, or mutation is refused, naming the module and the missing command — even when avspec verify alone reports ready.
+        statement: A module whose effective stack (module override where present, project stack otherwise) is missing or blank on any of test, lint, typecheck, arch, coverage, or mutation is refused, naming the module and the missing command — even when avspec verify alone reports ready.
         test: verification/REQ-spec-intake.feature#missing module command refuses intake
       - id: AC-intake-snapshot-authority
         statement: Working-tree edits to the spec never change what a build or recovery executes; both read the bound snapshot's pinned artifacts and resolved commands. A spec change enters the pipeline only through a new intake.
@@ -282,6 +282,9 @@ requirements:
       - id: AC-structure-hard-fail
         statement: "Structural findings are hard failures: no waiver at gate time — the remedy is code, or an operator-approved config change in the target project, which is a spec amendment and re-intake. A result from an older commit never satisfies the gate."
         test: verification/REQ-gate-structure.feature#structural findings cannot be waived
+      - id: AC-structure-arch
+        statement: The declared architecture command runs as its own commit-pinned gate per touched module — declared boundaries checked against real imports; a violation fails the gate, results upsert as GateResults, and a stale pass never satisfies the chain.
+        test: verification/REQ-gate-structure.feature#the arch gate checks real imports
       - id: AC-structure-feedback
         statement: A failure hands the tool's findings back to the dev agent and the loop continues; pass or fail, the result is upserted as a GateResult with detail, so reruns never duplicate.
         test: verification/REQ-gate-structure.feature#failures feed back and results upsert
@@ -302,6 +305,9 @@ requirements:
       - id: AC-coverage-every-arm
         statement: The gate runs each touched module's snapshot-resolved coverage command at the head commit and fails on any uncovered conditional arm; there is no threshold to slip under.
         test: verification/REQ-gate-branch-coverage.feature#any uncovered arm fails the gate
+      - id: AC-coverage-tests-pass
+        statement: The module's test command is its own commit-pinned gate and a prerequisite — coverage is judged only over a passing suite, and a failing test fails the chain regardless of coverage.
+        test: verification/REQ-gate-branch-coverage.feature#tests must pass before coverage is judged
       - id: AC-coverage-recorded
         statement: Results upsert as GateResults pinned to the commit, uncovered arms named in detail for the dev agent; stale passes never satisfy the chain.
         test: verification/REQ-gate-branch-coverage.feature#coverage results pin to the commit
@@ -320,7 +326,7 @@ requirements:
     rationale: The PO holds the big picture the coding agent cannot have.
     acceptance:
       - id: AC-po-position
-        statement: PO validation runs only after the review and mutation gates passed at the head commit; it cannot be skipped or reordered.
+        statement: PO validation runs only after every machine gate — review, test, structure, typing, arch, branch-coverage, mutation — passed at the head commit; it cannot be skipped or reordered.
         test: verification/REQ-po-validation.feature#the PO validates after review and mutation
       - id: AC-po-genuine
         statement: "The PO checks every AC on the ticket against actual behavior: each AC has a test that genuinely exercises it, and the implementation satisfies the AC's intent — in the context of the whole spec, which only the PO holds."
@@ -607,7 +613,7 @@ data:
         timestamp: when every ticket of the activated head plan is
         complete, kriya first records review-submitting — rotating the
         ENTIRE claim-field set (submission key, report doc, review id and
-        revision, claim epoch) transactionally as one unit for THIS
+        revision, claim epoch, and the epic's observed subtree_revision) transactionally as one unit for THIS
         attempt; the submission key is derived deterministically from
         (target_key, completion_epoch), so it is epoch-scoped — BEFORE
         the review-create call; sutra reviews are session-searchable, so
@@ -621,12 +627,19 @@ data:
         The fields are immutable within an attempt and rotated only by
         the next attempt's review-submitting transaction — with ONE
         in-attempt exception: a changes-requested verdict on the
-        completion review takes the rework path, regenerating the
-        report and resubmitting through sutra's resubmit path while
-        transactionally updating completion_report_doc and
-        completion_revision within the SAME attempt (key and epoch
+        completion review takes the rework path, itself write-ahead:
+        review-resubmitting is recorded FIRST — carrying a
+        revision-scoped resubmission key derived from (submission key,
+        next revision) and the pending report content reference —
+        before the new doc version or the sutra resubmission exists;
+        recovery from review-resubmitting reads the review's current
+        revision and reconciles (a landed resubmission is adopted, an
+        absent one replayed under the same key), and only then are
+        completion_report_doc and completion_revision updated
+        transactionally within the SAME attempt (key and epoch
         unchanged); the epic closes on the new revision's approval, so
-        a rejected completion review can never strand the target.
+        a rejected completion review can never strand the target and a
+        crash mid-rework never double-submits or loses the operation.
         The recorded review's id and revision land with the PlanHead
         generation the claim is about (completed_generation), and
         completion_state advances around every sutra call — closing
@@ -654,7 +667,13 @@ data:
         child reopened, and kriya stamps ONLY after a successful close:
         a delayed approval earned before a reopen or supersession can
         never stamp an unfinished target complete — it surfaces
-        instead. For a reopen landing AFTER a successful close, sutra's
+        instead. The close itself carries expected_subtree_revision —
+        the epic's subtree revision recorded with the claim set at
+        submission — so a descendant that reopened AND recompleted
+        before kriya consumed any event still refuses the close: sutra's
+        revision moved even though current state matches, and kriya then
+        advances its epoch and requires a fresh attempt with fresh
+        approval. For a reopen landing AFTER a successful close, sutra's
         reopen cascade is the invariant: reopening a child of a complete
         parent reopens the parent in the same sutra transaction, so the
         epic is never closed over an open child; kriya's stamp is a
@@ -673,13 +692,14 @@ data:
         - { name: target_key, type: string, required: true, unique: true }
         - { name: epic, type: string }  # opaque tracker epic id; absent until the create returns
         - { name: epic_state, type: enum, required: true, values: [pending, created] }
-        - { name: completion_state, type: enum, required: true, values: [none, review-submitting, review-submitted, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step; also the per-target SERIALIZER — a new close or reopen is issued only after the in-flight operation's outcome is durably resolved
+        - { name: completion_state, type: enum, required: true, values: [none, review-submitting, review-submitted, review-resubmitting, closing, complete, reopening] }  # write-ahead around each sutra call; recovery resumes the exact step; also the per-target SERIALIZER — a new close or reopen is issued only after the in-flight operation's outcome is durably resolved
         - { name: completion_submission_key, type: string }  # deterministic per (target_key, completion_epoch) — epoch-scoped; immutable within an attempt, rotated with the whole claim-field set when a new epoch's attempt enters review-submitting
         - { name: completion_report_doc, type: string }  # opaque doc-version id of the completion report; populated with the submission key
         - { name: completion_review, type: string }  # opaque tracker review id of the build-completion review
         - { name: completion_revision, type: integer }  # the review revision the approval must still carry
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession and every ticket reopen
+        - { name: completion_subtree_revision, type: integer }  # the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically when the head moves or a ticket reopens
         - { name: created, type: datetime, required: true }
@@ -1041,6 +1061,7 @@ data:
         the condition, carrying its cause; it is what the operator inbox
         lists, and resolution stamps it rather than deleting it.
       fields:
+        - { name: stall_key, type: string, required: true, unique: true }  # deterministic from (target_key, completion_epoch) — detection UPSERTS on it, so polls, concurrent detectors, and restart recovery converge on one row; re-detection of a resolved same-epoch stall reopens that row; a later epoch's stall is a new key
         - { name: target_key, type: string, required: true }
         - { name: cause, type: string, required: true }
         - { name: state, type: enum, required: true, values: [open, resolved] }

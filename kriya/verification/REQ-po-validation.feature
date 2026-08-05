@@ -4,9 +4,9 @@ Feature: Product-owner validation
   gaming before anything reaches human review.
 
   Scenario: the PO validates after review and mutation
-    Given a run whose head commit has passed the review and mutation gates
+    Given a run whose head commit has passed every machine gate — review, test, structure, typing, arch, branch-coverage, and mutation
     Then PO validation begins
-    Given a run missing either gate at the head commit
+    Given a run missing any of those gates at the head commit
     Then PO validation does not run and cannot be reordered around the gap
 
   Scenario: every AC is checked against real behavior

@@ -24,6 +24,14 @@ Feature: Issue hierarchy
     When SUT-1 is transitioned to "complete"
     Then the transition is rejected naming the active descendant — deferred nodes cannot hide active work
 
+  Scenario: subtree revision fences history, not just state
+    Given SUT-1's subtree_revision is 7 as observed by a caller
+    And a child of SUT-1 reopens and recompletes, advancing SUT-1's subtree_revision to 9
+    When SUT-1 is transitioned to "complete" with expected_subtree_revision 7
+    Then the transition is rejected with a conflict — current state matches but history moved
+    When the caller re-reads and retries with expected_subtree_revision 9
+    Then the transition succeeds under its ordinary gates
+
   Scenario: reopening a child reopens a complete parent
     Given SUT-1 is "complete" and its child SUT-2 is "complete"
     When SUT-2 is reopened to "open"

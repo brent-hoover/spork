@@ -26,7 +26,7 @@ Feature: Context assembly
   Scenario: the toolset matches the ticket
     Given the snapshot resolves commands for the ticket's modules
     When the toolset is assembled
-    Then the touched modules' resolved test, lint, typecheck, coverage, and mutation commands are wired in
+    Then the touched modules' resolved test, lint, typecheck, arch, coverage, and mutation commands are wired in
     And tools irrelevant to the ticket are absent
 
   Scenario: relevant learnings are injected

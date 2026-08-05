@@ -17,6 +17,14 @@ Feature: Structural lint gate
     Given a passing structure result recorded at an older commit
     Then it does not satisfy the gate at the current head
 
+  Scenario: the arch gate checks real imports
+    Given a run at head commit "C2" whose ticket touched module "api"
+    When the arch gate runs the module's snapshot-resolved architecture command
+    Then declared boundaries are checked against the code's real imports
+    And an undeclared import fails the gate for "api"
+    And the result upserts as a GateResult with gate "arch" pinned to "C2"
+    And a passing arch result from an older commit never satisfies the chain
+
   Scenario: failures feed back and results upsert
     Given the structure gate fails with findings
     Then the tool's findings are handed to the dev agent and the loop continues

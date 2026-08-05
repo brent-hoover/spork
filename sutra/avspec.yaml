@@ -150,6 +150,9 @@ requirements:
       - id: AC-parent-reopen-cascade
         statement: Whenever an issue enters open, in-progress, or blocked — by reopening from complete, by leaving deferred, or by being attached as a child beneath a complete parent — every complete ancestor reopens atomically in the same transaction, with status events recorded on each; no complete issue ever has a descendant in open, in-progress, or blocked.
         test: verification/REQ-issue-hierarchy.feature#reopening a child reopens a complete parent
+      - id: AC-subtree-revision
+        statement: Every status transition or child attachment atomically increments subtree_revision on the issue and each ancestor; a complete transition may carry expected_subtree_revision and is rejected on mismatch — a descendant that reopened and recompleted since the caller's observation still fails the precondition, because history moved even though current state matches.
+        test: verification/REQ-issue-hierarchy.feature#subtree revision fences history, not just state
       - id: AC-parent-close-gate
         statement: Transitioning a parent to complete is rejected while any descendant — at any depth, including beneath deferred children — is open, in-progress, or blocked; deferred nodes whose whole subtree is deferred or complete do not hold the parent open.
         test: verification/REQ-issue-hierarchy.feature#open children hold the parent open
@@ -399,6 +402,7 @@ data:
         - { name: assignee, type: ref, ref: ENT-identity }
         - { name: created, type: datetime, required: true }
         - { name: updated, type: datetime, required: true }
+        - { name: subtree_revision, type: integer, required: true }  # init 0; incremented atomically on the issue AND every ancestor by each status transition or child attachment in its subtree — a history-aware fence, not a current-state check
       relations:
         - { to: ENT-label, kind: many_to_many, name: labels }
     - id: ENT-comment

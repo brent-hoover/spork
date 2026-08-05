@@ -9,6 +9,14 @@ Feature: Branch coverage gate
     And a module with every arm covered passes
     And no overall percentage can compensate for an uncovered arm
 
+  Scenario: tests must pass before coverage is judged
+    Given a run at head commit "C2" whose ticket touched module "api"
+    When the module's test command fails at "C2"
+    Then the test gate fails as its own commit-pinned GateResult with gate "test"
+    And the chain fails regardless of what coverage would report
+    When the test command passes at "C2"
+    Then coverage is judged over the passing suite
+
   Scenario: coverage results pin to the commit
     Given the coverage gate ran for module "api" at commit "C2"
     Then the result upserts as a GateResult with gate "branch-coverage" pinned to "C2"

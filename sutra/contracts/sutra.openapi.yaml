@@ -307,14 +307,24 @@ paths:
       summary: Transition an issue's status
       description: >-
         Transitions among open, in-progress, blocked, and deferred are free and
-        recorded as events; complete is gated on an approved Review and no open
-        children (AC-status-set, AC-status-reopen, AC-parent-close-gate,
-        AC-close-approved, AC-close-blocked-without). Invoked by the kanban board's
+        recorded as events; complete is gated on an approved Review and a
+        DESCENDANT-AWARE check — rejected while any descendant at any depth,
+        including beneath deferred children, is open, in-progress, or blocked
+        (AC-status-set, AC-status-reopen, AC-parent-close-gate,
+        AC-close-approved, AC-close-blocked-without). An issue entering open,
+        in-progress, or blocked atomically reopens every complete ancestor in
+        the same transaction, with a status event recorded on each
+        (AC-parent-reopen-cascade); every transition also increments
+        subtree_revision on the issue and its ancestors (AC-subtree-revision).
+        Invoked by the kanban board's
         drag-to-move action (ACT-move-card). The request may carry
         expected_status: when present and the issue's current status
         differs, the transition is rejected with a conflict — optimistic
         concurrency for racing writers, e.g. a deferral racing a
-        work-stack pop (AC-status-conditional).
+        work-stack pop (AC-status-conditional). A complete transition may
+        additionally carry expected_subtree_revision: mismatch rejects with a
+        conflict even when current state matches, fencing histories where a
+        descendant reopened and recompleted since the caller's observation.
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -329,6 +339,9 @@ paths:
               properties:
                 status: { $ref: '#/components/schemas/IssueStatus' }
                 expected_status: { $ref: '#/components/schemas/IssueStatus' }
+                expected_subtree_revision:
+                  type: integer
+                  description: Valid only when status is complete; rejected with a conflict if the issue's subtree_revision differs — a history-aware fence.
                 actor: { type: string, format: uuid }
       responses:
         '200':
@@ -461,8 +474,12 @@ paths:
       description: >-
         Creates a parent_of or blocks relation from this issue. Ancestry cycles
         (AC-parent-create) and blocking cycles, direct or transitive
-        (AC-block-no-cycles), are rejected. Records an `issue.relation-added`
-        event (subject: the relation's `from` issue).
+        (AC-block-no-cycles), are rejected. Attaching a child in open,
+        in-progress, or blocked beneath a complete parent atomically reopens
+        every complete ancestor in the same transaction, records a status event
+        on each, and increments their subtree_revision
+        (AC-parent-reopen-cascade, AC-subtree-revision). Records an
+        `issue.relation-added` event (subject: the relation's `from` issue).
       tags: [issues]
       parameters:
         - $ref: '#/components/parameters/IssueIdPath'
@@ -1595,6 +1612,9 @@ components:
           items: { $ref: '#/components/schemas/Label' }
         created: { type: string, format: date-time }
         updated: { type: string, format: date-time }
+        subtree_revision:
+          type: integer
+          description: Incremented atomically on the issue and every ancestor by each status transition or child attachment in its subtree.
 
     NewIssue:
       type: object

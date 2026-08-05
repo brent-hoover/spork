@@ -37,6 +37,13 @@ Feature: Run to complete
     Then the epic close is attempted through sutra, whose no-open-children gate is the authoritative check
     And after the close succeeds, completion is stamped on the BuildTarget row — a CAS requiring the current epoch to still equal the immutable claim epoch recorded at submission — and popping stops for that target
 
+  Scenario: a reopen-and-recomplete before the event is consumed still fences
+    Given a completion review was submitted with the epic's subtree revision recorded as 7
+    And a child ticket reopens and recompletes before kriya consumes any reopen event, advancing the revision to 9
+    When the approval event arrives and kriya attempts the epic close with expected subtree revision 7
+    Then sutra rejects the close — history moved even though current state matches
+    And kriya advances its epoch and a fresh attempt with fresh approval is required
+
   Scenario: a stale approval never stamps an unfinished target
     Given a build-completion review recorded with claim epoch 3
     And a supersession or a ticket reopen has since advanced the current epoch to 4

@@ -7,7 +7,7 @@ Feature: Spec intake
 
   Scenario: ready spec is pinned
     Given a project "shorty" whose avspec verifies status "ready" with zero errors and zero todo findings
-    And every module's effective stack resolves non-empty test, lint, typecheck, coverage, and mutation commands
+    And every module's effective stack resolves non-empty test, lint, typecheck, arch, coverage, and mutation commands
     When the operator points kriya at the project
     Then intake succeeds and a SpecSnapshot is pinned
     And the snapshot holds the full artifact set and every module's resolved commands
