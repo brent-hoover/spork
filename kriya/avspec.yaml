@@ -257,9 +257,9 @@ data:
         the planner; the orchestrator reaches the guard through its
         existing planner import.
       fields:
-        - { name: singleton_key, type: string, required: true, unique: true }  # constant — exactly one row, created at store bootstrap
-        - { name: unactivated_heads, type: integer, required: true }
-        - { name: version, type: integer, required: true }
+        - { name: singleton_key, type: string, required: true, unique: true }  # constant — exactly one row; bootstrap inserts it idempotently (the unique key makes the insert the CAS: a loser reads the existing row) with unactivated_heads 0 and version 0
+        - { name: unactivated_heads, type: integer, required: true }  # initialized to 0 at bootstrap — no plan exists yet, so nothing is unactivated and admissions flow immediately
+        - { name: version, type: integer, required: true }  # initialized to 0 at bootstrap; strictly increasing thereafter
     - id: ENT-plan-head
       name: PlanHead
       description: The single durable head per decomposition target — successor creation and activation move it by CAS, making the one-active-plan invariant enforceable rather than aspirational.
