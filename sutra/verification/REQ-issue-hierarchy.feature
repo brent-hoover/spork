@@ -47,7 +47,7 @@ Feature: Issue hierarchy
     Given SUT-1 is "complete" and its child SUT-2 is "complete"
     When SUT-2 is reopened to "open"
     Then SUT-1 returns to "open" in the same transaction
-    And a status event is recorded for both SUT-1 and SUT-2
+    And a status event is recorded for both SUT-1 and SUT-2, sharing the reopen request's operation id
 
   Scenario: a nested reopen cascades to every complete ancestor
     Given a fresh hierarchy where grandparent SUT-10, parent SUT-11, and leaf SUT-12 are all "complete"

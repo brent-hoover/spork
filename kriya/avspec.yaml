@@ -367,6 +367,12 @@ requirements:
       - id: AC-complete-supersede
         statement: A supersession mid-build moves the loop's horizon to the new head's ticket set; completion is always judged against the current head, never a superseded plan.
         test: verification/REQ-run-to-complete.feature#supersession moves the finish line
+      - id: AC-complete-active-work
+        statement: Completion detection counts every active target-scoped ticket — open, in progress, or blocked, resolved through the live tracker queue and mappings whether bound or not — and any of them prevents an attempt from starting.
+        test: verification/REQ-run-to-complete.feature#a blocked unplanned ticket blocks completion
+      - id: AC-complete-detached-reopen
+        statement: A reopen whose cascade verification shows the epic unreached — a ticket detached after the close — takes the explicit durable keyed reopen, so the epic never stays complete while kriya's stamp clears.
+        test: verification/REQ-run-to-complete.feature#a reopened detached ticket still reopens the epic
       - id: AC-complete-stall
         statement: When nothing is workable, nothing is in flight, and the epic still cannot close, a durable Stall row records the condition and its cause and surfaces in the operator inbox; resolution stamps it — never silent spinning, never a false done.
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
@@ -798,9 +804,11 @@ data:
         epoch, and the durable advance cause is AUTHORITATIVE — every advance INSERTS a CompletionAdvance record keyed uniquely by (target, event) in the advancing transaction, so any replayed event, in any order, collides and is a no-op; the record carries the cause recovery reads: every
         sutra-cascade-driven advance — a ticket reopening, deferred
         work activating, an active subtree attached — SKIPS the call
-        only after VERIFYING the cascade actually reached the epic
-        (the reopen's status events name the reopened ancestors; the
-        epic must be among them, which holds for every descendant
+        only after VERIFYING the cascade actually reached the epic —
+        the reopen's sibling events share its operation id, and the
+        epic must appear among their subjects, evidence recorded on the
+        advance's CompletionAdvance row —
+        (which holds for every descendant reopen, which holds for every descendant
         reopen since binds parent under the epic and reattachment
         reconciliation precedes every claim). A reopen that did NOT
         cascade — a ticket detached after the epic closed — takes the
@@ -841,7 +849,7 @@ data:
         - { name: completion_subtree_revision, type: integer }  # PRE-close: the epic's subtree_revision observed at submission, rotated with the claim set; the epic close carries it as expected_subtree_revision
         - { name: completion_closed_revision, type: integer }  # POST-close: the subtree_revision the close itself committed, taken from the close response and recorded atomically with the completed stamp — the mirror-trust comparison uses THIS, never the pre-close precondition
         - { name: completion_approval_event, type: string }  # immutable id of the approval event the pending close acts on, recorded with the exact review and revision before the close key derives — a reapproval after a reversal-induced conflict is a NEW event and therefore a fresh close key, never a replay of the cached conflict
-        - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is issued ONLY for supersession-driven advances where completion_state shows a close ever ran (and for stale-close compensation); every sutra-cascade-driven advance — ticket reopen, deferred activation, active-subtree attachment — skips it regardless of completion state, the cascade having already reopened the epic
+        - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is issued for supersession-driven advances where completion_state shows a close ever ran, for stale-close compensation, AND for any reopen whose persisted cascade verification failed — an uncascaded detached-ticket reopen enters this keyed reopening lifecycle; a cascade-driven advance skips it only when the recorded verification shows the epic among the cascade's subjects
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
         - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically by EVERY completion_epoch advance, whatever its cause — supersession, ticket reopen, deferred activation, subtree attachment, or compensation
         - { name: created, type: datetime, required: true }

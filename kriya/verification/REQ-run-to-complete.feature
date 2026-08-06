@@ -72,8 +72,8 @@ Feature: Run to complete
 
   Scenario: a reopened detached ticket still reopens the epic
     Given a target ticket was detached after the epic closed and is then reopened
-    When kriya consumes the reopen event and verifies the cascade
-    Then the epic is not among the reopened ancestors — no cascade reached it
+    When kriya consumes the reopen event and checks its operation id against the sibling events
+    Then the epic is not among their subjects — no cascade reached it — and the verification outcome is recorded on the advance
     And kriya issues the explicit durable keyed reopen, the epoch advances, and popping resumes
     And the epic is never left complete while kriya's stamp is cleared
 

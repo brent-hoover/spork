@@ -2085,10 +2085,13 @@ components:
         thread.imported, thread.anchor-changed, review.created,
         review.changes-requested, review.approved, review.resubmitted,
         review.consumed, project.created, project.archived, project.imported.
-      required: [id, kind, subject, actor, created]
+      required: [id, kind, subject, operation, actor, created]
       properties:
         id: { type: string, format: uuid }
         kind: { type: string }
+        operation:
+          type: string
+          description: The Idempotency-Key of the mutating request that produced this event. Every event one API transaction emits — ancestor-cascade events included — shares it, so subscribers can attribute a cascade to its trigger and verify which ancestors it reached.
         subject:
           type: string
           format: uuid

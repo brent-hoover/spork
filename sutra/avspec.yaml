@@ -149,7 +149,7 @@ requirements:
         statement: A parent shows progress over its children, e.g. 3 of 5 complete.
         test: verification/REQ-issue-hierarchy.feature#parent rolls up child progress
       - id: AC-parent-reopen-cascade
-        statement: Whenever an issue enters open, in-progress, or blocked — by reopening from complete or by leaving deferred — and whenever an attachment places active work beneath a complete parent (the attached child itself, or any descendant in its subtree, being open, in-progress, or blocked), every complete ancestor reopens atomically in the same transaction, with status events recorded on each; no complete issue ever has a descendant in open, in-progress, or blocked.
+        statement: Whenever an issue enters open, in-progress, or blocked — by reopening from complete or by leaving deferred — and whenever an attachment places active work beneath a complete parent (the attached child itself, or any descendant in its subtree, being open, in-progress, or blocked), every complete ancestor reopens atomically in the same transaction, with status events recorded on each — all sharing the triggering request's operation id, so a subscriber can verify exactly which ancestors the cascade reached; no complete issue ever has a descendant in open, in-progress, or blocked.
         test: verification/REQ-issue-hierarchy.feature#reopening a child reopens a complete parent
       - id: AC-subtree-revision
         statement: Every status-transition or parent_of-relation API transaction — attachment and removal alike, removal incrementing the former parent's chain; blocking relations do not participate — atomically increments subtree_revision by exactly ONE on each affected issue and each of its ancestors, however many cascaded transitions the transaction produces (a reopen that cascades to the parent still moves the parent's revision once, not once per hop); a complete transition may carry expected_subtree_revision and is rejected on mismatch — a descendant that reopened and recompleted since the caller's observation still fails the precondition, because history moved even though current state matches.
@@ -496,6 +496,7 @@ data:
       fields:
         - { name: kind, type: string, required: true }
         - { name: subject, type: string, required: true }
+        - { name: operation, type: string, required: true }  # the Idempotency-Key of the mutating request that produced this event; every event one API transaction emits — cascades included — shares it, so subscribers can attribute a cascade to its trigger
         - { name: actor, type: ref, ref: ENT-identity, required: true }
         - { name: payload, type: json }
         - { name: created, type: datetime, required: true }
