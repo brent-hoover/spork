@@ -19,6 +19,8 @@ Feature: Pollable event feed
     Then processing the feed through that watermark covers every event that could have affected the returned state
     Given an issue list matches nothing
     Then the empty response still carries its watermark
+    Given a work-stack pop claims an issue
+    Then the popped issue carries its atomically captured watermark like every live read
 
   Scenario: draining to a watermark is bounded and provable
     Given a consumer drains the feed with until set to a captured watermark

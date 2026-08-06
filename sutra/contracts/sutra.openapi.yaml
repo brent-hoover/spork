@@ -2532,9 +2532,9 @@ components:
       type: object
       properties:
         issue:
-          description: The claimed issue, now in-progress; absent if the stack was empty.
+          description: The claimed issue, now in-progress; absent if the stack was empty. An IssueRead — pop is a live read, so it carries the atomic feed watermark like every other.
           allOf:
-            - $ref: '#/components/schemas/Issue'
+            - $ref: '#/components/schemas/IssueRead'
 
     DocumentExport:
       type: object
