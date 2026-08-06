@@ -223,7 +223,7 @@ Feature: Run to complete
     And the row stamps resolved and the other target's completion detection arms normally
     Given a resolution's parenting call instead finds a concurrent parent on re-read
     Then the observed parent is fed back through the attribution algorithm
-    And a parent attributing to exactly one target is adopted — selected_target updates atomically and the row resolves only after that target's epoch advance and cascade reconciliation complete
+    And a parent attributing to exactly one target is adopted — selected_target updates and the resolution generation and key rotate in one transaction, the row resolving only after that target's epoch advance and cascade reconciliation complete
     And a parent attributing to none or several retains a conflicting ambiguity with suppression intact, the observed parent and failure recorded for the inbox
     Given the call fails with a permanent conflict
     Then the row records conflicting with the code and details in resolution_error, and reselection rotates the resolution generation and key atomically — no cached conflict suppresses the candidates forever

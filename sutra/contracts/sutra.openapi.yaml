@@ -1727,11 +1727,13 @@ components:
                  expected-subtree-revision-mismatch, review-close-used,
                  review-consumed, review-not-approved, open-children,
                  missing-approval, uuid-collision, malformed-import,
-                 bad-request, not-found]
+                 unique-violation, bad-request, not-found]
           description: >-
             Stable machine-readable cause, for deterministic client
             classification — a closed enum, so schema-valid responses cannot
-            invent values. Clients distinguishing transient races from
+            invent values. unique-violation covers every uniqueness
+            constraint (duplicate identity handles, template names, label
+            names), with the colliding resource named in conflicts. Clients distinguishing transient races from
             permanent conditions (e.g. kriya's parenting reconciliation) rely
             on this field, never on message text.
         conflicts:
