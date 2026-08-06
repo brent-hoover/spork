@@ -258,6 +258,18 @@ func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
 		out = append(out, i)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for idx := range out {
+		labels, err := LabelsOf(tx, out[idx].ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(labels) > 0 {
+			out[idx].Labels = labels
+		}
+	}
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate issues: %w", err)
 	}
 	return out, nil

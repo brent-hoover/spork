@@ -131,6 +131,15 @@ var implementedFeatures = []string{
 	"../verification/REQ-code-review.feature:149",          // moved default head rejects despite unchanged merge base
 	"../verification/REQ-code-review.feature:155",          // resubmission enforces the same base and head fences
 	"../verification/REQ-code-review.feature:165",          // unresolvable repository rejects submission
+	"../verification/REQ-kanban.feature:3",                 // columns mirror statuses
+	"../verification/REQ-kanban.feature:9",                 // drag is a real transition
+	"../verification/REQ-kanban.feature:15",                // cards carry the essentials
+	"../verification/REQ-doc-review-server.feature:4",      // doc renders in the browser
+	"../verification/REQ-doc-review-server.feature:10",     // comments pin to a spot in a version
+	"../verification/REQ-doc-review-server.feature:16",     // discussion sits beside the doc
+	"../verification/REQ-doc-review-server.feature:21",     // viewer learns of new versions
+	"../verification/REQ-thread-catalog.feature:10",        // threads read like conversations
+	"../verification/REQ-issue-hierarchy.feature:11",       // parent rolls up child progress
 }
 
 var contractRouter routers.Router
@@ -353,6 +362,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerMiscSteps(sc, cw)
 	rw := registerReviewSteps(sc, cw)
 	registerReviewFenceSteps(sc, cw, rw)
+	registerWebSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

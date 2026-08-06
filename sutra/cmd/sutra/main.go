@@ -18,6 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"sutra/internal/api"
+	"sutra/internal/web"
 )
 
 func main() {
@@ -29,6 +30,8 @@ func main() {
 func run() error {
 	addr := flag.String("addr", envOr("SUTRA_ADDR", "127.0.0.1:7357"), "listen address")
 	dbPath := flag.String("db", envOr("SUTRA_DB", "sutra.db"), "SQLite database path")
+	uiAddr := flag.String("ui-addr", envOr("SUTRA_UI_ADDR", ""), "web UI listen address (off when empty)")
+	uiActor := flag.String("ui-actor", envOr("SUTRA_UI_ACTOR", ""), "identity id web UI mutations act as")
 	flag.Parse()
 
 	db, err := sql.Open("sqlite", "file:"+escapeSQLitePath(*dbPath)+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
@@ -55,6 +58,23 @@ func run() error {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The web UI is a pure HTTP client of the API (MOD-web imports no
+	// sibling modules); it serves on its own listener when enabled.
+	var uiServer *http.Server
+	if *uiAddr != "" {
+		uiServer = &http.Server{
+			Addr:              *uiAddr,
+			Handler:           web.New("http://"+*addr, *uiActor).Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			log.Printf("sutra web UI on %s", *uiAddr)
+			if err := uiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("web UI: %v", err)
+			}
+		}()
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("sutra serving on %s (db %s)", *addr, *dbPath)
@@ -70,6 +90,9 @@ func run() error {
 		log.Printf("shutting down")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if uiServer != nil {
+			_ = uiServer.Shutdown(ctx)
+		}
 		if err := server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("shutdown: %w", err)
 		}
