@@ -165,6 +165,11 @@ func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, exp
 	if err := review.CheckRenderable(repo.Path, base, *d.Commit); err != nil {
 		return review.Deliverable{}, "", reviewErrorFrom(err)
 	}
+	// Pin both objects durably: a later branch deletion or force-push
+	// must never let gc prune what an accepted review resolves from.
+	if err := review.PinObjects(repo.Path, *d.Commit, base); err != nil {
+		return review.Deliverable{}, "", reviewErrorFrom(err)
+	}
 	return out, base, nil
 }
 

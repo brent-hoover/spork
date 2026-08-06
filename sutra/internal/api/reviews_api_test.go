@@ -885,3 +885,55 @@ func TestNonUTF8DiffRejected(t *testing.T) {
 		t.Fatalf("rejection must name the encoding: %s", body)
 	}
 }
+
+// TestDeliverableSurvivesBranchDeletionAndGC pins durable object pins:
+// after the feature branch is force-deleted and the repository pruned,
+// an accepted review's deliverable still resolves.
+func TestDeliverableSurvivesBranchDeletionAndGC(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := decoded["id"].(string)
+
+	for _, args := range [][]string{
+		{"branch", "-D", "feature"},
+		{"reflog", "expire", "--expire=now", "--all"},
+		{"gc", "--prune=now", "--aggressive"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v — %s", args, err, out)
+		}
+	}
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	decode(status, body, http.StatusOK, "deliverable after gc")
+	if !strings.Contains(decoded["content"].(string), "feature work") {
+		t.Fatalf("pinned content lost after gc: %.200s", decoded["content"].(string))
+	}
+}

@@ -560,6 +560,23 @@ func CheckRenderable(repoPath, baseCommit, commit string) error {
 	return err
 }
 
+// PinObjects records durable refs for a submission's commit and base —
+// refs/sutra/pins/<sha> — so branch deletion or a force-push can never
+// let garbage collection prune the objects an accepted review's
+// deliverable resolves from. Content-addressed and idempotent; pins
+// are never removed (submissions are immutable).
+func PinObjects(repoPath string, shas ...string) error {
+	for _, sha := range shas {
+		if sha == "" {
+			continue
+		}
+		if _, err := gitOut(repoPath, "update-ref", "refs/sutra/pins/"+sha, sha); err != nil {
+			return &GitError{Message: fmt.Sprintf("pin %s: %v", sha, err)}
+		}
+	}
+	return nil
+}
+
 // RevalidateFences re-checks BOTH submission fences with bounded git
 // (500ms per command) at the TAIL of the prepare stage — no database
 // lock held. The head is resolved once; when a base fence is supplied
