@@ -1717,21 +1717,39 @@ components:
 
     IssueRead:
       description: >-
-        An Issue as returned by API reads — identical to Issue plus a
-        REQUIRED feed_watermark, captured atomically with the read.
-        Import/export payloads use Issue, which never carries a
-        watermark.
-      allOf:
-        - $ref: '#/components/schemas/Issue'
-        - type: object
-          required: [feed_watermark]
-          properties:
-            feed_watermark:
-              type: string
-              description: Server-issued event-feed position captured atomically with this read; a consumer that has processed the feed through it has seen every event that could have affected the state returned. Lives only on reads — import/export payloads carrying it are rejected as malformed.
+        An Issue as returned by single-issue API reads — Issue's exact
+        property set (kept in lockstep; Issue is the strict import/export
+        shape with additionalProperties false, which is why this is a
+        standalone schema rather than a composition) plus a REQUIRED
+        feed_watermark captured atomically with the read.
+      type: object
+      additionalProperties: false
+      required: [id, number, title, status, project, created, updated, subtree_revision, feed_watermark]
+      properties:
+        id: { type: string, format: uuid }
+        number:
+          type: integer
+          description: Project-scoped display alias (e.g. SUT-42); never canonical identity.
+        title: { type: string }
+        body: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/IssueStatus' }
+        project: { type: string, format: uuid }
+        assignee: { type: string, format: uuid, nullable: true }
+        labels:
+          type: array
+          items: { $ref: '#/components/schemas/Label' }
+        created: { type: string, format: date-time }
+        updated: { type: string, format: date-time }
+        subtree_revision:
+          type: integer
+          description: See Issue.subtree_revision.
+        feed_watermark:
+          type: string
+          description: Server-issued event-feed position captured atomically with this read; a consumer that has processed the feed through it has seen every event that could have affected the state returned. Lives only on reads — import/export payloads carrying it are rejected as malformed (Issue's closed schema enforces this).
 
     Issue:
       type: object
+      additionalProperties: false
       required: [id, number, title, status, project, created, updated, subtree_revision]
       properties:
         id: { type: string, format: uuid }
@@ -2104,6 +2122,32 @@ components:
         display_name: { type: string }
 
     Event:
+      description: >-
+        Discriminated by kind: `issue.relation-removed` events REQUIRE a
+        RelationRemovedPayload; every other kind uses the general variant.
+      oneOf:
+        - $ref: '#/components/schemas/RelationRemovedEvent'
+        - $ref: '#/components/schemas/GeneralEvent'
+
+    RelationRemovedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventBase'
+        - type: object
+          required: [payload]
+          properties:
+            kind: { type: string, enum: [issue.relation-removed] }
+            payload: { $ref: '#/components/schemas/RelationRemovedPayload' }
+
+    GeneralEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventBase'
+        - not:
+            type: object
+            properties:
+              kind: { type: string, enum: [issue.relation-removed] }
+            required: [kind]
+
+    EventBase:
       type: object
       description: >-
         A single append-only stream, consumed both as the pollable feed and the
@@ -2140,10 +2184,7 @@ components:
             `subject`.
         actor: { type: string, format: uuid }
         payload:
-          description: >-
-            JSON event payload. For `issue.relation-removed` events the
-            payload is REQUIRED and conforms to RelationRemovedPayload; other
-            kinds carry kind-specific or absent payloads.
+          description: JSON event payload — kind-specific or absent; the relation-removed variant constrains it.
         created: { type: string, format: date-time }
 
     RelationRemovedPayload:

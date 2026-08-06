@@ -373,6 +373,9 @@ requirements:
       - id: AC-complete-detached-reopen
         statement: A reopen whose cascade verification shows the epic unreached — a ticket detached after the close — takes the explicit durable keyed reopen, so the epic never stays complete while kriya's stamp clears.
         test: verification/REQ-run-to-complete.feature#a reopened detached ticket still reopens the epic
+      - id: AC-complete-drained
+        statement: An untrusted completion stamp never reports done from current state — the fallback reads live state with its atomically captured feed watermark and processes the feed through it first, so pending revision-advancing events, a detached reopen-and-recomplete included, are consumed before any completion verdict.
+        test: verification/REQ-run-to-complete.feature#a detached reopen-and-recomplete cannot slip a stale completion
       - id: AC-complete-stall
         statement: When nothing is workable, nothing is in flight, and the epic still cannot close, a durable Stall row records the condition and its cause and surfaces in the operator inbox; resolution stamps it — never silent spinning, never a false done.
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause

@@ -13,3 +13,15 @@ Feature: Pollable event feed
     Given events of kinds "review.approved" and "issue.updated" exist for several issues
     When a consumer polls with kind "review.approved" and subject SUT-1
     Then it receives only review approvals for SUT-1
+
+  Scenario: watermarks anchor reads to the feed
+    Given an issue read returns state with its feed watermark captured atomically
+    Then processing the feed through that watermark covers every event that could have affected the returned state
+    Given an issue list matches nothing
+    Then the empty response still carries its watermark
+
+  Scenario: draining to a watermark is bounded and provable
+    Given a consumer drains the feed with until set to a captured watermark
+    And new events keep arriving concurrently
+    Then each page reports drained false until everything through the fixed watermark has been returned
+    And the page that completes the drain reports drained true — later concurrent events do not move the bound
