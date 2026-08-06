@@ -11,3 +11,15 @@ Feature: Identities without auth
     When issue SUT-1 is assigned to that identity id
     Then the operation is rejected
     And nothing is created
+
+  Scenario Outline: uniqueness collisions name their colliding resource
+    Given a request that would create <duplicate>
+    When it is rejected with a conflict
+    Then the error's code is "unique-violation" and conflicts names the colliding resource
+
+    Examples:
+      | duplicate                 |
+      | a duplicate project key   |
+      | a duplicate handle        |
+      | a duplicate label name    |
+      | a duplicate template name |

@@ -224,6 +224,7 @@ Feature: Run to complete
     Given a resolution's parenting call instead finds a concurrent parent on re-read
     Then the observed parent is fed back through the attribution algorithm
     And a parent attributing to exactly one target is adopted — selected_target updates and the row moves to the adopted state in one transaction
+    And a parent verified as the epic's descendant records external cascade evidence, while one outside the epic persists an explicit-reopen obligation executed by the keyed reopen before resolution, its foreign parentage surfacing for cede or reclaim
     And adopted recovery resumes only the adopted target's epoch advance and cascade reconciliation — never an attachment replay against the already-parented ticket
     And the row resolves only after that reconciliation completes
     And a parent attributing to none or several retains a conflicting ambiguity with suppression intact, the observed parent and failure recorded for the inbox

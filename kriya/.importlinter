@@ -1,0 +1,196 @@
+# Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
+# enforced against real imports by the stack's arch command:
+#   uv run lint-imports
+# One package per module; each forbidden contract lists every kriya module
+# the source may NOT import — the complement of its declared may_import.
+# Modules with an empty may_import forbid all other domain modules.
+
+[importlinter]
+root_package = kriya
+
+[importlinter:contract:planner]
+name = planner imports only tracker-client
+type = forbidden
+source_modules = kriya.planner
+forbidden_modules =
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.architect
+    kriya.owner
+    kriya.context
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:orchestrator]
+name = orchestrator imports planner, workspace, dev-loop, gates, owner, tracker-client
+type = forbidden
+source_modules = kriya.orchestrator
+forbidden_modules =
+    kriya.review_bridge
+    kriya.architect
+    kriya.context
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:workspace]
+name = workspace imports nothing
+type = forbidden
+source_modules = kriya.workspace
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.architect
+    kriya.owner
+    kriya.context
+    kriya.tracker_client
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:dev-loop]
+name = dev-loop imports context, review-bridge, architect
+type = forbidden
+source_modules = kriya.dev_loop
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.gates
+    kriya.owner
+    kriya.tracker_client
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:review-bridge]
+name = review-bridge imports nothing
+type = forbidden
+source_modules = kriya.review_bridge
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.gates
+    kriya.architect
+    kriya.owner
+    kriya.context
+    kriya.tracker_client
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:gates]
+name = gates imports nothing
+type = forbidden
+source_modules = kriya.gates
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.architect
+    kriya.owner
+    kriya.context
+    kriya.tracker_client
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:architect]
+name = architect imports nothing
+type = forbidden
+source_modules = kriya.architect
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.owner
+    kriya.context
+    kriya.tracker_client
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:owner]
+name = owner imports nothing
+type = forbidden
+source_modules = kriya.owner
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.architect
+    kriya.context
+    kriya.tracker_client
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:context]
+name = context imports only tracker-client
+type = forbidden
+source_modules = kriya.context
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.architect
+    kriya.owner
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:tracker-client]
+name = tracker-client imports nothing
+type = forbidden
+source_modules = kriya.tracker_client
+forbidden_modules =
+    kriya.planner
+    kriya.orchestrator
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.architect
+    kriya.owner
+    kriya.context
+    kriya.cli
+    kriya.tui
+
+[importlinter:contract:cli]
+name = cli imports planner, orchestrator, context
+type = forbidden
+source_modules = kriya.cli
+forbidden_modules =
+    kriya.workspace
+    kriya.dev_loop
+    kriya.review_bridge
+    kriya.gates
+    kriya.architect
+    kriya.owner
+    kriya.tracker_client
+    kriya.tui
+
+[importlinter:contract:tui]
+name = tui imports orchestrator, architect, review-bridge
+type = forbidden
+source_modules = kriya.tui
+forbidden_modules =
+    kriya.planner
+    kriya.workspace
+    kriya.dev_loop
+    kriya.gates
+    kriya.owner
+    kriya.context
+    kriya.tracker_client
+    kriya.cli

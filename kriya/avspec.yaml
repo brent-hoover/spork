@@ -1381,7 +1381,17 @@ data:
         candidate. The parenting call runs the SAME conflict-aware
         lifecycle as new-work advances: a concurrent parent found on
         re-read is fed back through the target-attribution algorithm —
-        a parent attributing to exactly ONE target is ADOPTED:
+        a parent attributing to exactly ONE target is ADOPTED —
+        with the evidence matched to HOW it attributed: a parent that is
+        the target's epic or verified as its descendant carries sutra's
+        attach-invariant guarantee that the epic reopened, recorded as
+        external cascade evidence; a unique attribution through plan
+        membership or run binding whose parent sits OUTSIDE the epic
+        proves no such cascade, so the row persists a durable
+        explicit-reopen obligation and executes the keyed reopen before
+        it can resolve, the foreign parentage surfacing through the
+        standard conflicting-parentage record for the operator to cede
+        or reclaim. Either way
         selected_target updates to that target and the row moves to the
         distinct ADOPTED state in one transaction — the prior key's
         request targeted a different epic and is dead, and adopted
