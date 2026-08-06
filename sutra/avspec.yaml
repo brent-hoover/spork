@@ -234,10 +234,10 @@ requirements:
         statement: A review comment carrying a superseded revision is rejected and no comment is created.
         test: verification/REQ-code-review.feature#stale comments are rejected
       - id: AC-review-resolution-guard
-        statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission; a supplied expected base commit that differs from the resolved base, or a supplied expected default head that differs from the current default-branch ref, is rejected the same way, atomically, before any review, submission, or event exists.
+        statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission; a supplied expected base commit that differs from the base resolved at submission, or a supplied expected default head that differs from the ref as observed at submission, is rejected the same way before any review, submission, or event exists — the fences reject stale caller observations of an external store no tracker transaction can lock.
         test: verification/REQ-code-review.feature#unresolvable repository rejects submission
       - id: AC-review-submission-fence
-        statement: A code submission or resubmission carrying expected_base_commit or expected_default_head is validated atomically against the resolved merge base and the current default-branch ref; a mismatch on either rejects with a conflict and creates no review, submission, or event.
+        statement: A code submission or resubmission carrying expected_base_commit or expected_default_head is validated against the merge base and default-branch ref as observed at submission time; a mismatch on either rejects with a conflict and creates no review, submission, or event. The repository is external — the fence catches stale caller knowledge and the pinned base_commit stays authoritative for what approval covers; nothing serializes against pushes concurrent with the submission.
         test: verification/REQ-code-review.feature#both fences guard creation and resubmission
       - id: AC-review-reverdict
         statement: A verdict carrying the current revision always applies, including reversing an earlier verdict, UNTIL the approval is consumed; the latest verdict for the current revision is authoritative and every verdict is recorded, and a verdict on a consumed review is rejected with no mutation.

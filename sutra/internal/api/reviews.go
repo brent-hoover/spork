@@ -186,7 +186,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 	// mutations. The transaction revalidates the database-side facts.
 	prepare := func(r *http.Request) (any, *apiError) {
 		var req newReviewRequest
-		if apiErr := rejectExplicitNulls(r, &req, "expected_base_commit", "expected_default_head"); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "issue", "author", "summary", "session", "branch", "commit", "doc_version", "expected_base_commit", "expected_default_head"); apiErr != nil {
 			return nil, apiErr
 		}
 		// Snapshot database facts, CLOSE the read transaction, and only
@@ -470,7 +470,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("reviewId")
 	prepare := func(r *http.Request) (any, *apiError) {
 		var req resubmitRequest
-		if apiErr := rejectExplicitNulls(r, &req, "expected_base_commit", "expected_default_head"); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "author", "summary", "session", "branch", "commit", "doc_version", "expected_revision", "expected_verdict_event", "expected_base_commit", "expected_default_head"); apiErr != nil {
 			return nil, apiErr
 		}
 		if req.ExpectedRevision == nil || !isUUID(req.ExpectedVerdictEvent) {

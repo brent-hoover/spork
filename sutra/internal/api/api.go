@@ -154,7 +154,7 @@ func (s *server) createIdentity(w http.ResponseWriter, r *http.Request) {
 			Kind        string  `json:"kind"`
 			DisplayName *string `json:"display_name"`
 		}
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "handle", "kind", "display_name"); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		if req.Handle == "" || (req.Kind != "human" && req.Kind != "agent") {
@@ -180,7 +180,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 			DefaultBranch *string `json:"default_branch"`
 			Actor         string  `json:"actor"`
 		}
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "key", "name", "description", "repo_path", "default_branch", "actor"); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		if req.Key == "" || req.Name == "" {

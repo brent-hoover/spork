@@ -530,14 +530,15 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	return string(raw), nil
 }
 
-// RevalidateFences re-checks BOTH submission fences at the mutation's
-// linearization point — bounded git (500ms per command), under the
-// write lock only for fenced submissions. The head is resolved once;
-// when a base fence is supplied the merge base is recomputed against
-// that same immutable head sha, so a default branch that moved after
-// preparation can never commit a stale base past either fence. Local
-// commands answer in milliseconds; ones that cannot answer in 500ms
-// fail the request unsettled rather than starving concurrent writers.
+// RevalidateFences re-checks BOTH submission fences with bounded git
+// (500ms per command) at the TAIL of the prepare stage — no database
+// lock held. The head is resolved once; when a base fence is supplied
+// the merge base is recomputed against that same immutable head sha.
+// This is the tightest observation an implementation can make: the
+// repository is an external store, so fences carry
+// observed-at-submission semantics (they reject stale caller
+// knowledge) and nothing serializes against concurrent pushes — see
+// the contract's expected_base_commit/expected_default_head.
 func RevalidateFences(repo Repo, commit string, f Fences) error {
 	head, err := gitOutTimeout(repo.Path, 500*time.Millisecond, "rev-parse", "refs/heads/"+repo.DefaultBranch)
 	if err != nil {

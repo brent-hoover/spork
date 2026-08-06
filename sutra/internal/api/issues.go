@@ -79,7 +79,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			Assignee *string `json:"assignee"`
 			Actor    string  `json:"actor"`
 		}
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "title", "body", "assignee", "actor"); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		if req.Title == "" {

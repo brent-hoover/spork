@@ -322,3 +322,33 @@ func TestUpdateIssueNullFieldsRejected(t *testing.T) {
 		t.Fatalf("null patch emitted events: %s", body)
 	}
 }
+
+// TestOptionalFieldNullsRejectedEverywhere sweeps representative
+// endpoints: explicit null on an optional non-nullable field is 400
+// with nothing created.
+func TestOptionalFieldNullsRejectedEverywhere(t *testing.T) {
+	srv, db := startAPI(t)
+	cases := []struct {
+		name, path, body string
+	}{
+		{"identity display_name", "/identities", `{"handle":"x","kind":"human","display_name":null}`},
+		{"project default_branch", "/projects", `{"key":"NUL","name":"n","actor":"00000000-0000-7000-8000-000000000001","default_branch":null}`},
+		{"project description", "/projects", `{"key":"NUL","name":"n","actor":"00000000-0000-7000-8000-000000000001","description":null}`},
+	}
+	for i, tc := range cases {
+		status, body := req(t, srv, http.MethodPost, tc.path, fmt.Sprintf("null-%d", i), tc.body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d %s", tc.name, status, body)
+		}
+	}
+	var identities, projects int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&identities); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&projects); err != nil {
+		t.Fatal(err)
+	}
+	if identities != 0 || projects != 0 {
+		t.Fatalf("null requests created resources: %d identities, %d projects", identities, projects)
+	}
+}
