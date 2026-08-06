@@ -866,7 +866,7 @@ data:
         - { name: completion_approval_event, type: string }  # immutable id of the approval event the pending close acts on, recorded with the exact review and revision before the close key derives — a reapproval after a reversal-induced conflict is a NEW event and therefore a fresh close key, never a replay of the cached conflict
         - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is issued for supersession-driven advances where completion_state shows a close ever ran, for stale-close compensation, AND for any reopen whose persisted cascade verification failed — an uncascaded detached-ticket reopen enters this keyed reopening lifecycle; a cascade-driven advance skips it only when cascade_verified records reached — a matching issue.status-changed event for the epic, with its reopened status, under the same operation; subject presence alone never suppresses the call
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
-        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically by EVERY completion_epoch advance, whatever its cause — supersession, ticket reopen, deferred activation, subtree attachment, or compensation
+        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically by EVERY completion_epoch advance, whatever its cause — supersession, ticket reopen, deferred activation, subtree attachment, detachment, or compensation
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
       name: Plan
@@ -1313,13 +1313,20 @@ data:
         claims in a multi-mapping project. Detection upserts on the
         deterministic key, the inbox lists open rows, and the operator
         resolves one by parenting the ticket under a target's epic —
-        the resolution action — which stamps the row resolved; a
+        the resolution action, itself write-ahead: the selected target
+        and the parenting mutation's idempotency key persist with state
+        resolving BEFORE sutra is called, recovery replays the keyed
+        mutation and stamps resolved transactionally with the outcome —
+        a crash after the relation lands but before the stamp can never
+        strand an open inbox entry. A
         re-detected same ticket reopens its row, never duplicating.
       fields:
         - { name: ambiguity_key, type: string, required: true, unique: true }  # deterministic per (project_key, ticket)
         - { name: project_key, type: string, required: true }
         - { name: ticket, type: string, required: true }
-        - { name: state, type: enum, required: true, values: [open, resolved] }
+        - { name: selected_target, type: string }  # persisted with state resolving, before the parenting call
+        - { name: resolution_key, type: string }  # the parenting mutation's Idempotency-Key — recovery replays under it
+        - { name: state, type: enum, required: true, values: [open, resolving, resolved] }
         - { name: created, type: datetime, required: true }
         - { name: resolved, type: datetime }
     - id: ENT-stall

@@ -261,8 +261,15 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/IssueRead' }
+                type: object
+                required: [issues, feed_watermark]
+                properties:
+                  issues:
+                    type: array
+                    items: { $ref: '#/components/schemas/IssueRead' }
+                  feed_watermark:
+                    type: string
+                    description: Server-issued feed position captured atomically with this query — present even when issues is empty, so a consumer can always reconcile the feed against exactly what this read reflected.
 
   /issues/{issueId}:
     get:
@@ -581,7 +588,10 @@ paths:
       summary: Remove a relation
       description: >-
         Removal clears both sides (AC-block-create) and records an
-        `issue.relation-removed` event. Removing a parent_of relation
+        `issue.relation-removed` event whose payload snapshots the removed
+        relation — its id, kind, former `from`, and former `to` — so a
+        consumer can distinguish a parent_of detachment from a removed
+        blocks relation and identify the detached child. Removing a parent_of relation
         atomically increments subtree_revision on the former parent and each
         of its ancestors (AC-subtree-revision) — a detached-then-reopened
         child cannot leave a stale revision satisfying a close fence.
@@ -1495,9 +1505,13 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: until
+          in: query
+          description: A feed watermark to drain to. When present, the response's `drained` flag reports whether every event through that watermark has now been returned — the bounded reconciliation consumers like kriya's completion fallback rely on, correct under concurrent event traffic because the watermark is a fixed position.
+          schema: { type: string }
       responses:
         '200':
-          description: A page of events newer than the cursor, plus the cursor to resume from.
+          description: A page of events newer than the cursor, plus the cursor to resume from; with `until`, also whether the drain completed.
           content:
             application/json:
               schema:
@@ -2137,6 +2151,9 @@ components:
         next_cursor:
           type: string
           description: Pass as `cursor` on the next call to resume after this page.
+        drained:
+          type: boolean
+          description: Present when the request carried `until` — true once every event through that watermark has been returned across the pages consumed so far.
 
     Review:
       type: object

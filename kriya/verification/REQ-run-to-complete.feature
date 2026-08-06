@@ -94,7 +94,7 @@ Feature: Run to complete
 
   Scenario: a post-close detachment rotates the completion claim
     Given the epic closed and a complete target ticket is then detached
-    When kriya consumes the detachment event
+    When kriya consumes the detachment event, whose payload names the removed relation's kind and the detached child
     Then the completion epoch advances with cause detachment and the stamp clears
     And recompletion runs as a fresh epoch-scoped attempt — new keys, a new review, fresh approval — never replaying the spent one
 
@@ -217,8 +217,10 @@ Feature: Run to complete
     When completion detection runs for either target
     Then it refuses to arm — the active ticket is ambiguous
     And a durable AttributionAmbiguity row upserts on its key and the inbox lists it
-    When the operator resolves it through the attribution action, parenting the ticket under one target's epic
-    Then the row stamps resolved and the other target's completion detection arms normally
+    When the operator resolves it through the attribution action
+    Then the selected target and the parenting mutation's key persist with state resolving before sutra is called
+    And a crash after the relation lands is recovered by replaying the keyed mutation, stamping resolved with the outcome
+    And the row stamps resolved and the other target's completion detection arms normally
 
   Scenario: a previously bound unplanned ticket is never ambiguous
     Given a multi-mapping project where an unplanned ticket was once bound to target "A", then detached and reopened
