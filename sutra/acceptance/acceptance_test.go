@@ -91,6 +91,15 @@ var implementedFeatures = []string{
 	"../verification/REQ-search.feature:8",                 // filters compose
 	"../verification/REQ-search.feature:14",                // one surface over all content
 	"../verification/REQ-search.feature:19",                // session id joins an instance's work
+	"../verification/REQ-import-export.feature:3",          // export captures the whole project
+	"../verification/REQ-import-export.feature:8",          // import round-trips losslessly
+	"../verification/REQ-import-export.feature:15",         // a half-consumed review is rejected at import
+	"../verification/REQ-import-export.feature:20",         // a malformed consumed review is rejected at import
+	"../verification/REQ-import-export.feature:28",         // a verdict-bearing review missing its latest verdict event
+	"../verification/REQ-import-export.feature:36",         // a malformed close-used review is rejected at import
+	"../verification/REQ-import-export.feature:44",         // an invariant-violating hierarchy is rejected at import
+	"../verification/REQ-import-export.feature:50",         // colliding import is rejected whole
+	"../verification/REQ-import-export.feature:56",         // unknown import actor is rejected
 }
 
 var contractRouter routers.Router
@@ -309,6 +318,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerThreadsSteps(sc, cw)
 	registerCommentsSteps(sc, iw)
 	registerSearchSteps(sc, cw)
+	registerImportExportSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

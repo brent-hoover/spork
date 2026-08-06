@@ -85,28 +85,25 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Threads: native q/session/project composition; issue-anchored
-	// session threads pull their issues in too.
-	threadList := []threads.Thread{}
+	// Threads: native q/session/project composition. This first pass
+	// collects only ids and anchored issues — transcripts stream to
+	// the wire later, never accumulating in memory.
+	threadIDs := []string{}
 	if q != nil || session != nil {
-		matched, err := threads.Search(tx, q, session, project)
-		if err != nil {
-			writeError(w, errorFrom(err))
-			return
-		}
-		threadList = matched
-		if session != nil {
-			for _, t := range matched {
-				if t.Issue == nil {
-					continue
-				}
+		err := threads.SearchEach(tx, q, session, project, func(t threads.Thread) error {
+			threadIDs = append(threadIDs, t.ID)
+			if session != nil && t.Issue != nil {
 				iss, err := issues.Get(tx, *t.Issue)
 				if err != nil {
-					writeError(w, issueErrorFrom(err))
-					return
+					return err
 				}
 				issueSet[iss.ID] = iss
 			}
+			return nil
+		})
+		if err != nil {
+			writeError(w, issueErrorFrom(err))
+			return
 		}
 	}
 
@@ -133,13 +130,10 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	sortIssues(issueList)
 
-	threadsRaw, apiErr := threadListJSON(threadList)
-	if apiErr != nil {
-		writeError(w, apiErr)
-		return
-	}
-	// Threads splice verbatim transcripts, so the envelope assembles
-	// around their pre-built bytes.
+	// The envelope's bounded groups marshal normally; the threads
+	// group streams row by row inside it, transcripts spliced verbatim
+	// and never accumulated (matched ids were collected above, content
+	// re-reads one row at a time).
 	envelope := struct {
 		FeedWatermark string          `json:"feed_watermark"`
 		Issues        []issues.Issue  `json:"issues"`
@@ -151,10 +145,25 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
-	body := append(raw[:len(raw)-1], []byte(`,"threads":`)...)
-	body = append(body, threadsRaw...)
-	body = append(body, '}')
-	writeJSON(w, http.StatusOK, json.RawMessage(body))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw[:len(raw)-1])
+	_, _ = w.Write([]byte(`,"threads":[`))
+	for i, id := range threadIDs {
+		t, err := threads.Get(tx, id)
+		if err != nil {
+			return // truncation is the only signal after the first byte
+		}
+		one, apiErr := threadJSON(t)
+		if apiErr != nil {
+			return
+		}
+		if i > 0 {
+			_, _ = w.Write([]byte{','})
+		}
+		_, _ = w.Write(one)
+	}
+	_, _ = w.Write([]byte(`]}`))
 }
 
 func listProjectIDs(tx *sql.Tx) ([]string, error) {

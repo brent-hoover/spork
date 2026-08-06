@@ -136,6 +136,17 @@ func (e *NotFoundError) Error() string { return fmt.Sprintf("identity %s not fou
 
 // Exists reports whether an identity id names a real identity
 // (AC-identity-referenced: unknown ids are rejected, never created).
+// Get returns one identity by id.
+func Get(tx *sql.Tx, id string) (Identity, error) {
+	var i Identity
+	err := tx.QueryRow(`SELECT id, handle, kind, display_name FROM identities WHERE id = ?`, id).
+		Scan(&i.ID, &i.Handle, &i.Kind, &i.DisplayName)
+	if err != nil {
+		return Identity{}, fmt.Errorf("get identity %s: %w", id, err)
+	}
+	return i, nil
+}
+
 func Exists(tx *sql.Tx, id string) (bool, error) {
 	var one int
 	err := tx.QueryRow(`SELECT 1 FROM identities WHERE id = ?`, id).Scan(&one)

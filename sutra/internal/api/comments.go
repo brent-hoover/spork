@@ -70,7 +70,7 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 			return "", reviewErrorFrom(err)
 		}
 		if rev.Revision != *reviewRevision {
-			return "", &apiError{status: http.StatusConflict, code: "stale-revision",
+			return "", &apiError{status: http.StatusConflict, code: "expected-revision-mismatch",
 				message: "review_revision names a revision superseded by a resubmission"}
 		}
 		target, err := issues.Get(tx, rev.Issue)

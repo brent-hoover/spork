@@ -113,11 +113,13 @@ func SetAnchor(tx *sql.Tx, id string, anchor Anchor) (Thread, Anchor, error) {
 	return current, old, nil
 }
 
-// Search filters threads by substring match on title or transcript
-// (AC-thread-search), by session (AC-search-session), and by anchored
-// project (the project side of AC-thread-anchor's listing). Every
-// filter is optional; with none set it returns all threads.
-func Search(tx *sql.Tx, q, session, project *string) ([]Thread, error) {
+// SearchEach streams threads matching substring q on title or
+// transcript (AC-thread-search), session (AC-search-session), and
+// anchored project (the project side of AC-thread-anchor's listing) —
+// every filter optional — one row at a time to fn. Transcripts can
+// approach SQLite's value bound, so listings never accumulate them:
+// memory stays at one thread regardless of catalog size.
+func SearchEach(tx *sql.Tx, q, session, project *string, fn func(Thread) error) error {
 	where := []string{"1=1"}
 	var args []any
 	if q != nil {
@@ -133,17 +135,17 @@ func Search(tx *sql.Tx, q, session, project *string) ([]Thread, error) {
 		where = append(where, "project = ?")
 		args = append(args, *project)
 	}
-	return queryThreads(tx, `
+	return queryThreadsEach(tx, `
 		SELECT id, title, transcript, session, project, issue, imported_at
-		FROM threads WHERE `+strings.Join(where, " AND ")+` ORDER BY imported_at, id`, args...)
+		FROM threads WHERE `+strings.Join(where, " AND ")+` ORDER BY imported_at, id`, fn, args...)
 }
 
-// ListByIssue returns the threads anchored to an issue — the issue
-// side of AC-thread-anchor's "both sides list it".
-func ListByIssue(tx *sql.Tx, issueID string) ([]Thread, error) {
-	return queryThreads(tx, `
+// ListByIssueEach streams the threads anchored to an issue — the
+// issue side of AC-thread-anchor's "both sides list it".
+func ListByIssueEach(tx *sql.Tx, issueID string, fn func(Thread) error) error {
+	return queryThreadsEach(tx, `
 		SELECT id, title, transcript, session, project, issue, imported_at
-		FROM threads WHERE issue = ? ORDER BY imported_at, id`, issueID)
+		FROM threads WHERE issue = ? ORDER BY imported_at, id`, fn, issueID)
 }
 
 func escapeLike(s string) string {
@@ -151,21 +153,22 @@ func escapeLike(s string) string {
 	return r.Replace(s)
 }
 
-func queryThreads(tx *sql.Tx, query string, args ...any) ([]Thread, error) {
+func queryThreadsEach(tx *sql.Tx, query string, fn func(Thread) error, args ...any) error {
 	rows, err := tx.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query threads: %w", err)
+		return fmt.Errorf("query threads: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := []Thread{}
 	for rows.Next() {
 		t, err := scanThread(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan thread: %w", err)
+			return fmt.Errorf("scan thread: %w", err)
 		}
-		out = append(out, t)
+		if err := fn(t); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 type scannable interface{ Scan(dest ...any) error }

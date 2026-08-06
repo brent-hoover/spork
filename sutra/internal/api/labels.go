@@ -15,7 +15,9 @@ func labelErrorFrom(err error) *apiError {
 	case *issues.LabelNotFoundError:
 		return &apiError{status: http.StatusNotFound, code: "not-found", message: err.Error()}
 	case *issues.LabelAttachedError:
-		return &apiError{status: http.StatusConflict, code: "label-attached", message: err.Error(), conflicts: []string{e.Label}}
+		// The issue_labels primary key is a uniqueness constraint; the
+		// contract's closed code enum covers it as unique-violation.
+		return &apiError{status: http.StatusConflict, code: "unique-violation", message: err.Error(), conflicts: []string{e.Label}}
 	case *issues.LabelNotAttachedError:
 		return &apiError{status: http.StatusNotFound, code: "not-found", message: err.Error()}
 	default:

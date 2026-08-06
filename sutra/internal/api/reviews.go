@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -133,65 +134,162 @@ func rejectExplicitNulls(r *http.Request, into any, fields ...string) *apiError 
 	return decodeBody(r, into)
 }
 
-// scanExplicitNulls walks the body's top-level object token by token
-// and reports which keys carry a literal null. Nested values are
-// skipped by delimiter counting; string tokens materialize one at a
-// time and are dropped immediately.
+// scanExplicitNulls lexes the body's top-level object byte by byte
+// and reports which keys carry a literal null. Nothing materializes —
+// not even string tokens, unlike a json.Decoder walk — so the scan
+// runs in O(1) memory over gigabyte content fields. Only gross shape
+// errors reject here; pass B's decode is the authority on malformed
+// JSON, and it re-reads the same captured body.
 func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
-	malformed := func(err error) *apiError {
-		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+	malformed := func(detail string) *apiError {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: " + detail}
 	}
-	dec := json.NewDecoder(body)
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, malformed(err)
+	br := bufio.NewReaderSize(body, 64<<10)
+	next := func() (byte, error) {
+		for {
+			c, err := br.ReadByte()
+			if err != nil {
+				return 0, err
+			}
+			switch c {
+			case ' ', '\t', '\n', '\r':
+				continue
+			}
+			return c, nil
+		}
 	}
-	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: expected a JSON object"}
+	// skipString consumes bytes to the closing quote, honoring
+	// backslash escapes, retaining nothing.
+	skipString := func() error {
+		escaped := false
+		for {
+			c, err := br.ReadByte()
+			if err != nil {
+				return err
+			}
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				return nil
+			}
+		}
+	}
+	// maxKeyCapture bounds key retention; a longer key cannot name a
+	// handler field, so its null-ness is irrelevant.
+	const maxKeyCapture = 256
+
+	c, err := next()
+	if err != nil || c != '{' {
+		return nil, malformed("expected a JSON object")
 	}
 	nulls := map[string]bool{}
-	for dec.More() {
-		keyTok, err := dec.Token()
+	first := true
+	for {
+		c, err := next()
 		if err != nil {
-			return nil, malformed(err)
+			return nil, malformed("truncated object")
 		}
-		key, ok := keyTok.(string)
-		if !ok {
-			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: non-string key"}
+		if c == '}' {
+			return nulls, nil
 		}
-		valTok, err := dec.Token()
+		if !first {
+			if c != ',' {
+				return nil, malformed("expected a comma between members")
+			}
+			if c, err = next(); err != nil {
+				return nil, malformed("truncated object")
+			}
+		}
+		first = false
+		if c != '"' {
+			return nil, malformed("expected a string key")
+		}
+		key := make([]byte, 0, 32)
+		overlong := false
+		escaped := false
+		for {
+			b, err := br.ReadByte()
+			if err != nil {
+				return nil, malformed("truncated key")
+			}
+			if escaped {
+				escaped = false
+				key = append(key, b)
+				continue
+			}
+			if b == '\\' {
+				escaped = true
+				continue
+			}
+			if b == '"' {
+				break
+			}
+			if len(key) < maxKeyCapture {
+				key = append(key, b)
+			} else {
+				overlong = true
+			}
+		}
+		if c, err = next(); err != nil || c != ':' {
+			return nil, malformed("expected a colon")
+		}
+		c, err = next()
 		if err != nil {
-			return nil, malformed(err)
+			return nil, malformed("truncated value")
 		}
-		switch v := valTok.(type) {
-		case json.Delim:
-			if v == '{' || v == '[' {
-				depth := 1
-				for depth > 0 {
-					t, err := dec.Token()
-					if err != nil {
-						return nil, malformed(err)
+		switch c {
+		case 'n':
+			// null — verify the literal so "nonsense" doesn't pass
+			rest := make([]byte, 3)
+			if _, err := io.ReadFull(br, rest); err != nil || string(rest) != "ull" {
+				return nil, malformed("bad literal")
+			}
+			if !overlong {
+				nulls[string(key)] = true
+			}
+		case '"':
+			if err := skipString(); err != nil {
+				return nil, malformed("truncated string")
+			}
+		case '{', '[':
+			depth := 1
+			for depth > 0 {
+				b, err := br.ReadByte()
+				if err != nil {
+					return nil, malformed("truncated value")
+				}
+				switch b {
+				case '"':
+					if err := skipString(); err != nil {
+						return nil, malformed("truncated string")
 					}
-					if d, ok := t.(json.Delim); ok {
-						switch d {
-						case '{', '[':
-							depth++
-						case '}', ']':
-							depth--
-						}
-					}
+				case '{', '[':
+					depth++
+				case '}', ']':
+					depth--
 				}
 			}
 		default:
-			if valTok == nil {
-				nulls[key] = true
+			// number, true, false: consume to the next member/end
+			for {
+				b, err := br.ReadByte()
+				if err != nil {
+					return nil, malformed("truncated value")
+				}
+				if b == ',' || b == '}' {
+					if err := br.UnreadByte(); err != nil {
+						return nil, malformed("lexer rewind")
+					}
+					break
+				}
 			}
 		}
 	}
-	if _, err := dec.Token(); err != nil { // consume the closing '}'
-		return nil, malformed(err)
-	}
-	return nulls, nil
 }
 
 // repoFacts snapshots the project fields git resolution needs, so the

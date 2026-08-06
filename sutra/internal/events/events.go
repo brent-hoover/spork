@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -187,6 +188,21 @@ func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Pa
 		page.Drained = n == 0
 	}
 	return page, nil
+}
+
+// SortByFeedOrder orders events by their feed position, so an export
+// assembled per-subject reads as the original append order.
+func SortByFeedOrder(list []Event) {
+	slices.SortFunc(list, func(a, b Event) int {
+		switch {
+		case a.seq < b.seq:
+			return -1
+		case a.seq > b.seq:
+			return 1
+		default:
+			return 0
+		}
+	})
 }
 
 // BySubject returns every event for one subject in chronological

@@ -131,17 +131,9 @@ func (s *server) searchThreads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	found, err := threads.Search(tx, optional("q"), optional("session"), optional("project"))
-	if err != nil {
-		writeError(w, errorFrom(err))
-		return
-	}
-	body, apiErr := threadListJSON(found)
-	if apiErr != nil {
-		writeError(w, apiErr)
-		return
-	}
-	writeJSON(w, http.StatusOK, body)
+	streamThreadArray(w, func(fn func(threads.Thread) error) error {
+		return threads.SearchEach(tx, optional("q"), optional("session"), optional("project"), fn)
+	})
 }
 
 func (s *server) listIssueThreads(w http.ResponseWriter, r *http.Request) {
@@ -156,17 +148,9 @@ func (s *server) listIssueThreads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, issueErrorFrom(err))
 		return
 	}
-	found, err := threads.ListByIssue(tx, issueID)
-	if err != nil {
-		writeError(w, errorFrom(err))
-		return
-	}
-	body, apiErr := threadListJSON(found)
-	if apiErr != nil {
-		writeError(w, apiErr)
-		return
-	}
-	writeJSON(w, http.StatusOK, body)
+	streamThreadArray(w, func(fn func(threads.Thread) error) error {
+		return threads.ListByIssueEach(tx, issueID, fn)
+	})
 }
 
 func (s *server) setThreadAnchor(w http.ResponseWriter, r *http.Request) {
@@ -262,20 +246,34 @@ func threadJSON(t threads.Thread) (json.RawMessage, *apiError) {
 	return buf, nil
 }
 
-// threadListJSON assembles an array of verbatim thread responses.
-func threadListJSON(list []threads.Thread) (json.RawMessage, *apiError) {
-	buf := []byte{'['}
-	for i, t := range list {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
+// streamThreadArray writes a JSON array of verbatim thread responses
+// straight to the wire, one row at a time — transcripts can approach
+// SQLite's value bound, so listings never accumulate the catalog in
+// memory. Errors after the first byte can only truncate the stream;
+// the status is already committed.
+func streamThreadArray(w http.ResponseWriter, each func(fn func(threads.Thread) error) error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{'['})
+	first := true
+	err := each(func(t threads.Thread) error {
 		one, apiErr := threadJSON(t)
 		if apiErr != nil {
-			return nil, apiErr
+			return fmt.Errorf("%s", apiErr.message)
 		}
-		buf = append(buf, one...)
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(one)
+		return writeErr
+	})
+	if err != nil {
+		// Mid-stream failure: the array is already partially written;
+		// truncating is the only honest signal left.
+		return
 	}
-	return append(buf, ']'), nil
+	_, _ = w.Write([]byte{']'})
 }
 
 func threadPayload(threadID string) string {
