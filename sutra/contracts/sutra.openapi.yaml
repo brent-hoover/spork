@@ -972,10 +972,11 @@ paths:
       description: >-
         Any two versions can be diffed (AC-doc-history). Diffing
         materializes both versions and the rendered output, so the
-        server bounds the COMBINED version size it will diff at 64 MiB —
-        beyond that the request rejects 400 with the bound named;
-        version content itself remains readable at any size the store
-        accepts.
+        server bounds the COMBINED version size it will diff at 64 MiB
+        (measured in bytes, both sides counted even when from equals to)
+        and the combined line count at 8 million — beyond either bound
+        the request rejects 400 with the bound named; version content
+        itself remains readable at any size the store accepts.
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'

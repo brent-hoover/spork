@@ -109,3 +109,18 @@ func TestUnifiedDiffNULContent(t *testing.T) {
 		t.Fatalf("unterminated NUL tail must carry the marker:\n%q", diff)
 	}
 }
+
+// TestCheckDiffableLineBound pins the line-density guard: within the
+// byte bound, newline-dense content still refuses to split.
+func TestCheckDiffableLineBound(t *testing.T) {
+	docs.SetMaxDiffLinesForTest(8)
+	defer docs.SetMaxDiffLinesForTest(8 << 20)
+	if err := docs.CheckDiffable(version(1, "a\nb\n"), version(2, "a\nc\n")); err != nil {
+		t.Fatalf("sparse content must pass: %v", err)
+	}
+	dense := strings.Repeat("\n", 10)
+	err := docs.CheckDiffable(version(1, dense), version(2, "x\n"))
+	if _, ok := err.(*docs.DiffTooDenseError); !ok {
+		t.Fatalf("dense content must be rejected, got %v", err)
+	}
+}

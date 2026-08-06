@@ -303,18 +303,51 @@ func (e *DiffTooLargeError) Error() string {
 }
 
 // VersionSizesOK validates the two versions' combined stored size via
-// SQL length() BEFORE any content loads — the bound rejects without
-// materializing what it guards against.
+// SQL BEFORE any content loads — the bound rejects without
+// materializing what it guards against. Sizes are measured in BYTES
+// (length of the BLOB cast; plain length(TEXT) counts characters), and
+// identical from/to numbers count twice because both sides load.
 func VersionSizesOK(tx *sql.Tx, documentID string, from, to int64) error {
-	var combined sql.NullInt64
-	err := tx.QueryRow(`
-		SELECT SUM(length(content)) FROM doc_versions
-		WHERE document = ? AND number IN (?, ?)`, documentID, from, to).Scan(&combined)
-	if err != nil {
-		return fmt.Errorf("size versions %d,%d of %s: %w", from, to, documentID, err)
+	var combined int64
+	for _, number := range []int64{from, to} {
+		var size sql.NullInt64
+		err := tx.QueryRow(`
+			SELECT length(CAST(content AS BLOB)) FROM doc_versions
+			WHERE document = ? AND number = ?`, documentID, number).Scan(&size)
+		if err == sql.ErrNoRows {
+			continue // the load path reports the 404
+		}
+		if err != nil {
+			return fmt.Errorf("size version %d of %s: %w", number, documentID, err)
+		}
+		combined += size.Int64
 	}
-	if combined.Int64 > MaxDiffInput {
-		return &DiffTooLargeError{Combined: combined.Int64}
+	if combined > MaxDiffInput {
+		return &DiffTooLargeError{Combined: combined}
+	}
+	return nil
+}
+
+// maxDiffLines bounds the combined LINE count a diff will process:
+// splitting materializes one string header (16 bytes) per line, so
+// newline-dense content within the byte bound could otherwise multiply
+// memory ~16x. 8M lines caps the header overhead at ~128 MiB.
+var maxDiffLines = int64(8 << 20)
+
+// DiffTooDenseError reports versions whose combined line count exceeds
+// the documented diff bound.
+type DiffTooDenseError struct{ Lines int64 }
+
+func (e *DiffTooDenseError) Error() string {
+	return fmt.Sprintf("combined line count %d exceeds the %d-line diff bound", e.Lines, maxDiffLines)
+}
+
+// CheckDiffable validates the loaded contents' combined line density
+// before UnifiedDiff splits them — counting allocates nothing.
+func CheckDiffable(from, to Version) error {
+	lines := int64(strings.Count(from.Content, "\n") + strings.Count(to.Content, "\n") + 2)
+	if lines > maxDiffLines {
+		return &DiffTooDenseError{Lines: lines}
 	}
 	return nil
 }

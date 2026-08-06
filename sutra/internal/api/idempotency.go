@@ -70,12 +70,19 @@ func (b *capturedBody) rewind(r *http.Request) *apiError {
 		if _, err := b.file.Seek(0, io.SeekStart); err != nil {
 			return &apiError{status: http.StatusInternalServerError, code: "internal", message: fmt.Sprintf("rewind spooled body: %v", err)}
 		}
-		r.Body = io.NopCloser(b.file)
+		r.Body = seekableBody{b.file}
 		return nil
 	}
-	r.Body = io.NopCloser(bytes.NewReader(b.buf))
+	r.Body = seekableBody{bytes.NewReader(b.buf)}
 	return nil
 }
+
+// seekableBody exposes the captured body's Seeker to consumers that
+// make two passes over it (rejectExplicitNulls) — RAM or spool alike —
+// with a no-op Close: the wrapper owns the underlying lifetime.
+type seekableBody struct{ io.ReadSeeker }
+
+func (seekableBody) Close() error { return nil }
 
 func (b *capturedBody) close() {
 	if b.file != nil {
@@ -252,12 +259,12 @@ func (s *server) settleRejection(w http.ResponseWriter, operation, key string, a
 // exists, reporting whether it did.
 func (s *server) replayed(w http.ResponseWriter, operation, key string) bool {
 	var status int
-	var body string
+	var body []byte
 	err := s.db.QueryRow(`SELECT status, body FROM idempotency_keys WHERE operation = ? AND key = ?`, operation, key).Scan(&status, &body)
 	if err != nil {
 		return false
 	}
-	writeRecorded(w, status, []byte(body))
+	writeRecorded(w, status, body)
 	return true
 }
 
@@ -320,7 +327,7 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 	}
 
 	if _, err := tx.Exec(`UPDATE idempotency_keys SET status = ?, body = ? WHERE operation = ? AND key = ?`,
-		status, string(raw), operation, key); err != nil {
+		status, raw, operation, key); err != nil {
 		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record idempotency key: %v", err)}
 	}
 	if err := tx.Commit(); err != nil {
@@ -331,7 +338,7 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 
 func (s *server) recordSettled(operation, key string, status int, raw []byte) error {
 	_, err := s.db.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, ?, ?)`,
-		operation, key, status, string(raw))
+		operation, key, status, raw)
 	return err
 }
 

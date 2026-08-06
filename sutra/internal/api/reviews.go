@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -116,6 +117,18 @@ func rejectExplicitNulls(r *http.Request, into any, fields ...string) *apiError 
 		if v, ok := raw[field]; ok && string(v) == "null" {
 			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("%s must not be null", field)}
 		}
+	}
+	// Second pass decodes the target struct from the SAME captured
+	// body — the null-check map is dropped first, so a large content
+	// field is never resident in both escaped and decoded form plus a
+	// re-encoded copy at once. The idempotency wrapper always installs
+	// a seekable body; the re-marshal branch covers any direct caller.
+	if seeker, ok := r.Body.(io.Seeker); ok {
+		raw = nil
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("rewind body: %v", err)}
+		}
+		return decodeBody(r, into)
 	}
 	reencoded, err := json.Marshal(raw)
 	if err != nil {
