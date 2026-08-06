@@ -248,10 +248,17 @@ Feature: Run to complete
     Then the keyed replay returns the original response with its operation id
     And cascade verification completes and parented, operation, cascade_verified, and any reopen_owed stamp in one transaction
     And an unreached cascade's explicit-reopen obligation is never lost
-    Given the replay instead returns a conflict because a concurrent actor already parented the ticket
-    When recovery re-reads the ticket's parentage
-    Then the desired parent in place stamps parented with no reopen owed — sutra's attach invariant already kept the epic honest
-    And a different parent surfaces durably as conflicting parentage, while a transient conflict retries under a fresh key
+
+  Scenario Outline: a parenting conflict resolves by re-reading parentage
+    Given a pending new-work advance whose keyed attachment replay returns a conflict
+    When recovery re-reads the ticket's parentage and finds <parentage>
+    Then <outcome>
+
+    Examples:
+      | parentage                              | outcome                                                                                             |
+      | the desired epic already parenting it  | parented stamps with no reopen owed — sutra's attach invariant already kept the epic honest         |
+      | a different parent holding it          | parenting_state records conflicting with the parent in parenting_error, and the inbox lists it      |
+      | no parent at all                       | parenting_generation advances durably first, and the retry issues under the next generation's key   |
 
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project
