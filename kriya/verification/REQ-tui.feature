@@ -42,6 +42,9 @@ Feature: TUI overview
     Given another permanent-failure conflict
     When the operator dismisses it from the TUI
     Then the advance stamps terminal dismissed while the ticket still blocks completion through attribution
+    Given a conflicting attribution ambiguity in the inbox, showing its observed parent and cause
+    When the operator reselects a target from the TUI
+    Then the resolution generation and key rotate and the fresh keyed resolution proceeds
     Given an open attribution ambiguity in the inbox
     When the operator attributes the ticket to a target from the TUI
     Then the selected target and the parenting mutation's key persist with state resolving before sutra is called
