@@ -172,11 +172,47 @@ func (s *server) reconcileRepoPins(repoPath string) error {
 		return err
 	}
 	for _, sha := range pins {
-		if !covered[sha] && !pendingRecent[sha] {
+		if covered[sha] || pendingRecent[sha] {
+			continue
+		}
+		// The initial reads were separate snapshots: a submission can
+		// commit between them and be misclassified. The RECHECK is one
+		// atomic query, and the staging protocol guarantees continuous
+		// protection — a staged sha is pending until the accepting
+		// transaction's commit instant and covered from it (settlement
+		// happens inside that transaction) — so any sha this recheck
+		// sees unprotected was truly abandoned, not in flight.
+		protected, err := s.shaProtected(repoPath, sha)
+		if err != nil {
+			return err
+		}
+		if !protected {
 			_ = review.Unpin(repoPath, sha)
 		}
 	}
 	return nil
+}
+
+// shaProtected reports, in ONE query snapshot, whether a sha is covered
+// by an accepted submission of a project on this repository or pending
+// (any age — age gating belongs to candidate selection, not to this
+// final guard).
+func (s *server) shaProtected(repoPath, sha string) (bool, error) {
+	var protected bool
+	err := s.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM review_submissions sub
+			JOIN reviews r ON r.id = sub.review
+			JOIN issues i ON i.id = r.issue
+			JOIN projects p ON p.id = i.project
+			WHERE p.repo_path = ? AND (sub.commit_sha = ? OR sub.base_commit = ?)
+		) OR EXISTS(
+			SELECT 1 FROM pending_pins WHERE repo = ? AND sha = ?
+		)`, repoPath, sha, sha, repoPath, sha).Scan(&protected)
+	if err != nil {
+		return false, fmt.Errorf("recheck pin %s: %w", sha, err)
+	}
+	return protected, nil
 }
 
 // apiError is a handler-produced rejection carrying the contract's

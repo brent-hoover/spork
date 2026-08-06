@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sutra/internal/api"
 	"sutra/internal/review"
@@ -1105,5 +1106,86 @@ func TestPinReconciliationAtStartup(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("submission-covered pin was pruned: %v", pins)
+	}
+}
+
+func timeNowRFC3339ForTest() string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+// TestRecheckProtectsInFlightPins pins the final unpin guard: a sha
+// whose pending row is EXPIRED for candidate selection but still
+// present at recheck time is never pruned — the atomic recheck counts
+// pending rows of any age, so an in-flight submission's pin survives
+// even when the snapshot reads misclassified it.
+func TestRecheckProtectsInFlightPins(t *testing.T) {
+	srv, db := startAPI(t)
+	repo := newGitRepo(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+
+	// A pin whose pending row exists (expired age) — candidate
+	// selection flags it, but the recheck must protect it because the
+	// row is STILL THERE at unpin time. (Expiry deletes the row first
+	// in real flows; this isolates the recheck's any-age semantics by
+	// re-inserting after the expiry pass would have run.)
+	sha := repo.featureSHA2
+	pin := exec.Command("git", "-C", repo.path, "update-ref", "refs/sutra/pins/"+sha, sha)
+	if out, err := pin.CombinedOutput(); err != nil {
+		t.Fatalf("pin: %v — %s", err, out)
+	}
+	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, ?)`,
+		repo.path, sha, "2000-01-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	// Startup reconciliation expires the old row AND prunes — that is
+	// the abandoned-pin path, proven elsewhere. Here: a FRESH pending
+	// row (in-flight submission) must survive reconciliation triggered
+	// by another submission.
+	if _, err := db.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, repo.path, sha); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, ?)`,
+		repo.path, sha, timeNowRFC3339ForTest()); err != nil {
+		t.Fatal(err)
+	}
+	status, body = req(t, srv, http.MethodPost, "/projects", "p2",
+		fmt.Sprintf(`{"key":"OTH","name":"O","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "second project shares repo")
+	status, body = req(t, srv, http.MethodPost, "/projects/"+decoded["id"].(string)+"/issues", "i2",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue2 := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r2",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue2, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review triggers in-band reconcile")
+
+	out, err := exec.Command("git", "-C", repo.path, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/sutra/pins/").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range strings.Fields(string(out)) {
+		if s == sha {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("in-flight pending pin was pruned by concurrent reconciliation: %s", out)
 	}
 }
