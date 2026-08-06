@@ -89,8 +89,12 @@ func validateImport(p *importPayload, actor string) *apiError {
 		return apiErr
 	}
 	identitySet := map[string]bool{}
+	humanSet := map[string]bool{}
 	for _, i := range p.Identities {
 		identitySet[i.ID] = true
+		if i.Kind == "human" {
+			humanSet[i.ID] = true
+		}
 	}
 	if actor == "" || !identitySet[actor] {
 		// AC-import-actor: an actor outside the export's identities
@@ -120,12 +124,37 @@ func validateImport(p *importPayload, actor string) *apiError {
 		}
 	}
 	children := map[string][]string{}
+	blocks := map[string][]string{}
+	parentOf := map[string]bool{} // child -> has a parent (single-parent cardinality)
+	seenEdges := map[string]bool{}
 	for _, rel := range p.IssueRelations {
 		if !issueSet[rel.From] || !issueSet[rel.To] {
 			return malformedImport("relation %s references an issue outside the export", rel.ID)
 		}
-		if rel.Kind == "parent_of" {
+		if rel.From == rel.To {
+			return malformedImport("relation %s relates an issue to itself", rel.ID)
+		}
+		edge := rel.Kind + ":" + rel.From + ">" + rel.To
+		if seenEdges[edge] {
+			return malformedImport("relation %s duplicates an existing edge", rel.ID)
+		}
+		seenEdges[edge] = true
+		switch rel.Kind {
+		case "parent_of":
+			if parentOf[rel.To] {
+				return malformedImport("issue %s has more than one parent", rel.To)
+			}
+			parentOf[rel.To] = true
 			children[rel.From] = append(children[rel.From], rel.To)
+		case "blocks":
+			blocks[rel.From] = append(blocks[rel.From], rel.To)
+		}
+	}
+	// Cycles in either graph are unreachable through the API and
+	// reject the payload whole.
+	for _, graph := range []map[string][]string{children, blocks} {
+		if node, found := findCycle(graph); found {
+			return malformedImport("relations form a cycle through issue %s", node)
 		}
 	}
 	// Completion invariant: a complete issue with any active
@@ -164,7 +193,10 @@ func validateImport(p *importPayload, actor string) *apiError {
 	}
 	reviewSet := map[string]bool{}
 	for i := range p.Reviews {
-		if apiErr := validateImportedReview(&p.Reviews[i], p, issueSet, identitySet, docVersionSet); apiErr != nil {
+		if !identitySet[p.Reviews[i].Author] {
+			return malformedImport("review %s author is not in identities", p.Reviews[i].ID)
+		}
+		if apiErr := validateImportedReview(&p.Reviews[i], p, issueSet, humanSet, docVersionSet); apiErr != nil {
 			return apiErr
 		}
 		reviewSet[p.Reviews[i].ID] = true
@@ -197,6 +229,23 @@ func validateImport(p *importPayload, actor string) *apiError {
 		}
 		if (c.ReviewRevision != nil) != (c.Review != nil) {
 			return malformedImport("comment %s review_revision must accompany review exactly", c.ID)
+		}
+	}
+	// Reply threads never span anchors or review revisions.
+	commentByID := map[string]*comments.Comment{}
+	for i := range p.Comments {
+		commentByID[p.Comments[i].ID] = &p.Comments[i]
+	}
+	for _, c := range p.Comments {
+		if c.Parent == nil {
+			continue
+		}
+		parent, ok := commentByID[*c.Parent]
+		if !ok {
+			return malformedImport("comment %s replies to a parent outside the export", c.ID)
+		}
+		if !ptrEq(parent.Issue, c.Issue) || !ptrEq(parent.DocVersion, c.DocVersion) || !ptrEq(parent.Review, c.Review) || !ptrEqInt(parent.ReviewRevision, c.ReviewRevision) {
+			return malformedImport("comment %s replies across anchors or review revisions", c.ID)
 		}
 	}
 	for _, t := range p.Threads {
@@ -364,6 +413,56 @@ func validateImportShapes(p *importPayload) *apiError {
 	return nil
 }
 
+func ptrEq(a, b *string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || *a == *b
+}
+
+func ptrEqInt(a, b *int64) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || *a == *b
+}
+
+// findCycle detects a cycle in a relation graph via colored DFS,
+// returning a node on the cycle.
+func findCycle(graph map[string][]string) (string, bool) {
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := map[string]int{}
+	var walk func(string) (string, bool)
+	walk = func(node string) (string, bool) {
+		state[node] = visiting
+		for _, next := range graph[node] {
+			switch state[next] {
+			case visiting:
+				return next, true
+			case done:
+				continue
+			default:
+				if hit, found := walk(next); found {
+					return hit, true
+				}
+			}
+		}
+		state[node] = done
+		return "", false
+	}
+	for node := range graph {
+		if state[node] == 0 {
+			if hit, found := walk(node); found {
+				return hit, true
+			}
+		}
+	}
+	return "", false
+}
+
 // findActiveDescendant walks the parent_of tree below root looking for
 // an active (open, in-progress, blocked) issue at any depth.
 func findActiveDescendant(root string, children map[string][]string, statuses map[string]string) (string, bool) {
@@ -387,13 +486,11 @@ func findActiveDescendant(root string, children map[string][]string, statuses ma
 // validateImportedReview enforces the ReviewExport invariants the
 // contract makes normative for import: contiguous submissions,
 // deliverable agreement, coherent consumption and verdict stamps.
-func validateImportedReview(r *review.Review, p *importPayload, issueSet, identitySet, docVersionSet map[string]bool) *apiError {
+func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanSet, docVersionSet map[string]bool) *apiError {
 	if !issueSet[r.Issue] {
 		return malformedImport("review %s names an issue outside the export", r.ID)
 	}
-	if !identitySet[r.Author] {
-		return malformedImport("review %s author is not in identities", r.ID)
-	}
+
 	if len(r.Submissions) == 0 {
 		return malformedImport("review %s carries no submissions", r.ID)
 	}
@@ -408,11 +505,21 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, identi
 			return malformedImport("submission %s belongs to another review", sub.ID)
 		}
 		code := sub.Branch != nil || sub.Commit != nil
-		if code && (sub.Content == nil || *sub.Content == "") {
-			// ReviewSubmissionExport: the durable copy is the only one.
-			return malformedImport("review %s code submission %d omits its content", r.ID, sub.Revision)
-		}
-		if !code && (sub.DocVersion == nil || !docVersionSet[*sub.DocVersion]) {
+		if code {
+			if sub.Branch == nil || sub.Commit == nil || sub.BaseCommit == nil {
+				return malformedImport("review %s code submission %d must carry branch, commit, and base_commit together", r.ID, sub.Revision)
+			}
+			if !isCommitSHA(*sub.Commit) || !isCommitSHA(*sub.BaseCommit) {
+				return malformedImport("review %s code submission %d carries a malformed object id", r.ID, sub.Revision)
+			}
+			if sub.Content == nil || *sub.Content == "" {
+				// ReviewSubmissionExport: the durable copy is the only one.
+				return malformedImport("review %s code submission %d omits its content", r.ID, sub.Revision)
+			}
+			if sub.DocVersion != nil {
+				return malformedImport("review %s submission %d mixes deliverable shapes", r.ID, sub.Revision)
+			}
+		} else if sub.DocVersion == nil || !docVersionSet[*sub.DocVersion] {
 			return malformedImport("review %s submission %d names no resolvable deliverable", r.ID, sub.Revision)
 		}
 	}
@@ -445,12 +552,20 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, identi
 		if r.LatestVerdictEvent == nil {
 			return malformedImport("review %s carries a verdict but no latest verdict event", r.ID)
 		}
-		actualID, actualKind := latestVerdictEventFor(r.ID, p.Events)
-		if actualID == "" || actualID != *r.LatestVerdictEvent {
+		actual, found := latestVerdictEventFor(r.ID, p.Events)
+		if !found || actual.ID != *r.LatestVerdictEvent {
 			return malformedImport("review %s latest_verdict_event is not its actual latest verdict event", r.ID)
 		}
-		if actualKind != "review."+r.State {
-			return malformedImport("review %s state %s disagrees with its latest verdict event's kind %s", r.ID, r.State, actualKind)
+		if actual.Kind != "review."+r.State {
+			return malformedImport("review %s state %s disagrees with its latest verdict event's kind %s", r.ID, r.State, actual.Kind)
+		}
+		if actual.Subject != r.Issue {
+			return malformedImport("review %s verdict event's subject is not its issue", r.ID)
+		}
+		// Verdicts are human-only (AC-review-verdict); a fabricated
+		// agent-authored approval cannot arrive through import either.
+		if humanSet != nil && !humanSet[actual.Actor] {
+			return malformedImport("review %s verdict event's actor is not a human identity", r.ID)
 		}
 	}
 	return nil
@@ -469,8 +584,9 @@ func deliverableMatches(r *review.Review, latest review.Submission) bool {
 // latestVerdictEventFor scans the export's events — already in feed
 // order — for the last verdict event naming the review, returning its
 // id and kind so the caller can require kind/state agreement.
-func latestVerdictEventFor(reviewID string, list []events.Event) (string, string) {
-	id, kind := "", ""
+func latestVerdictEventFor(reviewID string, list []events.Event) (events.Event, bool) {
+	var last events.Event
+	found := false
 	for _, e := range list {
 		if e.Kind != "review.approved" && e.Kind != "review.changes-requested" {
 			continue
@@ -483,71 +599,65 @@ func latestVerdictEventFor(reviewID string, list []events.Event) (string, string
 			Review string `json:"review"`
 		}
 		if json.Unmarshal(raw, &payload) == nil && payload.Review == reviewID {
-			id, kind = e.ID, e.Kind
+			last, found = e, true
 		}
 	}
-	return id, kind
+	return last, found
 }
 
 // checkImportCollisions rejects the payload whole if ANY of its UUIDs
-// already exists on this server (AC-import-collision), naming every
-// conflict.
+// already exists ANYWHERE on this server (AC-import-collision) —
+// "any pre-existing UUID is a collision", regardless of record type —
+// naming every conflict. Payload-internal duplicates are equally
+// malformed: no two records may share an id.
 func (s *server) checkImportCollisions(tx *sql.Tx, p *importPayload) *apiError {
-	type probe struct {
-		table string
-		ids   []string
-	}
-	probes := []probe{
-		{"projects", []string{p.Project.ID}},
-		{"identities", nil},
-		{"issues", nil},
-		{"labels", nil},
-		{"issue_relations", nil},
-		{"documents", nil},
-		{"doc_versions", nil},
-		{"threads", nil},
-		{"reviews", nil},
-		{"review_submissions", nil},
-		{"comments", nil},
-		{"events", nil},
-	}
+	all := []string{p.Project.ID}
 	for _, i := range p.Identities {
-		probes[1].ids = append(probes[1].ids, i.ID)
+		all = append(all, i.ID)
 	}
 	for _, i := range p.Issues {
-		probes[2].ids = append(probes[2].ids, i.ID)
+		all = append(all, i.ID)
 	}
 	for _, l := range p.Labels {
-		probes[3].ids = append(probes[3].ids, l.ID)
+		all = append(all, l.ID)
 	}
 	for _, r := range p.IssueRelations {
-		probes[4].ids = append(probes[4].ids, r.ID)
+		all = append(all, r.ID)
 	}
 	for _, d := range p.Documents {
-		probes[5].ids = append(probes[5].ids, d.Document.ID)
+		all = append(all, d.Document.ID)
 		for _, v := range d.Versions {
-			probes[6].ids = append(probes[6].ids, v.ID)
+			all = append(all, v.ID)
 		}
 	}
 	for _, t := range p.Threads {
-		probes[7].ids = append(probes[7].ids, t.ID)
+		all = append(all, t.ID)
 	}
 	for _, r := range p.Reviews {
-		probes[8].ids = append(probes[8].ids, r.ID)
+		all = append(all, r.ID)
 		for _, sub := range r.Submissions {
-			probes[9].ids = append(probes[9].ids, sub.ID)
+			all = append(all, sub.ID)
 		}
 	}
 	for _, c := range p.Comments {
-		probes[10].ids = append(probes[10].ids, c.ID)
+		all = append(all, c.ID)
 	}
 	for _, e := range p.Events {
-		probes[11].ids = append(probes[11].ids, e.ID)
+		all = append(all, e.ID)
 	}
-	conflicts := []string{}
-	for _, pr := range probes {
-		for _, chunk := range chunkIDs(pr.ids, 500) {
-			query := `SELECT id FROM ` + pr.table + ` WHERE id IN (?` + strings.Repeat(",?", len(chunk)-1) + `)`
+	seen := map[string]bool{}
+	for _, id := range all {
+		if seen[id] {
+			return malformedImport("payload reuses id %s across records", id)
+		}
+		seen[id] = true
+	}
+	conflictSet := map[string]bool{}
+	tables := []string{"projects", "identities", "issues", "labels", "issue_relations",
+		"documents", "doc_versions", "threads", "reviews", "review_submissions", "comments", "events"}
+	for _, table := range tables {
+		for _, chunk := range chunkIDs(all, 500) {
+			query := `SELECT id FROM ` + table + ` WHERE id IN (?` + strings.Repeat(",?", len(chunk)-1) + `)`
 			args := make([]any, len(chunk))
 			for i, id := range chunk {
 				args[i] = id
@@ -562,7 +672,7 @@ func (s *server) checkImportCollisions(tx *sql.Tx, p *importPayload) *apiError {
 					_ = rows.Close()
 					return errorFrom(err)
 				}
-				conflicts = append(conflicts, id)
+				conflictSet[id] = true
 			}
 			if err := rows.Err(); err != nil {
 				_ = rows.Close()
@@ -571,9 +681,9 @@ func (s *server) checkImportCollisions(tx *sql.Tx, p *importPayload) *apiError {
 			_ = rows.Close()
 		}
 	}
-	if len(conflicts) > 0 {
+	if len(conflictSet) > 0 {
 		return &apiError{status: http.StatusConflict, code: "uuid-collision",
-			message: fmt.Sprintf("%d record ids already exist on this server", len(conflicts)), conflicts: conflicts}
+			message: fmt.Sprintf("%d record ids already exist on this server", len(conflictSet)), conflicts: sortedKeys(conflictSet)}
 	}
 	return nil
 }

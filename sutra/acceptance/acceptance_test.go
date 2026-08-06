@@ -110,6 +110,22 @@ var implementedFeatures = []string{
 	"../verification/REQ-issue-blocking.feature:13",        // blocker completion unblocks
 	"../verification/REQ-notifications.feature:17",         // watermarks anchor reads to the feed
 	"../verification/REQ-status-workflow.feature:36",       // simultaneous writers mutate exactly once
+	"../verification/REQ-code-review.feature:6",            // agent submits a review
+	"../verification/REQ-code-review.feature:12",           // reviewer sees the deliverable
+	"../verification/REQ-code-review.feature:18",           // pinned base survives default branch movement
+	"../verification/REQ-code-review.feature:24",           // feedback threads on the review
+	"../verification/REQ-code-review.feature:30",           // verdict changes state and is recorded
+	"../verification/REQ-code-review.feature:36",           // verdicts can be revised for the current revision
+	"../verification/REQ-code-review.feature:45",           // approval publishes an event
+	"../verification/REQ-code-review.feature:50",           // rework routes back with session context
+	"../verification/REQ-code-review.feature:72",           // stale feedback is rejected
+	"../verification/REQ-code-review.feature:79",           // stale comments are rejected
+	"../verification/REQ-code-review.feature:86",           // approval consumption fences reversal
+	"../verification/REQ-code-review.feature:100",          // a verdict ABA fences delayed operations
+	"../verification/REQ-code-review.feature:105",          // delayed consumption naming a superseded approval
+	"../verification/REQ-code-review.feature:110",          // delayed close naming a superseded approval
+	"../verification/REQ-code-review.feature:115",          // a stale resubmission cannot land on a newer revision
+	"../verification/REQ-code-review.feature:120",          // resubmission requires changes-requested
 }
 
 var contractRouter routers.Router
@@ -330,6 +346,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerSearchSteps(sc, cw)
 	registerImportExportSteps(sc, cw)
 	registerMiscSteps(sc, cw)
+	registerReviewSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

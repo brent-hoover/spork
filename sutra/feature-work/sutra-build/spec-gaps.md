@@ -85,3 +85,14 @@ exportProject description) and a round-trip loses it. avspec's data model
 would need either an external-endpoint representation in ProjectExport or
 a constraint confining `blocks` to one project. Surfaced by roborev
 review 1805.
+
+## assigned_at (pop FIFO position) is not exportable
+
+The work-stack pops FIFO by `assigned_at`, an internal column stamped at
+create/assign. The contract's Issue schema is strict
+(additionalProperties: false) and carries no such field, so export
+cannot represent it and import reconstructs it from `updated` — a
+round-trip can therefore reorder an agent's pop sequence when several
+assigned issues survive the trip. Fixing this needs a contract/spec
+change (an explicit queue-position field on Issue). Surfaced by roborev
+review 1807.

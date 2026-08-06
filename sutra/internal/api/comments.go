@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 
 	"sutra/internal/comments"
@@ -151,10 +152,26 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	list, err := comments.ListByAnchor(tx, column, id)
+	// Comment bodies carry no cap (AC-comment-no-cap); the listing
+	// streams row by row so memory holds one comment, not the thread.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{'['})
+	first := true
+	err = comments.EachByAnchor(tx, column, id, func(c comments.Comment) error {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	})
 	if err != nil {
-		writeError(w, errorFrom(err))
-		return
+		return // status committed; truncation is the only signal
 	}
-	writeJSON(w, http.StatusOK, list)
+	_, _ = w.Write([]byte{']'})
 }
