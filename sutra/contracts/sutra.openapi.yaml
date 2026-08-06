@@ -2530,7 +2530,11 @@ components:
 
     WorkStackPopResult:
       type: object
+      required: [feed_watermark]
       properties:
+        feed_watermark:
+          type: string
+          description: Server-issued feed position captured atomically with the pop — present for claimed AND empty results, so an explicit empty pop can anchor its negative answer to the feed exactly like a positive one.
         issue:
           description: The claimed issue, now in-progress; absent if the stack was empty. An IssueRead — pop is a live read, so it carries the atomic feed watermark like every other.
           allOf:
