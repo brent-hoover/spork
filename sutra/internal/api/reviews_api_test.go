@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"sutra/internal/api"
 	"sutra/internal/review"
 )
 
@@ -994,5 +995,115 @@ func TestValidationRejectionsPinNothing(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("validation rejection left pins: %s", out)
+	}
+}
+
+// TestFenceRejectionsPinNothing pins the reorder: a failed fence leaves
+// zero refs.
+func TestFenceRejectionsPinNothing(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"expected_base_commit":%q}`,
+			issue, actor, repo.featureSHA, repo.featureSHA2))
+	if status != http.StatusConflict {
+		t.Fatalf("fence must 409: %d %s", status, body)
+	}
+	out, err := exec.Command("git", "-C", repo.path, "for-each-ref", "refs/sutra/").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("fence rejection left pins: %s", out)
+	}
+}
+
+// TestPinReconciliationAtStartup pins the crash-cleanup half: an
+// orphaned pin with an EXPIRED pending row is pruned at api.New, while
+// submission-covered pins survive.
+func TestPinReconciliationAtStartup(t *testing.T) {
+	srv, db := startAPI(t)
+	repo := newGitRepo(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+
+	// Simulate a crashed submission: a pin ref plus an EXPIRED pending
+	// row for an otherwise-unreferenced sha (featureSHA2).
+	orphan := repo.featureSHA2
+	pin := exec.Command("git", "-C", repo.path, "update-ref", "refs/sutra/pins/"+orphan, orphan)
+	if out, err := pin.CombinedOutput(); err != nil {
+		t.Fatalf("orphan pin: %v — %s", err, out)
+	}
+	if _, err := db.Exec(`INSERT INTO pending_pins (sha, created) VALUES (?, '2000-01-01T00:00:00Z')`, orphan); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh api.New over the same store reconciles.
+	if _, err := api.New(db); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	out, err := exec.Command("git", "-C", repo.path, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/sutra/pins/").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := strings.Fields(string(out))
+	for _, sha := range pins {
+		if sha == orphan {
+			t.Fatalf("expired orphan pin survived reconciliation: %v", pins)
+		}
+	}
+	found := false
+	for _, sha := range pins {
+		if sha == repo.featureSHA {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("submission-covered pin was pruned: %v", pins)
 	}
 }

@@ -161,24 +161,52 @@ func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, exp
 	}
 	// A deliverable that could never be rendered must not become a
 	// review: renderability (resolvable, within the size limit) is
-	// checked at submission, in prepare, with no lock held.
+	// checked at submission, in prepare, with no lock held. Pinning
+	// happens LATER in prepare, after every validation including the
+	// fence revalidation — see stagePins.
 	if err := review.CheckRenderable(repo.Path, base, *d.Commit); err != nil {
 		return review.Deliverable{}, "", reviewErrorFrom(err)
 	}
-	// Pin both objects durably: a later branch deletion or force-push
-	// must never let gc prune what an accepted review resolves from.
-	// Pinning runs WRITE-AHEAD of the database transaction by design:
-	// the failure asymmetry is what decides the order. A pin without a
-	// submission (rejection, lost race, crash) is a benign extra
-	// reachability root — content-addressed, idempotent, retaining
-	// only objects that already exist. A submission without a pin is
-	// the actual corruption: an accepted review whose deliverable gc
-	// can destroy. Pin-then-commit makes every crash window err toward
-	// harmless surplus, exactly like the idempotency reservation.
-	if err := review.PinObjects(repo.Path, *d.Commit, base); err != nil {
-		return review.Deliverable{}, "", reviewErrorFrom(err)
-	}
 	return out, base, nil
+}
+
+// stagePins durably pins a submission's objects as the LAST prepare
+// step — after every deterministic validation and fence revalidation,
+// before the transaction. The write-ahead order (pin before commit)
+// is deliberate: a submission without a pin is the corruption (gc can
+// destroy an accepted deliverable), while a pin without a submission —
+// possible only through a crash or lost race from here on — is benign
+// surplus that startup reconciliation prunes via the pending_pins
+// ledger recorded here first.
+func (s *server) stagePins(repoPath string, shas ...string) *apiError {
+	for _, sha := range shas {
+		if sha == "" {
+			continue
+		}
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO pending_pins (sha, created) VALUES (?, ?)`,
+			sha, timeNowRFC3339()); err != nil {
+			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record pending pin: %v", err)}
+		}
+	}
+	if err := review.PinObjects(repoPath, shas...); err != nil {
+		return reviewErrorFrom(err)
+	}
+	return nil
+}
+
+// settlePins converts pending pins into submission-covered pins inside
+// the accepting transaction: once the commit lands, the shas are
+// referenced by review_submissions and the pending rows go.
+func settlePins(tx *sql.Tx, shas ...string) *apiError {
+	for _, sha := range shas {
+		if sha == "" {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM pending_pins WHERE sha = ?`, sha); err != nil {
+			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("settle pin: %v", err)}
+		}
+	}
+	return nil
 }
 
 type newReviewRequest struct {
@@ -241,9 +269,9 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr != nil {
 			return nil, apiErr
 		}
-		// Fences revalidate as prepare's LAST step — bounded git with
-		// no database lock held. The residual window from here to
-		// COMMIT is inherent to fencing an external store: even an
+		// Fences revalidate before pinning — bounded git with no
+		// database lock held. The residual window from here to COMMIT
+		// is inherent to fencing an external store: even an
 		// in-transaction recheck leaves the same gap between its
 		// rev-parse and the commit, so this placement trades nothing
 		// while keeping git out of the SQLite writer entirely.
@@ -253,6 +281,9 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 			}); err != nil {
 				return nil, reviewErrorFrom(err)
 			}
+		}
+		if apiErr := s.stagePins(repo.Path, *d.Commit, base); apiErr != nil {
+			return nil, apiErr
 		}
 		return preparedReview{req: req, d: d, base: base, repo: repo}, nil
 	}
@@ -271,6 +302,9 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
+		}
+		if apiErr := settlePins(tx, *p.d.Commit, p.base); apiErr != nil {
+			return 0, nil, apiErr
 		}
 		payload := reviewPayload(created.ID)
 		if _, err := events.Emit(tx, "review.created", p.req.Issue, events.NewOperation(), p.req.Author, &payload); err != nil {
@@ -563,6 +597,9 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 				return nil, reviewErrorFrom(err)
 			}
 		}
+		if apiErr := s.stagePins(repo.Path, *d.Commit, base); apiErr != nil {
+			return nil, apiErr
+		}
 		return preparedResubmit{req: req, d: d, base: base, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
@@ -580,6 +617,9 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
+		}
+		if apiErr := settlePins(tx, *p.d.Commit, p.base); apiErr != nil {
+			return 0, nil, apiErr
 		}
 		payload := reviewPayload(id)
 		if _, err := events.Emit(tx, "review.resubmitted", current.Issue, events.NewOperation(), p.req.Author, &payload); err != nil {

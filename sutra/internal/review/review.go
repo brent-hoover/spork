@@ -580,6 +580,27 @@ func PinObjects(repoPath string, shas ...string) error {
 	return nil
 }
 
+// ListPins returns the shas currently pinned under refs/sutra/pins.
+func ListPins(repoPath string) ([]string, error) {
+	out, err := gitOut(repoPath, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/sutra/pins/")
+	if err != nil {
+		return nil, &GitError{Message: fmt.Sprintf("list pins: %v", err)}
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
+// Unpin removes one pin ref — reconciliation's half of the write-ahead
+// pin protocol; hookless like pin creation.
+func Unpin(repoPath, sha string) error {
+	if _, err := gitOut(repoPath, "-c", "core.hooksPath=/dev/null", "update-ref", "-d", "refs/sutra/pins/"+sha); err != nil {
+		return &GitError{Message: fmt.Sprintf("unpin %s: %v", sha, err)}
+	}
+	return nil
+}
+
 // RevalidateFences re-checks BOTH submission fences with bounded git
 // (500ms per command) at the TAIL of the prepare stage — no database
 // lock held. The head is resolved once; when a base fence is supplied

@@ -12,6 +12,25 @@ import (
 	"sutra/internal/identity"
 )
 
+// migratePendingPins creates the pending-pin ledger: shas pinned in
+// prepare whose accepting transaction has not (yet) committed. Startup
+// reconciliation prunes pin refs that are neither submission-covered
+// nor pending-recent, so crash and lost-race windows cannot grow the
+// repository unboundedly.
+func migratePendingPins(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS pending_pins (
+			sha     TEXT PRIMARY KEY,
+			created TEXT NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("migrate pending_pins: %w", err)
+	}
+	return nil
+}
+
+func timeNowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
 // migrateIdempotency creates the replay table. The stored response is
 // the whole idempotency contract (CON-idempotent-mutations): replaying
 // a key returns the original response verbatim — success or rejection —

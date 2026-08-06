@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"sutra/internal/events"
 	"sutra/internal/identity"
@@ -24,12 +25,15 @@ import (
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, migrateIdempotency} {
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, migrateIdempotency, migratePendingPins} {
 		if err := migrate(db); err != nil {
 			return nil, err
 		}
 	}
 	s := &server{db: db}
+	if err := s.reconcilePins(); err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /identities", s.createIdentity)
 	mux.HandleFunc("GET /identities", s.listIdentities)
@@ -60,6 +64,100 @@ func New(db *sql.DB) (http.Handler, error) {
 
 type server struct {
 	db *sql.DB
+}
+
+// pendingPinGrace is how long an unsettled pending pin is presumed to
+// belong to an in-flight submission before reconciliation prunes it.
+const pendingPinGrace = time.Hour
+
+// reconcilePins runs at startup: every refs/sutra/pins ref that is
+// neither referenced by an accepted submission nor covered by a recent
+// pending row is removed, together with expired pending rows — the
+// cleanup half of the write-ahead pin protocol.
+func (s *server) reconcilePins() error {
+	covered := map[string]bool{}
+	rows, err := s.db.Query(`SELECT commit_sha, base_commit FROM review_submissions WHERE commit_sha IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("reconcile pins: read submissions: %w", err)
+	}
+	for rows.Next() {
+		var commit, base sql.NullString
+		if err := rows.Scan(&commit, &base); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("reconcile pins: scan: %w", err)
+		}
+		if commit.Valid {
+			covered[commit.String] = true
+		}
+		if base.Valid {
+			covered[base.String] = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reconcile pins: iterate: %w", err)
+	}
+
+	pendingRecent := map[string]bool{}
+	cutoff := time.Now().UTC().Add(-pendingPinGrace).Format(time.RFC3339Nano)
+	pending, err := s.db.Query(`SELECT sha, created FROM pending_pins`)
+	if err != nil {
+		return fmt.Errorf("reconcile pins: read pending: %w", err)
+	}
+	var expired []string
+	for pending.Next() {
+		var sha, created string
+		if err := pending.Scan(&sha, &created); err != nil {
+			_ = pending.Close()
+			return fmt.Errorf("reconcile pins: scan pending: %w", err)
+		}
+		if created >= cutoff {
+			pendingRecent[sha] = true
+		} else {
+			expired = append(expired, sha)
+		}
+	}
+	_ = pending.Close()
+	if err := pending.Err(); err != nil {
+		return fmt.Errorf("reconcile pins: iterate pending: %w", err)
+	}
+	for _, sha := range expired {
+		if _, err := s.db.Exec(`DELETE FROM pending_pins WHERE sha = ?`, sha); err != nil {
+			return fmt.Errorf("reconcile pins: expire pending %s: %w", sha, err)
+		}
+	}
+
+	repos, err := s.db.Query(`SELECT DISTINCT repo_path FROM projects WHERE repo_path IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("reconcile pins: read repos: %w", err)
+	}
+	var paths []string
+	for repos.Next() {
+		var p string
+		if err := repos.Scan(&p); err != nil {
+			_ = repos.Close()
+			return fmt.Errorf("reconcile pins: scan repo: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	_ = repos.Close()
+	if err := repos.Err(); err != nil {
+		return fmt.Errorf("reconcile pins: iterate repos: %w", err)
+	}
+	for _, path := range paths {
+		// A missing or broken repo must not block startup — its pins
+		// are unreachable anyway.
+		pins, err := review.ListPins(path)
+		if err != nil {
+			continue
+		}
+		for _, sha := range pins {
+			if !covered[sha] && !pendingRecent[sha] {
+				_ = review.Unpin(path, sha)
+			}
+		}
+	}
+	return nil
 }
 
 // apiError is a handler-produced rejection carrying the contract's
