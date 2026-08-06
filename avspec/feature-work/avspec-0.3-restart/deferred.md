@@ -68,14 +68,14 @@ stays optional; no reviewer-side read-tracking for now.
 
 ## Sutra contract polish (non-blocking, from the final review rounds)
 
-9. 400-response enumeration is asymmetric across mutations that take
+10. 400-response enumeration is asymmetric across mutations that take
    identity refs (some declare it, most rely on the shared BadRequest).
-10. Mixed nullability conventions: `Thread.session` and
+11. Mixed nullability conventions: `Thread.session` and
     `Document.current_version` are `nullable` while sibling fields use
     omit-when-absent.
-11. `searchThreads` carries a sentence about review-session matching that
+12. `searchThreads` carries a sentence about review-session matching that
     belongs on `listReviews`/`/search` only.
-12. Risk/spike representation: kriya's risk-first planning needs risk items
+13. Risk/spike representation: kriya's risk-first planning needs risk items
     and spike tickets visible in sutra. Convention for now — a `risk` /
     `spike` label plus blocks-relations making risky items block their
     dependents; promote to a first-class field only if the convention

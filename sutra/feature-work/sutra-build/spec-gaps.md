@@ -35,6 +35,11 @@ proposed home (avspec field / kriya context / convention).
   harness) caught it — fixed minimally (`items: {}`) — proposed home:
   avspec verify should validate referenced OpenAPI documents (motivates
   deferred item 1's check attachments).
+- 2026-08-06 — Stale toolchain pin: the spec's Go 1.23 was already out
+  of security support at build time, and current dependency versions
+  floor at go 1.25 — resolved by bumping both specs to 1.25 — proposed
+  home: avspec could flag EOL language pins at verify time, or the pin
+  belongs at major-version altitude.
 - 2026-08-06 — SQLite DDL (indexes, composite keys, on-delete) not
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,

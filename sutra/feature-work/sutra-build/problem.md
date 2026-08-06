@@ -21,7 +21,7 @@ acceptance criterion). The spec reached a clean whole-branch roborev pass
 and `avspec verify` reports it ready. No line of Go exists.
 
 The specified surface is large: 23 requirements, ~96 acceptance criteria,
-25 feature files, 53 API operations across a ~2,600-line contract, and 10
+23 feature files, 53 API operations across a ~2,600-line contract, and 10
 modules with declared import boundaries.
 
 Kriya — the build engine specified alongside sutra — consumes sutra's API
@@ -61,12 +61,16 @@ software. Until sutra runs:
   detection then reports builds done that are not. Every crash window has
   a specified recovery; an implementation that misses one breaks a
   downstream consumer that trusts it.
-- **Cross-cutting policies**: no PII, no secrets in the data plane. There
-  is no authentication boundary: `actor` is a client-supplied identity id
+- **Cross-cutting policies**: no secrets in source or configuration
+  (CON-no-secrets); the data plane itself is freeform operator content.
+  There is no authentication boundary: `actor` is a client-supplied identity id
   validated only for existence (AC-identity-referenced), so every caller
-  is trusted. Auditability is load-bearing: every mutation emits events
-  carrying a server-generated operation id, and the watermarked feed is
-  the observability surface consumers reconcile against.
+  is trusted. Auditability is load-bearing: every mutation the audit
+  requirements cover emits events carrying a server-generated operation
+  id — the contract's closed kind list (issue.*, comment.created, doc.*,
+  thread.*, review.*, project.*) is the authority; identity, label, and
+  template CRUD have no event kinds — and the watermarked feed is the
+  observability surface consumers reconcile against.
 
 ## Constraints
 
@@ -77,7 +81,9 @@ software. Until sutra runs:
   unknown fields; the rest are ordinary open schemas.
 - All `sutra/verification/*.feature` scenarios must pass, wired through
   godog — they are the acceptance tests, not documentation.
-- Stack is fixed by the spec: Go 1.23, `go` toolchain, godog, SQLite
+- Stack is fixed by the spec: Go 1.25 (bumped from the spec's original
+  1.23 pin — out of security support, and current dependency floors
+  require 1.25; recorded in spec-gaps.md), `go` toolchain, godog, SQLite
   (FTS5 for search), net/http + htmx.
 - The gate chain is pinned: golangci-lint v2.1.6 via `go run`, `go vet`,
   arch-go v1.7.0 against `sutra/arch-go.yml` module boundaries, gobco
@@ -122,7 +128,11 @@ All resolved 2026-08-06 with Brent:
       validates every HTTP response against the OpenAPI document via a
       validator library (kin-openapi — approved as a test-only
       dependency). Lives inside the existing `go test` gate; no new gate
-      command.
+      command. Response validation alone cannot prove the server rejects
+      unknown fields on the closed schemas (`Issue`, `IssueRead`, the
+      status-transition bodies) — that is proven behaviorally: dedicated
+      steps submit unknown fields and assert rejection without mutation,
+      alongside the closed-schema scenarios already in verification/.
 - [x] Browser-bound scenarios → **handler/HTML-level assertions**: godog
       asserts the server side of each behavior (the rejected move returns
       the error htmx uses to snap the card back; the doc-review server

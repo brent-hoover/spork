@@ -8,7 +8,7 @@ project:
     with, not requirements to test.
   status: ready
   stack:
-    languages: [{ name: go, version: "1.23" }]
+    languages: [{ name: go, version: "1.25" }]  # bumped from 1.23 during sutra-build: 1.23 is out of security support and current deps floor at 1.25 (spec-gaps.md 2026-08-06)
     package_manager: go
     frameworks: [net/http, htmx]
     bdd: godog
