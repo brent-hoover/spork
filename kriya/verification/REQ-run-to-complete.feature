@@ -162,7 +162,7 @@ Feature: Run to complete
     Given a build target whose completion is stamped
     When a supersession installs a new head plan or a completed ticket reopens
     Then the completion epoch advances and the completion stamp is atomically cleared
-    And a ticket-reopen advance issues no sutra call — the ancestor cascade already reopened the epic in the ticket's own transaction
+    And a ticket-reopen advance issues no sutra call only when its recorded verification shows the epic's own status-changed reopen event under the same operation
     And a supersession advance calls the keyed reopen only when the durable lifecycle shows a close ever ran
     And popping resumes for the target
 
@@ -172,7 +172,7 @@ Feature: Run to complete
     And recompletion runs under a new epoch-scoped key with a fresh review — the spent one cannot replay
     Given a completed target whose epic reopened because an active subtree was attached
     Then the same epoch advance, clear, and fresh-review requirement apply
-    And no cascade-driven advance issues an external reopen call — the cascade already reopened the epic, whatever the prior completion state
+    And a cascade-driven advance skips the external reopen call only with recorded reached verification — the epic's own status-changed event under the operation — whatever the prior completion state
 
   Scenario: replayed advance events are no-ops in any order
     Given advance events "E1" then "E2" were consumed, each inserting its keyed CompletionAdvance record
@@ -216,9 +216,15 @@ Feature: Run to complete
     Given a project with two target mappings and an unbound blocked ticket attributed to neither
     When completion detection runs for either target
     Then it refuses to arm — the active ticket is ambiguous
-    And the ambiguity surfaces in the operator inbox
-    When the operator parents the ticket under one target's epic
-    Then the other target's completion detection arms normally
+    And a durable AttributionAmbiguity row upserts on its key and the inbox lists it
+    When the operator resolves it through the attribution action, parenting the ticket under one target's epic
+    Then the row stamps resolved and the other target's completion detection arms normally
+
+  Scenario: a previously bound unplanned ticket is never ambiguous
+    Given a multi-mapping project where an unplanned ticket was once bound to target "A", then detached and reopened
+    When completion detection attributes active work
+    Then the ticket attributes to "A" through its BuildRun's persisted target binding
+    And no ambiguity row is created and target "B" is unaffected
 
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close

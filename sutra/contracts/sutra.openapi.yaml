@@ -213,7 +213,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
@@ -262,7 +262,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Issue' }
+                items: { $ref: '#/components/schemas/IssueRead' }
 
   /issues/{issueId}:
     get:
@@ -277,7 +277,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '404':
           $ref: '#/components/responses/NotFound'
     patch:
@@ -300,7 +300,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -390,7 +390,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -449,7 +449,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -482,7 +482,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -508,7 +508,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Issue'
+                $ref: '#/components/schemas/IssueRead'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1700,6 +1700,17 @@ components:
       type: string
       enum: [open, changes-requested, approved]
 
+    IssueRead:
+      description: >-
+        An Issue as returned by API reads — identical to Issue plus a
+        REQUIRED feed_watermark, captured atomically with the read.
+        Import/export payloads use Issue, which never carries a
+        watermark.
+      allOf:
+        - $ref: '#/components/schemas/Issue'
+        - type: object
+          required: [feed_watermark]
+
     Issue:
       type: object
       required: [id, number, title, status, project, created, updated, subtree_revision]
@@ -1723,7 +1734,7 @@ components:
           description: Incremented atomically on the issue and every ancestor by each status transition, child attachment, or child removal in its subtree — removal increments the former parent's chain.
         feed_watermark:
           type: string
-          description: Server-issued event-feed position captured atomically with this read; a consumer that has processed the feed through this watermark has seen every event that could have affected the state returned here. Read-time decoration — present on API reads, absent from importProject payloads.
+          description: Server-issued event-feed position captured atomically with a read; a consumer that has processed the feed through this watermark has seen every event that could have affected the state returned. REQUIRED on API reads (IssueRead), absent from importProject payloads.
 
     NewIssue:
       type: object
