@@ -23,124 +23,12 @@ import (
 	"sutra/internal/api"
 )
 
-// implementedFeatures lists the verification files whose steps are fully
-// implemented. It grows as modules land; the suite runs in strict mode,
-// so a listed feature with pending or undefined steps fails the build.
-var implementedFeatures = []string{
-	"../verification/REQ-identities.feature:4",             // identity is just a named kind
-	"../verification/REQ-notifications.feature:5",          // cursor polling resumes losslessly
-	"../verification/REQ-notifications.feature:12",         // filters narrow the feed
-	"../verification/REQ-notifications.feature:27",         // draining to a watermark is bounded and provable
-	"../verification/REQ-core-issues.feature:3",            // create mints uuid and display number
-	"../verification/REQ-core-issues.feature:11",           // updates persist
-	"../verification/REQ-status-workflow.feature:3",        // free transitions are recorded
-	"../verification/REQ-status-workflow.feature:45",       // unknown statuses are rejected
-	"../verification/REQ-issue-hierarchy.feature:3",        // parent and child see each other
-	"../verification/REQ-issue-blocking.feature:3",         // both sides see the block
-	"../verification/REQ-issue-blocking.feature:19",        // cycles are rejected
-	"../verification/REQ-audit.feature:5",                  // every mutation is recorded
-	"../verification/REQ-audit.feature:16",                 // events are append-only
-	"../verification/REQ-close-requires-review.feature:5",  // approved review allows close
-	"../verification/REQ-close-requires-review.feature:13", // a stale revision cannot authorize a close
-	"../verification/REQ-close-requires-review.feature:19", // a reversed approval cannot authorize a close
-	"../verification/REQ-close-requires-review.feature:24", // a merge-consumed approval still closes its issue
-	"../verification/REQ-close-requires-review.feature:29", // a spent review cannot close a reopened issue
-	"../verification/REQ-close-requires-review.feature:37", // naming the wrong review cannot close
-	"../verification/REQ-close-requires-review.feature:44", // no approval no close
-	"../verification/REQ-status-workflow.feature:9",        // complete can reopen
-	"../verification/REQ-status-workflow.feature:16",       // conditional transitions guard racing writers
-	"../verification/REQ-issue-hierarchy.feature:16",       // open children hold the parent open
-	"../verification/REQ-issue-hierarchy.feature:27",       // subtree revision fences history, not just state
-	"../verification/REQ-issue-hierarchy.feature:39",       // detaching a child cannot leave a stale close fence
-	"../verification/REQ-issue-hierarchy.feature:46",       // reopening a child reopens a complete parent
-	"../verification/REQ-issue-hierarchy.feature:52",       // a nested reopen cascades to every complete ancestor
-	"../verification/REQ-issue-hierarchy.feature:58",       // a deferred child activating reopens its complete parent
-	"../verification/REQ-issue-hierarchy.feature:63",       // a child becoming blocked reopens its complete parent
-	"../verification/REQ-issue-hierarchy.feature:68",       // a blocked descendant holds the parent open
-	"../verification/REQ-issue-hierarchy.feature:73",       // attaching an open child reopens a complete parent
-	"../verification/REQ-issue-hierarchy.feature:78",       // an attached deferred subtree carrying active work reopens the parent
-	"../verification/REQ-issue-hierarchy.feature:84",       // relation conflicts carry their distinct codes
-	"../verification/REQ-agent-queue.feature:5",            // pop claims the issue
-	"../verification/REQ-agent-queue.feature:12",           // concurrent pops never collide
-	"../verification/REQ-agent-queue.feature:17",           // oldest issue comes first
-	"../verification/REQ-agent-queue.feature:22",           // blocker is worked first
-	"../verification/REQ-agent-queue.feature:28",           // externally blocked issues are skipped
-	"../verification/REQ-agent-queue.feature:35",           // non-open statuses are never handed out
-	"../verification/REQ-agent-queue.feature:45",           // empty stack is not an error
-	"../verification/REQ-agent-queue.feature:50",           // archived project issues are never handed out
-	"../verification/REQ-agent-queue.feature:57",           // same-key replay claims nothing new
-	"../verification/REQ-status-workflow.feature:22",       // pop wins the race over a conditional defer
-	"../verification/REQ-status-workflow.feature:29",       // conditional defer wins the race over a pop
-	"../verification/REQ-doc-database.feature:4",           // doc files under its project
-	"../verification/REQ-doc-database.feature:12",          // saves append immutable versions
-	"../verification/REQ-doc-database.feature:18",          // latest by default
-	"../verification/REQ-doc-database.feature:23",          // history lists and diffs versions
-	"../verification/REQ-doc-templates.feature:3",          // templates are managed by name
-	"../verification/REQ-doc-templates.feature:10",         // template seeds the first version
-	"../verification/REQ-doc-issue-links.feature:3",        // link and unlink after creation
-	"../verification/REQ-doc-issue-links.feature:12",       // both sides see the link
-	"../verification/REQ-close-requires-review.feature:50", // doc deliverables gate like code
-	"../verification/REQ-thread-catalog.feature:4",         // import preserves the transcript
-	"../verification/REQ-thread-catalog.feature:15",        // thread content is searchable
-	"../verification/REQ-thread-links.feature:3",           // threads anchor to their work
-	"../verification/REQ-comments.feature:3",               // comment lands on the issue
-	"../verification/REQ-comments.feature:8",               // replies nest without depth limit
-	"../verification/REQ-comments.feature:13",              // no artificial caps
-	"../verification/REQ-core-issues.feature:17",           // labels attach and detach
-	"../verification/REQ-search.feature:3",                 // text search over issues
-	"../verification/REQ-search.feature:8",                 // filters compose
-	"../verification/REQ-search.feature:14",                // one surface over all content
-	"../verification/REQ-search.feature:19",                // session id joins an instance's work
-	"../verification/REQ-import-export.feature:3",          // export captures the whole project
-	"../verification/REQ-import-export.feature:8",          // import round-trips losslessly
-	"../verification/REQ-import-export.feature:15",         // a half-consumed review is rejected at import
-	"../verification/REQ-import-export.feature:20",         // a malformed consumed review is rejected at import
-	"../verification/REQ-import-export.feature:28",         // a verdict-bearing review missing its latest verdict event
-	"../verification/REQ-import-export.feature:36",         // a malformed close-used review is rejected at import
-	"../verification/REQ-import-export.feature:44",         // an invariant-violating hierarchy is rejected at import
-	"../verification/REQ-import-export.feature:50",         // colliding import is rejected whole
-	"../verification/REQ-import-export.feature:56",         // unknown import actor is rejected
-	"../verification/REQ-projects.feature:16",              // content scopes to its project
-	"../verification/REQ-projects.feature:21",              // archive hides without deleting
-	"../verification/REQ-identities.feature:9",             // unknown identity ids are rejected
-	"../verification/REQ-identities.feature:15",            // uniqueness collisions name their colliding resource
-	"../verification/REQ-identities.feature:27",            // renaming a template into an existing name collides
-	"../verification/REQ-audit.feature:10",                 // history reads back in order
-	"../verification/REQ-core-issues.feature:23",           // assignment to any identity
-	"../verification/REQ-issue-blocking.feature:13",        // blocker completion unblocks
-	"../verification/REQ-notifications.feature:17",         // watermarks anchor reads to the feed
-	"../verification/REQ-status-workflow.feature:36",       // simultaneous writers mutate exactly once
-	"../verification/REQ-code-review.feature:6",            // agent submits a review
-	"../verification/REQ-code-review.feature:12",           // reviewer sees the deliverable
-	"../verification/REQ-code-review.feature:18",           // pinned base survives default branch movement
-	"../verification/REQ-code-review.feature:24",           // feedback threads on the review
-	"../verification/REQ-code-review.feature:30",           // verdict changes state and is recorded
-	"../verification/REQ-code-review.feature:36",           // verdicts can be revised for the current revision
-	"../verification/REQ-code-review.feature:45",           // approval publishes an event
-	"../verification/REQ-code-review.feature:50",           // rework routes back with session context
-	"../verification/REQ-code-review.feature:72",           // stale feedback is rejected
-	"../verification/REQ-code-review.feature:79",           // stale comments are rejected
-	"../verification/REQ-code-review.feature:86",           // approval consumption fences reversal
-	"../verification/REQ-code-review.feature:100",          // a verdict ABA fences delayed operations
-	"../verification/REQ-code-review.feature:105",          // delayed consumption naming a superseded approval
-	"../verification/REQ-code-review.feature:110",          // delayed close naming a superseded approval
-	"../verification/REQ-code-review.feature:115",          // a stale resubmission cannot land on a newer revision
-	"../verification/REQ-code-review.feature:120",          // resubmission requires changes-requested
-	"../verification/REQ-code-review.feature:130",          // both fences guard creation and resubmission
-	"../verification/REQ-code-review.feature:143",          // stale expected base rejects before the review exists
-	"../verification/REQ-code-review.feature:149",          // moved default head rejects despite unchanged merge base
-	"../verification/REQ-code-review.feature:155",          // resubmission enforces the same base and head fences
-	"../verification/REQ-code-review.feature:165",          // unresolvable repository rejects submission
-	"../verification/REQ-kanban.feature:3",                 // columns mirror statuses
-	"../verification/REQ-kanban.feature:9",                 // drag is a real transition
-	"../verification/REQ-kanban.feature:15",                // cards carry the essentials
-	"../verification/REQ-doc-review-server.feature:4",      // doc renders in the browser
-	"../verification/REQ-doc-review-server.feature:10",     // comments pin to a spot in a version
-	"../verification/REQ-doc-review-server.feature:16",     // discussion sits beside the doc
-	"../verification/REQ-doc-review-server.feature:21",     // viewer learns of new versions
-	"../verification/REQ-thread-catalog.feature:10",        // threads read like conversations
-	"../verification/REQ-issue-hierarchy.feature:11",       // parent rolls up child progress
-}
+// The suite runs the ENTIRE verification directory in strict mode:
+// every scenario of every feature is implemented — the avspec's
+// "ready = buildable" claim, held end to end. (The per-scenario
+// allowlist that constructed this suite retired once the directory
+// went green.)
+var implementedFeatures = []string{"../verification"}
 
 var contractRouter routers.Router
 
@@ -363,6 +251,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	rw := registerReviewSteps(sc, cw)
 	registerReviewFenceSteps(sc, cw, rw)
 	registerWebSteps(sc, cw)
+	registerCLISteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.
