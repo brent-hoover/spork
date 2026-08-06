@@ -11,17 +11,19 @@ project:
     approval. Loops until the app is complete. Kriya: Sanskrit, a
     deliberate, practiced sequence of actions.
   stack:
-    languages: [{ name: python, version: "3.13" }]
-    package_manager: uv
-    bdd: pytest-bdd
+    languages: [{ name: go, version: "1.23" }]
+    package_manager: go
+    frameworks: [bubbletea]  # TUI (REQ-tui); bubbles/lipgloss ride along
+    bdd: godog
+    store: sqlite  # durable observability plane + recovery rows; single-binary friendly
     commands:
-      install: uv sync
-      test: uv run pytest
-      lint: uv run ruff check .
-      typecheck: uv run ty check
-      arch: uv run lint-imports  # enforces the declared may_import boundaries in code
-      coverage: uv run pytest --cov=kriya --cov-branch --cov-fail-under=100  # 100% branch = no uncovered conditional arm (REQ-gate-branch-coverage)
-      mutation: uv run pytest-gremlins  # R2 open — the spike validates incremental per-ticket speed; invocation may be amended
+      install: go mod download  # gate tools need no install — coverage and mutation invoke exact pinned versions via `go run pkg@version`, immune to PATH and preinstalled binaries
+      test: go test ./...
+      lint: golangci-lint run
+      typecheck: go vet ./...
+      arch: go run github.com/arch-go/arch-go@v1.6.4  # declared may_import boundaries mirrored in arch-go.yml and checked against real imports; exits nonzero on any violation
+      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # sutra's spike-validated compound (kriya R3, retired 2026-08-04): 100% condition coverage = no uncovered conditional arm (REQ-gate-branch-coverage)
+      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # documented to exit nonzero below thresholds; R2's residue is incremental per-ticket SPEED, observed in use
   status: ready
 
 constitution:
@@ -82,8 +84,11 @@ constitution:
 #       (see ENT-review-round): kriya acts ONLY on ids recorded from its
 #       own enqueue returns — no adoption, no cancellation of unproven
 #       jobs; rare crash-window orphans are surfaced in the TUI.
-#   R2: Can mutation testing (pytest-gremlins-class) run incrementally per
-#       ticket at acceptable speed, or only as a slower periodic gate?
+#   R2 (NARROWED 2026-08-06 by the Go stack flip): the mutation tool is
+#       now go-gremlins, the same invocation sutra's stack spike
+#       validated — tooling risk retired; what remains open is whether
+#       per-ticket incremental runs are fast enough, or only a slower
+#       periodic gate. Observed in use; the gate command stands either way.
 #   R3 (RETIRED 2026-08-04 by spike): gobco detects uncovered arms but
 #       exits 0; wrapped with an awk check it gates correctly (exit 1 on
 #       any uncovered arm). The validated compound command is pinned in

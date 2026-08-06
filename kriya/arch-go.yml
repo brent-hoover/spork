@@ -1,0 +1,65 @@
+# Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
+# checked against real imports by the stack's arch command:
+#   go run github.com/arch-go/arch-go@v1.6.4
+# Package layout mirrors module names with hyphens dropped: one package
+# directory per module (dev-loop -> devloop, review-bridge -> reviewbridge,
+# tracker-client -> trackerclient). A module may import only the packages
+# listed here (its own package is always allowed); modules with an empty
+# rule import no domain packages. Patterns match the LEAF package per
+# module ("**.planner", not "**.planner.**") — add descendant patterns
+# only if subpackages appear.
+version: 1
+dependenciesRules:
+  - package: "**.planner"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.trackerclient"
+  - package: "**.orchestrator"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.planner"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.gates"
+        - "**.owner"
+        - "**.trackerclient"
+  - package: "**.workspace"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.devloop"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.context"
+        - "**.reviewbridge"
+        - "**.architect"
+  - package: "**.reviewbridge"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.gates"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.architect"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.owner"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.context"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.trackerclient"
+  - package: "**.trackerclient"
+    shouldOnlyDependsOn:
+      internal: []
+  - package: "**.cli"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.context"
+  - package: "**.tui"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.orchestrator"
+        - "**.architect"
+        - "**.reviewbridge"
