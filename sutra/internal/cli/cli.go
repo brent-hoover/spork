@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -341,9 +342,15 @@ func (c *client) issue(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: sutra issue show <KEY-N>")
 		}
-		key, number, ok := strings.Cut(args[1], "-")
-		if !ok {
+		// Split at the LAST hyphen: project keys may contain hyphens
+		// (MY-PROJ-42 is project MY-PROJ, issue 42).
+		cut := strings.LastIndex(args[1], "-")
+		if cut <= 0 || cut == len(args[1])-1 {
 			return fmt.Errorf("issue reference %q must be KEY-N", args[1])
+		}
+		key, number := args[1][:cut], args[1][cut+1:]
+		if n, err := strconv.ParseInt(number, 10, 64); err != nil || n < 1 {
+			return fmt.Errorf("issue reference %q must end in a positive number", args[1])
 		}
 		c.flags["project"] = key
 		projectID, err := c.projectIDByKey(key)

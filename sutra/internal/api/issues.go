@@ -142,17 +142,33 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	list, err := issues.List(tx, r.PathValue("projectId"), f)
-	if err != nil {
-		writeError(w, issueErrorFrom(err))
-		return
-	}
 	watermark, err := events.Watermark(tx)
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"issues": list, "feed_watermark": watermark})
+	// Issue bodies are unbounded; rows stream to the wire one at a
+	// time instead of accumulating in an aggregate slice and buffer.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, `{"feed_watermark":%q,"issues":[`, watermark)
+	first := true
+	streamErr := issues.ListEach(tx, r.PathValue("projectId"), f, func(i issues.Issue) error {
+		raw, err := json.Marshal(i)
+		if err != nil {
+			return err
+		}
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	})
+	if streamErr != nil {
+		return // status committed; truncation is the only signal
+	}
+	_, _ = w.Write([]byte(`]}`))
 }
 
 func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {

@@ -534,12 +534,41 @@ func validateImport(p *importPayload, actor string) *apiError {
 			return malformedImport("thread %s anchors to an issue outside the export", t.ID)
 		}
 	}
+	reviewIssueByID := map[string]string{}
+	for _, r := range p.Reviews {
+		reviewIssueByID[r.ID] = r.Issue
+	}
 	for _, e := range p.Events {
 		if !identitySet[e.Actor] {
 			return malformedImport("event %s actor is not in identities", e.ID)
 		}
 		if e.Subject != p.Project.ID && !issueSet[e.Subject] {
 			return malformedImport("event %s subject is outside the export", e.ID)
+		}
+		if e.Kind == "review.approved" || e.Kind == "review.changes-requested" {
+			// EVERY verdict event is human-authored against a carried
+			// review's issue — not only the latest one; imported audit
+			// history must be reachable through the verdict API.
+			if !humanSet[e.Actor] {
+				return malformedImport("verdict event %s actor is not a human identity", e.ID)
+			}
+			raw, err := json.Marshal(e.Payload)
+			if err != nil {
+				return malformedImport("verdict event %s carries an unreadable payload", e.ID)
+			}
+			var payload struct {
+				Review string `json:"review"`
+			}
+			if json.Unmarshal(raw, &payload) != nil || payload.Review == "" {
+				return malformedImport("verdict event %s names no review", e.ID)
+			}
+			issue, ok := reviewIssueByID[payload.Review]
+			if !ok {
+				return malformedImport("verdict event %s names a review outside the export", e.ID)
+			}
+			if e.Subject != issue {
+				return malformedImport("verdict event %s subject is not its review's issue", e.ID)
+			}
 		}
 	}
 	return nil
@@ -715,8 +744,9 @@ func validateImportShapes(p *importPayload) *apiError {
 				From     string `json:"from"`
 				To       string `json:"to"`
 			}
-			if json.Unmarshal(raw, &payload) != nil || payload.Relation == "" ||
-				payload.Kind == "" || payload.From == "" || payload.To == "" {
+			if json.Unmarshal(raw, &payload) != nil || !isUUID(payload.Relation) ||
+				!isUUID(payload.From) || !isUUID(payload.To) ||
+				(payload.Kind != "parent_of" && payload.Kind != "blocks") {
 				return malformedImport("event %s carries a malformed RelationRemovedPayload", e.ID)
 			}
 		}

@@ -254,11 +254,24 @@ func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {
 	return out, rows.Err()
 }
 
-// List returns a project's issues, filterable per Filters. With Q set,
-// results rank by where the term matched — title first, then body,
-// then comments — and by display number within a rank.
+// List returns a project's issues, filterable per Filters — a
+// convenience over ListEach for callers that keep results in memory.
 func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
-	query := `SELECT ` + issueColumns + ` FROM issues WHERE project = ?`
+	out := []Issue{}
+	err := ListEach(tx, project, f, func(i Issue) error {
+		out = append(out, i)
+		return nil
+	})
+	return out, err
+}
+
+// ListEach streams a project's filtered issues one row at a time, in
+// filter order (Q ranks title, then body, then comments; number
+// otherwise). Bodies are unbounded strings — wire-serving listings
+// must never accumulate them, so the filter pass collects only ids
+// and each issue loads as it is handed over.
+func ListEach(tx *sql.Tx, project string, f Filters, fn func(Issue) error) error {
+	query := `SELECT id FROM issues WHERE project = ?`
 	args := []any{project}
 	if f.Number != nil {
 		query += ` AND number = ?`
@@ -296,33 +309,32 @@ func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
 	}
 	rows, err := tx.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list issues: %w", err)
+		return fmt.Errorf("list issues: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	out := []Issue{}
+	ids := []string{}
 	for rows.Next() {
-		i, err := scanIssue(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan issue: %w", err)
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan issue id: %w", err)
 		}
-		out = append(out, i)
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		_ = rows.Close()
+		return fmt.Errorf("iterate issues: %w", err)
 	}
-	for idx := range out {
-		labels, err := LabelsOf(tx, out[idx].ID)
+	_ = rows.Close()
+	for _, id := range ids {
+		issue, err := Get(tx, id)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if len(labels) > 0 {
-			out[idx].Labels = labels
+		if err := fn(issue); err != nil {
+			return err
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate issues: %w", err)
-	}
-	return out, nil
+	return nil
 }
 
 // Update rewrites title/body and stamps updated (AC-issue-update).

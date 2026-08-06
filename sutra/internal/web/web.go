@@ -570,9 +570,22 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 		Speaker string `json:"speaker"`
 		Text    string `json:"text"`
 	}
-	var turns []turn
-	if err := json.Unmarshal(t.Transcript, &turns); err != nil {
+	// The conventional [{speaker, text}] shape renders as a
+	// conversation; entries in any OTHER shape fall back to their raw
+	// JSON per entry — never a blank row.
+	turns := []turn{}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(t.Transcript, &entries); err != nil {
 		turns = []turn{{Speaker: "transcript", Text: string(t.Transcript)}}
+	} else {
+		for _, entry := range entries {
+			var decoded turn
+			if err := json.Unmarshal(entry, &decoded); err == nil && (decoded.Speaker != "" || decoded.Text != "") {
+				turns = append(turns, decoded)
+				continue
+			}
+			turns = append(turns, turn{Speaker: "entry", Text: string(entry)})
+		}
 	}
 	_ = threadTmpl.Execute(w, map[string]any{"Title": t.Title, "Turns": turns})
 }
