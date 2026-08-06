@@ -189,6 +189,80 @@ func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// transitionRequest is the strictly-decoded status-transition body.
+type transitionRequest struct {
+	Status                  string
+	ExpectedStatus          *string
+	ExpectedSubtreeRevision *int64
+	Review                  string
+	ReviewRevision          *int64
+	ReviewVerdictEvent      string
+	Actor                   string
+}
+
+// decodeTransition enforces the contract's CLOSED oneOf schemas
+// (additionalProperties: false on both variants): unknown fields
+// reject, and each variant's required set is validated before any state
+// is touched — an incomplete complete-transition is schema-invalid 400,
+// never 409.
+func decodeTransition(r *http.Request) (transitionRequest, *apiError) {
+	var raw map[string]json.RawMessage
+	if apiErr := decodeBody(r, &raw); apiErr != nil {
+		return transitionRequest{}, apiErr
+	}
+	var req transitionRequest
+	get := func(field string, into any) *apiError {
+		v, ok := raw[field]
+		if !ok {
+			return nil
+		}
+		if err := json.Unmarshal(v, into); err != nil {
+			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed %s: %v", field, err)}
+		}
+		return nil
+	}
+	if apiErr := get("status", &req.Status); apiErr != nil {
+		return transitionRequest{}, apiErr
+	}
+
+	var allowed map[string]bool
+	var required []string
+	switch req.Status {
+	case issues.StatusComplete:
+		allowed = map[string]bool{"status": true, "expected_status": true, "expected_subtree_revision": true,
+			"review": true, "review_revision": true, "review_verdict_event": true, "actor": true}
+		required = []string{"status", "review", "review_revision", "review_verdict_event", "actor"}
+	case issues.StatusOpen, issues.StatusInProgress, issues.StatusBlocked, issues.StatusDeferred:
+		allowed = map[string]bool{"status": true, "expected_status": true, "actor": true}
+		required = []string{"status", "actor"}
+	default:
+		return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("unknown status %q", req.Status)}
+	}
+	for field := range raw {
+		if !allowed[field] {
+			return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("unknown field %q for %s transition", field, req.Status)}
+		}
+	}
+	for _, field := range required {
+		if _, ok := raw[field]; !ok {
+			return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("%s is required for %s transitions", field, req.Status)}
+		}
+	}
+	for field, into := range map[string]any{
+		"expected_status":           &req.ExpectedStatus,
+		"expected_subtree_revision": &req.ExpectedSubtreeRevision,
+		"review":                    &req.Review,
+		"review_revision":           &req.ReviewRevision,
+		"review_verdict_event":      &req.ReviewVerdictEvent,
+		"actor":                     &req.Actor,
+	} {
+		if apiErr := get(field, into); apiErr != nil {
+			return transitionRequest{}, apiErr
+		}
+	}
+	return req, nil
+}
+
 // updateIssueStatus is the review-gated, cascade-carrying transition
 // (AC-status-set, AC-parent-close-gate, AC-parent-reopen-cascade,
 // AC-subtree-revision, AC-status-conditional). Complete transitions
@@ -198,26 +272,9 @@ func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {
 func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("issueId")
 	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Status         string  `json:"status"`
-			ExpectedStatus *string `json:"expected_status"`
-			Actor          string  `json:"actor"`
-			Review         *string `json:"review"`
-		}
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		req, apiErr := decodeTransition(r)
+		if apiErr != nil {
 			return 0, nil, apiErr
-		}
-		switch req.Status {
-		case issues.StatusOpen, issues.StatusInProgress, issues.StatusBlocked, issues.StatusDeferred:
-			if req.Review != nil {
-				return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "review is valid only on complete transitions"}
-			}
-		case issues.StatusComplete:
-			if req.Review == nil {
-				return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "complete transitions require review, review_revision, and review_verdict_event"}
-			}
-		default:
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("unknown status %q", req.Status)}
 		}
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
@@ -238,7 +295,7 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 			// module exists; the named review therefore fails the
 			// ownership check (AC-close-approved).
 			return 0, nil, &apiError{status: http.StatusConflict, code: "missing-approval",
-				message: fmt.Sprintf("review %s does not belong to issue %s", *req.Review, id)}
+				message: fmt.Sprintf("review %s does not belong to issue %s", req.Review, id)}
 		}
 
 		operation := events.NewOperation()
@@ -391,6 +448,13 @@ func (s *server) removeIssueRelation(w http.ResponseWriter, r *http.Request) {
 		if pathIssue := r.PathValue("issueId"); rel.From != pathIssue && rel.To != pathIssue {
 			return 0, nil, &apiError{status: http.StatusNotFound, code: "not-found",
 				message: fmt.Sprintf("relation %s does not involve issue %s", rel.ID, pathIssue)}
+		}
+		fromIssue, err := issues.Get(tx, rel.From)
+		if err != nil {
+			return 0, nil, issueErrorFrom(err)
+		}
+		if apiErr := guardWritable(tx, fromIssue.Project); apiErr != nil {
+			return 0, nil, apiErr
 		}
 		payload, err := json.Marshal(map[string]string{
 			"relation": rel.ID, "kind": rel.Kind, "from": rel.From, "to": rel.To,

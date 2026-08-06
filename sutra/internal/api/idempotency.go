@@ -148,6 +148,14 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("reserve idempotency key: %v", err)}
 	}
 
+	// Handler work runs inside a savepoint: a 4xx rolls back only the
+	// mutation's partial work while the reservation stays held, so no
+	// concurrent same-key request can slip in a different outcome
+	// between a rejection and its record.
+	if _, err := tx.Exec(`SAVEPOINT handler`); err != nil {
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("savepoint: %v", err)}
+	}
+
 	status, body, apiErr := fn(tx)
 	if apiErr != nil && apiErr.status >= http.StatusInternalServerError {
 		// A 5xx is not a settled outcome — nothing is recorded, the
@@ -170,16 +178,11 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 
 	if apiErr != nil {
 		// Rejections settle the pair but must not keep the mutation's
-		// partial work: drop the transaction (reservation included),
-		// then record the settled rejection standalone.
-		_ = tx.Rollback()
-		if err := s.recordSettled(operation, key, status, raw); err != nil {
-			if identity.IsUniqueViolation(err) {
-				return 0, nil, nil
-			}
-			return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record idempotency key: %v", err)}
+		// partial work: unwind to the savepoint — the reservation
+		// survives — then record the 4xx and commit atomically.
+		if _, err := tx.Exec(`ROLLBACK TO handler`); err != nil {
+			return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("rollback to savepoint: %v", err)}
 		}
-		return status, raw, nil
 	}
 
 	if _, err := tx.Exec(`UPDATE idempotency_keys SET status = ?, body = ? WHERE operation = ? AND key = ?`,
