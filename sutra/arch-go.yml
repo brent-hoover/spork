@@ -12,6 +12,13 @@
 # "**.issues.**") — add descendant patterns only if subpackages appear.
 version: 1
 dependenciesRules:
+  # Acceptance harness — test-only package that boots the API over
+  # httptest and drives it through HTTP; api.New is its only internal
+  # import. Not an avspec module (same spec gap as the composition root).
+  - package: "**.acceptance"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.api"
   # Composition root — not a declared avspec module; it wires the declared
   # surface modules together and may import only them (spec gap logged in
   # feature-work/sutra-build/spec-gaps.md: avspec has no composition-root

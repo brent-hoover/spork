@@ -25,6 +25,16 @@ proposed home (avspec field / kriya context / convention).
   list — resolved by an explicitly-commented extra rule in arch-go.yml —
   proposed home: avspec could declare an app composition module, or the
   arch-config generator (deferred item 8) could emit the rule.
+- 2026-08-06 — SQLite driver unpinned: `store: sqlite` names the engine
+  but not the Go driver — resolved with Brent: modernc.org/sqlite (pure
+  Go, FTS5, single-binary) — proposed home: stack block could pin driver
+  alongside engine.
+- 2026-08-06 — Contract invalid per OpenAPI 3.0: `Error.conflicts`
+  declared `type: array` with no `items` — ~100 LLM review rounds missed
+  it; the FIRST mechanical validation (kin-openapi doc load in the
+  harness) caught it — fixed minimally (`items: {}`) — proposed home:
+  avspec verify should validate referenced OpenAPI documents (motivates
+  deferred item 1's check attachments).
 - 2026-08-06 — SQLite DDL (indexes, composite keys, on-delete) not
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,
