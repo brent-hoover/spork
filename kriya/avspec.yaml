@@ -671,20 +671,31 @@ data:
     - id: ENT-completion-advance
       name: CompletionAdvance
       description: >-
-        Insert-once record of one epoch advance, in one of two variants.
-        EVENT-CONSUMPTION advances are keyed by (target, event) with the
-        consumed event required, so a replayed event — however stale, in
-        whatever order — collides on the key and advances nothing: every
-        event is consumed at most once, a valid completion is never
-        cleared twice, and the cause needed to recover an explicit
-        reopen is never overwritten. AMBIGUITY-RESOLUTION advances are
-        keyed by (ambiguity_key, resolution_generation, target_key),
-        created and linked in the resolution's generation-conditional
-        transaction — event holds the parenting operation when one ran
-        and is absent on the adopted path, whose evidence is external.
+        Insert-once record of one epoch advance, in one of three
+        variants. EVENT-CONSUMPTION advances are keyed by (target,
+        event) with the consumed event required, so a replayed event —
+        however stale, in whatever order — collides on the key and
+        advances nothing: every event is consumed at most once, a valid
+        completion is never cleared twice, and the cause needed to
+        recover an explicit reopen is never overwritten.
+        AMBIGUITY-RESOLUTION advances are keyed by (ambiguity_key,
+        resolution_generation, target_key), created and linked in the
+        resolution's generation-conditional transaction — event holds
+        the parenting operation when one ran and is absent on the
+        adopted path, whose evidence is external. LOCAL-OPERATION
+        advances (causes supersession and compensation) consume no
+        event and hold no ambiguity: their key derives from
+        (target_key, cause, local_source), where local_source is the
+        supersession's new PlanHead generation or the stale close's
+        completion_operation_key — both immutable and unique to the
+        one operation that advanced the epoch — recorded in
+        local_source and inserted in that operation's own transaction,
+        so a crash-replay of the replacement CAS or the compensation
+        collides on the key and never advances twice.
       fields:
-        - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id) for event-consumption advances; ambiguity-resolution advances derive it from (ambiguity_key, resolution_generation, target_key) instead — generation-scoped, so a reopened row's fresh resolution creates a distinct advance while a same-generation replay collides idempotently, and the event field records the resolution's parenting operation
+        - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id) for event-consumption advances; ambiguity-resolution advances derive it from (ambiguity_key, resolution_generation, target_key), and local-operation advances from (target_key, cause, local_source) — generation-scoped, so a reopened row's fresh resolution creates a distinct advance while a same-generation replay collides idempotently, and the event field records the resolution's parenting operation
         - { name: target_key, type: string, required: true }
+        - { name: local_source, type: string }  # LOCAL-OPERATION advances only, required for them at write time — the supersession's new PlanHead generation or the compensating close attempt's completion_operation_key; the immutable identity source the advance_key derives from
         - { name: event, type: string }  # required for event-consumption advances (the consumed event id) — enforced at write time; ambiguity-resolution advances record the resolution's parenting operation here when one ran, and the ADOPTED path leaves it deliberately absent, its cascade evidence being external and its identity coming from the (ambiguity_key, resolution_generation, target_key) derivation
         - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, new-work, compensation] }
         - { name: operation, type: string }  # the server transaction id correlated during cascade verification — the evidence the check ran against

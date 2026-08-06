@@ -205,6 +205,12 @@ Feature: Run to complete
     And a new build-completion review is submitted for fresh human approval
     And recovery can never adopt the prior epoch's approved review — its key names the old epoch
 
+  Scenario: a replayed local operation advances the epoch exactly once
+    Given a supersession's replacement transaction inserted its advance keyed by the new head generation
+    And a stale-close compensation inserted its advance keyed by the close attempt's operation key
+    When crash recovery replays either transaction
+    Then the insert collides on its local-source-derived key and the epoch never advances twice
+
   Scenario: a creation in the event lag cannot hide behind a trusted stamp
     Given a completed target whose stamp's recorded revision still matches sutra
     And a new unparented target ticket was just created, its event not yet consumed
