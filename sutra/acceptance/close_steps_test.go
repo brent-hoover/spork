@@ -21,6 +21,7 @@ type closeWorld struct {
 	repoPath string
 	commits  []string // feature commits, in order minted
 	reviews  map[string]reviewRef
+	tempDirs []string
 }
 
 type reviewRef struct {
@@ -31,9 +32,19 @@ type reviewRef struct {
 }
 
 func (cw *closeWorld) reset() {
+	cw.cleanup()
 	cw.repoPath = ""
 	cw.commits = nil
 	cw.reviews = map[string]reviewRef{}
+}
+
+// cleanup removes every repository this world minted, including
+// partially initialized ones left by setup failures.
+func (cw *closeWorld) cleanup() {
+	for _, dir := range cw.tempDirs {
+		_ = os.RemoveAll(dir)
+	}
+	cw.tempDirs = nil
 }
 
 // ensureRepo builds a throwaway git repository and stamps it onto the
@@ -46,6 +57,7 @@ func (cw *closeWorld) ensureRepo() error {
 	if err != nil {
 		return err
 	}
+	cw.tempDirs = append(cw.tempDirs, dir) // removed by cleanup even if setup fails below
 	run := func(args ...string) error {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
@@ -232,10 +244,14 @@ func (cw *closeWorld) readReview(issueName string) (map[string]any, error) {
 	return out, nil
 }
 
-func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) {
+func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) *closeWorld {
 	cw := &closeWorld{iw: iw}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		cw.reset()
+		return ctx, nil
+	})
+	sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		cw.cleanup()
 		return ctx, nil
 	})
 
@@ -543,13 +559,16 @@ func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) {
 			"status": "deferred", "expected_status": "open", "actor": actor,
 		})
 	})
+	// Shared by the conditional-transition scenario and the
+	// relation-conflict outline: assert the conflict status here; each
+	// scenario's next step pins its specific code.
 	sc.Step(`^it is rejected with a conflict$`, func() error {
-		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
-			return err
-		}
-		return iw.s.expectErrorCode("expected-status-mismatch")
+		return iw.s.expectStatus(http.StatusConflict)
 	})
 	sc.Step(`^(SUT-\d+) still has status "in-progress"$`, func(name string) error {
+		if err := iw.s.expectErrorCode("expected-status-mismatch"); err != nil {
+			return err
+		}
 		if err := iw.readIssue(name); err != nil {
 			return err
 		}
@@ -558,4 +577,5 @@ func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) {
 		}
 		return nil
 	})
+	return cw
 }

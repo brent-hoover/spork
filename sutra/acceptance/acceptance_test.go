@@ -49,6 +49,17 @@ var implementedFeatures = []string{
 	"../verification/REQ-close-requires-review.feature:44", // no approval no close
 	"../verification/REQ-status-workflow.feature:9",        // complete can reopen
 	"../verification/REQ-status-workflow.feature:16",       // conditional transitions guard racing writers
+	"../verification/REQ-issue-hierarchy.feature:16",       // open children hold the parent open
+	"../verification/REQ-issue-hierarchy.feature:27",       // subtree revision fences history, not just state
+	"../verification/REQ-issue-hierarchy.feature:39",       // detaching a child cannot leave a stale close fence
+	"../verification/REQ-issue-hierarchy.feature:46",       // reopening a child reopens a complete parent
+	"../verification/REQ-issue-hierarchy.feature:52",       // a nested reopen cascades to every complete ancestor
+	"../verification/REQ-issue-hierarchy.feature:58",       // a deferred child activating reopens its complete parent
+	"../verification/REQ-issue-hierarchy.feature:63",       // a child becoming blocked reopens its complete parent
+	"../verification/REQ-issue-hierarchy.feature:68",       // a blocked descendant holds the parent open
+	"../verification/REQ-issue-hierarchy.feature:73",       // attaching an open child reopens a complete parent
+	"../verification/REQ-issue-hierarchy.feature:78",       // an attached deferred subtree carrying active work reopens the parent
+	"../verification/REQ-issue-hierarchy.feature:84",       // relation conflicts carry their distinct codes
 }
 
 var contractRouter routers.Router
@@ -229,7 +240,8 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerIdentitySteps(sc, s)
 	registerFeedSteps(sc, s)
 	iw := registerIssueSteps(sc, s)
-	registerCloseSteps(sc, iw)
+	cw := registerCloseSteps(sc, iw)
+	registerHierarchySteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

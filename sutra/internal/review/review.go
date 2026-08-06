@@ -172,7 +172,11 @@ func ResolveCode(repo Repo, commit string, f Fences) (baseCommit string, err err
 }
 
 func gitOut(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	return gitOutTimeout(dir, 10*time.Second, args...)
+}
+
+func gitOutTimeout(dir string, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
 	if err != nil {
@@ -508,12 +512,17 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	}
 	limited := io.LimitReader(stdout, MaxDiffBytes+1)
 	raw, readErr := io.ReadAll(limited)
+	if int64(len(raw)) > MaxDiffBytes {
+		// Overflow detected: kill git immediately instead of letting it
+		// block on a full pipe until the timeout — oversized requests
+		// must not pin processes or handler capacity.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s exceeds the %d-byte limit", baseCommit, commit, MaxDiffBytes)}
+	}
 	waitErr := cmd.Wait()
 	if readErr != nil {
 		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s: %v", baseCommit, commit, readErr)}
-	}
-	if int64(len(raw)) > MaxDiffBytes {
-		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s exceeds the %d-byte limit", baseCommit, commit, MaxDiffBytes)}
 	}
 	if waitErr != nil {
 		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s unresolvable: %v", baseCommit, commit, waitErr)}
@@ -521,12 +530,15 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	return string(raw), nil
 }
 
-// RevalidateHead re-reads the default branch head — one bounded
-// rev-parse — for fenced submissions at the mutation's linearization
-// point: a head that advanced after preparation rejects rather than
-// letting a stale fence pass.
+// RevalidateHead re-reads the default branch head — one rev-parse with
+// a 500ms bound, far inside the database's 5s busy budget, because it
+// runs under the mutation's write lock — for fenced submissions at the
+// linearization point: a head that advanced after preparation rejects
+// rather than letting a stale fence pass. A local rev-parse answers in
+// milliseconds; one that cannot answer in 500ms fails the request
+// unsettled rather than starving concurrent writers.
 func RevalidateHead(repo Repo, expectedHead string) error {
-	head, err := gitOut(repo.Path, "rev-parse", "refs/heads/"+repo.DefaultBranch)
+	head, err := gitOutTimeout(repo.Path, 500*time.Millisecond, "rev-parse", "refs/heads/"+repo.DefaultBranch)
 	if err != nil {
 		return &GitError{Message: fmt.Sprintf("default branch %q unresolvable: %v", repo.DefaultBranch, err)}
 	}
