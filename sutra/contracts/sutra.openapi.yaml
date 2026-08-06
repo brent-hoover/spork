@@ -2531,7 +2531,11 @@ components:
 
     SearchResults:
       type: object
+      required: [feed_watermark]
       properties:
+        feed_watermark:
+          type: string
+          description: Server-issued feed position captured atomically with the grouped results — present even when every group is empty, so consumers can reconcile the feed against exactly what this search reflected (AC-feed-watermark).
         issues:
           type: array
           items: { $ref: '#/components/schemas/Issue' }

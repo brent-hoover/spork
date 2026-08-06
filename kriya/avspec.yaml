@@ -376,6 +376,9 @@ requirements:
       - id: AC-complete-drained
         statement: An untrusted completion stamp never reports done from current state — the fallback reads live state with its atomically captured feed watermark and processes the feed through it first, so pending revision-advancing events, a detached reopen-and-recomplete included, are consumed before any completion verdict.
         test: verification/REQ-run-to-complete.feature#a detached reopen-and-recomplete cannot slip a stale completion
+      - id: AC-complete-new-work
+        statement: Kriya keeps consuming project work events after a target completes — a new active issue attributing to a completed target advances its epoch, clears the stamp, and parents the ticket under the epic, whose attachment cascade reopens it; an ambiguous creation suppresses completion for every candidate through the open ambiguity record, without advancing epochs, until resolution wakes only the selected target.
+        test: verification/REQ-run-to-complete.feature#new work created after completion wakes the target
       - id: AC-complete-stall
         statement: When nothing is workable, nothing is in flight, and the epic still cannot close, a durable Stall row records the condition and its cause and surfaces in the operator inbox; resolution stamps it — never silent spinning, never a false done.
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
@@ -778,12 +781,19 @@ data:
         consuming the project's work events after a target completes,
         and a creation attributing to a completed target advances its
         epoch (cause new-work, keyed by the creating event), clears the
-        stamp, parents the ticket under the epic, and explicitly
-        reopens the epic under the keyed reopen, since a creation
-        cannot cascade (the ticket was never a descendant); in a
-        multi-mapping project an AMBIGUOUS creation advances the epoch
-        of EVERY candidate target until the ambiguity resolves, so no
-        completed target sleeps through work that might be its own (none of
+        stamp, and parents the ticket under the epic through the keyed
+        relation mutation: ATTACHING active work beneath the complete
+        epic is itself the reopen trigger — sutra cascades atomically —
+        and kriya verifies that cascade through the mutation's
+        operation id exactly as for reopens, issuing the explicit keyed
+        reopen only if the epic provably went unreached. An AMBIGUOUS
+        creation in a multi-mapping project advances NO epoch: the open
+        AttributionAmbiguity row itself suppresses completion for every
+        candidate target — no stamp reports done and no attempt starts
+        while an open ambiguity names the project — and resolution
+        advances only the selected target through its parenting
+        attachment's cascade, the other candidates resuming untouched
+        with their stamps and epics intact (none of
         which move the PlanHead generation, so the generation alone
         cannot fence them). Because the submission key embeds the
         epoch, any such reopen forces recompletion onto a NEW key and a

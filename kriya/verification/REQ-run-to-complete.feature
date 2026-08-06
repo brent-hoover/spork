@@ -232,10 +232,13 @@ Feature: Run to complete
     Given a completed target whose stamp is trusted
     When a new active issue is created and attributes to that target
     Then the epoch advances with cause new-work, keyed by the creating event, and the stamp clears
-    And the ticket is parented under the epic, which is explicitly reopened under the keyed reopen — a creation cannot cascade
+    And the ticket is parented under the epic through the keyed mutation — attaching active work beneath the complete epic cascades the reopen
+    And kriya verifies the cascade through the mutation's operation id, issuing the explicit keyed reopen only if the epic provably went unreached
     And popping resumes; nothing strands
     Given the creation is ambiguous in a multi-mapping project
-    Then every candidate target's epoch advances and stamp clears until the ambiguity resolves
+    Then no epoch advances — the open ambiguity row suppresses completion for every candidate target
+    When the operator resolves the attribution
+    Then only the selected target advances, through its parenting attachment's cascade, and the other candidates resume untouched
 
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close
