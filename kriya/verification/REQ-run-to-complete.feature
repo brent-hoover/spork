@@ -222,7 +222,8 @@ Feature: Run to complete
     And a crash after the relation lands is recovered by replaying the keyed mutation, stamping resolved with the outcome
     And the row stamps resolved and the other target's completion detection arms normally
     Given a resolution's parenting call instead finds a concurrent parent on re-read
-    Then that parent IS the attribution and the row stamps resolved in place
+    Then the observed parent is fed back through the attribution algorithm
+    And only a parent attributing to exactly one target stamps the row resolved in place — none or several retains a conflicting ambiguity with suppression intact
     Given the call fails with a permanent conflict
     Then the row records conflicting with the code and details in resolution_error, and reselection rotates the resolution generation and key atomically — no cached conflict suppresses the candidates forever
 
