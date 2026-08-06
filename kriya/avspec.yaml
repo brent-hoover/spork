@@ -677,7 +677,7 @@ data:
       fields:
         - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id) for event-consumption advances; ambiguity-resolution advances derive it from (ambiguity_key, resolution_generation, target_key) instead — generation-scoped, so a reopened row's fresh resolution creates a distinct advance while a same-generation replay collides idempotently, and the event field records the resolution's parenting operation
         - { name: target_key, type: string, required: true }
-        - { name: event, type: string, required: true }
+        - { name: event, type: string }  # required for event-consumption advances (the consumed event id) — enforced at write time; ambiguity-resolution advances record the resolution's parenting operation here when one ran, and the ADOPTED path leaves it deliberately absent, its cascade evidence being external and its identity coming from the (ambiguity_key, resolution_generation, target_key) derivation
         - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, new-work, compensation] }
         - { name: operation, type: string }  # the server transaction id correlated during cascade verification — the evidence the check ran against
         - { name: ticket, type: string }  # new-work advances — the created ticket this advance must parent
@@ -1429,8 +1429,10 @@ data:
         and reopening atomically clears the WHOLE prior resolution —
         selected target, error, conflict cause, the linked advance, and
         every reclaim field — while rotating resolution_generation and
-        resolution_key, and every write that links an advance, stamps reclaim state, or
-        resolves the row is a CAS conditional on resolution_generation
+        resolution_key, and EVERY resolver-owned mutation — transitions to resolving,
+        adopted, or conflicting, writes of selected target, observed
+        parent, or error, advance links, reclaim stamps, and the
+        resolved stamp alike — is a CAS conditional on resolution_generation
         still equaling the value the resolver started under — a stale
         resolver finishing after a reopen loses that CAS and mutates
         nothing — so re-selecting

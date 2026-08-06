@@ -20,7 +20,7 @@ Feature: Pollable event feed
     Given an issue list matches nothing
     Then the empty response still carries its watermark
     Given a work-stack pop claims an issue
-    Then the popped issue carries its atomically captured watermark like every live read
+    Then the result carries ONE authoritative top-level watermark — the nested issue carries none, so no two drain positions can disagree
     Given a work-stack pop finds the stack empty
     Then the empty result still carries a top-level watermark anchoring the negative answer to the feed
 

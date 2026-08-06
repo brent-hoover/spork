@@ -2536,9 +2536,9 @@ components:
           type: string
           description: Server-issued feed position captured atomically with the pop — present for claimed AND empty results, so an explicit empty pop can anchor its negative answer to the feed exactly like a positive one.
         issue:
-          description: The claimed issue, now in-progress; absent if the stack was empty. An IssueRead — pop is a live read, so it carries the atomic feed watermark like every other.
+          description: The claimed issue, now in-progress; absent if the stack was empty. A plain Issue — the pop's single authoritative watermark is the top-level one, so consumers can never drain to two different positions for one result.
           allOf:
-            - $ref: '#/components/schemas/IssueRead'
+            - $ref: '#/components/schemas/Issue'
 
     DocumentExport:
       type: object

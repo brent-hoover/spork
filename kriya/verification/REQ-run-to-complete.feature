@@ -238,8 +238,8 @@ Feature: Run to complete
     When the row reopens
     Then the whole prior resolution clears — selected target, linked advance, and reclaim fields included — and the resolution generation and key rotate atomically
     And re-selecting target "A" issues a fresh keyed mutation that creates and links a FRESH advance — neither the stale success nor the old advance can ever stand in for the new resolution
-    Given a resolver from before the reopen completes late and attempts to link its advance or stamp the row
-    Then its generation-conditional write fails — the row's generation moved — and it mutates nothing
+    Given a resolver from before the reopen completes late and attempts to link its advance, stamp the row, or transition it to adopted or conflicting
+    Then every such generation-conditional write fails — the row's generation moved — and it mutates nothing, its state, targets, and errors untouched
 
   Scenario: a previously bound unplanned ticket is never ambiguous
     Given a multi-mapping project where an unplanned ticket was once bound to target "A", then detached and reopened
