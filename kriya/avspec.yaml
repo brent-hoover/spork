@@ -533,7 +533,7 @@ modules:
           name: Inbox
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
-          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-workspace.cleanup_error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-enqueue-attempt.round, ENT-enqueue-attempt.external_id, ENT-enqueue-attempt.created, ENT-enqueue-attempt.resolved, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state, ENT-attribution-ambiguity.ticket, ENT-attribution-ambiguity.state, ENT-attribution-ambiguity.resolution_error, ENT-attribution-ambiguity.observed_parent, ENT-completion-advance.parenting_state, ENT-completion-advance.conflict_kind, ENT-completion-advance.parenting_error]
+          shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-workspace.cleanup_error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-enqueue-attempt.round, ENT-enqueue-attempt.external_id, ENT-enqueue-attempt.created, ENT-enqueue-attempt.resolved, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state, ENT-attribution-ambiguity.ticket, ENT-attribution-ambiguity.state, ENT-attribution-ambiguity.resolution_error, ENT-attribution-ambiguity.observed_parent, ENT-attribution-ambiguity.reclaim_state, ENT-completion-advance.reclaim_state, ENT-completion-advance.parenting_state, ENT-completion-advance.conflict_kind, ENT-completion-advance.parenting_error]
           actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-attempt-resolve, ACT-ticket-attribute, ACT-parenting-resolve, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
@@ -688,7 +688,7 @@ data:
         - { name: reclaim_relation, type: string }  # RECLAIM — the conflicting relation id recorded with the operator's choice, before any call
         - { name: reclaim_generation, type: integer }  # RECLAIM — init 0; the removal key derives from (advance, reclaim_generation), and the pair rotates atomically on retry-after-correction AND whenever reclaim_relation changes under fresh authorization — a cached result for a previous relation can never replay against a newly authorized one
         - { name: reclaim_removal_key, type: string }  # RECLAIM — Idempotency-Key of the removal mutation, derived per (advance, reclaim_generation) and updated in the same transaction; recovery replays it
-        - { name: reclaim_state, type: enum, values: [pending, failed, removed] }  # RECLAIM — write-ahead around the removal; failed is the operator-visible unrecoverable outcome, whose correction rotates the generation and returns the state to pending; the advance returns to pending attachment only after removed
+        - { name: reclaim_state, type: enum, values: [pending, failed, removed] }  # RECLAIM — write-ahead around the removal; failed is the operator-visible unrecoverable outcome with its cause recorded in parenting_error and the state shown by the inbox; correction rotates the generation and returns the state to pending, and the advance returns to pending attachment only after removed
         - { name: parenting_state, type: enum, values: [pending, parented, conflicting, ceded, dismissed] }  # conflicting is the awaiting-operator condition — conflict_kind records whether a different parent holds the ticket or the attachment failed permanently; ceded is terminal (other-parent: the ticket counts for the target that holds it); dismissed is terminal (permanent-failure: the attachment is abandoned, but the ticket STILL blocks completion through attribution until handled out-of-band — dismissal hides nothing);  # new-work advances — written pending with the advance and held pending THROUGH cascade verification: parented is stamped only in the same transaction that records operation, cascade_verified, and (when unreached) reopen_owed, so recovery resuming every pending row always re-runs the keyed attachment replay AND the correlation — a crash at any point before the atomic stamp can never lose the explicit-reopen obligation or strand a detached ticket. A CONFLICT on the attachment replay is resolved by re-reading the ticket's parentage: the desired parent already in place means a concurrent actor parented it — stamp parented with cascade_verified external and no reopen owed (operation deliberately absent; sutra's attach invariant carried the cascade), satisfying the same atomic-stamp contract; a DIFFERENT parent transitions parenting_state to conflicting with the offending parent recorded in parenting_error — an inbox item the operator resolves; a parentless conflict is CLASSIFIED by its recorded cause: a concurrency race is transient — parenting_generation and relation_key rotate atomically in one transaction and the retry issues under the fresh key — while a permanent condition (an ancestry cycle, an archived project) transitions to conflicting with conflict_kind permanent-failure and the error details in parenting_error, never retried blindly — its resolutions are RETRY-AFTER-CORRECTION (the operator fixes the underlying condition, the action rotates the generation and returns the advance to pending) or terminal DISMISS, which abandons the attachment while the ticket keeps blocking completion through attribution; a pending advance can never sit permanently behind a cached 409 or spin forever on a permanent failure. The operator resolves a conflicting advance through the parenting-resolution action, itself crash-safe: CEDE stamps the terminal ceded state — the ticket henceforth counts for the parent that holds it — while RECLAIM persists its whole lifecycle write-ahead: the conflicting relation id (reclaim_relation), the keyed removal mutation (reclaim_removal_key), and reclaim_state pending land with the choice BEFORE any call, the keyed removal replays to removed — a not-found means another actor already removed it and is ACCEPTED as removed; a conflict re-reads parentage: an absent parent proceeds, a parent DIFFERENT from the authorized one returns the advance to conflicting with parenting_error updated — fresh authorization records the new reclaim_relation and rotates reclaim_generation and the removal key atomically with it, and an unrecoverable failure records its cause with reclaim_state failed — the operator corrects, the removal generation and key rotate atomically, and the fresh attempt reconciles before attachment resumes — and only then does the advance return to pending under an advanced generation for the ordinary keyed attachment; each step is reconciled before the choice clears, so recovery never forgets the authorization to remove, never removes an unauthorized parent, and never re-encounters the same conflict blind
         - { name: cascade_verified, type: enum, values: [reached, unreached, external] }  # cascade-driven causes only — reached requires an issue.status-changed event for the epic, with its reopened status, under the same operation; external records a desired-parent acceptance, where a concurrent actor's attachment carried the cascade (sutra's invariant guarantees it) and operation is deliberately absent; recorded atomically with the FINAL parenting reconciliation — new-work advances insert pending first, verification landing with the parented stamp
         - { name: reopen_owed, type: boolean }  # true exactly when verification recorded unreached — the durable explicit-reopen obligation recovery honors
@@ -1368,7 +1368,7 @@ data:
         Durable record of an active ticket that no attribution source
         claims in a multi-mapping project. Detection upserts on the
         deterministic key, the inbox lists EVERY unresolved row — open,
-        resolving, and conflicting alike — and the operator
+        resolving, conflicting, and adopted alike — and the operator
         resolves one by parenting the ticket under a target's epic —
         the resolution action, itself write-ahead: the selected target
         and the parenting mutation's idempotency key persist with state
@@ -1385,15 +1385,17 @@ data:
         with the evidence matched to HOW it attributed: a parent that is
         the target's epic or verified as its descendant carries sutra's
         attach-invariant guarantee that the epic reopened, recorded as
-        external cascade evidence; a unique attribution through plan
-        membership or run binding whose parent sits OUTSIDE the epic
-        proves no such cascade, so the row persists a durable
-        explicit-reopen obligation and executes the keyed reopen before
-        it can resolve, the foreign parentage surfacing through the
-        standard conflicting-parentage record for the operator to cede
-        or reclaim. Either way
-        selected_target updates to that target and the row moves to the
-        distinct ADOPTED state in one transaction — the prior key's
+        external cascade evidence — ONLY this case adopts:
+        selected_target updates and the row moves to the distinct
+        ADOPTED state in one transaction. A unique attribution through
+        plan membership or run binding whose parent sits OUTSIDE the
+        epic proves no such cascade: the row records the durable
+        explicit-reopen obligation, executes the keyed reopen, and
+        routes to CONFLICTING with the observed parent — the
+        operator-authorized reclaim lifecycle must reparent the ticket
+        beneath the epic before the row can resolve, so resolution can
+        never precede reparenting and later reattachment never fights
+        an entrenched foreign parent. For the adopted case — the prior key's
         request targeted a different epic and is dead, and adopted
         recovery resumes ONLY the adopted target's epoch advance and
         cascade reconciliation, never an attachment replay (the ticket
@@ -1435,7 +1437,7 @@ data:
         - { name: reclaim_relation, type: string }  # reselection over a foreign parent — the observed relation recorded with the operator's authorization, before any call
         - { name: reclaim_removal_key, type: string }  # keyed removal of the foreign parent, derived per (row, reclaim_generation) and rotated with it atomically
         - { name: reclaim_generation, type: integer }  # init 0; rotates atomically with the removal key on correction and whenever the authorized relation changes
-        - { name: reclaim_state, type: enum, values: [pending, failed, removed] }  # write-ahead around the removal — the SAME operator-authorized reclaim lifecycle as new-work parenting conflicts, parent changes re-read and re-authorized; only after removed does the keyed attachment to the selected epic proceed
+        - { name: reclaim_state, type: enum, values: [pending, failed, removed] }  # write-ahead around the removal — the SAME operator-authorized reclaim lifecycle as new-work parenting conflicts, parent changes re-read and re-authorized; only after removed does the keyed attachment to the selected epic proceed; a failed removal records its cause in resolution_error, and the inbox shows this state so failed rows are never invisible
         - { name: state, type: enum, required: true, values: [open, resolving, conflicting, adopted, resolved] }  # adopted is the post-adoption phase: the ticket already has its parent, so recovery resumes ONLY the adopted target's epoch advance and cascade reconciliation — never an attachment replay, which would conflict with sutra's one-parent invariant forever
         - { name: created, type: datetime, required: true }
         - { name: resolved, type: datetime }

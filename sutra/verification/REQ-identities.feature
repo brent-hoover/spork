@@ -23,3 +23,4 @@ Feature: Identities without auth
       | a duplicate handle        |
       | a duplicate label name    |
       | a duplicate template name |
+      | a template renamed to an existing name |

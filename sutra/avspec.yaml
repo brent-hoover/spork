@@ -352,6 +352,9 @@ requirements:
     title: Identities for both humans and agents
     rationale: Plain strings, no auth model — single-user system, YAGNI until success demands it.
     acceptance:
+      - id: AC-unique-violation
+        statement: Every uniqueness collision — creating or renaming into an existing project key, handle, label name, or template name — rejects with code unique-violation and names the colliding resource in conflicts.
+        test: verification/REQ-identities.feature#uniqueness collisions name their colliding resource
       - id: AC-identity-create
         statement: An identity is created with a unique handle and a kind (human or agent); no credentials, no auth — it is a name.
         test: verification/REQ-identities.feature#identity is just a named kind

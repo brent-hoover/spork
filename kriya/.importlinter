@@ -4,6 +4,8 @@
 # One package per module; each forbidden contract lists every kriya module
 # the source may NOT import — the complement of its declared may_import.
 # Modules with an empty may_import forbid all other domain modules.
+# allow_indirect_imports keeps contracts to DIRECT edges only — declared
+# chains like dev_loop -> context -> tracker_client stay legal.
 
 [importlinter]
 root_package = kriya
@@ -11,6 +13,7 @@ root_package = kriya
 [importlinter:contract:planner]
 name = planner imports only tracker-client
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.planner
 forbidden_modules =
     kriya.orchestrator
@@ -27,6 +30,7 @@ forbidden_modules =
 [importlinter:contract:orchestrator]
 name = orchestrator imports planner, workspace, dev-loop, gates, owner, tracker-client
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.orchestrator
 forbidden_modules =
     kriya.review_bridge
@@ -38,6 +42,7 @@ forbidden_modules =
 [importlinter:contract:workspace]
 name = workspace imports nothing
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.workspace
 forbidden_modules =
     kriya.planner
@@ -55,6 +60,7 @@ forbidden_modules =
 [importlinter:contract:dev-loop]
 name = dev-loop imports context, review-bridge, architect
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.dev_loop
 forbidden_modules =
     kriya.planner
@@ -69,6 +75,7 @@ forbidden_modules =
 [importlinter:contract:review-bridge]
 name = review-bridge imports nothing
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.review_bridge
 forbidden_modules =
     kriya.planner
@@ -86,6 +93,7 @@ forbidden_modules =
 [importlinter:contract:gates]
 name = gates imports nothing
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.gates
 forbidden_modules =
     kriya.planner
@@ -103,6 +111,7 @@ forbidden_modules =
 [importlinter:contract:architect]
 name = architect imports nothing
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.architect
 forbidden_modules =
     kriya.planner
@@ -120,6 +129,7 @@ forbidden_modules =
 [importlinter:contract:owner]
 name = owner imports nothing
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.owner
 forbidden_modules =
     kriya.planner
@@ -137,6 +147,7 @@ forbidden_modules =
 [importlinter:contract:context]
 name = context imports only tracker-client
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.context
 forbidden_modules =
     kriya.planner
@@ -153,6 +164,7 @@ forbidden_modules =
 [importlinter:contract:tracker-client]
 name = tracker-client imports nothing
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.tracker_client
 forbidden_modules =
     kriya.planner
@@ -170,6 +182,7 @@ forbidden_modules =
 [importlinter:contract:cli]
 name = cli imports planner, orchestrator, context
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.cli
 forbidden_modules =
     kriya.workspace
@@ -184,6 +197,7 @@ forbidden_modules =
 [importlinter:contract:tui]
 name = tui imports orchestrator, architect, review-bridge
 type = forbidden
+allow_indirect_imports = true
 source_modules = kriya.tui
 forbidden_modules =
     kriya.planner
