@@ -96,3 +96,28 @@ round-trip can therefore reorder an agent's pop sequence when several
 assigned issues survive the trip. Fixing this needs a contract/spec
 change (an explicit queue-position field on Issue). Surfaced by roborev
 review 1807.
+
+## The pinned coverage gate does not run against the real codebase
+
+The stack pins `go run github.com/rillig/gobco@v1.3.4 ./...` with a 100%
+condition-coverage bar (spike-validated on a toy module). Against the real
+multi-package module: (a) `./...` instruments NOTHING — gobco does not
+expand recursive package patterns, and the awk wrapper's missing-summary
+guard is the only reason the gate would fail rather than silently pass;
+(b) per-package runs panic on packages using the standard `export_test.go`
+test-hook idiom (gobco's type resolution includes external _test packages
+but omits in-package test files). Beyond tooling, a 100% condition bar
+counts thousands of defensive `if err != nil` branches on in-memory SQLite
+calls that cannot be made to fail without fault injection. The gate as
+pinned needs a spec decision: a working tool invocation (per-package loop,
+export_test.go accommodation) and an attainable bar, or a different
+coverage measure. First measured 2026-08-06 after the verification
+directory went green (136/136).
+
+First per-package measurements (packages without export_test.go):
+identity 8/34, projects 26/44, events 38/66, issues 58/212,
+comments 0/68, threads 0/30. The zeros expose the structural mismatch:
+gobco runs each package's OWN tests, but sutra's behavior coverage lives
+in the acceptance package driving the system over HTTP — per-package
+condition coverage cannot see it. The gate needs respecification against
+this architecture, not just tool fixes.
