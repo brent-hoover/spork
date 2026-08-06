@@ -42,6 +42,8 @@ type Review struct {
 }
 
 // Submission mirrors ReviewSubmission — immutable, one per revision.
+// Content holds the diff exactly as validated at submission time; it is
+// storage, not wire shape (the deliverable endpoint serves it).
 type Submission struct {
 	ID         string  `json:"id"`
 	Review     string  `json:"review"`
@@ -51,6 +53,7 @@ type Submission struct {
 	BaseCommit *string `json:"base_commit,omitempty"`
 	DocVersion *string `json:"doc_version,omitempty"`
 	Session    *string `json:"session,omitempty"`
+	Content    *string `json:"-"`
 	Created    string  `json:"created"`
 }
 
@@ -110,6 +113,7 @@ func Migrate(db *sql.DB) error {
 			base_commit TEXT,
 			doc_version TEXT,
 			session     TEXT,
+			content     TEXT,
 			created     TEXT NOT NULL,
 			UNIQUE (review, revision)
 		);
@@ -200,7 +204,7 @@ func gitOutTimeout(dir string, timeout time.Duration, args ...string) (string, e
 // Create inserts a review in state open at revision 1 with its first
 // submission. baseCommit comes from ResolveCode for code deliverables
 // and is empty for doc deliverables.
-func Create(tx *sql.Tx, issue, author string, d Deliverable, summary *string, baseCommit string) (Review, error) {
+func Create(tx *sql.Tx, issue, author string, d Deliverable, summary *string, baseCommit string, content *string) (Review, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	r := Review{
 		ID: newUUIDv7(), Issue: issue, Author: author, State: StateOpen,
@@ -214,7 +218,7 @@ func Create(tx *sql.Tx, issue, author string, d Deliverable, summary *string, ba
 	if err != nil {
 		return Review{}, fmt.Errorf("insert review: %w", err)
 	}
-	sub, err := appendSubmission(tx, r.ID, 1, d, baseCommit, now)
+	sub, err := appendSubmission(tx, r.ID, 1, d, baseCommit, content, now)
 	if err != nil {
 		return Review{}, err
 	}
@@ -222,19 +226,19 @@ func Create(tx *sql.Tx, issue, author string, d Deliverable, summary *string, ba
 	return r, nil
 }
 
-func appendSubmission(tx *sql.Tx, reviewID string, revision int64, d Deliverable, baseCommit, now string) (Submission, error) {
+func appendSubmission(tx *sql.Tx, reviewID string, revision int64, d Deliverable, baseCommit string, content *string, now string) (Submission, error) {
 	sub := Submission{
 		ID: newUUIDv7(), Review: reviewID, Revision: revision,
 		Branch: d.Branch, Commit: d.Commit, DocVersion: d.DocVersion,
-		Session: d.Session, Created: now,
+		Session: d.Session, Content: content, Created: now,
 	}
 	if baseCommit != "" {
 		sub.BaseCommit = &baseCommit
 	}
 	_, err := tx.Exec(`
-		INSERT INTO review_submissions (id, review, revision, branch, commit_sha, base_commit, doc_version, session, created)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sub.ID, reviewID, revision, d.Branch, d.Commit, sub.BaseCommit, d.DocVersion, d.Session, now)
+		INSERT INTO review_submissions (id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sub.ID, reviewID, revision, d.Branch, d.Commit, sub.BaseCommit, d.DocVersion, d.Session, content, now)
 	if err != nil {
 		return Submission{}, fmt.Errorf("insert submission: %w", err)
 	}
@@ -254,7 +258,7 @@ func Get(tx *sql.Tx, id string) (Review, error) {
 		return Review{}, fmt.Errorf("get review %s: %w", id, err)
 	}
 	rows, err := tx.Query(`
-		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, created
+		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created
 		FROM review_submissions WHERE review = ? ORDER BY revision`, id)
 	if err != nil {
 		return Review{}, fmt.Errorf("submissions of %s: %w", id, err)
@@ -262,7 +266,7 @@ func Get(tx *sql.Tx, id string) (Review, error) {
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var s Submission
-		if err := rows.Scan(&s.ID, &s.Review, &s.Revision, &s.Branch, &s.Commit, &s.BaseCommit, &s.DocVersion, &s.Session, &s.Created); err != nil {
+		if err := rows.Scan(&s.ID, &s.Review, &s.Revision, &s.Branch, &s.Commit, &s.BaseCommit, &s.DocVersion, &s.Session, &s.Content, &s.Created); err != nil {
 			return Review{}, fmt.Errorf("scan submission: %w", err)
 		}
 		r.Submissions = append(r.Submissions, s)
@@ -406,7 +410,7 @@ func Consume(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent
 // expected revision AND the expected latest verdict event — stale
 // rework can never replace a deliverable without addressing the latest
 // feedback. revision++, new immutable submission, state open.
-func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent string, d Deliverable, summary *string, baseCommit string) (Review, error) {
+func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent string, d Deliverable, summary *string, baseCommit string, content *string) (Review, error) {
 	r, err := Get(tx, id)
 	if err != nil {
 		return Review{}, err
@@ -431,7 +435,7 @@ func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEven
 		WHERE id = ?`, next, d.Branch, d.Commit, d.DocVersion, d.Session, summary, id); err != nil {
 		return Review{}, fmt.Errorf("resubmit %s: %w", id, err)
 	}
-	if _, err := appendSubmission(tx, id, next, d, baseCommit, now); err != nil {
+	if _, err := appendSubmission(tx, id, next, d, baseCommit, content, now); err != nil {
 		return Review{}, err
 	}
 	return Get(tx, id)
@@ -551,65 +555,15 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	return string(raw), nil
 }
 
-// CheckRenderable verifies at submission time that the pinned diff can
-// actually be served to a reviewer — within MaxDiffBytes and
-// resolvable. A review whose content nobody could ever open must never
-// be created, let alone approved.
-func CheckRenderable(repoPath, baseCommit, commit string) error {
-	_, err := Diff(repoPath, baseCommit, commit)
-	return err
-}
-
-// PinObjects records durable refs for a submission's commit and base —
-// refs/sutra/pins/<sha> — so branch deletion or a force-push can never
-// let garbage collection prune the objects an accepted review's
-// deliverable resolves from. Content-addressed and idempotent; pins
-// are never removed (submissions are immutable).
-func PinObjects(repoPath string, shas ...string) error {
-	for _, sha := range shas {
-		if sha == "" {
-			continue
-		}
-		// core.hooksPath is voided so repository-configured
-		// reference-transaction hooks can neither run arbitrary code
-		// under sutra's identity nor veto sutra's internal pin refs.
-		if _, err := gitOut(repoPath, "-c", "core.hooksPath=/dev/null", "update-ref", "refs/sutra/pins/"+sha, sha); err != nil {
-			return &GitError{Message: fmt.Sprintf("pin %s: %v", sha, err)}
-		}
-	}
-	return nil
-}
-
-// CanonicalRepoDir resolves a repository path to its canonical git
-// common directory — one identity across relative paths, symlinks, and
-// worktrees, so pin bookkeeping can never split or cross aliases.
-func CanonicalRepoDir(repoPath string) (string, error) {
-	dir, err := gitOut(repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", &GitError{Message: fmt.Sprintf("canonicalize %s: %v", repoPath, err)}
-	}
-	return dir, nil
-}
-
-// ListPins returns the shas currently pinned under refs/sutra/pins.
-func ListPins(repoPath string) ([]string, error) {
-	out, err := gitOut(repoPath, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/sutra/pins/")
-	if err != nil {
-		return nil, &GitError{Message: fmt.Sprintf("list pins: %v", err)}
-	}
-	if out == "" {
-		return nil, nil
-	}
-	return strings.Split(out, "\n"), nil
-}
-
-// Unpin removes one pin ref — reconciliation's half of the write-ahead
-// pin protocol; hookless like pin creation.
-func Unpin(repoPath, sha string) error {
-	if _, err := gitOut(repoPath, "-c", "core.hooksPath=/dev/null", "update-ref", "-d", "refs/sutra/pins/"+sha); err != nil {
-		return &GitError{Message: fmt.Sprintf("unpin %s: %v", sha, err)}
-	}
-	return nil
+// Render produces and validates the pinned diff at submission time —
+// within MaxDiffBytes, valid UTF-8, resolvable. The returned content is
+// STORED with the submission and served verbatim thereafter: the
+// deliverable is immutable by construction, beyond the reach of later
+// repository configuration, attribute changes, ref deletion, or
+// garbage collection. A review whose content nobody could ever open is
+// never created, let alone approved.
+func Render(repoPath, baseCommit, commit string) (string, error) {
+	return Diff(repoPath, baseCommit, commit)
 }
 
 // RevalidateFences re-checks BOTH submission fences with bounded git

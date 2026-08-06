@@ -144,87 +144,30 @@ func repoFacts(p projects.Project) review.Repo {
 // Runs git — the caller must have closed its read transaction. Doc
 // deliverables reject truthfully until the docs module exists — no
 // doc_version can name a stored version yet.
-func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, expectedHead *string) (review.Deliverable, string, *apiError) {
+func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, expectedHead *string) (review.Deliverable, string, string, *apiError) {
 	if apiErr := d.validate(); apiErr != nil {
-		return review.Deliverable{}, "", apiErr
+		return review.Deliverable{}, "", "", apiErr
 	}
 	out := review.Deliverable{Branch: d.Branch, Commit: d.Commit, DocVersion: d.DocVersion, Session: d.Session}
 	if d.DocVersion != nil {
-		return review.Deliverable{}, "", &apiError{status: http.StatusNotFound, code: "not-found",
+		return review.Deliverable{}, "", "", &apiError{status: http.StatusNotFound, code: "not-found",
 			message: fmt.Sprintf("doc version %s does not exist", *d.DocVersion)}
 	}
 	base, err := review.ResolveCode(repo, *d.Commit, review.Fences{
 		ExpectedBaseCommit: expectedBase, ExpectedDefaultHead: expectedHead,
 	})
 	if err != nil {
-		return review.Deliverable{}, "", reviewErrorFrom(err)
+		return review.Deliverable{}, "", "", reviewErrorFrom(err)
 	}
-	// A deliverable that could never be rendered must not become a
-	// review: renderability (resolvable, within the size limit) is
-	// checked at submission, in prepare, with no lock held. Pinning
-	// happens LATER in prepare, after every validation including the
-	// fence revalidation — see stagePins.
-	if err := review.CheckRenderable(repo.Path, base, *d.Commit); err != nil {
-		return review.Deliverable{}, "", reviewErrorFrom(err)
-	}
-	return out, base, nil
-}
-
-// stagePins durably pins a submission's objects as the LAST prepare
-// step — after every deterministic validation and fence revalidation,
-// before the transaction. The write-ahead order (pin before commit)
-// is deliberate: a submission without a pin is the corruption (gc can
-// destroy an accepted deliverable), while a pin without a submission —
-// possible only through a crash or lost race from here on — is benign
-// surplus that startup reconciliation prunes via the pending_pins
-// ledger recorded here first.
-func (s *server) stagePins(repoPath string, shas ...string) *apiError {
-	canonical, err := s.canonicalRepo(repoPath)
+	// The deliverable renders ONCE, here at submission — validated
+	// (resolvable, size-capped, UTF-8) and returned for storage with
+	// the submission; it is served verbatim ever after, immutable by
+	// construction.
+	content, err := review.Render(repo.Path, base, *d.Commit)
 	if err != nil {
-		return reviewErrorFrom(err)
+		return review.Deliverable{}, "", "", reviewErrorFrom(err)
 	}
-	// The repository mutex covers reconcile AND stage: no unpin can
-	// interleave between a recheck and a fresh staging of the same sha
-	// (review 1773). Reconciliation riding the submission path bounds
-	// growth exactly where it happens.
-	mu := s.repoMutex(canonical)
-	mu.Lock()
-	defer mu.Unlock()
-	if err := s.reconcileRepoPinsLocked(repoPath, canonical); err != nil {
-		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("reconcile pins: %v", err)}
-	}
-	for _, sha := range shas {
-		if sha == "" {
-			continue
-		}
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO pending_pins (repo, sha, created) VALUES (?, ?, ?)`,
-			canonical, sha, timeNowRFC3339()); err != nil {
-			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record pending pin: %v", err)}
-		}
-	}
-	if err := review.PinObjects(repoPath, shas...); err != nil {
-		return reviewErrorFrom(err)
-	}
-	return nil
-}
-
-// settlePins converts pending pins into submission-covered pins inside
-// the accepting transaction: once the commit lands, the shas are
-// referenced by review_submissions and the pending rows go.
-func (s *server) settlePins(tx *sql.Tx, repoPath string, shas ...string) *apiError {
-	canonical, err := s.canonicalRepo(repoPath)
-	if err != nil {
-		return reviewErrorFrom(err)
-	}
-	for _, sha := range shas {
-		if sha == "" {
-			continue
-		}
-		if _, err := tx.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, canonical, sha); err != nil {
-			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("settle pin: %v", err)}
-		}
-	}
-	return nil
+	return out, base, content, nil
 }
 
 type newReviewRequest struct {
@@ -236,13 +179,15 @@ type newReviewRequest struct {
 	ExpectedDefaultHead *string `json:"expected_default_head"`
 }
 
-// preparedReview carries the decoded request and the git-resolved pin
-// from the prepare stage into the transaction.
+// preparedReview carries the decoded request, the git-resolved pin,
+// and the submission-time render from the prepare stage into the
+// transaction.
 type preparedReview struct {
-	req  newReviewRequest
-	d    review.Deliverable
-	base string
-	repo review.Repo
+	req     newReviewRequest
+	d       review.Deliverable
+	base    string
+	content string
+	repo    review.Repo
 }
 
 func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
@@ -283,13 +228,13 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 			return nil, errorFrom(err)
 		}
 		repo := repoFacts(project)
-		d, base, apiErr := resolveDeliverable(repo, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		d, base, content, apiErr := resolveDeliverable(repo, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
 		if apiErr != nil {
 			return nil, apiErr
 		}
-		// Fences revalidate before pinning — bounded git with no
-		// database lock held. The residual window from here to COMMIT
-		// is inherent to fencing an external store: even an
+		// Fences revalidate as prepare's last step — bounded git with
+		// no database lock held. The residual window from here to
+		// COMMIT is inherent to fencing an external store: even an
 		// in-transaction recheck leaves the same gap between its
 		// rev-parse and the commit, so this placement trades nothing
 		// while keeping git out of the SQLite writer entirely.
@@ -300,10 +245,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 				return nil, reviewErrorFrom(err)
 			}
 		}
-		if apiErr := s.stagePins(repo.Path, *d.Commit, base); apiErr != nil {
-			return nil, apiErr
-		}
-		return preparedReview{req: req, d: d, base: base, repo: repo}, nil
+		return preparedReview{req: req, d: d, base: base, content: content, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
 		p := prepped.(preparedReview)
@@ -317,12 +259,9 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base)
+		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base, &p.content)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
-		}
-		if apiErr := s.settlePins(tx, p.repo.Path, *p.d.Commit, p.base); apiErr != nil {
-			return 0, nil, apiErr
 		}
 		payload := reviewPayload(created.ID)
 		if _, err := events.Emit(tx, "review.created", p.req.Issue, events.NewOperation(), p.req.Author, &payload); err != nil {
@@ -378,37 +317,21 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &apiError{status: http.StatusNotFound, code: "not-found", message: fmt.Sprintf("no submission at revision %d", revision)})
 		return
 	}
-	var repoPath string
-	if sub.Commit != nil {
-		issue, err := issues.Get(tx, rev.Issue)
-		if err != nil {
-			_ = tx.Rollback()
-			writeError(w, issueErrorFrom(err))
-			return
-		}
-		project, err := projects.GetTx(tx, issue.Project)
-		if err != nil {
-			_ = tx.Rollback()
-			writeError(w, errorFrom(err))
-			return
-		}
-		if project.RepoPath != nil {
-			repoPath = *project.RepoPath
-		}
-	}
-	_ = tx.Rollback() // snapshot taken; git runs with no connection held
+	_ = tx.Rollback()
 
 	if sub.Commit == nil {
 		// Doc deliverables resolve once the docs module stores content.
 		writeError(w, &apiError{status: http.StatusConflict, code: "not-found", message: "doc deliverable content is not resolvable yet"})
 		return
 	}
-	content, err := review.Diff(repoPath, *sub.BaseCommit, *sub.Commit)
-	if err != nil {
-		writeError(w, reviewErrorFrom(err))
+	if sub.Content == nil {
+		writeError(w, &apiError{status: http.StatusConflict, code: "bad-request", message: "submission predates stored content"})
 		return
 	}
-	resolved := map[string]any{"kind": "code", "content": content}
+	// Served verbatim from the submission-time render: immutable by
+	// construction — no git, no repository configuration, no
+	// reachability concerns can alter what approval covered.
+	resolved := map[string]any{"kind": "code", "content": *sub.Content}
 	if rev.Summary != nil {
 		resolved["summary"] = *rev.Summary
 	}
@@ -543,10 +466,11 @@ type resubmitRequest struct {
 }
 
 type preparedResubmit struct {
-	req  resubmitRequest
-	d    review.Deliverable
-	base string
-	repo review.Repo
+	req     resubmitRequest
+	d       review.Deliverable
+	base    string
+	content string
+	repo    review.Repo
 }
 
 func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
@@ -604,7 +528,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 			return nil, errorFrom(err)
 		}
 		repo := repoFacts(project)
-		d, base, apiErr := resolveDeliverable(repo, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		d, base, content, apiErr := resolveDeliverable(repo, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
 		if apiErr != nil {
 			return nil, apiErr
 		}
@@ -615,10 +539,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 				return nil, reviewErrorFrom(err)
 			}
 		}
-		if apiErr := s.stagePins(repo.Path, *d.Commit, base); apiErr != nil {
-			return nil, apiErr
-		}
-		return preparedResubmit{req: req, d: d, base: base, repo: repo}, nil
+		return preparedResubmit{req: req, d: d, base: base, content: content, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
 		p := prepped.(preparedResubmit)
@@ -632,12 +553,9 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base)
+		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base, &p.content)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
-		}
-		if apiErr := s.settlePins(tx, p.repo.Path, *p.d.Commit, p.base); apiErr != nil {
-			return 0, nil, apiErr
 		}
 		payload := reviewPayload(id)
 		if _, err := events.Emit(tx, "review.resubmitted", current.Issue, events.NewOperation(), p.req.Author, &payload); err != nil {
