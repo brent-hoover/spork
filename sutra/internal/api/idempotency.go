@@ -17,7 +17,14 @@ import (
 // promise large payloads carry their own bounds — a full-project
 // import aggregates every issue, comment, doc version, and stored
 // review deliverable, and comment bodies are unbounded by the spec.
+// testBodyLimit lets tests exercise the oversize-settle path without
+// gigabyte fixtures; set only via export_test.go.
+var testBodyLimit int64
+
 func bodyLimit(operation string) int64 {
+	if testBodyLimit != 0 {
+		return testBodyLimit
+	}
 	switch operation {
 	case "POST /projects/import":
 		// Whole-project payloads aggregate every record including
@@ -25,13 +32,14 @@ func bodyLimit(operation string) int64 {
 		// payload when it lands; until then the bound sits at 4 GiB so
 		// no valid export within SQLite's physical limits rejects.
 		return 4 << 30
-	case "POST /comments":
-		// AC-comment-no-cap: comments carry full transcripts with no
-		// artificial cap — the bound is SQLite's own maximum value
-		// length (1e9 bytes), a physical constraint, not a policy.
-		return 1_000_000_000
 	default:
-		return 1 << 20
+		// The contract leaves content-bearing strings (doc versions,
+		// templates, issue bodies, comments — AC-comment-no-cap)
+		// unconstrained, so the only honest bound is SQLite's own
+		// maximum value length (1e9 bytes): a physical constraint,
+		// never a policy cap below the contract. Bodies buffer BEFORE
+		// any transaction opens, so size never holds the database.
+		return 1_000_000_000
 	}
 }
 

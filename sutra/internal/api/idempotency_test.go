@@ -224,8 +224,10 @@ func TestTrailingJSON400Replays(t *testing.T) {
 // TestOversizedBody400Replays pins that a body-read failure settles its
 // key: the valid same-key retry replays the 400 without mutating.
 func TestOversizedBody400Replays(t *testing.T) {
+	api.SetBodyLimitForTest(1 << 10)
+	t.Cleanup(func() { api.SetBodyLimitForTest(0) })
 	srv, db := startAPI(t)
-	huge := `{"handle":"` + strings.Repeat("x", 1<<20) + `","kind":"agent"}`
+	huge := `{"handle":"` + strings.Repeat("x", 1<<11) + `","kind":"agent"}`
 	status1, body1 := post(t, srv, "/identities", "kbig", huge)
 	if status1 != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized body, got %d", status1)

@@ -271,12 +271,22 @@ func (s *server) linkDocumentToIssue(w http.ResponseWriter, r *http.Request) {
 		if issue.Project != doc.Project {
 			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "document and issue must share a project"}
 		}
+		formerIssue := doc.Issue
 		updated, err := docs.SetIssue(tx, id, &req.Issue)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}
+		operation := events.NewOperation()
 		payload := docPayload(id)
-		if _, err := events.Emit(tx, "doc.linked", req.Issue, events.NewOperation(), req.Actor, &payload); err != nil {
+		// A relink is a move: the former issue's audit trail records
+		// the departure under the SAME operation as the arrival — a
+		// document never silently vanishes from an issue's history.
+		if formerIssue != nil && *formerIssue != req.Issue {
+			if _, err := events.Emit(tx, "doc.unlinked", *formerIssue, operation, req.Actor, &payload); err != nil {
+				return 0, nil, errorFrom(err)
+			}
+		}
+		if _, err := events.Emit(tx, "doc.linked", req.Issue, operation, req.Actor, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusOK, updated, nil

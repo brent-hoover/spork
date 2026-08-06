@@ -273,6 +273,9 @@ func UnifiedDiff(from, to Version) string {
 
 	var out strings.Builder
 	fmt.Fprintf(&out, "--- v%d\n+++ v%d\n", from.Number, to.Number)
+	// One whole-file hunk with full context — valid unified diff for
+	// standard patch tooling.
+	fmt.Fprintf(&out, "@@ -1,%d +1,%d @@\n", len(a), len(b))
 	for _, line := range a[:prefix] {
 		out.WriteString(" " + line + "\n")
 	}
