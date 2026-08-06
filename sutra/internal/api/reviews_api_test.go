@@ -759,3 +759,129 @@ func TestOversizedDeliverableRejectedAtSubmission(t *testing.T) {
 		t.Fatalf("oversized submission created a review: %d %s", status, body)
 	}
 }
+
+// TestSubmoduleChangesNeverIgnored pins --ignore-submodules=none: a
+// repository configured to ignore submodules still shows the changed
+// gitlink in the pinned diff.
+func TestSubmoduleChangesNeverIgnored(t *testing.T) {
+	srv, _ := startAPI(t)
+	sub := newGitRepo(t)
+	repo := newGitRepo(t)
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		"GIT_ALLOW_PROTOCOL=file")
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "protocol.file.allow=always"}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v — %s", args, err, out)
+		}
+	}
+	run(repo.path, "checkout", "feature")
+	run(repo.path, "submodule", "add", sub.path, "vendored")
+	run(repo.path, "commit", "-m", "add submodule")
+	// Configure the repo to ignore submodule changes entirely.
+	run(repo.path, "config", "diff.ignoreSubmodules", "all")
+	// Advance the submodule gitlink.
+	run(filepath.Join(repo.path, "vendored"), "checkout", "feature")
+	run(repo.path, "add", "vendored")
+	run(repo.path, "commit", "-m", "bump submodule")
+	out, err := exec.Command("git", "-C", repo.path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	headSHA := strings.TrimSpace(string(out))
+	run(repo.path, "checkout", "main")
+
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, headSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := decoded["id"].(string)
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	decode(status, body, http.StatusOK, "deliverable")
+	content := decoded["content"].(string)
+	if !strings.Contains(content, "vendored") {
+		t.Fatalf("ignored-submodule config hid the gitlink change: %.300s", content)
+	}
+}
+
+// TestNonUTF8DiffRejected pins that a text-classified non-UTF-8 change
+// is unrenderable at submission — JSON transport would corrupt it.
+func TestNonUTF8DiffRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	// Latin-1 text with a .gitattributes text classification: git
+	// treats it as text (no binary detection kicks in for short
+	// mostly-ASCII content) and emits the raw bytes into the patch.
+	latin1 := []byte("caf\xe9 r\xe9sum\xe9\n")
+	if err := os.WriteFile(filepath.Join(repo.path, "notes.txt"), latin1, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"checkout", "feature"}, {"add", "."}, {"commit", "-m", "latin1"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v — %s", args, err, out)
+		}
+	}
+	out, err := exec.Command("git", "-C", repo.path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.TrimSpace(string(out))
+
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, sha))
+	if status != http.StatusConflict {
+		t.Fatalf("non-UTF-8 deliverable must reject at submission: %d %s", status, body)
+	}
+	if !strings.Contains(body, "UTF-8") {
+		t.Fatalf("rejection must name the encoding: %s", body)
+	}
+}

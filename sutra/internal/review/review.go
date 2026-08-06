@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Review mirrors the contract's Review schema; optional fields are
@@ -512,7 +513,9 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", repoPath,
-		"-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary",
+		"-c", "diff.external=", "-c", "diff.submodule=short",
+		"diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary",
+		"--ignore-submodules=none",
 		baseCommit, commit)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -537,6 +540,13 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	}
 	if waitErr != nil {
 		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s unresolvable: %v", baseCommit, commit, waitErr)}
+	}
+	// JSON transport replaces invalid UTF-8 with U+FFFD, silently
+	// corrupting the content approval covers. Binary changes already
+	// travel as ASCII (--binary); a text-classified file with a
+	// non-UTF-8 encoding is unrenderable and rejects at submission.
+	if !utf8.Valid(raw) {
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s contains non-UTF-8 text content and cannot be rendered faithfully", baseCommit, commit)}
 	}
 	return string(raw), nil
 }
