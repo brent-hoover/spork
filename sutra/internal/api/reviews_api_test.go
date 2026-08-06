@@ -950,3 +950,49 @@ func TestDeliverableSurvivesBranchDeletionAndGC(t *testing.T) {
 		t.Fatalf("pinned content lost after gc: %.200s", decoded["content"].(string))
 	}
 }
+
+// TestCrossProjectDocDeliverableRejected pins that a doc version from a
+// FOREIGN project can never become this issue's deliverable.
+func TestCrossProjectDocDeliverableRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p1",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "project")
+	projectA := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p2",
+		fmt.Sprintf(`{"key":"OTH","name":"O","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "other project")
+	projectB := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+projectA+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+projectB+"/documents", "d",
+		fmt.Sprintf(`{"title":"foreign","content":"c","author":%q}`, actor))
+	decode(status, body, http.StatusCreated, "foreign doc")
+	versionID := decoded["version"].(map[string]any)["id"].(string)
+
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"doc_version":%q}`, issue, actor, versionID))
+	if status != http.StatusBadRequest {
+		t.Fatalf("cross-project doc deliverable must reject: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews?issue="+issue, "", "")
+	if status != http.StatusOK || body != "[]" {
+		t.Fatalf("rejection created a review: %d %s", status, body)
+	}
+}

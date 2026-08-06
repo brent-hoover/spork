@@ -245,15 +245,57 @@ func SetIssue(tx *sql.Tx, documentID string, issue *string) (Document, error) {
 	return Get(tx, documentID)
 }
 
-// UnifiedDiff renders a minimal line-based unified diff between two
-// version contents (AC-doc-history) — a plain LCS walk, no context
-// trimming: documents are small planning artifacts.
+// maxDiffCells bounds the LCS matrix (8 bytes per cell — 25M cells is
+// 200 MB avoided; the fallback keeps memory linear).
+const maxDiffCells = 4 << 20
+
+// UnifiedDiff renders a line-based unified diff between two version
+// contents (AC-doc-history). Common prefix and suffix are trimmed
+// first — planning docs change in small regions — and the remaining
+// middle uses a minimal LCS diff only while its matrix stays within
+// maxDiffCells; beyond that the middle is emitted as one exact
+// replacement hunk (still a correct old→new diff, just not minimal),
+// keeping memory linear regardless of document shape.
 func UnifiedDiff(from, to Version) string {
 	a := strings.Split(from.Content, "\n")
 	b := strings.Split(to.Content, "\n")
-	lcs := make([][]int, len(a)+1)
+
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(a)-prefix && suffix < len(b)-prefix && a[len(a)-1-suffix] == b[len(b)-1-suffix] {
+		suffix++
+	}
+	midA := a[prefix : len(a)-suffix]
+	midB := b[prefix : len(b)-suffix]
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "--- v%d\n+++ v%d\n", from.Number, to.Number)
+	for _, line := range a[:prefix] {
+		out.WriteString(" " + line + "\n")
+	}
+	if len(midA)*len(midB) <= maxDiffCells {
+		writeLCSDiff(&out, midA, midB)
+	} else {
+		for _, line := range midA {
+			out.WriteString("-" + line + "\n")
+		}
+		for _, line := range midB {
+			out.WriteString("+" + line + "\n")
+		}
+	}
+	for _, line := range a[len(a)-suffix:] {
+		out.WriteString(" " + line + "\n")
+	}
+	return out.String()
+}
+
+func writeLCSDiff(out *strings.Builder, a, b []string) {
+	lcs := make([][]int32, len(a)+1)
 	for i := range lcs {
-		lcs[i] = make([]int, len(b)+1)
+		lcs[i] = make([]int32, len(b)+1)
 	}
 	for i := len(a) - 1; i >= 0; i-- {
 		for j := len(b) - 1; j >= 0; j-- {
@@ -266,8 +308,6 @@ func UnifiedDiff(from, to Version) string {
 			}
 		}
 	}
-	var out strings.Builder
-	fmt.Fprintf(&out, "--- v%d\n+++ v%d\n", from.Number, to.Number)
 	i, j := 0, 0
 	for i < len(a) && j < len(b) {
 		switch {
@@ -289,7 +329,6 @@ func UnifiedDiff(from, to Version) string {
 	for ; j < len(b); j++ {
 		out.WriteString("+" + b[j] + "\n")
 	}
-	return out.String()
 }
 
 // CreateTemplate inserts a template; the UNIQUE name constraint is the

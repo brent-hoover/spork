@@ -11,6 +11,7 @@ import (
 	"sutra/internal/docs"
 	"sutra/internal/events"
 	"sutra/internal/issues"
+	"sutra/internal/projects"
 )
 
 func docErrorFrom(err error) *apiError {
@@ -319,6 +320,10 @@ func (s *server) listProjectDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := projects.GetTx(tx, r.PathValue("projectId")); err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
 	list, err := docs.ListByProject(tx, r.PathValue("projectId"))
 	if err != nil {
 		writeError(w, docErrorFrom(err))

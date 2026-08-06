@@ -224,13 +224,24 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 			return nil, apiErr
 		}
 		if req.DocVersion != nil {
-			// Doc deliverable: the version must exist; its immutable
-			// content becomes the stored deliverable (docs need
-			// approval like code — AC-review-deliverable-kinds).
+			// Doc deliverable: the version must exist AND belong to
+			// the issue's project — a foreign project's doc must never
+			// authorize this issue's completion, exactly as code
+			// deliverables resolve through the issue's own project.
+			// Its immutable content becomes the stored deliverable
+			// (AC-review-deliverable-kinds).
 			version, err := docs.VersionByID(read, *req.DocVersion)
+			if err != nil {
+				_ = read.Rollback()
+				return nil, docErrorFrom(err)
+			}
+			doc, err := docs.Get(read, version.Document)
 			_ = read.Rollback()
 			if err != nil {
 				return nil, docErrorFrom(err)
+			}
+			if doc.Project != issue.Project {
+				return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "doc deliverable must belong to the issue's project"}
 			}
 			d := review.Deliverable{DocVersion: req.DocVersion, Session: req.Session}
 			return preparedReview{req: req, d: d, content: version.Content}, nil
@@ -544,9 +555,17 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.DocVersion != nil {
 			version, err := docs.VersionByID(read, *req.DocVersion)
+			if err != nil {
+				_ = read.Rollback()
+				return nil, docErrorFrom(err)
+			}
+			doc, err := docs.Get(read, version.Document)
 			_ = read.Rollback()
 			if err != nil {
 				return nil, docErrorFrom(err)
+			}
+			if doc.Project != issue.Project {
+				return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "doc deliverable must belong to the issue's project"}
 			}
 			d := review.Deliverable{DocVersion: req.DocVersion, Session: req.Session}
 			return preparedResubmit{req: req, d: d, content: version.Content}, nil
