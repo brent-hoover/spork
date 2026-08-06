@@ -575,7 +575,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/RelationConflictError'
     get:
       operationId: listIssueRelations
       summary: List an issue's relations
@@ -1698,6 +1698,19 @@ components:
             $ref: '#/components/schemas/Error'
 
   schemas:
+    RelationConflictError:
+      type: object
+      description: Conflict body for relation creation — the code enum is restricted to exactly the conditions this operation can produce, so unrelated codes are not contract-valid here (AC-relation-conflict-codes).
+      required: [message, code]
+      properties:
+        message: { type: string }
+        code:
+          type: string
+          enum: [relation-exists, ancestry-cycle, blocking-cycle, project-archived]
+        conflicts:
+          type: array
+          items: { type: string }
+
     Error:
       type: object
       required: [message, code]

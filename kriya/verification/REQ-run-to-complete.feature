@@ -224,7 +224,13 @@ Feature: Run to complete
     Given a resolution's parenting call instead finds a concurrent parent on re-read
     Then that parent IS the attribution and the row stamps resolved in place
     Given the call fails with a permanent conflict
-    Then the row records conflicting, and reselection rotates the resolution generation and key atomically — no cached conflict suppresses the candidates forever
+    Then the row records conflicting with the code and details in resolution_error, and reselection rotates the resolution generation and key atomically — no cached conflict suppresses the candidates forever
+
+  Scenario: a reopened ambiguity never replays a stale resolution
+    Given an ambiguity resolved to target "A" whose parenting relation was later removed, and the same ticket is re-detected
+    When the row reopens
+    Then the prior resolution clears and the resolution generation and key rotate atomically
+    And re-selecting target "A" issues a fresh keyed mutation — the stale success can never replay
 
   Scenario: a previously bound unplanned ticket is never ambiguous
     Given a multi-mapping project where an unplanned ticket was once bound to target "A", then detached and reopened
@@ -296,7 +302,7 @@ Feature: Run to complete
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project
     When a new active issue is created attributing to neither
-    Then no epoch advances — the ambiguity row suppresses completion for every candidate target while open or resolving
+    Then no epoch advances — the ambiguity row suppresses completion for every candidate target while open, resolving, or conflicting
     When the operator resolves the attribution to one target
     Then only the selected target advances, through its parenting attachment's cascade
     And the candidates release only when the row stamps resolved — after parenting, epoch advance, and cascade reconciliation all complete
