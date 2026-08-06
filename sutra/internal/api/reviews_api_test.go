@@ -616,6 +616,19 @@ func TestDiffIgnoresRepoDiffConfig(t *testing.T) {
 func TestRevisionSyntaxBranchRejected(t *testing.T) {
 	srv, _ := startAPI(t)
 	repo := newGitRepo(t)
+	// A second commit on main makes "main~1" RESOLVABLE under
+	// rev-parse's revision syntax — the exact-ref implementation must
+	// still reject it, so this test catches a regression to rev-parse.
+	if err := os.WriteFile(filepath.Join(repo.path, "second.txt"), []byte("second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "second on main"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v — %s", args, err, out)
+		}
+	}
 	var out map[string]any
 	decode := func(status int, body string, want int, label string) {
 		t.Helper()

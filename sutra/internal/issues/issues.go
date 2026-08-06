@@ -584,19 +584,29 @@ func (w *blockerWalk) resolve(candidate Issue) (walkResult, error) {
 		}
 		if eligible {
 			// Walk EVERY branch and claim the deepest — a shallow
-			// branch must not shadow deeper prerequisite work.
+			// branch must not shadow deeper prerequisite work. ANY
+			// unworkable branch (an external or frozen block deeper
+			// down) poisons the whole candidate, exactly as a direct
+			// external blocker does: its prerequisites cannot all be
+			// worked by this identity, so an older workable fallback
+			// must win instead.
 			bestDepth := -1
 			var best *Issue
+			poisoned := false
 			for _, b := range blockers {
 				sub, err := w.resolve(b.issue)
 				if err != nil {
 					return walkResult{}, err
 				}
-				if sub.claim != nil && sub.depth > bestDepth {
+				if sub.claim == nil {
+					poisoned = true
+					break
+				}
+				if sub.depth > bestDepth {
 					best, bestDepth = sub.claim, sub.depth
 				}
 			}
-			if best != nil {
+			if !poisoned && best != nil {
 				result = walkResult{claim: best, depth: bestDepth + 1}
 			}
 		}

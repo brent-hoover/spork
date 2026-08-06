@@ -223,3 +223,59 @@ func TestPopDiamondBlockerGraph(t *testing.T) {
 		return nil
 	})
 }
+
+// TestPopMixedBranchesPoisonCandidate pins that ONE unworkable blocker
+// branch (externally blocked deeper down) makes the whole candidate
+// unworkable — the pop falls back to older workable work instead of
+// redirecting into a partially-blocked chain.
+func TestPopMixedBranchesPoisonCandidate(t *testing.T) {
+	db := openDB(t)
+	agent := "00000000-0000-7000-8000-00000000000a"
+	other := "00000000-0000-7000-8000-00000000000b"
+	var fallback issues.Issue
+	inTx(t, db, func(tx *sql.Tx) error {
+		project, err := projects.Create(tx, projects.New{Key: "SUT", Name: "S"})
+		if err != nil {
+			return err
+		}
+		mk := func(title string, assignee string) issues.Issue {
+			a := assignee
+			i, err := issues.Create(tx, project.ID, title, nil, &a)
+			if err != nil {
+				t.Fatalf("create %s: %v", title, err)
+			}
+			return i
+		}
+		// candidate <- blockedMine (ours, open) <- external (other's):
+		// the walk into blockedMine hits the external block and must
+		// poison the candidate rather than claim anything through it;
+		// blockedMine as its own candidate is directly external-blocked
+		// too, so the pop falls through to the later fallback.
+		candidate := mk("candidate", agent)
+		blockedMine := mk("mine but blocked deeper", agent)
+		external := mk("external deep blocker", other)
+		for _, rel := range [][2]string{
+			{blockedMine.ID, candidate.ID},
+			{external.ID, blockedMine.ID},
+		} {
+			if _, err := issues.AddRelation(tx, "blocks", rel[0], rel[1]); err != nil {
+				return err
+			}
+		}
+		fallback = mk("older workable fallback", agent)
+		return nil
+	})
+	inTx(t, db, func(tx *sql.Tx) error {
+		claim, err := issues.PopCandidate(tx, agent)
+		if err != nil {
+			return err
+		}
+		if claim == nil {
+			return fmt.Errorf("expected the fallback claimable")
+		}
+		if claim.ID != fallback.ID {
+			return fmt.Errorf("poisoned chain must fall through: got %s, want fallback %s", claim.ID, fallback.ID)
+		}
+		return nil
+	})
+}
