@@ -529,7 +529,11 @@ paths:
       description: >-
         Creates a parent_of or blocks relation from this issue. Ancestry cycles
         (AC-parent-create) and blocking cycles, direct or transitive
-        (AC-block-no-cycles), are rejected. Every parent_of attachment increments subtree_revision on
+        (AC-block-no-cycles), are rejected. Conflict codes are NORMATIVE for
+        this operation: an already-present relation returns relation-exists,
+        an ancestry cycle ancestry-cycle, a blocking cycle blocking-cycle,
+        and an archived project project-archived — no other code is
+        contract-valid for those conditions (AC-relation-conflict-codes). Every parent_of attachment increments subtree_revision on
         the new parent and each of its ancestors, whether or not any
         reopening occurs (AC-subtree-revision). An attachment that places
         active work beneath a complete parent — the attached child itself, or

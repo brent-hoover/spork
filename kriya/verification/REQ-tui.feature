@@ -36,6 +36,12 @@ Feature: TUI overview
     Given another conflicting parentage
     When the operator reclaims it from the TUI
     Then the reclaim lifecycle persists write-ahead and the keyed removal and attachment reconcile to completion
+    Given a permanent-failure conflict shown with its kind in the inbox
+    When the operator retries after correcting the condition
+    Then the generation and key rotate atomically and the advance returns to pending
+    Given another permanent-failure conflict
+    When the operator dismisses it from the TUI
+    Then the advance stamps terminal dismissed while the ticket still blocks completion through attribution
     Given an open attribution ambiguity in the inbox
     When the operator attributes the ticket to a target from the TUI
     Then the selected target and the parenting mutation's key persist with state resolving before sutra is called

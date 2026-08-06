@@ -279,8 +279,8 @@ Feature: Run to complete
     Then the advance returns to conflicting with the new parent recorded — fresh authorization required
 
   Scenario: a permanent attachment failure resolves by correction or dismissal
-    Given a new-work advance conflicting with kind permanent-failure — an archived project
-    When the operator corrects the condition and retries through the parenting-resolution action
+    Given a new-work advance conflicting with kind permanent-failure — an ancestry cycle the attachment would create
+    When the operator corrects the condition by removing the cycle-causing relation and retries through the parenting-resolution action
     Then the generation rotates and the advance returns to pending, the keyed attachment completing normally
     Given the operator instead dismisses
     Then the advance stamps terminal dismissed

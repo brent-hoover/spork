@@ -154,6 +154,9 @@ requirements:
       - id: AC-subtree-revision
         statement: Every status-transition or parent_of-relation API transaction — attachment and removal alike, removal incrementing the former parent's chain; blocking relations do not participate — atomically increments subtree_revision by exactly ONE on each affected issue and each of its ancestors, however many cascaded transitions the transaction produces (a reopen that cascades to the parent still moves the parent's revision once, not once per hop); a complete transition may carry expected_subtree_revision and is rejected on mismatch — a descendant that reopened and recompleted since the caller's observation still fails the precondition, because history moved even though current state matches.
         test: verification/REQ-issue-hierarchy.feature#subtree revision fences history, not just state
+      - id: AC-relation-conflict-codes
+        statement: "Relation conflicts return their normative machine-readable codes — relation-exists, ancestry-cycle, blocking-cycle, project-archived — exactly matched to their conditions; no other code is valid for them, so clients classify deterministically without reading message text."
+        test: verification/REQ-issue-hierarchy.feature#relation conflicts carry their distinct codes
       - id: AC-parent-close-gate
         statement: Transitioning a parent to complete is rejected while any descendant — at any depth, including beneath deferred children — is open, in-progress, or blocked; deferred nodes whose whole subtree is deferred or complete do not hold the parent open.
         test: verification/REQ-issue-hierarchy.feature#open children hold the parent open
