@@ -79,6 +79,10 @@ func run() error {
 		// never occupy a handler indefinitely. Five minutes clears any
 		// legitimate localhost payload within the physical body bounds.
 		ReadTimeout: 5 * time.Minute,
+		// Streaming reads (export, listings) hold a read snapshot while
+		// writing; the write bound keeps a stalled client from pinning
+		// the WAL indefinitely. Ten minutes clears any localhost export.
+		WriteTimeout: 10 * time.Minute,
 	}
 
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

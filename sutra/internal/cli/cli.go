@@ -201,13 +201,22 @@ func (c *client) actor() (string, error) {
 }
 
 func (c *client) do(method, path string, body any) (int, []byte, error) {
-	var payload io.Reader
+	var raw []byte
 	if body != nil {
-		raw, err := json.Marshal(body)
+		var err error
+		raw, err = json.Marshal(body)
 		if err != nil {
 			return 0, nil, err
 		}
-		payload = bytes.NewReader(raw)
+	}
+	return c.doRaw(method, path, raw)
+}
+
+// doRaw sends pre-encoded bytes verbatim.
+func (c *client) doRaw(method, path string, body []byte) (int, []byte, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
 	}
 	req, err := http.NewRequest(method, c.base+path, payload)
 	if err != nil {
@@ -391,15 +400,17 @@ func (c *client) generic(args []string) error {
 	if len(query) > 0 {
 		path += "?" + query.Encode()
 	}
-	var body any
+	var body []byte
 	if raw := c.flags["body"]; raw != "" {
-		var decoded any
-		if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-			return fmt.Errorf("--body is not valid JSON: %w", err)
+		// The original bytes go on the wire UNCHANGED: a decode/re-marshal
+		// would compact transcript formatting and round numbers past 2^53,
+		// corrupting verbatim imports.
+		if !json.Valid([]byte(raw)) {
+			return fmt.Errorf("--body is not valid JSON")
 		}
-		body = decoded
+		body = []byte(raw)
 	}
-	status, respBody, err := c.do(o.method, path, body)
+	status, respBody, err := c.doRaw(o.method, path, body)
 	if err != nil {
 		return err
 	}

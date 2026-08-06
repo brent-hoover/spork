@@ -419,17 +419,20 @@ func validateImport(p *importPayload, actor string) *apiError {
 		if d.Document.Project != p.Project.ID {
 			return malformedImport("document %s belongs to another project", d.Document.ID)
 		}
-		if d.Document.CurrentVersion != nil {
-			found := false
-			for _, v := range d.Versions {
-				if v.ID == *d.Document.CurrentVersion {
-					found = true
-					break
-				}
+		if len(d.Versions) == 0 {
+			// A document is unreachable without its seeding version.
+			return malformedImport("document %s carries no versions", d.Document.ID)
+		}
+		for i, v := range d.Versions {
+			if v.Number != int64(i+1) {
+				return malformedImport("document %s version numbers are not contiguous from 1", d.Document.ID)
 			}
-			if !found {
-				return malformedImport("document %s current_version names no carried version", d.Document.ID)
-			}
+		}
+		latest := d.Versions[len(d.Versions)-1]
+		if d.Document.CurrentVersion == nil || *d.Document.CurrentVersion != latest.ID {
+			// The default read serves current_version; anything but the
+			// highest-numbered version makes metadata disagree with it.
+			return malformedImport("document %s current_version must name its latest version", d.Document.ID)
 		}
 		if d.Document.Issue != nil && !issueSet[*d.Document.Issue] {
 			return malformedImport("document %s ties to an issue outside the export", d.Document.ID)

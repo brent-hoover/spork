@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/cucumber/godog"
+
+	"sutra/internal/web"
 )
 
 // crWorld drives REQ-code-review. The feature names 40-char shas
@@ -27,10 +32,49 @@ type crWorld struct {
 	lastStatus    int
 	lastBody      string
 	preState      map[string]any // review snapshot before a rejected mutation
+
+	uiServers []*httptest.Server // review pages, one per acting identity
+	lastPage  string
 }
 
 func (rw *crWorld) reset() {
+	for _, ui := range rw.uiServers {
+		ui.Close()
+	}
 	*rw = crWorld{iw: rw.iw, cw: rw.cw, sha: map[string]string{}, verdictEvents: map[string]string{}}
+}
+
+// reviewUI boots a web UI acting as the given identity.
+func (rw *crWorld) reviewUI(actorHandle string) (*httptest.Server, error) {
+	actor, err := rw.iw.identity(actorHandle)
+	if err != nil {
+		return nil, err
+	}
+	ui := httptest.NewServer(web.New(rw.iw.s.server.URL, actor).Handler())
+	rw.uiServers = append(rw.uiServers, ui)
+	return ui, nil
+}
+
+// openReviewPage fetches the review's WEB page — the reading surface
+// humans actually use (AC-review-web).
+func (rw *crWorld) openReviewPage() (string, error) {
+	ui, err := rw.reviewUI("human-brent")
+	if err != nil {
+		return "", err
+	}
+	resp, err := ui.Client().Get(ui.URL + "/r/" + rw.cw.reviews["SUT-1"].id)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("review page: %d %s", resp.StatusCode, body)
+	}
+	return string(body), nil
 }
 
 // real resolves a symbolic sha, minting a fresh commit on first use.
@@ -274,16 +318,16 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 		return rw.submit("SUT-1", map[string]any{"branch": branch, "commit": sha})
 	})
 	sc.Step(`^a human opens it in the web UI$`, func() error {
-		content, err := rw.readDeliverable("")
+		page, err := rw.openReviewPage()
 		if err != nil {
 			return err
 		}
-		rw.deliverable = content
+		rw.lastPage = page
 		return nil
 	})
 	sc.Step(`^the deliverable content is shown for reading$`, func() error {
-		if rw.deliverable == "" {
-			return fmt.Errorf("deliverable is empty")
+		if !strings.Contains(rw.lastPage, `class="deliverable"`) || !strings.Contains(rw.lastPage, "diff --git") {
+			return fmt.Errorf("page shows no deliverable:\n%.1500s", rw.lastPage)
 		}
 		return nil
 	})
@@ -291,11 +335,11 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 		if _, err := cw.mintCommit(); err != nil {
 			return err
 		}
-		content, err := rw.readDeliverable("")
+		page, err := rw.openReviewPage()
 		if err != nil {
 			return err
 		}
-		if content != rw.deliverable {
+		if page != rw.lastPage {
 			return fmt.Errorf("reviewed content moved with the branch")
 		}
 		return nil
@@ -375,42 +419,55 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 	})
 	sc.Step(`^a human comments and another replies$`, func() error {
 		ref := cw.reviews["SUT-1"]
-		first, err := iw.identity("human-brent")
+		// Each human speaks through their own UI instance — the page's
+		// comment and reply forms, not the API directly.
+		first, err := rw.reviewUI("human-brent")
 		if err != nil {
 			return err
 		}
-		second, err := iw.identity("human-alex")
+		if _, err := first.Client().PostForm(first.URL+"/r/"+ref.id+"/comment",
+			url.Values{"body": {"looks odd here"}}); err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodGet, "/comments?review="+ref.id, nil); err != nil {
+			return err
+		}
+		var created []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+			return err
+		}
+		if len(created) != 1 {
+			return fmt.Errorf("comment form landed %d comments", len(created))
+		}
+		rw.comments = append(rw.comments, created[0].ID)
+		second, err := rw.reviewUI("human-alex")
 		if err != nil {
 			return err
 		}
-		if err := iw.s.call(http.MethodPost, "/comments", map[string]any{
-			"review": ref.id, "review_revision": ref.revision, "author": first, "body": "looks odd here"}); err != nil {
+		if _, err := second.Client().PostForm(second.URL+"/r/"+ref.id+"/comment",
+			url.Values{"body": {"agreed"}, "parent": {created[0].ID}}); err != nil {
 			return err
 		}
-		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		if err := iw.s.call(http.MethodGet, "/comments?review="+ref.id, nil); err != nil {
 			return err
 		}
-		var c1 struct {
-			ID string `json:"id"`
+		var all []struct {
+			ID     string  `json:"id"`
+			Parent *string `json:"parent"`
 		}
-		if err := json.Unmarshal(iw.s.lastBody, &c1); err != nil {
+		if err := json.Unmarshal(iw.s.lastBody, &all); err != nil {
 			return err
 		}
-		rw.comments = append(rw.comments, c1.ID)
-		if err := iw.s.call(http.MethodPost, "/comments", map[string]any{
-			"review": ref.id, "review_revision": ref.revision, "author": second, "body": "agreed", "parent": c1.ID}); err != nil {
-			return err
+		for _, c := range all {
+			if c.ID != created[0].ID {
+				rw.comments = append(rw.comments, c.ID)
+			}
 		}
-		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
-			return err
+		if len(rw.comments) != 2 {
+			return fmt.Errorf("reply form landed %d comments total", len(all))
 		}
-		var c2 struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(iw.s.lastBody, &c2); err != nil {
-			return err
-		}
-		rw.comments = append(rw.comments, c2.ID)
 		return nil
 	})
 	sc.Step(`^both comments anchor to the review$`, func() error {

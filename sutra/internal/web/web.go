@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -44,6 +45,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /d/{documentId}/comment", s.sameOrigin(s.commentDoc))
 	mux.HandleFunc("GET /d/{documentId}/poll", s.pollDocument)
 	mux.HandleFunc("GET /t/{threadId}", s.thread)
+	mux.HandleFunc("GET /r/{reviewId}", s.review)
+	mux.HandleFunc("POST /r/{reviewId}/verdict", s.sameOrigin(s.reviewVerdict))
+	mux.HandleFunc("POST /r/{reviewId}/comment", s.sameOrigin(s.reviewComment))
 	return mux
 }
 
@@ -562,6 +566,144 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 		turns = []turn{{Speaker: "transcript", Text: string(t.Transcript)}}
 	}
 	_ = threadTmpl.Execute(w, map[string]any{"Title": t.Title, "Turns": turns})
+}
+
+type reviewView struct {
+	ID       string  `json:"id"`
+	Issue    string  `json:"issue"`
+	State    string  `json:"state"`
+	Revision int64   `json:"revision"`
+	Summary  *string `json:"summary"`
+}
+
+var reviewTmpl = template.Must(template.New("review").Parse(`<!doctype html>
+<title>review {{.Review.ID}}</title>
+<h1>Review</h1>
+<p class="state" data-state="{{.Review.State}}">{{.Review.State}} · revision {{.Review.Revision}}</p>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<main class="deliverable"><pre>{{.Deliverable}}</pre></main>
+<aside class="discussion">
+{{range .Comments}}<div class="comment{{if .Parent}} reply{{end}}" data-comment="{{.ID}}">
+<span class="author">{{.Author}}</span> <span class="on-revision">on r{{.ReviewRevision}}</span>
+<p>{{.Body}}</p>
+<form class="reply-form" method="post" action="/r/{{$.Review.ID}}/comment">
+<input type="hidden" name="parent" value="{{.ID}}">
+<input name="body" placeholder="reply"><button>Reply</button>
+</form>
+</div>{{end}}
+<form class="comment-form" method="post" action="/r/{{$.Review.ID}}/comment">
+<input name="body" placeholder="comment on this revision"><button>Comment</button>
+</form>
+</aside>
+<form class="verdict" method="post" action="/r/{{.Review.ID}}/verdict">
+<input type="hidden" name="revision" value="{{.Review.Revision}}">
+<button name="verdict" value="approved">Approve</button>
+<button name="verdict" value="changes-requested">Request changes</button>
+</form>`))
+
+// review renders the review page: the pinned deliverable for reading
+// (AC-review-web), the threaded discussion (AC-review-threads), and
+// verdict controls that post the revision the reviewer SAW
+// (AC-review-verdict, AC-review-stale-guard).
+func (s *Server) review(w http.ResponseWriter, r *http.Request) {
+	s.renderReview(w, r.PathValue("reviewId"), "")
+}
+
+func (s *Server) renderReview(w http.ResponseWriter, id, errMsg string) {
+	var rev reviewView
+	if err := s.get("/reviews/"+id, &rev); err != nil {
+		htmlError(w, err)
+		return
+	}
+	var deliverable struct {
+		Content string `json:"content"`
+	}
+	if err := s.get("/reviews/"+id+"/deliverable", &deliverable); err != nil {
+		htmlError(w, err)
+		return
+	}
+	var comments []struct {
+		ID             string  `json:"id"`
+		Parent         *string `json:"parent"`
+		Author         string  `json:"author"`
+		Body           string  `json:"body"`
+		ReviewRevision int64   `json:"review_revision"`
+	}
+	if err := s.get("/comments?review="+url.QueryEscape(id), &comments); err != nil {
+		htmlError(w, err)
+		return
+	}
+	_ = reviewTmpl.Execute(w, map[string]any{
+		"Review": rev, "Deliverable": deliverable.Content, "Comments": comments, "Error": errMsg,
+	})
+}
+
+// reviewVerdict posts the human's verdict at the revision the page
+// showed; a stale-revision rejection re-renders with the API's error.
+func (s *Server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("reviewId")
+	if err := r.ParseForm(); err != nil {
+		htmlError(w, err)
+		return
+	}
+	revision, err := strconv.ParseInt(r.Form.Get("revision"), 10, 64)
+	if err != nil {
+		htmlError(w, fmt.Errorf("bad revision"))
+		return
+	}
+	status, body, err := s.post("/reviews/"+id+"/verdict", map[string]any{
+		"verdict": r.Form.Get("verdict"), "revision": revision, "actor": s.actor})
+	if err != nil {
+		htmlError(w, err)
+		return
+	}
+	if status != http.StatusOK {
+		var apiErr struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(body, &apiErr)
+		s.renderReview(w, id, apiErr.Code+": "+apiErr.Message)
+		return
+	}
+	http.Redirect(w, r, "/r/"+id, http.StatusSeeOther)
+}
+
+// reviewComment anchors a comment (or reply) to the review at its
+// current revision.
+func (s *Server) reviewComment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("reviewId")
+	if err := r.ParseForm(); err != nil {
+		htmlError(w, err)
+		return
+	}
+	var rev reviewView
+	if err := s.get("/reviews/"+id, &rev); err != nil {
+		htmlError(w, err)
+		return
+	}
+	payload := map[string]any{
+		"review": id, "review_revision": rev.Revision,
+		"body": r.Form.Get("body"), "author": s.actor,
+	}
+	if parent := r.Form.Get("parent"); parent != "" {
+		payload["parent"] = parent
+	}
+	status, body, err := s.post("/comments", payload)
+	if err != nil {
+		htmlError(w, err)
+		return
+	}
+	if status != http.StatusCreated {
+		var apiErr struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(body, &apiErr)
+		s.renderReview(w, id, apiErr.Code+": "+apiErr.Message)
+		return
+	}
+	http.Redirect(w, r, "/r/"+id, http.StatusSeeOther)
 }
 
 // renderMarkdown is a deliberately small formatter: headings,

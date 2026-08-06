@@ -204,6 +204,56 @@ func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
+// Ref is a light issue reference for discovery listings — no body.
+type Ref struct {
+	ID      string
+	Project string
+	Number  int64
+}
+
+// SearchIDs runs List's filters but returns only references — search
+// discovery never loads unbounded bodies it will reduce to ids anyway.
+func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {
+	query := `SELECT id, project, number FROM issues WHERE project = ?`
+	args := []any{project}
+	if len(f.Statuses) > 0 {
+		query += ` AND status IN (?` + strings.Repeat(",?", len(f.Statuses)-1) + `)`
+		for _, s := range f.Statuses {
+			args = append(args, s)
+		}
+	}
+	if f.Assignee != "" {
+		query += ` AND assignee = ?`
+		args = append(args, f.Assignee)
+	}
+	for _, name := range f.Labels {
+		query += ` AND EXISTS (SELECT 1 FROM issue_labels il JOIN labels l ON l.id = il.label
+			WHERE il.issue = issues.id AND l.name = ?)`
+		args = append(args, name)
+	}
+	if f.Q != "" {
+		term := "%" + escapeLike(f.Q) + "%"
+		query += ` AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM comments c WHERE c.issue = issues.id AND c.body LIKE ? ESCAPE '\'))`
+		args = append(args, term, term, term)
+	}
+	query += ` ORDER BY number`
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search issue ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Ref{}
+	for rows.Next() {
+		var r Ref
+		if err := rows.Scan(&r.ID, &r.Project, &r.Number); err != nil {
+			return nil, fmt.Errorf("scan issue ref: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // List returns a project's issues, filterable per Filters. With Q set,
 // results rank by where the term matched — title first, then body,
 // then comments — and by display number within a rank.

@@ -44,6 +44,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		number  int64
 	}
 	issueSet := map[string]issueKey{}
+	noteRef := func(r issues.Ref) { issueSet[r.ID] = issueKey{r.Project, r.Number} }
 	noteIssue := func(i issues.Issue) { issueSet[i.ID] = issueKey{i.Project, i.Number} }
 	reviewList := []review.Review{}
 
@@ -67,13 +68,13 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			filter.Q = *q
 		}
 		for _, p := range scope {
-			matched, err := issues.List(tx, p, filter)
+			matched, err := issues.SearchIDs(tx, p, filter)
 			if err != nil {
 				writeError(w, issueErrorFrom(err))
 				return
 			}
-			for _, i := range matched {
-				noteIssue(i)
+			for _, r := range matched {
+				noteRef(r)
 			}
 		}
 	}
