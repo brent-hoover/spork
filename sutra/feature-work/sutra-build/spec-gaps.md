@@ -73,3 +73,15 @@ proposed home (avspec field / kriya context / convention).
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,
   entities-as-schema.
+
+## Cross-project blocks cannot round-trip through export
+
+`blocks` relations may cross projects (REQ-issue-blocking allows it; only
+`parent_of` is project-confined), but ProjectExport is single-project:
+IssueRelation carries bare from/to uuids, and import validates both ends
+resolve within the payload. A cross-project block therefore has no
+representable foreign endpoint — export omits it (now normative on the
+exportProject description) and a round-trip loses it. avspec's data model
+would need either an external-endpoint representation in ProjectExport or
+a constraint confining `blocks` to one project. Surfaced by roborev
+review 1805.

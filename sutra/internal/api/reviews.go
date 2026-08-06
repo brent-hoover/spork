@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -209,6 +210,10 @@ func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
 		if c != '"' {
 			return nil, malformed("expected a string key")
 		}
+		// Raw key bytes are captured escapes-and-all, then decoded by
+		// encoding/json below — so \u-escaped names resolve exactly as
+		// the second-pass decoder will see them, and an escaped null
+		// can never slip past the field check.
 		key := make([]byte, 0, 32)
 		overlong := false
 		escaped := false
@@ -219,11 +224,20 @@ func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
 			}
 			if escaped {
 				escaped = false
-				key = append(key, b)
+				if len(key) < maxKeyCapture {
+					key = append(key, b)
+				} else {
+					overlong = true
+				}
 				continue
 			}
 			if b == '\\' {
 				escaped = true
+				if len(key) < maxKeyCapture {
+					key = append(key, b)
+				} else {
+					overlong = true
+				}
 				continue
 			}
 			if b == '"' {
@@ -234,6 +248,14 @@ func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
 			} else {
 				overlong = true
 			}
+		}
+		decodedKey := string(key)
+		if bytes.ContainsRune(key, '\\') {
+			var s string
+			if err := json.Unmarshal(append(append([]byte{'"'}, key...), '"'), &s); err != nil {
+				return nil, malformed("bad key escape")
+			}
+			decodedKey = s
 		}
 		if c, err = next(); err != nil || c != ':' {
 			return nil, malformed("expected a colon")
@@ -250,7 +272,7 @@ func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
 				return nil, malformed("bad literal")
 			}
 			if !overlong {
-				nulls[string(key)] = true
+				nulls[decodedKey] = true
 			}
 		case '"':
 			if err := skipString(); err != nil {

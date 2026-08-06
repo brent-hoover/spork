@@ -40,8 +40,10 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	issueSet := map[string]issues.Issue{}
 	reviewList := []review.Review{}
 
-	// Text matches over issues, project-scoped when given.
-	if q != nil {
+	// Text matches over issues, project-scoped when given. With q
+	// omitted but a project set, the contract requires ALL content in
+	// scope — the empty filter enumerates it.
+	if q != nil || (project != nil && session == nil) {
 		scope := []string{}
 		if project != nil {
 			scope = append(scope, *project)
@@ -53,8 +55,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			}
 			scope = all
 		}
+		filter := issues.Filters{}
+		if q != nil {
+			filter.Q = *q
+		}
 		for _, p := range scope {
-			matched, err := issues.List(tx, p, issues.Filters{Q: *q})
+			matched, err := issues.List(tx, p, filter)
 			if err != nil {
 				writeError(w, issueErrorFrom(err))
 				return
@@ -65,23 +71,25 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Session joins: reviews by any submission, plus their issues.
+	// Session joins: reviews by any submission, plus their issues —
+	// both confined to the project scope when one is given.
 	if session != nil {
 		matched, err := review.List(tx, "", "", *session)
 		if err != nil {
 			writeError(w, reviewErrorFrom(err))
 			return
 		}
-		reviewList = matched
 		for _, rev := range matched {
 			iss, err := issues.Get(tx, rev.Issue)
 			if err != nil {
 				writeError(w, issueErrorFrom(err))
 				return
 			}
-			if project == nil || iss.Project == *project {
-				issueSet[iss.ID] = iss
+			if project != nil && iss.Project != *project {
+				continue
 			}
+			reviewList = append(reviewList, rev)
+			issueSet[iss.ID] = iss
 		}
 	}
 
@@ -89,7 +97,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// collects only ids and anchored issues — transcripts stream to
 	// the wire later, never accumulating in memory.
 	threadIDs := []string{}
-	if q != nil || session != nil {
+	if q != nil || session != nil || project != nil {
 		err := threads.SearchEach(tx, q, session, project, func(t threads.Thread) error {
 			threadIDs = append(threadIDs, t.ID)
 			if session != nil && t.Issue != nil {
@@ -107,10 +115,19 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Docs carry no session; they join on text alone.
+	// Docs carry no session; they join on text, or enumerate wholly
+	// under a project-only query.
 	docList := []docs.Document{}
-	if q != nil {
+	switch {
+	case q != nil:
 		matched, err := docs.Search(tx, project, *q)
+		if err != nil {
+			writeError(w, docErrorFrom(err))
+			return
+		}
+		docList = matched
+	case project != nil && session == nil:
+		matched, err := docs.ListByProject(tx, *project)
 		if err != nil {
 			writeError(w, docErrorFrom(err))
 			return

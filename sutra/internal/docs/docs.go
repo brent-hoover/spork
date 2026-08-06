@@ -131,6 +131,26 @@ func ListByProject(tx *sql.Tx, project string) ([]Document, error) {
 	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE project = ? ORDER BY title`, project)
 }
 
+// VersionsEach streams a document's versions oldest-first — export
+// assembles gigabyte-capable content without accumulating it.
+func VersionsEach(tx *sql.Tx, documentID string, fn func(Version) error) error {
+	rows, err := tx.Query(`SELECT id, document, number, content, author, created FROM doc_versions WHERE document = ? ORDER BY number`, documentID)
+	if err != nil {
+		return fmt.Errorf("versions of %s: %w", documentID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var v Version
+		if err := rows.Scan(&v.ID, &v.Document, &v.Number, &v.Content, &v.Author, &v.Created); err != nil {
+			return fmt.Errorf("scan version: %w", err)
+		}
+		if err := fn(v); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // Search returns documents whose title or ANY version content matches
 // the term, optionally project-scoped (AC-search-cross).
 func Search(tx *sql.Tx, project *string, q string) ([]Document, error) {

@@ -112,7 +112,11 @@ paths:
       description: >-
         Captures identities, issues, comments, labels, relations, docs with all
         versions, threads, reviews, and events — enough to reconstruct the
-        project (AC-export-full).
+        project (AC-export-full). Relations are carried only when BOTH ends
+        are the project's issues: a blocks relation crossing into another
+        project has no representable foreign endpoint in a single-project
+        export and is omitted — importing such an export reconstructs the
+        project without its cross-project blocks.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'

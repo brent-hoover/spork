@@ -100,6 +100,16 @@ var implementedFeatures = []string{
 	"../verification/REQ-import-export.feature:44",         // an invariant-violating hierarchy is rejected at import
 	"../verification/REQ-import-export.feature:50",         // colliding import is rejected whole
 	"../verification/REQ-import-export.feature:56",         // unknown import actor is rejected
+	"../verification/REQ-projects.feature:16",              // content scopes to its project
+	"../verification/REQ-projects.feature:21",              // archive hides without deleting
+	"../verification/REQ-identities.feature:9",             // unknown identity ids are rejected
+	"../verification/REQ-identities.feature:15",            // uniqueness collisions name their colliding resource
+	"../verification/REQ-identities.feature:27",            // renaming a template into an existing name collides
+	"../verification/REQ-audit.feature:10",                 // history reads back in order
+	"../verification/REQ-core-issues.feature:23",           // assignment to any identity
+	"../verification/REQ-issue-blocking.feature:13",        // blocker completion unblocks
+	"../verification/REQ-notifications.feature:17",         // watermarks anchor reads to the feed
+	"../verification/REQ-status-workflow.feature:36",       // simultaneous writers mutate exactly once
 }
 
 var contractRouter routers.Router
@@ -319,6 +329,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerCommentsSteps(sc, iw)
 	registerSearchSteps(sc, cw)
 	registerImportExportSteps(sc, cw)
+	registerMiscSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

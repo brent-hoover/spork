@@ -154,6 +154,34 @@ func ListByAnchor(tx *sql.Tx, column, id string) ([]Comment, error) {
 	return out, rows.Err()
 }
 
+// EachByAnchor streams the comments on one anchor target in creation
+// order — comment bodies carry no cap (AC-comment-no-cap), so export
+// never accumulates them.
+func EachByAnchor(tx *sql.Tx, column, id string, fn func(Comment) error) error {
+	switch column {
+	case "issue", "doc_version", "review":
+	default:
+		return fmt.Errorf("unknown anchor column %q", column)
+	}
+	rows, err := tx.Query(`
+		SELECT id, issue, doc_version, review, review_revision, parent, anchor, author, body, created
+		FROM comments WHERE `+column+` = ? ORDER BY created, id`, id)
+	if err != nil {
+		return fmt.Errorf("stream comments by %s: %w", column, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		c, err := scanComment(rows)
+		if err != nil {
+			return fmt.Errorf("scan comment: %w", err)
+		}
+		if err := fn(c); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 type scannable interface{ Scan(dest ...any) error }
 
 func scanComment(row scannable) (Comment, error) {

@@ -17,48 +17,60 @@ import (
 	"sutra/internal/threads"
 )
 
-// projectExport mirrors the contract's ProjectExport. Threads carry
-// verbatim transcripts, so the envelope is spliced by hand around
-// their raw bytes at serving time.
-type projectExport struct {
+// exportMeta is the bounded portion of ProjectExport — record
+// metadata, never unbounded content. The content-bearing groups
+// (comments, doc versions, review submissions, thread transcripts) are
+// streamed around it row by row at serving time, so export memory
+// stays at one record regardless of project size.
+type exportMeta struct {
 	Project        projects.Project    `json:"project"`
 	Identities     []identity.Identity `json:"identities"`
 	Issues         []issues.Issue      `json:"issues"`
-	Comments       []comments.Comment  `json:"comments"`
 	Labels         []issues.Label      `json:"labels"`
 	IssueRelations []issues.Relation   `json:"issue_relations"`
-	Documents      []documentExport    `json:"documents"`
-	Reviews        []review.Review     `json:"reviews"`
 	Events         []events.Event      `json:"events"`
 }
 
+// documentExport mirrors the contract's DocumentExport; import decodes
+// into it.
 type documentExport struct {
 	Document docs.Document  `json:"document"`
 	Versions []docs.Version `json:"versions"`
 }
 
-// assembleExport builds the full export in one read transaction
-// (AC-export-full). Cross-project blocks relations cannot round-trip
-// through a single-project export and are excluded — logged as a spec
-// gap in feature-work/sutra-build/spec-gaps.md.
-func assembleExport(tx *sql.Tx, projectID string) (projectExport, []threads.Thread, error) {
-	var ex projectExport
+// exportPlan carries the id lists the streaming writer walks.
+type exportPlan struct {
+	meta       exportMeta
+	issueIDs   []string
+	docs       []docs.Document
+	versionIDs []string
+	reviews    []review.Review // metadata only; submissions stream
+	threadIDs  []string
+}
+
+// assembleExportPlan collects metadata and identity references in one
+// read transaction (AC-export-full) WITHOUT loading unbounded content.
+// Cross-project blocks relations cannot round-trip through a
+// single-project export and are excluded — normative on the
+// exportProject contract description and logged in spec-gaps.md.
+func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
+	var plan exportPlan
 	var err error
-	if ex.Project, err = projects.GetTx(tx, projectID); err != nil {
-		return ex, nil, err
+	if plan.meta.Project, err = projects.GetTx(tx, projectID); err != nil {
+		return plan, err
 	}
-	if ex.Issues, err = issues.List(tx, projectID, issues.Filters{}); err != nil {
-		return ex, nil, err
+	if plan.meta.Issues, err = issues.List(tx, projectID, issues.Filters{}); err != nil {
+		return plan, err
 	}
-	issueIDs := map[string]bool{}
+	issueIDSet := map[string]bool{}
 	labelSet := map[string]issues.Label{}
 	identityIDs := map[string]bool{}
-	for i := range ex.Issues {
-		issue := &ex.Issues[i]
-		issueIDs[issue.ID] = true
+	for i := range plan.meta.Issues {
+		issue := &plan.meta.Issues[i]
+		issueIDSet[issue.ID] = true
 		labels, err := issues.LabelsOf(tx, issue.ID)
 		if err != nil {
-			return ex, nil, err
+			return plan, err
 		}
 		if len(labels) > 0 {
 			issue.Labels = labels
@@ -70,137 +82,145 @@ func assembleExport(tx *sql.Tx, projectID string) (projectExport, []threads.Thre
 			identityIDs[*issue.Assignee] = true
 		}
 	}
-	ex.Labels = make([]issues.Label, 0, len(labelSet))
+	plan.issueIDs = sortedKeys(issueIDSet)
+	plan.meta.Labels = make([]issues.Label, 0, len(labelSet))
 	for _, l := range labelSet {
-		ex.Labels = append(ex.Labels, l)
+		plan.meta.Labels = append(plan.meta.Labels, l)
 	}
-	slices.SortFunc(ex.Labels, func(a, b issues.Label) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(plan.meta.Labels, func(a, b issues.Label) int { return strings.Compare(a.Name, b.Name) })
 
-	// Relations among this project's issues; blocks with a foreign end
-	// are excluded (see the spec-gap note above).
-	ex.IssueRelations = []issues.Relation{}
+	plan.meta.IssueRelations = []issues.Relation{}
 	rows, err := tx.Query(`SELECT id, kind, from_issue, to_issue FROM issue_relations`)
 	if err != nil {
-		return ex, nil, err
+		return plan, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var r issues.Relation
-		if err := rows.Scan(&r.ID, &r.Kind, &r.From, &r.To); err != nil {
-			return ex, nil, err
+		var rel issues.Relation
+		if err := rows.Scan(&rel.ID, &rel.Kind, &rel.From, &rel.To); err != nil {
+			return plan, err
 		}
-		if issueIDs[r.From] && issueIDs[r.To] {
-			ex.IssueRelations = append(ex.IssueRelations, r)
+		if issueIDSet[rel.From] && issueIDSet[rel.To] {
+			plan.meta.IssueRelations = append(plan.meta.IssueRelations, rel)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return ex, nil, err
+		return plan, err
 	}
 
-	// Documents with all versions.
-	docList, err := docs.ListByProject(tx, projectID)
-	if err != nil {
-		return ex, nil, err
+	// Documents: metadata plus per-version (id, author) — content
+	// stays in the store until the writer streams it.
+	if plan.docs, err = docs.ListByProject(tx, projectID); err != nil {
+		return plan, err
 	}
-	ex.Documents = make([]documentExport, 0, len(docList))
-	docVersionIDs := map[string]bool{}
-	for _, d := range docList {
-		versions, err := docs.ListVersions(tx, d.ID)
+	for _, d := range plan.docs {
+		vrows, err := tx.Query(`SELECT id, author FROM doc_versions WHERE document = ? ORDER BY number`, d.ID)
 		if err != nil {
-			return ex, nil, err
+			return plan, err
 		}
-		for _, v := range versions {
-			docVersionIDs[v.ID] = true
-			identityIDs[v.Author] = true
+		for vrows.Next() {
+			var id, author string
+			if err := vrows.Scan(&id, &author); err != nil {
+				_ = vrows.Close()
+				return plan, err
+			}
+			plan.versionIDs = append(plan.versionIDs, id)
+			identityIDs[author] = true
 		}
-		ex.Documents = append(ex.Documents, documentExport{Document: d, Versions: versions})
+		if err := vrows.Err(); err != nil {
+			_ = vrows.Close()
+			return plan, err
+		}
+		_ = vrows.Close()
 	}
 
-	// Reviews of this project's issues, submissions complete WITH
-	// content (ReviewSubmissionExport: the durable deliverable copy).
-	ex.Reviews = []review.Review{}
-	reviewIDs := map[string]bool{}
-	for _, id := range sortedKeys(issueIDs) {
+	// Reviews: metadata only; submissions stream with content later.
+	for _, id := range plan.issueIDs {
 		list, err := review.List(tx, id, "", "")
 		if err != nil {
-			return ex, nil, err
+			return plan, err
 		}
 		for _, r := range list {
-			full, err := exportSubmissions(tx, r)
-			if err != nil {
-				return ex, nil, err
-			}
-			reviewIDs[full.ID] = true
-			identityIDs[full.Author] = true
-			ex.Reviews = append(ex.Reviews, full)
+			identityIDs[r.Author] = true
+			plan.reviews = append(plan.reviews, r)
 		}
 	}
 
-	// Comments anchored to any exported record.
-	ex.Comments = []comments.Comment{}
-	anchors := []struct {
+	// Comment authors, via metadata-only scans per anchor.
+	reviewIDs := make([]string, 0, len(plan.reviews))
+	for _, r := range plan.reviews {
+		reviewIDs = append(reviewIDs, r.ID)
+	}
+	for _, group := range []struct {
 		column string
-		ids    map[string]bool
-	}{{"issue", issueIDs}, {"doc_version", docVersionIDs}, {"review", reviewIDs}}
-	for _, a := range anchors {
-		for _, id := range sortedKeys(a.ids) {
-			list, err := comments.ListByAnchor(tx, a.column, id)
+		ids    []string
+	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", reviewIDs}} {
+		for _, id := range group.ids {
+			arows, err := tx.Query(`SELECT DISTINCT author FROM comments WHERE `+group.column+` = ?`, id)
 			if err != nil {
-				return ex, nil, err
+				return plan, err
 			}
-			for _, c := range list {
-				identityIDs[c.Author] = true
+			for arows.Next() {
+				var author string
+				if err := arows.Scan(&author); err != nil {
+					_ = arows.Close()
+					return plan, err
+				}
+				identityIDs[author] = true
 			}
-			ex.Comments = append(ex.Comments, list...)
+			if err := arows.Err(); err != nil {
+				_ = arows.Close()
+				return plan, err
+			}
+			_ = arows.Close()
 		}
 	}
 
-	// Threads anchored to the project or its issues.
-	threadList := []threads.Thread{}
-	err = threads.SearchEach(tx, nil, nil, &projectID, func(t threads.Thread) error {
-		threadList = append(threadList, t)
+	// Threads by id, deduplicated: an anchor may name BOTH the project
+	// and one of its issues, and a twice-exported id would collide
+	// with itself at import.
+	seenThreads := map[string]bool{}
+	collect := func(t threads.Thread) error {
+		if !seenThreads[t.ID] {
+			seenThreads[t.ID] = true
+			plan.threadIDs = append(plan.threadIDs, t.ID)
+		}
 		return nil
-	})
-	if err != nil {
-		return ex, nil, err
 	}
-	for _, id := range sortedKeys(issueIDs) {
-		if err := threads.ListByIssueEach(tx, id, func(t threads.Thread) error {
-			threadList = append(threadList, t)
-			return nil
-		}); err != nil {
-			return ex, nil, err
+	if err := threads.SearchEach(tx, nil, nil, &projectID, collect); err != nil {
+		return plan, err
+	}
+	for _, id := range plan.issueIDs {
+		if err := threads.ListByIssueEach(tx, id, collect); err != nil {
+			return plan, err
 		}
 	}
 
 	// Events whose subject is the project or one of its issues.
-	subjects := map[string]bool{projectID: true}
-	for id := range issueIDs {
-		subjects[id] = true
-	}
-	ex.Events = []events.Event{}
-	for _, subject := range sortedKeys(subjects) {
+	subjects := append([]string{projectID}, plan.issueIDs...)
+	slices.Sort(subjects)
+	plan.meta.Events = []events.Event{}
+	for _, subject := range subjects {
 		list, err := events.BySubject(tx, subject)
 		if err != nil {
-			return ex, nil, err
+			return plan, err
 		}
 		for _, e := range list {
 			identityIDs[e.Actor] = true
 		}
-		ex.Events = append(ex.Events, list...)
+		plan.meta.Events = append(plan.meta.Events, list...)
 	}
-	events.SortByFeedOrder(ex.Events)
+	events.SortByFeedOrder(plan.meta.Events)
 
-	// Every referenced identity travels with the export.
-	ex.Identities = []identity.Identity{}
+	plan.meta.Identities = []identity.Identity{}
 	for _, id := range sortedKeys(identityIDs) {
 		ident, err := identity.Get(tx, id)
 		if err != nil {
-			return ex, nil, err
+			return plan, err
 		}
-		ex.Identities = append(ex.Identities, ident)
+		plan.meta.Identities = append(plan.meta.Identities, ident)
 	}
-	return ex, threadList, nil
+	return plan, nil
 }
 
 // sortedKeys makes export assembly deterministic — map iteration order
@@ -214,28 +234,62 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// exportSubmissions loads a review's full submission history including
-// stored content, ordered by revision.
-func exportSubmissions(tx *sql.Tx, r review.Review) (review.Review, error) {
-	rows, err := tx.Query(`
-		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created
-		FROM review_submissions WHERE review = ? ORDER BY revision`, r.ID)
-	if err != nil {
-		return r, err
-	}
-	defer func() { _ = rows.Close() }()
-	r.Submissions = []review.Submission{}
-	for rows.Next() {
-		var s review.Submission
-		if err := rows.Scan(&s.ID, &s.Review, &s.Revision, &s.Branch, &s.Commit,
-			&s.BaseCommit, &s.DocVersion, &s.Session, &s.Content, &s.Created); err != nil {
-			return r, err
-		}
-		r.Submissions = append(r.Submissions, s)
-	}
-	return r, rows.Err()
+// jsonArrayWriter streams a JSON array element by element.
+type jsonArrayWriter struct {
+	w     http.ResponseWriter
+	first bool
 }
 
+func (a *jsonArrayWriter) open(name string) {
+	_, _ = a.w.Write([]byte(`,"` + name + `":[`))
+	a.first = true
+}
+
+func (a *jsonArrayWriter) elem(raw []byte) {
+	if !a.first {
+		_, _ = a.w.Write([]byte{','})
+	}
+	a.first = false
+	_, _ = a.w.Write(raw)
+}
+
+func (a *jsonArrayWriter) marshalElem(v any) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	a.elem(raw)
+	return nil
+}
+
+func (a *jsonArrayWriter) close() { _, _ = a.w.Write([]byte{']'}) }
+
+// reviewMetaShadow is review.Review minus submissions, so the writer
+// can splice streamed full-content submissions into its place.
+type reviewMetaShadow struct {
+	ID                 string  `json:"id"`
+	Issue              string  `json:"issue"`
+	Branch             *string `json:"branch,omitempty"`
+	Commit             *string `json:"commit,omitempty"`
+	DocVersion         *string `json:"doc_version,omitempty"`
+	Session            *string `json:"session,omitempty"`
+	Summary            *string `json:"summary,omitempty"`
+	Author             string  `json:"author"`
+	State              string  `json:"state"`
+	Revision           int64   `json:"revision"`
+	LatestVerdictEvent *string `json:"latest_verdict_event,omitempty"`
+	Consumed           *string `json:"consumed,omitempty"`
+	ConsumedRevision   *int64  `json:"consumed_revision,omitempty"`
+	CloseUsed          *string `json:"close_used,omitempty"`
+	Created            string  `json:"created"`
+}
+
+// exportProject streams the full export (AC-export-full): the bounded
+// metadata envelope marshals once; comments, doc versions, review
+// submissions, and transcripts — all unbounded per AC-comment-no-cap
+// and the store's physical limits — stream one row at a time. After
+// the first byte the status is committed; a mid-stream failure can
+// only truncate.
 func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -243,31 +297,127 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	ex, threadList, err := assembleExport(tx, r.PathValue("projectId"))
+	plan, err := assembleExportPlan(tx, r.PathValue("projectId"))
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	raw, err := json.Marshal(ex)
+	raw, err := json.Marshal(plan.meta)
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	// Threads splice in verbatim; the marshaled envelope closes after
-	// them.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw[:len(raw)-1])
-	_, _ = w.Write([]byte(`,"threads":[`))
-	for i, t := range threadList {
-		one, apiErr := threadJSON(t)
-		if apiErr != nil {
-			return // committed status; truncation is the only signal
+	arr := &jsonArrayWriter{w: w}
+
+	arr.open("comments")
+	reviewIDs := make([]string, 0, len(plan.reviews))
+	for _, rv := range plan.reviews {
+		reviewIDs = append(reviewIDs, rv.ID)
+	}
+	for _, group := range []struct {
+		column string
+		ids    []string
+	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", reviewIDs}} {
+		for _, id := range group.ids {
+			if err := comments.EachByAnchor(tx, group.column, id, func(c comments.Comment) error {
+				return arr.marshalElem(c)
+			}); err != nil {
+				return // status committed; truncation is the only signal
+			}
 		}
-		if i > 0 {
+	}
+	arr.close()
+
+	arr.open("documents")
+	for _, d := range plan.docs {
+		docRaw, err := json.Marshal(d)
+		if err != nil {
+			return
+		}
+		if !arr.first {
 			_, _ = w.Write([]byte{','})
 		}
-		_, _ = w.Write(one)
+		arr.first = false
+		_, _ = w.Write([]byte(`{"document":`))
+		_, _ = w.Write(docRaw)
+		_, _ = w.Write([]byte(`,"versions":[`))
+		inner := &jsonArrayWriter{w: w, first: true}
+		if err := docs.VersionsEach(tx, d.ID, func(v docs.Version) error {
+			return inner.marshalElem(v)
+		}); err != nil {
+			return
+		}
+		_, _ = w.Write([]byte(`]}`))
 	}
-	_, _ = w.Write([]byte(`]}`))
+	arr.close()
+
+	arr.open("reviews")
+	for _, rv := range plan.reviews {
+		shadow := reviewMetaShadow{
+			ID: rv.ID, Issue: rv.Issue, Branch: rv.Branch, Commit: rv.Commit,
+			DocVersion: rv.DocVersion, Session: rv.Session, Summary: rv.Summary,
+			Author: rv.Author, State: rv.State, Revision: rv.Revision,
+			LatestVerdictEvent: rv.LatestVerdictEvent, Consumed: rv.Consumed,
+			ConsumedRevision: rv.ConsumedRevision, CloseUsed: rv.CloseUsed, Created: rv.Created,
+		}
+		metaRaw, err := json.Marshal(shadow)
+		if err != nil {
+			return
+		}
+		if !arr.first {
+			_, _ = w.Write([]byte{','})
+		}
+		arr.first = false
+		_, _ = w.Write(metaRaw[:len(metaRaw)-1])
+		_, _ = w.Write([]byte(`,"submissions":[`))
+		inner := &jsonArrayWriter{w: w, first: true}
+		if err := eachSubmission(tx, rv.ID, func(sub review.Submission) error {
+			return inner.marshalElem(sub)
+		}); err != nil {
+			return
+		}
+		_, _ = w.Write([]byte(`]}`))
+	}
+	arr.close()
+
+	arr.open("threads")
+	for _, id := range plan.threadIDs {
+		t, err := threads.Get(tx, id)
+		if err != nil {
+			return
+		}
+		one, apiErr := threadJSON(t)
+		if apiErr != nil {
+			return
+		}
+		arr.elem(one)
+	}
+	arr.close()
+	_, _ = w.Write([]byte{'}'})
+}
+
+// eachSubmission streams a review's full submission history including
+// stored content, ordered by revision.
+func eachSubmission(tx *sql.Tx, reviewID string, fn func(review.Submission) error) error {
+	rows, err := tx.Query(`
+		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created
+		FROM review_submissions WHERE review = ? ORDER BY revision`, reviewID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var sub review.Submission
+		if err := rows.Scan(&sub.ID, &sub.Review, &sub.Revision, &sub.Branch, &sub.Commit,
+			&sub.BaseCommit, &sub.DocVersion, &sub.Session, &sub.Content, &sub.Created); err != nil {
+			return err
+		}
+		if err := fn(sub); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }

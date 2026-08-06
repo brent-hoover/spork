@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"sutra/internal/comments"
 	"sutra/internal/events"
@@ -42,20 +44,30 @@ func malformedImport(format string, args ...any) *apiError {
 // violation — no partial imports.
 func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 	actor := r.URL.Query().Get("actor")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+	// Decode and payload validation run in the PREPARE stage — before
+	// the idempotency reservation takes SQLite's write lock — so a
+	// multi-gigabyte decode never blocks other mutations. Only the
+	// collision probe and the inserts hold the writer.
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		var p importPayload
 		if err := dec.Decode(&p); err != nil {
-			return 0, nil, malformedImport("decode export: %v", err)
+			return nil, malformedImport("decode export: %v", err)
+		}
+		if err := dec.Decode(new(any)); err != io.EOF {
+			return nil, malformedImport("trailing data after the export payload")
 		}
 		if apiErr := validateImport(&p, actor); apiErr != nil {
+			return nil, apiErr
+		}
+		return &p, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		p := prepped.(*importPayload)
+		if apiErr := s.checkImportCollisions(tx, p); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		if apiErr := s.checkImportCollisions(tx, &p); apiErr != nil {
-			return 0, nil, apiErr
-		}
-		if apiErr := insertImport(tx, &p); apiErr != nil {
+		if apiErr := insertImport(tx, p); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		// Exactly one appended audit event; per-record events arrived
@@ -73,8 +85,8 @@ func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 // consumption/verdict stamps are coherent (REQ-import-export's
 // malformed-review scenarios).
 func validateImport(p *importPayload, actor string) *apiError {
-	if p.Project.ID == "" {
-		return malformedImport("project.id is required")
+	if apiErr := validateImportShapes(p); apiErr != nil {
+		return apiErr
 	}
 	identitySet := map[string]bool{}
 	for _, i := range p.Identities {
@@ -209,6 +221,149 @@ func validateImport(p *importPayload, actor string) *apiError {
 	return nil
 }
 
+// validateImportShapes enforces what DisallowUnknownFields cannot:
+// UUID formats on every record id, RFC 3339 timestamps, closed enums,
+// required strings, and the exactly-one deliverable shape — a payload
+// the OpenAPI schema would reject must never persist.
+func validateImportShapes(p *importPayload) *apiError {
+	uuidOf := func(what, id string) *apiError {
+		if !isUUID(id) {
+			return malformedImport("%s id %q is not a uuid", what, id)
+		}
+		return nil
+	}
+	timeOf := func(what, value string) *apiError {
+		if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+			return malformedImport("%s carries a malformed timestamp %q", what, value)
+		}
+		return nil
+	}
+	if apiErr := uuidOf("project", p.Project.ID); apiErr != nil {
+		return apiErr
+	}
+	if p.Project.Key == "" || p.Project.Name == "" {
+		return malformedImport("project key and name are required")
+	}
+	for _, i := range p.Identities {
+		if apiErr := uuidOf("identity", i.ID); apiErr != nil {
+			return apiErr
+		}
+		if i.Handle == "" || (i.Kind != "human" && i.Kind != "agent") {
+			return malformedImport("identity %s has a bad handle or kind", i.ID)
+		}
+	}
+	validStatus := map[string]bool{"open": true, "in-progress": true, "blocked": true, "deferred": true, "complete": true}
+	for _, i := range p.Issues {
+		if apiErr := uuidOf("issue", i.ID); apiErr != nil {
+			return apiErr
+		}
+		if i.Title == "" || !validStatus[i.Status] || i.Number < 1 {
+			return malformedImport("issue %s has a bad title, status, or number", i.ID)
+		}
+		for _, field := range []struct{ what, value string }{{"issue created", i.Created}, {"issue updated", i.Updated}} {
+			if apiErr := timeOf(field.what, field.value); apiErr != nil {
+				return apiErr
+			}
+		}
+	}
+	for _, l := range p.Labels {
+		if apiErr := uuidOf("label", l.ID); apiErr != nil {
+			return apiErr
+		}
+		if l.Name == "" {
+			return malformedImport("label %s has no name", l.ID)
+		}
+	}
+	for _, rel := range p.IssueRelations {
+		if apiErr := uuidOf("relation", rel.ID); apiErr != nil {
+			return apiErr
+		}
+		if rel.Kind != "parent_of" && rel.Kind != "blocks" {
+			return malformedImport("relation %s has kind %q", rel.ID, rel.Kind)
+		}
+	}
+	for _, d := range p.Documents {
+		if apiErr := uuidOf("document", d.Document.ID); apiErr != nil {
+			return apiErr
+		}
+		if d.Document.Title == "" {
+			return malformedImport("document %s has no title", d.Document.ID)
+		}
+		for _, v := range d.Versions {
+			if apiErr := uuidOf("doc version", v.ID); apiErr != nil {
+				return apiErr
+			}
+			if apiErr := timeOf("doc version created", v.Created); apiErr != nil {
+				return apiErr
+			}
+		}
+	}
+	for _, t := range p.Threads {
+		if apiErr := uuidOf("thread", t.ID); apiErr != nil {
+			return apiErr
+		}
+		if t.Title == "" || len(t.Transcript) == 0 {
+			return malformedImport("thread %s lacks a title or transcript", t.ID)
+		}
+		if apiErr := timeOf("thread imported_at", t.ImportedAt); apiErr != nil {
+			return apiErr
+		}
+	}
+	validState := map[string]bool{"open": true, "changes-requested": true, "approved": true}
+	for _, r := range p.Reviews {
+		if apiErr := uuidOf("review", r.ID); apiErr != nil {
+			return apiErr
+		}
+		if !validState[r.State] {
+			return malformedImport("review %s has state %q", r.ID, r.State)
+		}
+		if apiErr := timeOf("review created", r.Created); apiErr != nil {
+			return apiErr
+		}
+		code := r.Branch != nil && r.Commit != nil
+		doc := r.DocVersion != nil
+		if code == doc || (r.Branch != nil) != (r.Commit != nil) {
+			return malformedImport("review %s must carry exactly one deliverable: a branch pinned at a commit, or a doc version", r.ID)
+		}
+		for _, sub := range r.Submissions {
+			if apiErr := uuidOf("submission", sub.ID); apiErr != nil {
+				return apiErr
+			}
+			subCode := sub.Branch != nil && sub.Commit != nil
+			subDoc := sub.DocVersion != nil
+			if subCode == subDoc || (sub.Branch != nil) != (sub.Commit != nil) {
+				return malformedImport("review %s submission %d deliverable shape is invalid", r.ID, sub.Revision)
+			}
+			if apiErr := timeOf("submission created", sub.Created); apiErr != nil {
+				return apiErr
+			}
+		}
+	}
+	for _, c := range p.Comments {
+		if apiErr := uuidOf("comment", c.ID); apiErr != nil {
+			return apiErr
+		}
+		if c.Body == "" {
+			return malformedImport("comment %s has no body", c.ID)
+		}
+		if apiErr := timeOf("comment created", c.Created); apiErr != nil {
+			return apiErr
+		}
+	}
+	for _, e := range p.Events {
+		if apiErr := uuidOf("event", e.ID); apiErr != nil {
+			return apiErr
+		}
+		if e.Kind == "" {
+			return malformedImport("event %s has no kind", e.ID)
+		}
+		if apiErr := timeOf("event created", e.Created); apiErr != nil {
+			return apiErr
+		}
+	}
+	return nil
+}
+
 // findActiveDescendant walks the parent_of tree below root looking for
 // an active (open, in-progress, blocked) issue at any depth.
 func findActiveDescendant(root string, children map[string][]string, statuses map[string]string) (string, bool) {
@@ -290,9 +445,12 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, identi
 		if r.LatestVerdictEvent == nil {
 			return malformedImport("review %s carries a verdict but no latest verdict event", r.ID)
 		}
-		actual := latestVerdictEventFor(r.ID, p.Events)
-		if actual == "" || actual != *r.LatestVerdictEvent {
+		actualID, actualKind := latestVerdictEventFor(r.ID, p.Events)
+		if actualID == "" || actualID != *r.LatestVerdictEvent {
 			return malformedImport("review %s latest_verdict_event is not its actual latest verdict event", r.ID)
+		}
+		if actualKind != "review."+r.State {
+			return malformedImport("review %s state %s disagrees with its latest verdict event's kind %s", r.ID, r.State, actualKind)
 		}
 	}
 	return nil
@@ -309,9 +467,10 @@ func deliverableMatches(r *review.Review, latest review.Submission) bool {
 }
 
 // latestVerdictEventFor scans the export's events — already in feed
-// order — for the last verdict event naming the review.
-func latestVerdictEventFor(reviewID string, list []events.Event) string {
-	last := ""
+// order — for the last verdict event naming the review, returning its
+// id and kind so the caller can require kind/state agreement.
+func latestVerdictEventFor(reviewID string, list []events.Event) (string, string) {
+	id, kind := "", ""
 	for _, e := range list {
 		if e.Kind != "review.approved" && e.Kind != "review.changes-requested" {
 			continue
@@ -324,10 +483,10 @@ func latestVerdictEventFor(reviewID string, list []events.Event) string {
 			Review string `json:"review"`
 		}
 		if json.Unmarshal(raw, &payload) == nil && payload.Review == reviewID {
-			last = e.ID
+			id, kind = e.ID, e.Kind
 		}
 	}
-	return last
+	return id, kind
 }
 
 // checkImportCollisions rejects the payload whole if ANY of its UUIDs

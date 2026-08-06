@@ -119,10 +119,12 @@ func bodyLimit(operation string) int64 {
 	switch operation {
 	case "POST /projects/import":
 		// Whole-project payloads aggregate every record including
-		// stored deliverables; they spool to disk (captureBody), so
-		// the 4 GiB bound costs disk, not RAM, and no valid export
-		// within SQLite's physical limits rejects.
-		return 4 << 30
+		// stored deliverables, and a valid export has no aggregate
+		// bound — many records may each approach SQLite's per-value
+		// limit. The body spools to disk (captureBody), so the bound
+		// is effectively the disk: 1 TiB is a backstop against runaway
+		// streams, not a policy cap a real export could hit.
+		return 1 << 40
 	default:
 		// The contract leaves content-bearing strings (doc versions,
 		// templates, issue bodies, comments — AC-comment-no-cap)

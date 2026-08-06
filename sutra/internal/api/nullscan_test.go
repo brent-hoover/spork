@@ -26,6 +26,8 @@ func TestScanExplicitNulls(t *testing.T) {
 		{name: "escaped backslash then quote", body: `{"a":"c:\\","b":null}`, nulls: []string{"b"}},
 		{name: "whitespace everywhere", body: "{\n  \"a\" : null ,\n  \"b\" : 2\n}", nulls: []string{"a"}},
 		{name: "deep nesting", body: `{"a":[[{"x":[null]}]],"b":null}`, nulls: []string{"b"}},
+		{name: "unicode-escaped key null", body: `{"expected\u005fdefault\u005fhead":null}`, nulls: []string{"expected_default_head"}},
+		{name: "escaped key no null", body: `{"a\u0062c":"x","d":null}`, nulls: []string{"d"}},
 		{name: "not an object", body: `[1,2]`, bad: true},
 		{name: "bad literal", body: `{"a":nope}`, bad: true},
 		{name: "truncated", body: `{"a":`, bad: true},
