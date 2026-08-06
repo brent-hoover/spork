@@ -2147,6 +2147,13 @@ components:
             - not:
                 required: [close_used]
           description: close_used implies both consumption fields. Beyond schema reach but enforced at import — EVERY consumed review, close-used or not, must be in state approved with consumed_revision equal to its current revision; importProject rejects violations as malformed, so a consumed review's verdict can never be rewritten through import and no state impossible through the API can be imported.
+        - anyOf:
+            - not:
+                properties:
+                  state: { enum: [approved, changes-requested] }
+                required: [state]
+            - required: [latest_verdict_event]
+          description: Verdict-bearing states require latest_verdict_event — without it a review could never be closed, consumed, or resubmitted. Import additionally validates that it references the review's actual latest verdict event.
       properties:
         id: { type: string, format: uuid }
         issue: { type: string, format: uuid }

@@ -25,6 +25,14 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
+  Scenario: a verdict-bearing review without its latest verdict event is rejected at import
+    Given an export payload whose approved review carries no latest verdict event
+    When it is imported
+    Then the import is rejected as malformed — such a review could never be closed, consumed, or resubmitted
+    Given an export payload whose review names a latest verdict event that is not its actual latest
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
   Scenario: a malformed close-used review is rejected at import
     Given an export payload whose review is close-used but carries no consumption fields
     When it is imported

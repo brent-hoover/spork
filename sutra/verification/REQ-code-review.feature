@@ -85,7 +85,7 @@ Feature: Review lifecycle
 
   Scenario: approval consumption fences reversal
     Given an approved review at revision 2
-    When a subscriber consumes the approval expecting revision 2
+    When a subscriber consumes the approval expecting revision 2 and naming its approval's verdict event
     Then the consumption is durably recorded and replaying it under the same idempotency key returns the original success
     And a "review.consumed" event records the actor, the review, and revision 2
     And a second subscriber's distinct consumption attempt against the consumed approval is rejected with a conflict
@@ -114,7 +114,7 @@ Feature: Review lifecycle
 
   Scenario: a stale resubmission cannot land on a newer revision
     Given a review at revision 3 in state "changes-requested"
-    When a delayed resubmission arrives expecting revision 2
+    When a delayed resubmission arrives expecting revision 2, naming the changes-requested event it answers
     Then it is rejected with a conflict and no mutation
 
   Scenario: resubmission requires changes-requested
