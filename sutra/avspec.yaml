@@ -372,7 +372,7 @@ requirements:
         statement: The feed filters by event kind and/or subject, so a consumer watches exactly its concerns.
         test: verification/REQ-notifications.feature#filters narrow the feed
       - id: AC-feed-watermark
-        statement: Issue reads and issue-list responses carry a server-issued feed watermark captured atomically with the returned state — present even for an empty list — such that processing the feed through it provably covers every event that could have affected that state.
+        statement: Issue reads, issue-list responses, and work-stack pop results — claimed and empty alike — carry a server-issued feed watermark captured atomically with the returned state, present even for an empty list or an empty pop, such that processing the feed through it provably covers every event that could have affected that state.
         test: verification/REQ-notifications.feature#watermarks anchor reads to the feed
       - id: AC-feed-drain
         statement: The feed accepts an until watermark and every page reports drained — true once everything through that watermark has been returned — so a bounded reconciliation is provable and correct under concurrent event traffic, the watermark being a fixed position.

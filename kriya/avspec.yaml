@@ -675,7 +675,7 @@ data:
         once, a valid completion is never cleared twice, and the cause
         needed to recover an explicit reopen is never overwritten.
       fields:
-        - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id)
+        - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id) for event-consumption advances; ambiguity-resolution advances derive it from (ambiguity_key, resolution_generation, target_key) instead — generation-scoped, so a reopened row's fresh resolution creates a distinct advance while a same-generation replay collides idempotently, and the event field records the resolution's parenting operation
         - { name: target_key, type: string, required: true }
         - { name: event, type: string, required: true }
         - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, new-work, compensation] }
@@ -1403,9 +1403,12 @@ data:
         one-parent invariant forever); the row
         stamps resolved only after THAT target's epoch advance and
         cascade reconciliation complete — the advance is a
-        CompletionAdvance created and LINKED transactionally on the
-        ambiguity row, whose operation, cascade evidence, and reopen
-        obligation recovery reads directly — so resolution can never
+        CompletionAdvance created and LINKED in the generation-conditional
+        transaction, its key derived from (ambiguity_key,
+        resolution_generation, target_key) so reselecting the same
+        target after a reopen creates a DISTINCT advance rather than
+        colliding with the prior one; its operation, cascade evidence,
+        and reopen obligation recovery reads directly — so resolution can never
         wake the wrong target or skip the adopted one's reconciliation; a
         parent attributing to none or several
         retains a conflicting ambiguity, suppression intact, with the
