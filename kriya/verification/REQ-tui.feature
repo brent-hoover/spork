@@ -30,6 +30,10 @@ Feature: TUI overview
     Then reconciliation and reset are refused until the claimant is conclusively dead
     Given an escalated scope change
     Then the operator can approve or reject it from the TUI
+    Given an open attribution ambiguity in the inbox
+    When the operator attributes the ticket to a target from the TUI
+    Then the selected target and the parenting mutation's key persist with state resolving before sutra is called
+    And a crash before the resolved stamp is recovered by replaying the keyed mutation, stamping resolved with the outcome
 
   Scenario: the TUI reads the records recovery reads
     Given a completed run

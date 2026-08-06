@@ -135,7 +135,8 @@ paths:
         (AC-import-round-trip). Identities referenced by the export's records are
         recreated from the export itself — never invented — so every actor and
         assignee resolves after import. Exported records are canonical
-        serializations — every field, including server-stamped ones (e.g.
+        serializations — read-time decorations like feed_watermark are never
+        part of them, and a payload carrying one is rejected as malformed — every field, including server-stamped ones (e.g.
         Comment.review_revision), is preserved on import verbatim, not
         recomputed. Import deliberately targets empty servers: rejected as a
         whole, naming the conflict, if any UUID already exists on this
@@ -266,7 +267,7 @@ paths:
                 properties:
                   issues:
                     type: array
-                    items: { $ref: '#/components/schemas/IssueRead' }
+                    items: { $ref: '#/components/schemas/Issue' }
                   feed_watermark:
                     type: string
                     description: Server-issued feed position captured atomically with this query — present even when issues is empty, so a consumer can always reconcile the feed against exactly what this read reflected.
@@ -1724,6 +1725,10 @@ components:
         - $ref: '#/components/schemas/Issue'
         - type: object
           required: [feed_watermark]
+          properties:
+            feed_watermark:
+              type: string
+              description: Server-issued event-feed position captured atomically with this read; a consumer that has processed the feed through it has seen every event that could have affected the state returned. Lives only on reads — import/export payloads carrying it are rejected as malformed.
 
     Issue:
       type: object
@@ -1746,9 +1751,6 @@ components:
         subtree_revision:
           type: integer
           description: Incremented atomically on the issue and every ancestor by each status transition, child attachment, or child removal in its subtree — removal increments the former parent's chain.
-        feed_watermark:
-          type: string
-          description: Server-issued event-feed position captured atomically with a read; a consumer that has processed the feed through this watermark has seen every event that could have affected the state returned. REQUIRED on API reads (IssueRead), absent from importProject payloads.
 
     NewIssue:
       type: object
@@ -2138,12 +2140,25 @@ components:
             `subject`.
         actor: { type: string, format: uuid }
         payload:
-          description: Arbitrary JSON event payload.
+          description: >-
+            JSON event payload. For `issue.relation-removed` events the
+            payload is REQUIRED and conforms to RelationRemovedPayload; other
+            kinds carry kind-specific or absent payloads.
         created: { type: string, format: date-time }
+
+    RelationRemovedPayload:
+      type: object
+      description: Required payload of every `issue.relation-removed` event — a snapshot of the removed relation, so consumers can distinguish a parent_of detachment from a removed blocks relation and identify the detached child.
+      required: [relation, kind, from, to]
+      properties:
+        relation: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/RelationKind' }
+        from: { type: string, format: uuid, description: The former source — for parent_of, the former parent. }
+        to: { type: string, format: uuid, description: The former destination — for parent_of, the detached child. }
 
     EventPage:
       type: object
-      required: [events, next_cursor]
+      required: [events, next_cursor, drained]
       properties:
         events:
           type: array
@@ -2153,7 +2168,7 @@ components:
           description: Pass as `cursor` on the next call to resume after this page.
         drained:
           type: boolean
-          description: Present when the request carried `until` — true once every event through that watermark has been returned across the pages consumed so far.
+          description: Always present. For requests carrying `until`, true once every event through that watermark has been returned across the pages consumed so far; false for requests without `until` — never omitted, so bounded reconciliation is always provable.
 
     Review:
       type: object
