@@ -12,6 +12,16 @@
 # "**.issues.**") — add descendant patterns only if subpackages appear.
 version: 1
 dependenciesRules:
+  # Composition root — not a declared avspec module; it wires the declared
+  # surface modules together and may import only them (spec gap logged in
+  # feature-work/sutra-build/spec-gaps.md: avspec has no composition-root
+  # concept, yet arch-go requires 100% package coverage).
+  - package: "**.sutra"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.issues"
     shouldOnlyDependsOn:
       internal:
