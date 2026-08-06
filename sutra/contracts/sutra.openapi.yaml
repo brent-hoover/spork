@@ -1696,11 +1696,24 @@ components:
   schemas:
     Error:
       type: object
-      required: [message]
+      required: [message, code]
       properties:
         message:
           type: string
           description: Human-readable explanation of the rejection.
+        code:
+          type: string
+          description: >-
+            Stable machine-readable cause, for deterministic client
+            classification. Conflict codes include relation-exists,
+            ancestry-cycle, blocking-cycle, project-archived,
+            expected-status-mismatch, expected-revision-mismatch,
+            expected-verdict-event-mismatch, expected-base-mismatch,
+            expected-default-head-mismatch, expected-subtree-revision-mismatch,
+            review-close-used, review-consumed, review-not-approved; validation
+            codes mirror the request shape. Clients distinguishing transient
+            races from permanent conditions (e.g. kriya's parenting
+            reconciliation) rely on this field, never on message text.
         conflicts:
           type: array
           description: Ids of the resources this request conflicts with, if applicable.

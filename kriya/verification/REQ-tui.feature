@@ -30,6 +30,12 @@ Feature: TUI overview
     Then reconciliation and reset are refused until the claimant is conclusively dead
     Given an escalated scope change
     Then the operator can approve or reject it from the TUI
+    Given a conflicting new-work parentage in the inbox
+    When the operator cedes it from the TUI
+    Then the advance stamps terminal ceded
+    Given another conflicting parentage
+    When the operator reclaims it from the TUI
+    Then the reclaim lifecycle persists write-ahead and the keyed removal and attachment reconcile to completion
     Given an open attribution ambiguity in the inbox
     When the operator attributes the ticket to a target from the TUI
     Then the selected target and the parenting mutation's key persist with state resolving before sutra is called

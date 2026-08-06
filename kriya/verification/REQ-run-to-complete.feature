@@ -256,18 +256,23 @@ Feature: Run to complete
 
     Examples:
       | parentage                              | outcome                                                                                             |
-      | the desired epic already parenting it  | parented stamps with no reopen owed — sutra's attach invariant already kept the epic honest         |
+      | the desired epic already parenting it  | parented stamps with cascade_verified external and no reopen owed — the concurrent attachment carried the cascade |
       | a different parent holding it          | parenting_state records conflicting with the parent in parenting_error, and the inbox lists it      |
       | no parent at all, a concurrency race   | parenting_generation advances durably first, and the retry issues under the next generation's key   |
-      | no parent, a permanent failure cause   | parenting_state records conflicting with the failure details in parenting_error — never retried blindly |
+      | no parent, a permanent conflict code   | parenting_state records conflicting with the failure details in parenting_error — never retried blindly |
 
-  Scenario: the operator resolves a conflicting parentage
+  Scenario: ceding a conflicting parentage is terminal
     Given a new-work advance in state conflicting because another epic holds the ticket
     When the operator cedes through the parenting-resolution action
     Then the advance stamps terminal ceded and the ticket counts for the target that holds it
-    Given the operator instead reclaims
-    Then the choice persists, the generation advances, and the advance returns to pending
-    And reconciliation removes the conflicting relation and attaches under this epic through keyed mutations
+
+  Scenario: reclaiming a conflicting parentage recovers across every step
+    Given a new-work advance in state conflicting because another epic holds the ticket
+    When the operator reclaims through the parenting-resolution action
+    Then the conflicting relation id, the keyed removal mutation, and reclaim_state pending persist with the choice before any call
+    And the keyed removal replays to removed — a crash on either side of it recovers by the same key
+    And only then does the advance return to pending under an advanced generation, the ordinary keyed attachment completing the reclaim
+    And a crash at any step never forgets the removal authorization or re-encounters the conflict blind
 
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project
