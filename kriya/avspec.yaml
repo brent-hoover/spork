@@ -379,6 +379,12 @@ requirements:
       - id: AC-complete-new-work
         statement: Kriya keeps consuming project work events after a target completes — a new active issue attributing to a completed target advances its epoch, clears the stamp, and parents the ticket under the epic, whose attachment cascade reopens it.
         test: verification/REQ-run-to-complete.feature#new work created after completion wakes the target
+      - id: AC-complete-parenting-recovery
+        statement: A crash before the new-work attachment lands is recovered by keyed replay, correlation, and the atomic parented-plus-verification stamp — exactly one attachment ever exists.
+        test: verification/REQ-run-to-complete.feature#a parenting crash before the attachment recovers exactly once
+      - id: AC-complete-parenting-reconciliation
+        statement: A crash after the attachment lands but before reconciliation recovers through the keyed replay's original response and completes the verification stamp in one transaction; a conflicting replay re-reads parentage — accepting the desired parent, surfacing a different one, retrying a transient conflict under a fresh key.
+        test: verification/REQ-run-to-complete.feature#a parenting crash after the relation lands recovers the verification
       - id: AC-complete-ambiguous-new-work
         statement: An ambiguous post-completion creation advances no epoch — the open ambiguity record suppresses completion for every candidate target — and resolution wakes only the selected target through its parenting attachment's cascade, the others resuming untouched.
         test: verification/REQ-run-to-complete.feature#an ambiguous post-completion creation suppresses without advancing
@@ -671,7 +677,7 @@ data:
         - { name: operation, type: string }  # the server transaction id correlated during cascade verification — the evidence the check ran against
         - { name: ticket, type: string }  # new-work advances — the created ticket this advance must parent
         - { name: relation_key, type: string }  # new-work advances — deterministic Idempotency-Key of the parenting mutation, persisted with the advance; recovery replays it
-        - { name: parenting_state, type: enum, values: [pending, parented] }  # new-work advances — written pending with the advance and held pending THROUGH cascade verification: parented is stamped only in the same transaction that records operation, cascade_verified, and (when unreached) reopen_owed, so recovery resuming every pending row always re-runs the keyed attachment replay AND the correlation — a crash at any point before the atomic stamp can never lose the explicit-reopen obligation or strand a detached ticket
+        - { name: parenting_state, type: enum, values: [pending, parented] }  # new-work advances — written pending with the advance and held pending THROUGH cascade verification: parented is stamped only in the same transaction that records operation, cascade_verified, and (when unreached) reopen_owed, so recovery resuming every pending row always re-runs the keyed attachment replay AND the correlation — a crash at any point before the atomic stamp can never lose the explicit-reopen obligation or strand a detached ticket. A CONFLICT on the attachment replay is resolved by re-reading the ticket's parentage: the desired parent already in place means a concurrent actor parented it — stamp parented with no reopen owed, sutra's attach invariant having already kept the epic honest; a DIFFERENT parent surfaces durably as conflicting parentage for the operator; a transient conflict with no parent retries under a fresh key — a pending advance can never sit permanently behind a cached 409
         - { name: cascade_verified, type: enum, values: [reached, unreached] }  # cascade-driven causes only — reached requires an issue.status-changed event for the epic, with its reopened status, under the same operation; recorded atomically with the advance
         - { name: reopen_owed, type: boolean }  # true exactly when verification recorded unreached — the durable explicit-reopen obligation recovery honors
         - { name: epoch, type: integer, required: true }  # the epoch value this advance produced
