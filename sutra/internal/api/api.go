@@ -304,7 +304,39 @@ func (s *server) listEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, page)
+	// Event payloads serve their STORED bytes — imported payloads are
+	// promised back verbatim, and json.Marshal would compact them.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"events":[`))
+	for i, e := range page.Events {
+		if i > 0 {
+			_, _ = w.Write([]byte{','})
+		}
+		raw, err := eventJSON(e)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		_, _ = w.Write(raw)
+	}
+	_, _ = fmt.Fprintf(w, `],"next_cursor":%q,"drained":%t}`, page.NextCursor, page.Drained)
+}
+
+// eventJSON marshals an event with its payload bytes spliced in
+// UNTOUCHED, the same treatment export gives them.
+func eventJSON(e events.Event) ([]byte, error) {
+	payload := e.Payload
+	e.Payload = nil
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > 0 {
+		raw = append(raw[:len(raw)-1], []byte(`,"payload":`)...)
+		raw = append(raw, payload...)
+		raw = append(raw, '}')
+	}
+	return raw, nil
 }
 
 func (s *server) listIdentities(w http.ResponseWriter, r *http.Request) {

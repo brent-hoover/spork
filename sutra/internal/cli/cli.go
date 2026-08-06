@@ -380,10 +380,10 @@ func (c *client) issue(args []string) error {
 }
 
 // generic invokes any contract operation: sutra api <operationId>
-// [--path k=v]… [--query k=v]… [--body '<json>'].
+// [--path.<name> <value>]… [--query.<name> <value>]… [--body '<json>'].
 func (c *client) generic(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: sutra api <operationId> [--path k=v] [--query k=v] [--body json]")
+		return fmt.Errorf("usage: sutra api <operationId> [--path.<name> <value>] [--query.<name> <value>] [--body <json>]")
 	}
 	o, ok := operations[args[0]]
 	if !ok {

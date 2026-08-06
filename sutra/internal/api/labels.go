@@ -137,5 +137,20 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, history)
+	// Audit history serves stored payload bytes verbatim, like the
+	// feed and the export.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{'['})
+	for i, e := range history {
+		if i > 0 {
+			_, _ = w.Write([]byte{','})
+		}
+		raw, err := eventJSON(e)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		_, _ = w.Write(raw)
+	}
+	_, _ = w.Write([]byte{']'})
 }

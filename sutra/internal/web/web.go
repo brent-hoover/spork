@@ -575,12 +575,16 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 	// JSON per entry — never a blank row.
 	turns := []turn{}
 	var entries []json.RawMessage
-	if err := json.Unmarshal(t.Transcript, &entries); err != nil {
+	if err := json.Unmarshal(t.Transcript, &entries); err != nil || entries == nil {
+		// Non-array transcripts — JSON null included — render raw.
 		turns = []turn{{Speaker: "transcript", Text: string(t.Transcript)}}
 	} else {
 		for _, entry := range entries {
 			var decoded turn
-			if err := json.Unmarshal(entry, &decoded); err == nil && (decoded.Speaker != "" || decoded.Text != "") {
+			// A structured turn needs BOTH conventional fields; a
+			// half-shaped entry renders its raw JSON instead of a
+			// blank-sided row.
+			if err := json.Unmarshal(entry, &decoded); err == nil && decoded.Speaker != "" && decoded.Text != "" {
 				turns = append(turns, decoded)
 				continue
 			}

@@ -59,6 +59,11 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 			return malformedImport("decode export: %v", err)
 		}
 		key, _ := keyTok.(string)
+		if required[key] {
+			// A repeated property would let one pass validate the last
+			// value while the other pass processes BOTH.
+			return malformedImport("export payload repeats field %q", key)
+		}
 		required[key] = true
 		var apiErr *apiError
 		switch key {
@@ -195,6 +200,9 @@ func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 		}
 		switch keyTok {
 		case "document":
+			if sawDocument {
+				return fmt.Errorf("documents element repeats the document field")
+			}
 			var d docs.Document
 			if err := dec.Decode(&d); err != nil {
 				return err
@@ -204,6 +212,9 @@ func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 				return err
 			}
 		case "versions":
+			if sawVersions {
+				return fmt.Errorf("documents element repeats the versions field")
+			}
 			sawVersions = true
 			vt, err := dec.Token()
 			if err != nil {
@@ -258,6 +269,9 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 		}
 		key, _ := keyTok.(string)
 		if key == "submissions" {
+			if sawSubmissions {
+				return fmt.Errorf("reviews element repeats the submissions field")
+			}
 			sawSubmissions = true
 			st, err := dec.Token()
 			if err != nil {
@@ -279,6 +293,9 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 				return err
 			}
 			continue
+		}
+		if _, dup := scalars[key]; dup {
+			return fmt.Errorf("reviews element repeats field %q", key)
 		}
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
