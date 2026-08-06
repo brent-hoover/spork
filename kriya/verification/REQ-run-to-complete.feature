@@ -73,7 +73,7 @@ Feature: Run to complete
   Scenario: a reopened detached ticket still reopens the epic
     Given a target ticket was detached after the epic closed and is then reopened
     When kriya consumes the reopen event and checks its operation id against the sibling events
-    Then the epic is not among their subjects — no cascade reached it — and the advance records the operation, cascade_verified as unreached, and reopen_owed true
+    Then no status-changed event for the epic with a reopened status appears under the operation — a relation event naming the epic is not evidence — and the advance records the operation, cascade_verified as unreached, and reopen_owed true
     And until the owed reopen executes, completion reads fall back to live target work — the complete-looking epic alone never reports done
     And kriya issues the explicit durable keyed reopen, the epoch advances, and popping resumes
     And the epic is never left complete while kriya's stamp is cleared
@@ -91,6 +91,12 @@ Feature: Run to complete
     And a later reopen of that ticket is a descendant reopen — the cascade reopens the epic and the revision moves
     Given the ticket is instead detached after the claim was captured
     Then the removal advanced the epic's revision and the claim fails its fence
+
+  Scenario: a post-close detachment rotates the completion claim
+    Given the epic closed and a complete target ticket is then detached
+    When kriya consumes the detachment event
+    Then the completion epoch advances with cause detachment and the stamp clears
+    And recompletion runs as a fresh epoch-scoped attempt — new keys, a new review, fresh approval — never replaying the spent one
 
   Scenario: a detach between reattachment and capture aborts the attempt
     Given reattachment reconciliation completed and a target ticket was then detached before the revision capture
@@ -203,7 +209,7 @@ Feature: Run to complete
     Given a detached target ticket reopened and recompleted before kriya consumed its events
     And the live epic reads complete with no visible active target work
     When completion is read from an untrusted stamp
-    Then done is withheld until the event stream drains to sutra's current subtree revision
+    Then done is withheld until the feed is processed through the watermark captured atomically with the live read
     And draining consumes the reopen, advances the epoch, and kills the stale claim — completion needs a fresh review
 
   Scenario: an unattributed ticket in a multi-target project pauses completion

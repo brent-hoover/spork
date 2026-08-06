@@ -1721,6 +1721,9 @@ components:
         subtree_revision:
           type: integer
           description: Incremented atomically on the issue and every ancestor by each status transition, child attachment, or child removal in its subtree — removal increments the former parent's chain.
+        feed_watermark:
+          type: string
+          description: Server-issued event-feed position captured atomically with this read; a consumer that has processed the feed through this watermark has seen every event that could have affected the state returned here. Read-time decoration — present on API reads, absent from importProject payloads.
 
     NewIssue:
       type: object
