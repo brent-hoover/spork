@@ -33,13 +33,24 @@ the backlog of record.)
 6. **`UI_UNDECLARED`-class rule.** A module whose responsibility implies a
    user surface but declares no `ui:` block passes silently (MOD-web slid
    through the dry run until manually caught).
+7. **Entities-as-schema.** Extend the `entities` block until it can serve
+   as the verifiable logical schema: composite/derived unique keys (today
+   prose comments, e.g. CompletionAdvance's variant-keyed advance_key),
+   relation cardinality and on-delete semantics on `ref` fields (subsumes
+   item 5's `shows:` gap), and index declarations (FTS5 search is pinned
+   only in prose). Pair with a DDL-conformance check so a build's actual
+   tables are mechanically verified against the declared entities —
+   logical altitude in the spec, storage stays the stack's business.
+   Motivating case: sutra-build derives SQLite DDL from entities by
+   convention (2026-08-06); its spec-gaps.md logs every expressiveness
+   miss as evidence for this design.
 
 ## Later slices
 
-7. **Code-level boundary enforcement.** `avspec verify` (or a sibling
+8. **Code-level boundary enforcement.** `avspec verify` (or a sibling
    command) runs `stack.commands.arch` so declared boundaries are checked
    against real imports. Slice 1 deliberately verifies the spec only.
-8. **Cleanup batch.** `templates/` still speaks the 0.1 format;
+9. **Cleanup batch.** `templates/` still speaks the 0.1 format;
    `verification/architecture-rules.yaml` still uses `CMP-` vocabulary;
    wellformed unit tests assert codes but not severities.
 
