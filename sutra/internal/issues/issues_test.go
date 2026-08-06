@@ -173,14 +173,16 @@ func TestPopDeepestAcrossBranches(t *testing.T) {
 	})
 }
 
-// TestPopDiamondBlockerGraph pins converging DAGs: a shared descendant
-// reached first through a short branch must still contribute its full
-// depth to the longer branch — the deepest blocker wins regardless of
-// traversal order.
+// TestPopDiamondBlockerGraph pins converging DAGs with the shared node
+// reached through the SHORT branch first (blocker order is by number,
+// so "a shared" sorts before "m mid"). The fallback sits second in
+// FIFO: shared-visited traversal that suppresses the long branch turns
+// it into a poisoned nil and falls through to the fallback, while
+// memoized traversal claims the deepest blocker through the candidate.
 func TestPopDiamondBlockerGraph(t *testing.T) {
 	db := openDB(t)
 	agent := "00000000-0000-7000-8000-00000000000a"
-	var deepest issues.Issue
+	var fallback, deepest issues.Issue
 	inTx(t, db, func(tx *sql.Tx) error {
 		project, err := projects.Create(tx, projects.New{Key: "SUT", Name: "S"})
 		if err != nil {
@@ -193,17 +195,15 @@ func TestPopDiamondBlockerGraph(t *testing.T) {
 			}
 			return i
 		}
-		// candidate <- a <- shared ; candidate <- b <- shared <- deepest
-		// (a sits before b by number so the SHORT path visits shared
-		// first; the long path must still see shared's full subtree.)
 		candidate := mk("candidate")
-		a := mk("a short")
-		shared := mk("shared")
-		deepest = mk("deepest")
+		fallback = mk("fallback assigned second")
+		shared := mk("a shared")  // direct blocker — SHORT path, visited first
+		mid := mk("m mid")        // long path: candidate <- mid <- shared
+		deepest = mk("z deepest") // beneath shared
 		for _, rel := range [][2]string{
-			{a.ID, candidate.ID},
-			{shared.ID, a.ID},
 			{shared.ID, candidate.ID},
+			{mid.ID, candidate.ID},
+			{shared.ID, mid.ID},
 			{deepest.ID, shared.ID},
 		} {
 			if _, err := issues.AddRelation(tx, "blocks", rel[0], rel[1]); err != nil {
@@ -217,22 +217,27 @@ func TestPopDiamondBlockerGraph(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if claim == nil || claim.ID != deepest.ID {
-			return fmt.Errorf("diamond graph: expected deepest %s, got %+v", deepest.ID, claim)
+		if claim == nil || claim.ID == fallback.ID {
+			return fmt.Errorf("shared-visited suppression poisoned the diamond: got %+v, want deepest %s", claim, deepest.ID)
+		}
+		if claim.ID != deepest.ID {
+			return fmt.Errorf("expected deepest %s through the long path, got %s", deepest.ID, claim.ID)
 		}
 		return nil
 	})
 }
 
 // TestPopMixedBranchesPoisonCandidate pins that ONE unworkable blocker
-// branch (externally blocked deeper down) makes the whole candidate
-// unworkable — the pop falls back to older workable work instead of
-// redirecting into a partially-blocked chain.
+// branch poisons the candidate even when ANOTHER branch is fully
+// workable. The fallback sits between the candidate and the branch
+// nodes in FIFO order: traversal that ignores the poisoned branch
+// claims deep branch work through the candidate; correct traversal
+// falls through to the fallback first.
 func TestPopMixedBranchesPoisonCandidate(t *testing.T) {
 	db := openDB(t)
 	agent := "00000000-0000-7000-8000-00000000000a"
 	other := "00000000-0000-7000-8000-00000000000b"
-	var fallback issues.Issue
+	var fallback, deepMine issues.Issue
 	inTx(t, db, func(tx *sql.Tx) error {
 		project, err := projects.Create(tx, projects.New{Key: "SUT", Name: "S"})
 		if err != nil {
@@ -246,23 +251,22 @@ func TestPopMixedBranchesPoisonCandidate(t *testing.T) {
 			}
 			return i
 		}
-		// candidate <- blockedMine (ours, open) <- external (other's):
-		// the walk into blockedMine hits the external block and must
-		// poison the candidate rather than claim anything through it;
-		// blockedMine as its own candidate is directly external-blocked
-		// too, so the pop falls through to the later fallback.
 		candidate := mk("candidate", agent)
-		blockedMine := mk("mine but blocked deeper", agent)
+		fallback = mk("fallback assigned second", agent)
+		workable := mk("workable branch root", agent)
+		deepMine = mk("deep workable leaf", agent)
+		poisonRoot := mk("poisoned branch root", agent)
 		external := mk("external deep blocker", other)
 		for _, rel := range [][2]string{
-			{blockedMine.ID, candidate.ID},
-			{external.ID, blockedMine.ID},
+			{workable.ID, candidate.ID},
+			{deepMine.ID, workable.ID},
+			{poisonRoot.ID, candidate.ID},
+			{external.ID, poisonRoot.ID},
 		} {
 			if _, err := issues.AddRelation(tx, "blocks", rel[0], rel[1]); err != nil {
 				return err
 			}
 		}
-		fallback = mk("older workable fallback", agent)
 		return nil
 	})
 	inTx(t, db, func(tx *sql.Tx) error {
@@ -273,8 +277,11 @@ func TestPopMixedBranchesPoisonCandidate(t *testing.T) {
 		if claim == nil {
 			return fmt.Errorf("expected the fallback claimable")
 		}
+		if claim.ID == deepMine.ID {
+			return fmt.Errorf("poisoned candidate leaked its workable branch (claimed %s)", claim.ID)
+		}
 		if claim.ID != fallback.ID {
-			return fmt.Errorf("poisoned chain must fall through: got %s, want fallback %s", claim.ID, fallback.ID)
+			return fmt.Errorf("expected fall-through to %s, got %s", fallback.ID, claim.ID)
 		}
 		return nil
 	})
