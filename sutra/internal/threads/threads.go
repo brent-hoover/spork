@@ -132,8 +132,10 @@ func SearchEach(tx *sql.Tx, q, session, project *string, fn func(Thread) error) 
 		args = append(args, *session)
 	}
 	if project != nil {
-		where = append(where, "project = ?")
-		args = append(args, *project)
+		// A thread anchored solely to an issue still belongs to that
+		// issue's project — the project scope covers both anchor sides.
+		where = append(where, "(project = ? OR issue IN (SELECT id FROM issues WHERE project = ?))")
+		args = append(args, *project, *project)
 	}
 	return queryThreadsEach(tx, `
 		SELECT id, title, transcript, session, project, issue, imported_at

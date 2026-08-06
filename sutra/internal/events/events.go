@@ -17,14 +17,14 @@ import (
 
 // Event is one feed entry, shaped as the contract's EventBase.
 type Event struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Subject   string `json:"subject"`
-	Operation string `json:"operation"`
-	Actor     string `json:"actor"`
-	Payload   any    `json:"payload,omitempty"`
-	Created   string `json:"created"`
-	seq       int64  // feed position; exposed only through cursors
+	ID        string          `json:"id"`
+	Kind      string          `json:"kind"`
+	Subject   string          `json:"subject"`
+	Operation string          `json:"operation"`
+	Actor     string          `json:"actor"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	Created   string          `json:"created"`
+	seq       int64           // feed position; exposed only through cursors
 }
 
 // Page is the contract's EventPage: a cursor-bounded slice of the feed.

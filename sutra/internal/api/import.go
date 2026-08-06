@@ -287,13 +287,11 @@ func insertImportStream(tx *sql.Tx, body io.Reader, meta *importPayload) *apiErr
 			return nil
 		},
 		event: func(e events.Event) error {
+			// Payload bytes store VERBATIM — a decode/re-marshal would
+			// round integers past 2^53 and break the round trip.
 			var payload *string
-			if e.Payload != nil {
-				raw, err := json.Marshal(e.Payload)
-				if err != nil {
-					return fail("event payload", err)
-				}
-				str := string(raw)
+			if len(e.Payload) > 0 {
+				str := string(e.Payload)
 				payload = &str
 			}
 			if _, err := tx.Exec(`INSERT INTO events (id, kind, subject, operation, actor, payload, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -552,14 +550,10 @@ func validateImport(p *importPayload, actor string) *apiError {
 			if !humanSet[e.Actor] {
 				return malformedImport("verdict event %s actor is not a human identity", e.ID)
 			}
-			raw, err := json.Marshal(e.Payload)
-			if err != nil {
-				return malformedImport("verdict event %s carries an unreadable payload", e.ID)
-			}
 			var payload struct {
 				Review string `json:"review"`
 			}
-			if json.Unmarshal(raw, &payload) != nil || payload.Review == "" {
+			if json.Unmarshal(e.Payload, &payload) != nil || payload.Review == "" {
 				return malformedImport("verdict event %s names no review", e.ID)
 			}
 			issue, ok := reviewIssueByID[payload.Review]
@@ -734,8 +728,7 @@ func validateImportShapes(p *importPayload) *apiError {
 		if e.Kind == "issue.relation-removed" {
 			// The contract's discriminated variant REQUIRES a relation
 			// snapshot payload on every relation-removed event.
-			raw, err := json.Marshal(e.Payload)
-			if err != nil || e.Payload == nil {
+			if len(e.Payload) == 0 {
 				return malformedImport("event %s must carry a RelationRemovedPayload", e.ID)
 			}
 			var payload struct {
@@ -744,7 +737,7 @@ func validateImportShapes(p *importPayload) *apiError {
 				From     string `json:"from"`
 				To       string `json:"to"`
 			}
-			if json.Unmarshal(raw, &payload) != nil || !isUUID(payload.Relation) ||
+			if json.Unmarshal(e.Payload, &payload) != nil || !isUUID(payload.Relation) ||
 				!isUUID(payload.From) || !isUUID(payload.To) ||
 				(payload.Kind != "parent_of" && payload.Kind != "blocks") {
 				return malformedImport("event %s carries a malformed RelationRemovedPayload", e.ID)
@@ -934,14 +927,10 @@ func latestVerdictEventFor(reviewID string, list []events.Event) (events.Event, 
 		if e.Kind != "review.approved" && e.Kind != "review.changes-requested" {
 			continue
 		}
-		raw, err := json.Marshal(e.Payload)
-		if err != nil {
-			continue
-		}
 		var payload struct {
 			Review string `json:"review"`
 		}
-		if json.Unmarshal(raw, &payload) == nil && payload.Review == reviewID {
+		if json.Unmarshal(e.Payload, &payload) == nil && payload.Review == reviewID {
 			last, found = e, true
 		}
 	}
