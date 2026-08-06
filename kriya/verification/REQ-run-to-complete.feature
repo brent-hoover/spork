@@ -57,9 +57,23 @@ Feature: Run to complete
     Then sutra returns the original response and the fields reconcile from it
     And nothing double-submits and nothing is lost
 
+  Scenario: an open unplanned ticket blocks completion
+    Given the activated head plan's every ticket is complete
+    And a mapped unplanned ticket for the target — parented under the epic at bind time — is still open
+    When completion detection runs
+    Then no completion attempt starts and popping continues
+    And sutra's close gate would refuse the epic anyway — the unplanned ticket is a descendant
+
+  Scenario: a detached ticket cannot enable a stale completion
+    Given a planned ticket was detached from the epic through the relation API and later reopened
+    Then the detach advanced the epic's subtree revision when it happened
+    And any completion claim recorded before the detach fails its revision fence
+    And the detached ticket still blocks completion detection through its target scope
+
   Scenario: completion is the head plan done and the epic closable
     Given the activated head plan bears its completed stamp
     And every ticket of the activated head plan is complete
+    And no other target-scoped ticket is open or in flight
     Then kriya records review-submitting with the deterministic submission key, the doc key, and the pending report reference before any sutra call
     And the keyed doc mutation creates the report document and its returned version is persisted before the review-create call
     And kriya submits a build-completion review on the umbrella epic with that recorded document version as its deliverable
