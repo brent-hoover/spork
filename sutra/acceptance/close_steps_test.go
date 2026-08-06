@@ -17,11 +17,12 @@ import (
 // project, reviews created and approved through the API, and closes
 // naming review, revision, and verdict event.
 type closeWorld struct {
-	iw       *issueWorld
-	repoPath string
-	commits  []string // feature commits, in order minted
-	reviews  map[string]reviewRef
-	tempDirs []string
+	iw         *issueWorld
+	repoPath   string
+	commits    []string // feature commits, in order minted
+	reviews    map[string]reviewRef
+	tempDirs   []string
+	lastClosed string // issue name of the most recent close attempt
 }
 
 type reviewRef struct {
@@ -217,6 +218,7 @@ func (cw *closeWorld) approvedReview(issueName, branch string) error {
 // close attempts the complete transition naming the stored ref, with
 // overridable revision/event for the fence scenarios.
 func (cw *closeWorld) close(issueName string, revision int64, verdictEvent string) error {
+	cw.lastClosed = issueName
 	ref := cw.reviews[issueName]
 	if revision == 0 {
 		revision = ref.revision
@@ -262,12 +264,23 @@ func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) *closeWorld {
 	sc.Step(`^(SUT-\d+) is transitioned to "complete" naming that review at its approved revision with its approval's verdict event$`, func(name string) error {
 		return cw.close(name, 0, "")
 	})
-	sc.Step(`^the transition succeeds$`, func() error {
-		return iw.s.expectStatus(http.StatusOK)
-	})
-	sc.Step(`^the transition succeeds — verdict consumption is a fence, not a spend$`, func() error {
-		return iw.s.expectStatus(http.StatusOK)
-	})
+	// closedAndPersisted asserts BOTH the response and the stored
+	// state: a close that returns 200 but does not persist complete
+	// must fail the scenario.
+	closedAndPersisted := func() error {
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		if err := iw.readIssue(cw.lastClosed); err != nil {
+			return err
+		}
+		if iw.lastIssue.Status != "complete" {
+			return fmt.Errorf("close returned 200 but %s persisted as %q", cw.lastClosed, iw.lastIssue.Status)
+		}
+		return nil
+	}
+	sc.Step(`^the transition succeeds$`, closedAndPersisted)
+	sc.Step(`^the transition succeeds — verdict consumption is a fence, not a spend$`, closedAndPersisted)
 	sc.Step(`^the recorded approval names the pinned commit$`, func() error {
 		out, err := cw.readReview("SUT-1")
 		if err != nil {
@@ -474,6 +487,7 @@ func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) *closeWorld {
 		return nil
 	})
 	sc.Step(`^(SUT-\d+) is transitioned to "complete" naming (SUT-\d+)'s review at its approved revision with its approval's verdict event$`, func(a, b string) error {
+		cw.lastClosed = a
 		other := cw.reviews[b]
 		issueID := iw.issues[a]
 		actor := iw.identities["operator"]
@@ -526,7 +540,12 @@ func registerCloseSteps(sc *godog.ScenarioContext, iw *issueWorld) *closeWorld {
 		if err := iw.transition("SUT-1", "open"); err != nil {
 			return err
 		}
-		return iw.s.expectStatus(http.StatusOK)
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		// Refresh stored state so the next assertion reads the
+		// persisted status, not the creation-time snapshot.
+		return iw.readIssue("SUT-1")
 	})
 	sc.Step(`^the reopening is recorded$`, func() error {
 		return iw.expectEvent("issue.status-changed", "SUT-1", "operator")

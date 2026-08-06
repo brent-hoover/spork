@@ -77,7 +77,10 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return transition("SUT-90", "deferred")
 	})
 	sc.Step(`^the transition succeeds — deferred children are parked, not open$`, func() error {
-		return iw.s.expectStatus(http.StatusOK)
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		return expectStatusOf(cw.lastClosed, "complete")
 	})
 	sc.Step(`^a deferred child of (SUT-\d+) itself has a descendant in status "open"$`, func(parent string) error {
 		// SUT-90 is deferred beneath the (now complete) parent; give it
@@ -151,6 +154,7 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return cw.approvedReview(name, "fence-"+name)
 	})
 	sc.Step(`^(SUT-\d+) is transitioned to "complete" with expected_subtree_revision 7$`, func(name string) error {
+		cw.lastClosed = name
 		ref := cw.reviews[name]
 		issueID := iw.issues[name]
 		actor := iw.identities["operator"]
@@ -167,6 +171,7 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return iw.s.expectErrorCode("expected-subtree-revision-mismatch")
 	})
 	sc.Step(`^the caller re-reads and retries with expected_subtree_revision 9$`, func() error {
+		cw.lastClosed = "SUT-1"
 		if err := iw.readIssue("SUT-1"); err != nil {
 			return err
 		}
@@ -180,7 +185,10 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		})
 	})
 	sc.Step(`^the transition succeeds under its ordinary gates$`, func() error {
-		return iw.s.expectStatus(http.StatusOK)
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		return expectStatusOf(cw.lastClosed, "complete")
 	})
 	sc.Step(`^a complete-free hierarchy where nothing can reopen$`, func() error {
 		for _, name := range []string{"SUT-96", "SUT-97"} {
