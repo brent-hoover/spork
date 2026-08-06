@@ -37,7 +37,14 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	issueSet := map[string]issues.Issue{}
+	// Issues dedup as ids with a light sort key; bodies are unbounded,
+	// so rows stream at write time — never accumulated.
+	type issueKey struct {
+		project string
+		number  int64
+	}
+	issueSet := map[string]issueKey{}
+	noteIssue := func(i issues.Issue) { issueSet[i.ID] = issueKey{i.Project, i.Number} }
 	reviewList := []review.Review{}
 
 	// Text matches over issues, project-scoped when given. With q
@@ -66,7 +73,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for _, i := range matched {
-				issueSet[i.ID] = i
+				noteIssue(i)
 			}
 		}
 	}
@@ -74,8 +81,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// A project-only query enumerates the project's reviews too — all
 	// content in scope when q is omitted.
 	if project != nil && session == nil && q == nil {
-		for _, iss := range issueSet {
-			matched, err := review.List(tx, iss.ID, "", "")
+		for id := range issueSet {
+			matched, err := review.List(tx, id, "", "")
 			if err != nil {
 				writeError(w, reviewErrorFrom(err))
 				return
@@ -102,7 +109,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			reviewList = append(reviewList, rev)
-			issueSet[iss.ID] = iss
+			noteIssue(iss)
 		}
 	}
 
@@ -118,7 +125,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					return err
 				}
-				issueSet[iss.ID] = iss
+				noteIssue(iss)
 			}
 			return nil
 		})
@@ -154,22 +161,26 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issueList := make([]issues.Issue, 0, len(issueSet))
-	for _, i := range issueSet {
-		issueList = append(issueList, i)
+	issueIDs := make([]string, 0, len(issueSet))
+	for id := range issueSet {
+		issueIDs = append(issueIDs, id)
 	}
-	sortIssues(issueList)
+	slices.SortFunc(issueIDs, func(a, b string) int {
+		ka, kb := issueSet[a], issueSet[b]
+		if ka.project != kb.project {
+			return strings.Compare(ka.project, kb.project)
+		}
+		return int(ka.number - kb.number)
+	})
 
-	// The envelope's bounded groups marshal normally; the threads
-	// group streams row by row inside it, transcripts spliced verbatim
-	// and never accumulated (matched ids were collected above, content
-	// re-reads one row at a time).
+	// The envelope's bounded groups marshal normally; issues and
+	// threads stream row by row inside it — bodies and transcripts are
+	// never accumulated, one record re-reads at a time.
 	envelope := struct {
 		FeedWatermark string          `json:"feed_watermark"`
-		Issues        []issues.Issue  `json:"issues"`
 		Documents     []docs.Document `json:"documents"`
 		Reviews       []review.Review `json:"reviews"`
-	}{watermark, issueList, docList, reviewList}
+	}{watermark, docList, reviewList}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
 		writeError(w, errorFrom(err))
@@ -178,11 +189,26 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw[:len(raw)-1])
-	_, _ = w.Write([]byte(`,"threads":[`))
+	_, _ = w.Write([]byte(`,"issues":[`))
+	for i, id := range issueIDs {
+		issue, err := issues.Get(tx, id)
+		if err != nil {
+			return // truncation is the only signal after the first byte
+		}
+		one, err := json.Marshal(issue)
+		if err != nil {
+			return
+		}
+		if i > 0 {
+			_, _ = w.Write([]byte{','})
+		}
+		_, _ = w.Write(one)
+	}
+	_, _ = w.Write([]byte(`],"threads":[`))
 	for i, id := range threadIDs {
 		t, err := threads.Get(tx, id)
 		if err != nil {
-			return // truncation is the only signal after the first byte
+			return
 		}
 		one, apiErr := threadJSON(t)
 		if apiErr != nil {
@@ -211,13 +237,4 @@ func listProjectIDs(tx *sql.Tx) ([]string, error) {
 		out = append(out, id)
 	}
 	return out, rows.Err()
-}
-
-func sortIssues(list []issues.Issue) {
-	slices.SortFunc(list, func(a, b issues.Issue) int {
-		if a.Project != b.Project {
-			return strings.Compare(a.Project, b.Project)
-		}
-		return int(a.Number - b.Number)
-	})
 }

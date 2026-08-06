@@ -90,10 +90,21 @@ func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 	meta := &importPayload{}
 	const sentinel = "x"
+	versionsByDoc := map[string][]docs.Version{}
+	subsByReview := map[string][]review.Submission{}
 	apiErr := walkImport(body, importCallbacks{
 		project:  func(p projects.Project) error { meta.Project = p; return nil },
 		identity: func(v identity.Identity) error { meta.Identities = append(meta.Identities, v); return nil },
-		issue:    func(v issues.Issue) error { meta.Issues = append(meta.Issues, v); return nil },
+		issue: func(v issues.Issue) error {
+			// Bodies are unbounded and irrelevant to validation; the
+			// insert pass re-reads them from the spool.
+			if v.Body != nil && *v.Body != "" {
+				s := sentinel
+				v.Body = &s
+			}
+			meta.Issues = append(meta.Issues, v)
+			return nil
+		},
 		comment: func(c comments.Comment) error {
 			if c.Body != "" {
 				c.Body = sentinel
@@ -109,8 +120,7 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 		},
 		docVersion: func(v docs.Version) error {
 			v.Content = ""
-			last := &meta.Documents[len(meta.Documents)-1]
-			last.Versions = append(last.Versions, v)
+			versionsByDoc[v.Document] = append(versionsByDoc[v.Document], v)
 			return nil
 		},
 		thread: func(t threads.Thread) error {
@@ -121,19 +131,48 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			return nil
 		},
 		review: func(rv review.Review) error { meta.Reviews = append(meta.Reviews, rv); return nil },
-		submission: func(sub review.Submission, _ string) error {
+		submission: func(sub review.Submission) error {
 			if sub.Content != nil && *sub.Content != "" {
 				s := sentinel
 				sub.Content = &s
 			} // present-but-empty stays "", distinct from absent
-			last := &meta.Reviews[len(meta.Reviews)-1]
-			last.Submissions = append(last.Submissions, sub)
+			subsByReview[sub.Review] = append(subsByReview[sub.Review], sub)
 			return nil
 		},
-		event: func(e events.Event) error { meta.Events = append(meta.Events, e); return nil },
+		event: func(e events.Event) error {
+			// Payloads are needed only where validation reads them:
+			// the verdict-event agreement checks. Everything else
+			// strips — the insert pass re-reads the original bytes.
+			switch e.Kind {
+			case "review.approved", "review.changes-requested":
+			default:
+				e.Payload = nil
+			}
+			meta.Events = append(meta.Events, e)
+			return nil
+		},
 	})
 	if apiErr != nil {
 		return nil, apiErr
+	}
+	// Attach streamed children by their own foreign keys — property
+	// order in the payload never matters. A child naming an unknown
+	// parent must reject, not vanish.
+	for i := range meta.Documents {
+		id := meta.Documents[i].Document.ID
+		meta.Documents[i].Versions = versionsByDoc[id]
+		delete(versionsByDoc, id)
+	}
+	for id := range versionsByDoc {
+		return nil, malformedImport("doc versions name unknown document %s", id)
+	}
+	for i := range meta.Reviews {
+		id := meta.Reviews[i].ID
+		meta.Reviews[i].Submissions = subsByReview[id]
+		delete(subsByReview, id)
+	}
+	for id := range subsByReview {
+		return nil, malformedImport("submissions name unknown review %s", id)
 	}
 	return meta, nil
 }
@@ -237,10 +276,10 @@ func insertImportStream(tx *sql.Tx, body io.Reader, meta *importPayload) *apiErr
 			}
 			return nil
 		},
-		submission: func(sub review.Submission, reviewID string) error {
+		submission: func(sub review.Submission) error {
 			if _, err := tx.Exec(`INSERT INTO review_submissions (id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				sub.ID, reviewID, sub.Revision, sub.Branch, sub.Commit, sub.BaseCommit, sub.DocVersion, sub.Session, sub.Content, sub.Created); err != nil {
+				sub.ID, sub.Review, sub.Revision, sub.Branch, sub.Commit, sub.BaseCommit, sub.DocVersion, sub.Session, sub.Content, sub.Created); err != nil {
 				return fail("submission", err)
 			}
 			return nil
@@ -378,6 +417,18 @@ func validateImport(p *importPayload, actor string) *apiError {
 		if d.Document.Project != p.Project.ID {
 			return malformedImport("document %s belongs to another project", d.Document.ID)
 		}
+		if d.Document.CurrentVersion != nil {
+			found := false
+			for _, v := range d.Versions {
+				if v.ID == *d.Document.CurrentVersion {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return malformedImport("document %s current_version names no carried version", d.Document.ID)
+			}
+		}
 		if d.Document.Issue != nil && !issueSet[*d.Document.Issue] {
 			return malformedImport("document %s ties to an issue outside the export", d.Document.ID)
 		}
@@ -436,9 +487,24 @@ func validateImport(p *importPayload, actor string) *apiError {
 	for i := range p.Comments {
 		commentByID[p.Comments[i].ID] = &p.Comments[i]
 	}
+	reviewRevisions := map[string]int64{}
+	for _, r := range p.Reviews {
+		reviewRevisions[r.ID] = r.Revision
+	}
+	parentGraph := map[string][]string{}
 	for _, c := range p.Comments {
+		if c.Review != nil && c.ReviewRevision != nil {
+			// The named revision must exist: submissions are validated
+			// contiguous 1..revision, so the range check is existence.
+			if *c.ReviewRevision < 1 || *c.ReviewRevision > reviewRevisions[*c.Review] {
+				return malformedImport("comment %s names review revision %d, which does not exist", c.ID, *c.ReviewRevision)
+			}
+		}
 		if c.Parent == nil {
 			continue
+		}
+		if *c.Parent == c.ID {
+			return malformedImport("comment %s replies to itself", c.ID)
 		}
 		parent, ok := commentByID[*c.Parent]
 		if !ok {
@@ -447,6 +513,10 @@ func validateImport(p *importPayload, actor string) *apiError {
 		if !ptrEq(parent.Issue, c.Issue) || !ptrEq(parent.DocVersion, c.DocVersion) || !ptrEq(parent.Review, c.Review) || !ptrEqInt(parent.ReviewRevision, c.ReviewRevision) {
 			return malformedImport("comment %s replies across anchors or review revisions", c.ID)
 		}
+		parentGraph[*c.Parent] = append(parentGraph[*c.Parent], c.ID)
+	}
+	if node, found := findCycle(parentGraph); found {
+		return malformedImport("comment reply threads form a cycle through %s", node)
 	}
 	for _, t := range p.Threads {
 		if t.Project == nil && t.Issue == nil {

@@ -31,7 +31,7 @@ type importCallbacks struct {
 	docVersion func(docs.Version) error
 	thread     func(threads.Thread) error
 	review     func(review.Review) error
-	submission func(sub review.Submission, reviewID string) error
+	submission func(sub review.Submission) error
 	event      func(events.Event) error
 }
 
@@ -50,12 +50,16 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
 		return malformedImport("export payload must be a JSON object")
 	}
+	required := map[string]bool{"project": false, "identities": false, "issues": false,
+		"comments": false, "labels": false, "issue_relations": false, "documents": false,
+		"threads": false, "reviews": false, "events": false}
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
 			return malformedImport("decode export: %v", err)
 		}
 		key, _ := keyTok.(string)
+		required[key] = true
 		var apiErr *apiError
 		switch key {
 		case "project":
@@ -143,6 +147,11 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return malformedImport("trailing data after the export payload")
 	}
+	for key, seen := range required {
+		if !seen {
+			return malformedImport("export payload omits required field %q", key)
+		}
+	}
 	return nil
 }
 
@@ -165,12 +174,11 @@ func walkArray(dec *json.Decoder, what string, elem func() error) *apiError {
 	return nil
 }
 
-// walkDocumentExport streams one {document, versions:[…]} element —
-// the document fires first, then each version individually, so a
-// many-gigabyte version history never materializes together. The
-// document key must precede versions (the order our own exports
-// produce); buffering versions to tolerate the reverse would defeat
-// streaming.
+// walkDocumentExport streams one {document, versions:[…]} element in
+// ANY property order — JSON object order is insignificant. Versions
+// fire individually as encountered (each carries its document id), so
+// a many-gigabyte history never materializes together; both element
+// keys are required per DocumentExport.
 func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 	tok, err := dec.Token()
 	if err != nil {
@@ -179,7 +187,7 @@ func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
 		return fmt.Errorf("documents element must be an object")
 	}
-	sawDocument := false
+	sawDocument, sawVersions := false, false
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
@@ -196,9 +204,7 @@ func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 				return err
 			}
 		case "versions":
-			if !sawDocument {
-				return fmt.Errorf("document key must precede its versions")
-			}
+			sawVersions = true
 			vt, err := dec.Token()
 			if err != nil {
 				return err
@@ -225,17 +231,16 @@ func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 	if _, err := dec.Token(); err != nil {
 		return err
 	}
-	if !sawDocument {
-		return fmt.Errorf("documents element carries no document")
+	if !sawDocument || !sawVersions {
+		return fmt.Errorf("documents element requires document and versions")
 	}
 	return nil
 }
 
-// walkReviewExport streams one ReviewExport element: metadata fields
-// collect into a small map and MUST precede submissions (the order our
-// exports produce — buffering submissions would defeat streaming). The
-// review callback fires with submissions nil, then each submission
-// streams through individually.
+// walkReviewExport streams one ReviewExport element in ANY property
+// order: submissions fire individually as encountered (each carries
+// its review id), the bounded metadata collects into a small map and
+// fires when the element closes.
 func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 	tok, err := dec.Token()
 	if err != nil {
@@ -245,23 +250,7 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 		return fmt.Errorf("reviews element must be an object")
 	}
 	scalars := map[string]json.RawMessage{}
-	reviewFired := false
-	var reviewID string
-	fireReview := func() error {
-		remarshaled, err := json.Marshal(scalars)
-		if err != nil {
-			return err
-		}
-		strict := json.NewDecoder(bytes.NewReader(remarshaled))
-		strict.DisallowUnknownFields()
-		var r review.Review
-		if err := strict.Decode(&r); err != nil {
-			return fmt.Errorf("review metadata: %w", err)
-		}
-		reviewFired = true
-		reviewID = r.ID
-		return cb.review(r)
-	}
+	sawSubmissions := false
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
@@ -269,11 +258,7 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 		}
 		key, _ := keyTok.(string)
 		if key == "submissions" {
-			if !reviewFired {
-				if err := fireReview(); err != nil {
-					return err
-				}
-			}
+			sawSubmissions = true
 			st, err := dec.Token()
 			if err != nil {
 				return err
@@ -286,7 +271,7 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 				if err := dec.Decode(&sub); err != nil {
 					return err
 				}
-				if err := cb.submission(sub, reviewID); err != nil {
+				if err := cb.submission(sub); err != nil {
 					return err
 				}
 			}
@@ -294,9 +279,6 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 				return err
 			}
 			continue
-		}
-		if reviewFired {
-			return fmt.Errorf("review metadata must precede submissions")
 		}
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
@@ -307,10 +289,18 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 	if _, err := dec.Token(); err != nil {
 		return err
 	}
-	if !reviewFired {
-		if err := fireReview(); err != nil {
-			return err
-		}
+	if !sawSubmissions {
+		return fmt.Errorf("reviews element requires submissions")
 	}
-	return nil
+	remarshaled, err := json.Marshal(scalars)
+	if err != nil {
+		return err
+	}
+	strict := json.NewDecoder(bytes.NewReader(remarshaled))
+	strict.DisallowUnknownFields()
+	var r review.Review
+	if err := strict.Decode(&r); err != nil {
+		return fmt.Errorf("review metadata: %w", err)
+	}
+	return cb.review(r)
 }
