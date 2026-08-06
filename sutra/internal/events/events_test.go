@@ -30,7 +30,7 @@ func emit(t *testing.T, db *sql.DB, kind, subject string) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := events.Emit(tx, kind, subject, events.NewOperation(), "actor-id", nil); err != nil {
+	if _, err := events.Emit(tx, kind, subject, events.NewOperation(), "actor-id", nil); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -113,6 +113,17 @@ func Get(db *sql.DB, id string) (Project, error) {
 	return p, err
 }
 
+// GetTx returns one project inside the caller's transaction.
+func GetTx(tx *sql.Tx, id string) (Project, error) {
+	p, err := scanOne(tx.QueryRow(`
+		SELECT id, key, name, description, repo_path, default_branch, archived_at
+		FROM projects WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return Project{}, &NotFoundError{ID: id}
+	}
+	return p, err
+}
+
 // List returns projects; archived ones only when includeArchived
 // (AC-project-archive: hidden from default listings).
 func List(db *sql.DB, includeArchived bool) ([]Project, error) {

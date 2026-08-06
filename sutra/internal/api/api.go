@@ -17,13 +17,14 @@ import (
 	"sutra/internal/identity"
 	"sutra/internal/issues"
 	"sutra/internal/projects"
+	"sutra/internal/review"
 )
 
 // New wires the HTTP API over the given database, running each domain
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, migrateIdempotency} {
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, migrateIdempotency} {
 		if err := migrate(db); err != nil {
 			return nil, err
 		}
@@ -45,6 +46,12 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("POST /issues/{issueId}/relations", s.addIssueRelation)
 	mux.HandleFunc("GET /issues/{issueId}/relations", s.listIssueRelations)
 	mux.HandleFunc("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation)
+	mux.HandleFunc("POST /reviews", s.createReview)
+	mux.HandleFunc("GET /reviews", s.listReviews)
+	mux.HandleFunc("GET /reviews/{reviewId}", s.getReview)
+	mux.HandleFunc("POST /reviews/{reviewId}/verdict", s.setReviewVerdict)
+	mux.HandleFunc("POST /reviews/{reviewId}/consume", s.consumeReviewApproval)
+	mux.HandleFunc("POST /reviews/{reviewId}/resubmit", s.resubmitReview)
 	return mux, nil
 }
 
@@ -186,7 +193,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, errorFrom(err)
 		}
-		if err := events.Emit(tx, "project.created", created.ID, events.NewOperation(), req.Actor, nil); err != nil {
+		if _, err := events.Emit(tx, "project.created", created.ID, events.NewOperation(), req.Actor, nil); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusCreated, created, nil
@@ -227,7 +234,7 @@ func (s *server) archiveProject(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, errorFrom(err)
 		}
-		if err := events.Emit(tx, "project.archived", archived.ID, events.NewOperation(), req.Actor, nil); err != nil {
+		if _, err := events.Emit(tx, "project.archived", archived.ID, events.NewOperation(), req.Actor, nil); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusOK, archived, nil

@@ -318,22 +318,29 @@ func registerIssueSteps(sc *godog.ScenarioContext, s *testState) {
 		}
 		var page struct {
 			Events []struct {
-				ID      string `json:"id"`
-				Actor   string `json:"actor"`
-				Created string `json:"created"`
+				ID        string `json:"id"`
+				Operation string `json:"operation"`
+				Actor     string `json:"actor"`
+				Created   string `json:"created"`
 			} `json:"events"`
 		}
 		if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
 			return fmt.Errorf("decode events: %w", err)
 		}
-		distinct := map[string]bool{}
+		perOperation := map[string]int{}
 		for _, e := range page.Events {
-			if e.Actor == actor && e.Created != "" {
-				distinct[e.ID] = true
+			if e.Actor != actor || e.Created == "" {
+				return fmt.Errorf("event missing actor/timestamp: %+v", e)
 			}
+			perOperation[e.Operation]++
 		}
-		if len(distinct) != 3 {
-			return fmt.Errorf("expected 3 distinct status-change events, got %d: %s", len(distinct), iw.s.lastBody)
+		if len(perOperation) != 3 {
+			return fmt.Errorf("expected 3 transitions' operations, got %d: %s", len(perOperation), iw.s.lastBody)
+		}
+		for op, n := range perOperation {
+			if n != 1 {
+				return fmt.Errorf("operation %s emitted %d events, want exactly 1", op, n)
+			}
 		}
 		return nil
 	})

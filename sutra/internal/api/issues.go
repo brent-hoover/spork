@@ -10,6 +10,7 @@ import (
 	"sutra/internal/events"
 	"sutra/internal/issues"
 	"sutra/internal/projects"
+	"sutra/internal/review"
 )
 
 // issueRead is the contract's IssueRead: Issue plus the REQUIRED
@@ -99,7 +100,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
-		if err := events.Emit(tx, "issue.created", issue.ID, events.NewOperation(), req.Actor, nil); err != nil {
+		if _, err := events.Emit(tx, "issue.created", issue.ID, events.NewOperation(), req.Actor, nil); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		watermark, err := events.Watermark(tx)
@@ -121,10 +122,16 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	// label filtering and ranked text search over comments belong to
+	// the labels and search modules; until they exist these parameters
+	// reject explicitly rather than return silently wrong results.
+	if q.Get("q") != "" || len(q["label"]) > 0 {
+		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "q and label filters are not implemented yet"})
+		return
+	}
 	f := issues.Filters{
 		Statuses: q["status"],
 		Assignee: q.Get("assignee"),
-		Query:    q.Get("q"),
 	}
 	if raw := q.Get("number"); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)
@@ -178,7 +185,7 @@ func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
-		if err := events.Emit(tx, "issue.updated", id, events.NewOperation(), req.Actor, nil); err != nil {
+		if _, err := events.Emit(tx, "issue.updated", id, events.NewOperation(), req.Actor, nil); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		watermark, err := events.Watermark(tx)
@@ -349,11 +356,7 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 				message: fmt.Sprintf("expected subtree_revision %d, current is %d", *req.ExpectedSubtreeRevision, current.SubtreeRevision)}
 		}
 		if req.Status == issues.StatusComplete {
-			// No review can belong to this issue until the review
-			// module exists; the named review therefore fails the
-			// ownership check (AC-close-approved).
-			return 0, nil, &apiError{status: http.StatusConflict, code: "missing-approval",
-				message: fmt.Sprintf("review %s does not belong to issue %s", req.Review, id)}
+			return s.closeIssue(tx, id, current, req)
 		}
 
 		operation := events.NewOperation()
@@ -361,7 +364,7 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		if err := issues.SetStatus(tx, id, req.Status); err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
-		if err := events.Emit(tx, "issue.status-changed", id, operation, req.Actor, nil); err != nil {
+		if _, err := events.Emit(tx, "issue.status-changed", id, operation, req.Actor, nil); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		// An issue entering an active status reopens every complete
@@ -375,7 +378,7 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 				if err := issues.SetStatus(tx, ancestor, issues.StatusOpen); err != nil {
 					return 0, nil, issueErrorFrom(err)
 				}
-				if err := events.Emit(tx, "issue.status-changed", ancestor, operation, req.Actor, nil); err != nil {
+				if _, err := events.Emit(tx, "issue.status-changed", ancestor, operation, req.Actor, nil); err != nil {
 					return 0, nil, errorFrom(err)
 				}
 			}
@@ -397,6 +400,51 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		return http.StatusOK, issueRead{Issue: final, FeedWatermark: watermark}, nil
 	})
+}
+
+// closeIssue is the review-gated complete transition
+// (AC-close-approved, AC-parent-close-gate, AC-close-blocked-without):
+// the DESCENDANT-AWARE gate rejects while any descendant at any depth —
+// including beneath deferred children — is open, in-progress, or
+// blocked; then the named review is spent atomically (ownership,
+// approved at exactly the named revision, latest verdict event
+// matching, never close-used), stamping close_used and freezing the
+// verdict in the same transaction as the status change.
+func (s *server) closeIssue(tx *sql.Tx, id string, current issues.Issue, req transitionRequest) (int, any, *apiError) {
+	activeBelow, err := issues.ActiveInSubtree(tx, id)
+	if err != nil {
+		return 0, nil, errorFrom(err)
+	}
+	if activeBelow {
+		return 0, nil, &apiError{status: http.StatusConflict, code: "open-children",
+			message: fmt.Sprintf("issue %s has active descendants; close them first", id)}
+	}
+	if _, err := review.SpendForClose(tx, req.Review, id, *req.ReviewRevision, req.ReviewVerdictEvent); err != nil {
+		return 0, nil, reviewErrorFrom(err)
+	}
+	operation := events.NewOperation()
+	if err := issues.SetStatus(tx, id, issues.StatusComplete); err != nil {
+		return 0, nil, issueErrorFrom(err)
+	}
+	if _, err := events.Emit(tx, "issue.status-changed", id, operation, req.Actor, nil); err != nil {
+		return 0, nil, errorFrom(err)
+	}
+	ancestors, err := issues.Ancestors(tx, id)
+	if err != nil {
+		return 0, nil, errorFrom(err)
+	}
+	if err := issues.BumpSubtree(tx, append([]string{id}, ancestors...)); err != nil {
+		return 0, nil, errorFrom(err)
+	}
+	final, err := issues.Get(tx, id)
+	if err != nil {
+		return 0, nil, issueErrorFrom(err)
+	}
+	watermark, err := events.Watermark(tx)
+	if err != nil {
+		return 0, nil, errorFrom(err)
+	}
+	return http.StatusOK, issueRead{Issue: final, FeedWatermark: watermark}, nil
 }
 
 func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
@@ -440,7 +488,7 @@ func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 			return 0, nil, issueErrorFrom(err)
 		}
 		operation := events.NewOperation()
-		if err := events.Emit(tx, "issue.relation-added", from, operation, req.Actor, nil); err != nil {
+		if _, err := events.Emit(tx, "issue.relation-added", from, operation, req.Actor, nil); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		if rel.Kind == "parent_of" {
@@ -472,7 +520,7 @@ func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 						if err := issues.SetStatus(tx, candidate, issues.StatusOpen); err != nil {
 							return 0, nil, issueErrorFrom(err)
 						}
-						if err := events.Emit(tx, "issue.status-changed", candidate, operation, req.Actor, nil); err != nil {
+						if _, err := events.Emit(tx, "issue.status-changed", candidate, operation, req.Actor, nil); err != nil {
 							return 0, nil, errorFrom(err)
 						}
 					}
@@ -542,7 +590,7 @@ func (s *server) removeIssueRelation(w http.ResponseWriter, r *http.Request) {
 			return 0, nil, errorFrom(err)
 		}
 		payloadStr := string(payload)
-		if err := events.Emit(tx, "issue.relation-removed", rel.From, events.NewOperation(), actor, &payloadStr); err != nil {
+		if _, err := events.Emit(tx, "issue.relation-removed", rel.From, events.NewOperation(), actor, &payloadStr); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		if rel.Kind == "parent_of" {

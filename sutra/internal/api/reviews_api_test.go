@@ -1,0 +1,271 @@
+package api_test
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// gitRepo builds a throwaway repository: one commit on main (the merge
+// base), then a feature branch with one commit ahead.
+type gitRepo struct {
+	path                 string
+	baseSHA, featureSHA  string
+	featureSHA2, headSHA string
+}
+
+func newGitRepo(t *testing.T) gitRepo {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v — %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	run("init", "-b", "main")
+	write("a.txt", "base")
+	run("add", ".")
+	run("commit", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	run("checkout", "-b", "feature")
+	write("b.txt", "feature work")
+	run("add", ".")
+	run("commit", "-m", "feature")
+	feature := run("rev-parse", "HEAD")
+	write("c.txt", "rework")
+	run("add", ".")
+	run("commit", "-m", "rework")
+	feature2 := run("rev-parse", "HEAD")
+	run("checkout", "main")
+	return gitRepo{path: dir, baseSHA: base, featureSHA: feature, featureSHA2: feature2, headSHA: base}
+}
+
+func TestReviewLifecycleEndToEnd(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v — %s", label, err, body)
+		}
+	}
+
+	status, body := req(t, srv, http.MethodPost, "/identities", "id", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "proj",
+		fmt.Sprintf(`{"key":"SUT","name":"Sutra","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "iss",
+		fmt.Sprintf(`{"title":"work","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+
+	// Create pins base_commit as the merge base, never client-supplied.
+	status, body = req(t, srv, http.MethodPost, "/reviews", "rev",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+	subs := out["submissions"].([]any)
+	if len(subs) != 1 || subs[0].(map[string]any)["base_commit"] != repo.baseSHA {
+		t.Fatalf("submission must pin the resolved merge base %s: %v", repo.baseSHA, subs)
+	}
+
+	// Changes requested at revision 1.
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v1",
+		fmt.Sprintf(`{"verdict":"changes-requested","revision":1,"actor":%q}`, actor))
+	decode(status, body, http.StatusOK, "verdict-1")
+	changesEvent := out["latest_verdict_event"].(string)
+
+	// A stale verdict naming revision 1 content the reviewer saw is
+	// fine now, but after resubmission it must reject (tested below).
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/resubmit", "rs",
+		fmt.Sprintf(`{"author":%q,"expected_revision":1,"expected_verdict_event":%q,"branch":"feature","commit":%q}`,
+			actor, changesEvent, repo.featureSHA2))
+	decode(status, body, http.StatusOK, "resubmit")
+	if out["revision"].(float64) != 2 || out["state"].(string) != "open" {
+		t.Fatalf("resubmit must reopen at revision 2: %s", body)
+	}
+
+	// Stale verdict for revision 1 rejects — the reviewer never saw
+	// revision 2's content (AC-review-stale-guard).
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v-stale",
+		fmt.Sprintf(`{"verdict":"approved","revision":1,"actor":%q}`, actor))
+	if status != http.StatusConflict {
+		t.Fatalf("stale verdict must 409: %d %s", status, body)
+	}
+
+	// Approve revision 2.
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v2",
+		fmt.Sprintf(`{"verdict":"approved","revision":2,"actor":%q}`, actor))
+	decode(status, body, http.StatusOK, "verdict-2")
+	approvalEvent := out["latest_verdict_event"].(string)
+
+	// Close the issue naming review, revision, and verdict event.
+	closeBody := fmt.Sprintf(`{"status":"complete","review":%q,"review_revision":2,"review_verdict_event":%q,"actor":%q}`,
+		reviewID, approvalEvent, actor)
+	status, body = req(t, srv, http.MethodPost, "/issues/"+issue+"/status", "close", closeBody)
+	decode(status, body, http.StatusOK, "close")
+	if out["status"].(string) != "complete" {
+		t.Fatalf("close did not complete: %s", body)
+	}
+
+	// The spend stamped close_used and the consumption fields.
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID, "", "")
+	decode(status, body, http.StatusOK, "review-after-close")
+	if out["close_used"] == nil || out["consumed"] == nil || out["consumed_revision"].(float64) != 2 {
+		t.Fatalf("close must stamp close_used and consumption: %s", body)
+	}
+
+	// A verdict on the consumed review is frozen.
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v3",
+		fmt.Sprintf(`{"verdict":"changes-requested","revision":2,"actor":%q}`, actor))
+	if status != http.StatusConflict {
+		t.Fatalf("consumed review verdict must freeze: %d %s", status, body)
+	}
+
+	// Reopen the issue, then a second close with the SPENT review
+	// rejects — a spent review never authorizes another close.
+	status, body = req(t, srv, http.MethodPost, "/issues/"+issue+"/status", "reopen",
+		fmt.Sprintf(`{"status":"open","actor":%q}`, actor))
+	decode(status, body, http.StatusOK, "reopen")
+	status, body = req(t, srv, http.MethodPost, "/issues/"+issue+"/status", "close-2", closeBody)
+	if status != http.StatusConflict {
+		t.Fatalf("spent review must not close again: %d %s", status, body)
+	}
+	var envelope struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil || envelope.Code != "review-close-used" {
+		t.Fatalf("expected review-close-used, got %s", body)
+	}
+}
+
+func TestConsumeFencesAndSingleWinner(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "id", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "proj",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "iss",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "rev",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v",
+		fmt.Sprintf(`{"verdict":"approved","revision":1,"actor":%q}`, actor))
+	decode(status, body, http.StatusOK, "verdict")
+	approvalEvent := out["latest_verdict_event"].(string)
+
+	consumeBody := fmt.Sprintf(`{"expected_revision":1,"expected_verdict_event":%q,"actor":%q}`, approvalEvent, actor)
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/consume", "c1", consumeBody)
+	decode(status, body, http.StatusOK, "consume")
+
+	// Replay under the ORIGINAL key returns the original success.
+	status2, body2 := req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/consume", "c1", consumeBody)
+	if status2 != http.StatusOK || body2 != body {
+		t.Fatalf("original-key replay must return the original success: %d", status2)
+	}
+
+	// A DISTINCT key against the consumed approval conflicts — two
+	// subscribers can never both act.
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/consume", "c2", consumeBody)
+	if status != http.StatusConflict {
+		t.Fatalf("distinct-key consume of a consumed approval must 409: %d %s", status, body)
+	}
+	var envelope struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil || envelope.Code != "review-consumed" {
+		t.Fatalf("expected review-consumed, got %s", body)
+	}
+}
+
+func TestExpectedBaseAndHeadFences(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "id", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "proj",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "iss",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+
+	// A wrong expected_base_commit rejects with nothing created.
+	status, body = req(t, srv, http.MethodPost, "/reviews", "fence-1",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"expected_base_commit":%q}`,
+			issue, actor, repo.featureSHA, repo.featureSHA2))
+	if status != http.StatusConflict {
+		t.Fatalf("base fence must 409: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews?issue="+issue, "", "")
+	if status != http.StatusOK || body != "[]" {
+		t.Fatalf("fence rejection must create nothing: %d %s", status, body)
+	}
+
+	// Matching fences pass.
+	status, body = req(t, srv, http.MethodPost, "/reviews", "fence-2",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"expected_base_commit":%q,"expected_default_head":%q}`,
+			issue, actor, repo.featureSHA, repo.baseSHA, repo.headSHA))
+	decode(status, body, http.StatusCreated, "fenced create")
+}

@@ -173,17 +173,16 @@ func Get(tx *sql.Tx, id string) (Issue, error) {
 	return i, nil
 }
 
-// Filters narrows List.
+// Filters narrows List. Text search and label filtering arrive with
+// the search and labels modules.
 type Filters struct {
 	Number   *int64
 	Statuses []string
 	Assignee string
-	Query    string
 }
 
-// List returns a project's issues, filterable by number, status,
-// assignee, and free text over title/body (comments join once they
-// exist).
+// List returns a project's issues, filterable by number, status, and
+// assignee.
 func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
 	query := `SELECT ` + issueColumns + ` FROM issues WHERE project = ?`
 	args := []any{project}
@@ -200,11 +199,6 @@ func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
 	if f.Assignee != "" {
 		query += ` AND assignee = ?`
 		args = append(args, f.Assignee)
-	}
-	if f.Query != "" {
-		query += ` AND (title LIKE ? OR body LIKE ?)`
-		pat := "%" + f.Query + "%"
-		args = append(args, pat, pat)
 	}
 	query += ` ORDER BY number`
 	rows, err := tx.Query(query, args...)

@@ -66,17 +66,19 @@ func Migrate(db *sql.DB) error {
 func NewOperation() string { return newUUIDv7() }
 
 // Emit appends one event inside the mutating transaction, so the event
-// is exactly as durable as the change it records.
-func Emit(tx *sql.Tx, kind, subject, operation, actor string, payload *string) error {
+// is exactly as durable as the change it records. It returns the event
+// id — verdict machinery stores it as latest_verdict_event.
+func Emit(tx *sql.Tx, kind, subject, operation, actor string, payload *string) (string, error) {
+	id := newUUIDv7()
 	_, err := tx.Exec(`
 		INSERT INTO events (id, kind, subject, operation, actor, payload, created)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		newUUIDv7(), kind, subject, operation, actor, payload,
+		id, kind, subject, operation, actor, payload,
 		time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("emit %s for %s: %w", kind, subject, err)
+		return "", fmt.Errorf("emit %s for %s: %w", kind, subject, err)
 	}
-	return nil
+	return id, nil
 }
 
 // Watermark captures the feed position atomically within the caller's
