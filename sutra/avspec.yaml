@@ -18,7 +18,7 @@ project:
       test: go test ./...
       lint: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run  # pinned via go run like the other gates — no unmanaged PATH binary, clean environments included
       typecheck: go vet ./...
-      arch: go run github.com/arch-go/arch-go@v1.6.4  # declared may_import boundaries mirrored in arch-go.yml and checked against real imports; exits nonzero on any violation
+      arch: go run github.com/arch-go/arch-go@v1.7.0  # declared may_import boundaries mirrored in arch-go.yml and checked against real imports; exits nonzero on any violation (spiked 2026-08-06: v1.6.4 does not exist; empty-allowlist modules need explicit-complement shouldNotDependsOn rules — an empty shouldOnlyDependsOn passes silently)
       coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # mktemp + trap cleanup, POSIX sh, spike-validated: covered=0; uncovered, tool-failure, missing-summary all nonzero (kriya R3, retired 2026-08-04)
       mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
 

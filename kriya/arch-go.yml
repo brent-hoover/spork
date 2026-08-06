@@ -1,13 +1,17 @@
 # Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
 # checked against real imports by the stack's arch command:
-#   go run github.com/arch-go/arch-go@v1.6.4
+#   go run github.com/arch-go/arch-go@v1.7.0
 # Package layout mirrors module names with hyphens dropped: one package
 # directory per module (dev-loop -> devloop, review-bridge -> reviewbridge,
-# tracker-client -> trackerclient). A module may import only the packages
-# listed here (its own package is always allowed); modules with an empty
-# rule import no domain packages. Patterns match the LEAF package per
-# module ("**.planner", not "**.planner.**") — add descendant patterns
-# only if subpackages appear.
+# tracker-client -> trackerclient).
+# A module may import only the packages listed in its shouldOnlyDependsOn
+# rule (its own package is always allowed). Modules whose may_import is
+# EMPTY use shouldNotDependsOn with the explicit complement of every other
+# module — spiked 2026-08-06: an empty shouldOnlyDependsOn allowlist is
+# treated as UNCONSTRAINED (silent pass) and a bare "**" pattern panics
+# arch-go v1.7.0, so the complement idiom is the only enforcing form.
+# Patterns match the LEAF package per module ("**.issues", not
+# "**.issues.**") — add descendant patterns only if subpackages appear.
 version: 1
 dependenciesRules:
   - package: "**.planner"
@@ -24,8 +28,19 @@ dependenciesRules:
         - "**.owner"
         - "**.trackerclient"
   - package: "**.workspace"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
   - package: "**.devloop"
     shouldOnlyDependsOn:
       internal:
@@ -33,24 +48,79 @@ dependenciesRules:
         - "**.reviewbridge"
         - "**.architect"
   - package: "**.reviewbridge"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.gates"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
   - package: "**.gates"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
   - package: "**.architect"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
   - package: "**.owner"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.architect"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
   - package: "**.context"
     shouldOnlyDependsOn:
       internal:
         - "**.trackerclient"
   - package: "**.trackerclient"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.cli"
+        - "**.tui"
   - package: "**.cli"
     shouldOnlyDependsOn:
       internal:

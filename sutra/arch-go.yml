@@ -1,9 +1,13 @@
 # Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
 # checked against real imports by the stack's arch command:
-#   go run github.com/arch-go/arch-go@v1.6.4
+#   go run github.com/arch-go/arch-go@v1.7.0
 # Package layout mirrors module names: one package directory per module.
-# A module may import only the packages listed here (its own package is
-# always allowed); modules with an empty rule import no domain packages.
+# A module may import only the packages listed in its shouldOnlyDependsOn
+# rule (its own package is always allowed). Modules whose may_import is
+# EMPTY use shouldNotDependsOn with the explicit complement of every other
+# module — spiked 2026-08-06: an empty shouldOnlyDependsOn allowlist is
+# treated as UNCONSTRAINED (silent pass) and a bare "**" pattern panics
+# arch-go v1.7.0, so the complement idiom is the only enforcing form.
 # Patterns match the LEAF package per module ("**.issues", not
 # "**.issues.**") — add descendant patterns only if subpackages appear.
 version: 1
@@ -16,8 +20,17 @@ dependenciesRules:
         - "**.review"
         - "**.events"
   - package: "**.projects"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.events"
+        - "**.review"
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.docs"
     shouldOnlyDependsOn:
       internal:
@@ -32,11 +45,29 @@ dependenciesRules:
         - "**.issues"
         - "**.events"
   - package: "**.identity"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.events"
+        - "**.review"
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.events"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.review"
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.review"
     shouldOnlyDependsOn:
       internal:
@@ -53,8 +84,26 @@ dependenciesRules:
         - "**.events"
         - "**.review"
   - package: "**.cli"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.events"
+        - "**.review"
+        - "**.api"
+        - "**.web"
   - package: "**.web"
-    shouldOnlyDependsOn:
-      internal: []
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.events"
+        - "**.review"
+        - "**.api"
+        - "**.cli"
