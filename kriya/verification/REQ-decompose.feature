@@ -43,7 +43,7 @@ Feature: Spec decomposition
     When a request with key "K" arrives again
     Then a pending plan resumes from its durable progress
     And an active plan without completed resumes its remaining phases
-    And a completed plan returns the historical result with no mutation
+    And an active plan bearing completed returns as the current already-complete result with no mutation
     And a superseded plan returns the historical result with no mutation
     And an awaiting-operator plan is preserved untouched for the operator
     And a plan in terminal historical returns that terminal result with no mutation

@@ -205,6 +205,13 @@ Feature: Run to complete
     And a new build-completion review is submitted for fresh human approval
     And recovery can never adopt the prior epoch's approved review — its key names the old epoch
 
+  Scenario: a creation in the event lag cannot hide behind a trusted stamp
+    Given a completed target whose stamp's recorded revision still matches sutra
+    And a new unparented target ticket was just created, its event not yet consumed
+    When completion is read
+    Then the read first drains the project feed through its captured watermark — the revision match alone proves nothing about creations
+    And draining consumes the creation, the new-work advance fires, and done is never falsely reported
+
   Scenario: a detached reopen-and-recomplete cannot slip a stale completion
     Given a detached target ticket reopened and recompleted before kriya consumed its events
     And the live epic reads complete with no visible active target work
