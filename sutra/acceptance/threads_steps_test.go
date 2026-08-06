@@ -40,16 +40,21 @@ func (tw *threadsWorld) importThread(title string) error {
 	if err != nil {
 		return err
 	}
-	body := map[string]any{
-		"title":      title,
-		"transcript": tw.transcript,
-		"project":    iw.project,
-		"actor":      actor,
-	}
+	// The request body is assembled by splicing the transcript bytes
+	// in raw — marshaling a map would compact the fixture's deliberate
+	// whitespace before the server ever saw it.
+	rest := map[string]any{"title": title, "project": iw.project, "actor": actor}
 	if tw.session != "" {
-		body["session"] = tw.session
+		rest["session"] = tw.session
 	}
-	if err := iw.s.call(http.MethodPost, "/threads", body); err != nil {
+	encoded, err := json.Marshal(rest)
+	if err != nil {
+		return err
+	}
+	body := append(encoded[:len(encoded)-1], []byte(`,"transcript":`)...)
+	body = append(body, tw.transcript...)
+	body = append(body, '}')
+	if err := iw.s.call(http.MethodPost, "/threads", json.RawMessage(body)); err != nil {
 		return err
 	}
 	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
@@ -112,14 +117,12 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 
 	// --- import preserves the transcript
 	sc.Step(`^a session transcript file from agent "([^"]*)" with session "([^"]*)"$`, func(agent, session string) error {
-		raw, err := json.Marshal([]map[string]string{
-			{"speaker": "human-brent", "text": "why does pop hand out the parent first?"},
-			{"speaker": agent, "text": "the deepest unblocked descendant wins; the parent waits."},
-		})
-		if err != nil {
-			return err
-		}
-		tw.transcript = raw
+		// Deliberately formatted: insignificant whitespace and
+		// newlines must survive import and serving byte-for-byte.
+		tw.transcript = json.RawMessage("[\n" +
+			"  { \"speaker\": \"human-brent\",  \"text\": \"why does pop hand out the parent first?\" },\n" +
+			"  { \"speaker\": \"" + agent + "\",  \"text\": \"the deepest unblocked descendant wins; the parent waits.\" }\n" +
+			"]")
 		tw.session = session
 		return nil
 	})

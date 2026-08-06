@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"sutra/internal/comments"
 	"sutra/internal/docs"
 	"sutra/internal/events"
 	"sutra/internal/identity"
@@ -26,7 +27,7 @@ import (
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, docs.Migrate, threads.Migrate, migrateIdempotency} {
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, docs.Migrate, threads.Migrate, comments.Migrate, migrateIdempotency} {
 		if err := migrate(db); err != nil {
 			return nil, err
 		}
@@ -60,6 +61,13 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("POST /projects/{projectId}/documents", s.createDocument)
 	mux.HandleFunc("GET /projects/{projectId}/documents", s.listProjectDocuments)
 	mux.HandleFunc("GET /issues/{issueId}/documents", s.listIssueDocuments)
+	mux.HandleFunc("GET /issues/{issueId}/events", s.listIssueEvents)
+	mux.HandleFunc("POST /labels", s.createLabel)
+	mux.HandleFunc("POST /comments", s.createComment)
+	mux.HandleFunc("GET /comments", s.listComments)
+	mux.HandleFunc("GET /labels", s.listLabels)
+	mux.HandleFunc("POST /issues/{issueId}/labels", s.attachLabel)
+	mux.HandleFunc("DELETE /issues/{issueId}/labels/{labelId}", s.detachLabel)
 	mux.HandleFunc("POST /threads", s.importThread)
 	mux.HandleFunc("GET /threads/search", s.searchThreads)
 	mux.HandleFunc("GET /threads/{threadId}", s.getThread)
@@ -138,6 +146,15 @@ func requireActor(tx *sql.Tx, actor string) *apiError {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	// Pre-assembled bodies (thread responses carrying verbatim
+	// transcripts) pass through untouched — json.Marshal would compact
+	// embedded RawMessage bytes.
+	if rm, ok := body.(json.RawMessage); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(rm)
+		return
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"code":"bad-request","message":%q}`, err.Error()), http.StatusInternalServerError)

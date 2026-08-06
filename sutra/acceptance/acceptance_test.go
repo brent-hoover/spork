@@ -83,6 +83,10 @@ var implementedFeatures = []string{
 	"../verification/REQ-thread-catalog.feature:4",         // import preserves the transcript
 	"../verification/REQ-thread-catalog.feature:15",        // thread content is searchable
 	"../verification/REQ-thread-links.feature:3",           // threads anchor to their work
+	"../verification/REQ-comments.feature:3",               // comment lands on the issue
+	"../verification/REQ-comments.feature:8",               // replies nest without depth limit
+	"../verification/REQ-comments.feature:13",              // no artificial caps
+	"../verification/REQ-core-issues.feature:17",           // labels attach and detach
 }
 
 var contractRouter routers.Router
@@ -166,10 +170,16 @@ func (s *testState) call(method, path string, body any) error {
 	var payload io.Reader
 	var raw []byte
 	if body != nil {
-		var err error
-		raw, err = json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("marshal body: %w", err)
+		if rm, ok := body.(json.RawMessage); ok {
+			// Pre-built bodies carry deliberate formatting (verbatim
+			// transcript fixtures) that json.Marshal would compact.
+			raw = rm
+		} else {
+			var err error
+			raw, err = json.Marshal(body)
+			if err != nil {
+				return fmt.Errorf("marshal body: %w", err)
+			}
 		}
 		payload = bytes.NewReader(raw)
 	}
@@ -293,6 +303,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerQueueSteps(sc, cw)
 	registerDocsSteps(sc, cw)
 	registerThreadsSteps(sc, cw)
+	registerCommentsSteps(sc, iw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

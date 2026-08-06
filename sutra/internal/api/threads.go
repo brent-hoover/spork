@@ -88,7 +88,11 @@ func (s *server) importThread(w http.ResponseWriter, r *http.Request) {
 		if _, err := events.Emit(tx, "thread.imported", subject, events.NewOperation(), req.Actor, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
-		return http.StatusCreated, thread, nil
+		body, apiErr := threadJSON(thread)
+		if apiErr != nil {
+			return 0, nil, apiErr
+		}
+		return http.StatusCreated, body, nil
 	})
 }
 
@@ -104,7 +108,12 @@ func (s *server) getThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, threadErrorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, thread)
+	body, apiErr := threadJSON(thread)
+	if apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *server) searchThreads(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +136,12 @@ func (s *server) searchThreads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, found)
+	body, apiErr := threadListJSON(found)
+	if apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *server) listIssueThreads(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +161,12 @@ func (s *server) listIssueThreads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, found)
+	body, apiErr := threadListJSON(found)
+	if apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *server) setThreadAnchor(w http.ResponseWriter, r *http.Request) {
@@ -164,8 +183,15 @@ func (s *server) setThreadAnchor(w http.ResponseWriter, r *http.Request) {
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		if _, err := threads.Get(tx, id); err != nil {
+		current, err := threads.Get(tx, id)
+		if err != nil {
 			return 0, nil, threadErrorFrom(err)
+		}
+		// The CURRENT anchor's project guards too: a thread anchored
+		// inside an archived project is part of that project's
+		// read-only content and cannot be moved out.
+		if apiErr := s.guardCurrentAnchor(tx, current); apiErr != nil {
+			return 0, nil, apiErr
 		}
 		anchor, subject, apiErr := resolveAnchor(tx, req.Project, req.Issue)
 		if apiErr != nil {
@@ -182,8 +208,74 @@ func (s *server) setThreadAnchor(w http.ResponseWriter, r *http.Request) {
 		if _, err := events.Emit(tx, "thread.anchor-changed", subject, events.NewOperation(), req.Actor, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
-		return http.StatusOK, thread, nil
+		body, apiErr := threadJSON(thread)
+		if apiErr != nil {
+			return 0, nil, apiErr
+		}
+		return http.StatusOK, body, nil
 	})
+}
+
+// guardCurrentAnchor resolves the project governing a thread's
+// existing anchor — the anchored issue's project, else the anchored
+// project — and rejects if it is archived.
+func (s *server) guardCurrentAnchor(tx *sql.Tx, t threads.Thread) *apiError {
+	project := ""
+	if t.Issue != nil {
+		iss, err := issues.Get(tx, *t.Issue)
+		if err != nil {
+			return issueErrorFrom(err)
+		}
+		project = iss.Project
+	} else if t.Project != nil {
+		project = *t.Project
+	}
+	if project == "" {
+		return nil
+	}
+	return guardWritable(tx, project)
+}
+
+// threadJSON assembles a Thread response by hand: every field but the
+// transcript marshals normally, then the stored transcript bytes are
+// spliced in UNTOUCHED — passing them through json.Marshal (even as a
+// RawMessage or via MarshalJSON) would compact insignificant
+// whitespace and break AC-thread-import's verbatim guarantee.
+func threadJSON(t threads.Thread) (json.RawMessage, *apiError) {
+	shadow := struct {
+		ID         string  `json:"id"`
+		Title      string  `json:"title"`
+		Session    *string `json:"session"`
+		Project    *string `json:"project,omitempty"`
+		Issue      *string `json:"issue,omitempty"`
+		ImportedAt string  `json:"imported_at"`
+	}{t.ID, t.Title, t.Session, t.Project, t.Issue, t.ImportedAt}
+	raw, err := json.Marshal(shadow)
+	if err != nil {
+		return nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("encode thread: %v", err)}
+	}
+	buf := make([]byte, 0, len(raw)+len(t.Transcript)+16)
+	buf = append(buf, raw[:len(raw)-1]...)
+	buf = append(buf, `,"transcript":`...)
+	buf = append(buf, t.Transcript...)
+	buf = append(buf, '}')
+	return buf, nil
+}
+
+// threadListJSON assembles an array of verbatim thread responses.
+func threadListJSON(list []threads.Thread) (json.RawMessage, *apiError) {
+	buf := []byte{'['}
+	for i, t := range list {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		one, apiErr := threadJSON(t)
+		if apiErr != nil {
+			return nil, apiErr
+		}
+		buf = append(buf, one...)
+	}
+	return append(buf, ']'), nil
 }
 
 func threadPayload(threadID string) string {

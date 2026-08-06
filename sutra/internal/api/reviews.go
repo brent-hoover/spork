@@ -108,36 +108,90 @@ func isCommitSHA(s string) bool {
 // rejectExplicitNulls decodes the request body while rejecting an
 // explicit null on any of the named fields — a null fence is not an
 // absent fence and must never silently disarm one.
+// rejectExplicitNulls decodes the request body into `into` after
+// verifying none of the named top-level fields is an explicit JSON
+// null (the omit-when-absent convention). The null check is a
+// streaming token scan — no field value is retained, so a large
+// content field is resident exactly once: in the decoded struct.
 func rejectExplicitNulls(r *http.Request, into any, fields ...string) *apiError {
-	var raw map[string]json.RawMessage
-	if apiErr := decodeBody(r, &raw); apiErr != nil {
+	nulls, apiErr := scanExplicitNulls(r.Body)
+	if apiErr != nil {
 		return apiErr
 	}
 	for _, field := range fields {
-		if v, ok := raw[field]; ok && string(v) == "null" {
+		if nulls[field] {
 			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("%s must not be null", field)}
 		}
 	}
-	// Second pass decodes the target struct from the SAME captured
-	// body — the null-check map is dropped first, so a large content
-	// field is never resident in both escaped and decoded form plus a
-	// re-encoded copy at once. The idempotency wrapper always installs
-	// a seekable body; the re-marshal branch covers any direct caller.
-	if seeker, ok := r.Body.(io.Seeker); ok {
-		raw = nil
-		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("rewind body: %v", err)}
-		}
-		return decodeBody(r, into)
+	seeker, ok := r.Body.(io.Seeker)
+	if !ok {
+		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: "request body is not rewindable"}
 	}
-	reencoded, err := json.Marshal(raw)
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("rewind body: %v", err)}
+	}
+	return decodeBody(r, into)
+}
+
+// scanExplicitNulls walks the body's top-level object token by token
+// and reports which keys carry a literal null. Nested values are
+// skipped by delimiter counting; string tokens materialize one at a
+// time and are dropped immediately.
+func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
+	malformed := func(err error) *apiError {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+	}
+	dec := json.NewDecoder(body)
+	tok, err := dec.Token()
 	if err != nil {
-		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+		return nil, malformed(err)
 	}
-	if err := json.Unmarshal(reencoded, into); err != nil {
-		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: expected a JSON object"}
 	}
-	return nil
+	nulls := map[string]bool{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, malformed(err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: non-string key"}
+		}
+		valTok, err := dec.Token()
+		if err != nil {
+			return nil, malformed(err)
+		}
+		switch v := valTok.(type) {
+		case json.Delim:
+			if v == '{' || v == '[' {
+				depth := 1
+				for depth > 0 {
+					t, err := dec.Token()
+					if err != nil {
+						return nil, malformed(err)
+					}
+					if d, ok := t.(json.Delim); ok {
+						switch d {
+						case '{', '[':
+							depth++
+						case '}', ']':
+							depth--
+						}
+					}
+				}
+			}
+		default:
+			if valTok == nil {
+				nulls[key] = true
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil { // consume the closing '}'
+		return nil, malformed(err)
+	}
+	return nulls, nil
 }
 
 // repoFacts snapshots the project fields git resolution needs, so the

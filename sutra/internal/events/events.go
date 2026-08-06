@@ -189,6 +189,31 @@ func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Pa
 	return page, nil
 }
 
+// BySubject returns every event for one subject in chronological
+// order — the per-issue audit history (AC-audit-query).
+func BySubject(tx *sql.Tx, subject string) ([]Event, error) {
+	rows, err := tx.Query(`
+		SELECT seq, id, kind, subject, operation, actor, payload, created
+		FROM events WHERE subject = ? ORDER BY seq`, subject)
+	if err != nil {
+		return nil, fmt.Errorf("events of %s: %w", subject, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		var payload sql.NullString
+		if err := rows.Scan(&e.seq, &e.ID, &e.Kind, &e.Subject, &e.Operation, &e.Actor, &payload, &e.Created); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		if payload.Valid {
+			e.Payload = json.RawMessage(payload.String)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // BadCursorError reports a cursor that never came from this feed.
 type BadCursorError struct{ Cursor string }
 

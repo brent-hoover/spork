@@ -14,8 +14,7 @@ import (
 	"time"
 )
 
-// Issue mirrors the contract's Issue schema (labels live with the
-// labels endpoints and join at the API layer once implemented).
+// Issue mirrors the contract's Issue schema.
 type Issue struct {
 	ID              string  `json:"id"`
 	Number          int64   `json:"number"`
@@ -27,6 +26,7 @@ type Issue struct {
 	Created         string  `json:"created"`
 	Updated         string  `json:"updated"`
 	SubtreeRevision int64   `json:"subtree_revision"`
+	Labels          []Label `json:"labels,omitempty"`
 }
 
 // Relation mirrors the contract's IssueRelation schema.
@@ -120,7 +120,7 @@ func Migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate issues: %w", err)
 	}
-	return nil
+	return migrateLabels(db)
 }
 
 // Create mints a UUIDv7 id and the next per-project display number
@@ -176,6 +176,13 @@ func Get(tx *sql.Tx, id string) (Issue, error) {
 	}
 	if err != nil {
 		return Issue{}, fmt.Errorf("get issue %s: %w", id, err)
+	}
+	labels, err := LabelsOf(tx, id)
+	if err != nil {
+		return Issue{}, err
+	}
+	if len(labels) > 0 {
+		i.Labels = labels
 	}
 	return i, nil
 }

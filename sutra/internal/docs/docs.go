@@ -382,16 +382,21 @@ func UnifiedDiff(from, to Version) string {
 	for i := 0; i < prefix; i++ {
 		emit(&out, ' ', a, i)
 	}
-	// Overflow-safe fallback selection: division, never product.
-	if midB == 0 || midA <= maxDiffCells/midB {
-		writeLCSDiff(&out, a, b, prefix, midA, midB)
-	} else {
+	// An empty side needs no LCS: the middle is a pure deletion or
+	// pure addition. The guard checks the ACTUAL matrix dimensions
+	// ((midA+1)x(midB+1)) with division, never a product, so neither
+	// overflow nor a zero side can slip an unbounded allocation past
+	// it; beyond the bound the exact-replacement fallback emits the
+	// same pure runs.
+	if midA == 0 || midB == 0 || (midA+1) > maxDiffCells/(midB+1) {
 		for i := prefix; i < prefix+midA; i++ {
 			emit(&out, '-', a, i)
 		}
 		for j := prefix; j < prefix+midB; j++ {
 			emit(&out, '+', b, j)
 		}
+	} else {
+		writeLCSDiff(&out, a, b, prefix, midA, midB)
 	}
 	for i := len(a.lines) - suffix; i < len(a.lines); i++ {
 		emit(&out, ' ', a, i)

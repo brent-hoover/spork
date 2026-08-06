@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +42,27 @@ type capturedBody struct {
 	file *os.File
 }
 
+// spoolError tags server-side spool failures (temp-file creation,
+// disk writes) so the caller returns an UNSETTLED 5xx: binding an
+// idempotency key to an infrastructure failure would poison a request
+// that succeeds after recovery. Client-side failures (oversize,
+// malformed transfer) settle as keyed 400s.
+type spoolError struct{ err error }
+
+func (e *spoolError) Error() string { return fmt.Sprintf("spool request body: %v", e.err) }
+
+// spoolWriter wraps the temp file so a failed disk write is
+// distinguishable from a failed client read inside io.Copy.
+type spoolWriter struct{ f *os.File }
+
+func (w *spoolWriter) Write(p []byte) (int, error) {
+	n, err := w.f.Write(p)
+	if err != nil {
+		return n, &spoolError{err: err}
+	}
+	return n, nil
+}
+
 func captureBody(w http.ResponseWriter, r *http.Request, limit int64) (*capturedBody, error) {
 	bounded := http.MaxBytesReader(w, r.Body, limit)
 	if r.ContentLength >= 0 && r.ContentLength <= largeBodyThreshold {
@@ -52,10 +74,10 @@ func captureBody(w http.ResponseWriter, r *http.Request, limit int64) (*captured
 	}
 	f, err := os.CreateTemp("", "sutra-body-*")
 	if err != nil {
-		return nil, fmt.Errorf("spool request body: %w", err)
+		return nil, &spoolError{err: err}
 	}
 	_ = os.Remove(f.Name())
-	if _, err := io.Copy(f, bounded); err != nil {
+	if _, err := io.Copy(&spoolWriter{f: f}, bounded); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -180,6 +202,13 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 	}
 	body, err := captureBody(w, r, bodyLimit(operation))
 	if err != nil {
+		var spool *spoolError
+		if errors.As(err, &spool) {
+			// Server-side I/O failure: unsettled 5xx — the key stays
+			// fresh and a retry after recovery can succeed.
+			writeError(w, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: err.Error()})
+			return
+		}
 		s.settleRejection(w, operation, key, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
 		return
 	}
@@ -308,6 +337,10 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 	if apiErr != nil {
 		status = apiErr.status
 		raw, err = json.Marshal(errorEnvelope(apiErr))
+	} else if rm, ok := body.(json.RawMessage); ok {
+		// Pre-assembled responses (verbatim transcripts) are recorded
+		// and served byte-for-byte; json.Marshal would compact them.
+		raw = rm
 	} else if body != nil {
 		raw, err = json.Marshal(body)
 	} else {
