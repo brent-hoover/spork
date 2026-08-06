@@ -83,3 +83,29 @@ func TestUnifiedDiffBoundedFallback(t *testing.T) {
 		t.Fatalf("fallback diff dropped lines")
 	}
 }
+
+// TestUnifiedDiffNULContent pins that termination state lives outside
+// line text: documents containing NUL bytes diff faithfully, with no
+// false no-newline markers and the NUL preserved in output.
+func TestUnifiedDiffNULContent(t *testing.T) {
+	// Terminated line ending in NUL: no marker, NUL intact.
+	diff := docs.UnifiedDiff(version(1, "a\x00\n"), version(2, "b\n"))
+	if !strings.Contains(diff, "-a\x00\n+b\n") {
+		t.Fatalf("NUL-terminated line must diff without a marker:\n%q", diff)
+	}
+	if strings.Contains(diff, "No newline") {
+		t.Fatalf("terminated NUL line must not carry a marker:\n%q", diff)
+	}
+
+	// Shared context line ending in NUL stays a plain context line.
+	diff = docs.UnifiedDiff(version(1, "x\x00\nold\n"), version(2, "x\x00\nnew\n"))
+	if !strings.Contains(diff, " x\x00\n") || strings.Contains(diff, "No newline") {
+		t.Fatalf("NUL context line corrupted:\n%q", diff)
+	}
+
+	// Unterminated final line containing NUL: marker follows it.
+	diff = docs.UnifiedDiff(version(1, "head\n"), version(2, "head\ntail\x00"))
+	if !strings.Contains(diff, "+tail\x00\n\\ No newline at end of file\n") {
+		t.Fatalf("unterminated NUL tail must carry the marker:\n%q", diff)
+	}
+}

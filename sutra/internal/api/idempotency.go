@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"sutra/internal/identity"
@@ -31,6 +32,57 @@ const largeBodyThreshold = 4 << 20
 
 var largeBodySlot = make(chan struct{}, 1)
 
+// capturedBody is a rewindable request body: RAM below
+// largeBodyThreshold, an unlinked spool file above it (or when length
+// is unknown). The unlink means nothing leaks even on a crash; close
+// releases the disk space.
+type capturedBody struct {
+	buf  []byte
+	file *os.File
+}
+
+func captureBody(w http.ResponseWriter, r *http.Request, limit int64) (*capturedBody, error) {
+	bounded := http.MaxBytesReader(w, r.Body, limit)
+	if r.ContentLength >= 0 && r.ContentLength <= largeBodyThreshold {
+		raw, err := io.ReadAll(bounded)
+		if err != nil {
+			return nil, err
+		}
+		return &capturedBody{buf: raw}, nil
+	}
+	f, err := os.CreateTemp("", "sutra-body-*")
+	if err != nil {
+		return nil, fmt.Errorf("spool request body: %w", err)
+	}
+	_ = os.Remove(f.Name())
+	if _, err := io.Copy(f, bounded); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &capturedBody{file: f}, nil
+}
+
+// rewind points r.Body at the start of the captured bytes so the next
+// consumer (prepare, then the handler's streaming decode) reads the
+// whole body again.
+func (b *capturedBody) rewind(r *http.Request) *apiError {
+	if b.file != nil {
+		if _, err := b.file.Seek(0, io.SeekStart); err != nil {
+			return &apiError{status: http.StatusInternalServerError, code: "internal", message: fmt.Sprintf("rewind spooled body: %v", err)}
+		}
+		r.Body = io.NopCloser(b.file)
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b.buf))
+	return nil
+}
+
+func (b *capturedBody) close() {
+	if b.file != nil {
+		_ = b.file.Close()
+	}
+}
+
 func bodyLimit(operation string) int64 {
 	if testBodyLimit != 0 {
 		return testBodyLimit
@@ -38,9 +90,9 @@ func bodyLimit(operation string) int64 {
 	switch operation {
 	case "POST /projects/import":
 		// Whole-project payloads aggregate every record including
-		// stored deliverables. The import handler will stream/spool its
-		// payload when it lands; until then the bound sits at 4 GiB so
-		// no valid export within SQLite's physical limits rejects.
+		// stored deliverables; they spool to disk (captureBody), so
+		// the 4 GiB bound costs disk, not RAM, and no valid export
+		// within SQLite's physical limits rejects.
 		return 4 << 30
 	default:
 		// The contract leaves content-bearing strings (doc versions,
@@ -105,22 +157,30 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 		return
 	}
 
-	// Buffer the body — bounded per endpoint — BEFORE any transaction
+	// Capture the body — bounded per endpoint — BEFORE any transaction
 	// opens, so a slow or oversized upload can never hold a database
-	// connection. Large bodies (or unknown lengths) additionally take
-	// the single large-body slot first. A read failure (oversize
+	// connection. Small bodies buffer in RAM; large ones (or unknown
+	// lengths) take the single large-body slot and spool to an
+	// unlinked temp file, so the raw bytes of a gigabyte payload never
+	// sit in memory — handlers stream their JSON decode straight from
+	// disk and only the decoded values materialize, serialized to one
+	// request at a time by the slot. A read failure (oversize
 	// included) is a settled 400: it records under the pair and
 	// replays like any other keyed rejection.
 	if r.ContentLength > largeBodyThreshold || r.ContentLength < 0 {
 		largeBodySlot <- struct{}{}
 		defer func() { <-largeBodySlot }()
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit(operation)))
+	body, err := captureBody(w, r, bodyLimit(operation))
 	if err != nil {
 		s.settleRejection(w, operation, key, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewReader(raw))
+	defer body.close()
+	if apiErr := body.rewind(r); apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
 
 	var prepped any
 	if prepare != nil {
@@ -134,7 +194,10 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 			s.settleRejection(w, operation, key, apiErr)
 			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(raw))
+		if apiErr := body.rewind(r); apiErr != nil {
+			writeError(w, apiErr)
+			return
+		}
 	}
 
 	status, raw, apiErr := s.attempt(operation, key, func(tx *sql.Tx) (int, any, *apiError) { return fn(tx, prepped) })

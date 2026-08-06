@@ -245,92 +245,123 @@ func SetIssue(tx *sql.Tx, documentID string, issue *string) (Document, error) {
 	return Get(tx, documentID)
 }
 
-// maxDiffCells bounds the LCS matrix (8 bytes per cell — 25M cells is
-// 200 MB avoided; the fallback keeps memory linear).
-const maxDiffCells = 4 << 20
+// diffSide is one version's content split into pure lines plus an
+// out-of-band termination flag — never embedded in line text, so
+// documents containing NUL (or any byte) diff faithfully.
+type diffSide struct {
+	lines      []string
+	terminated bool
+}
 
-// noNewlineSentinel marks a side's final line as unterminated. It is
-// appended before diffing — making termination part of line identity,
-// so an unterminated line never pairs with a terminated twin as
-// context anywhere (prefix, suffix, or LCS) — and stripped at emission
-// into the standard \ No newline at end of file marker.
-const noNewlineSentinel = "\x00"
-
-// splitLines splits content into real lines: a trailing newline is a
-// terminator, never a phantom empty line, and an unterminated final
-// line carries the sentinel.
-func splitLines(content string) []string {
+func splitSide(content string) diffSide {
 	if content == "" {
-		return nil
+		return diffSide{terminated: true}
 	}
 	lines := strings.Split(content, "\n")
 	if lines[len(lines)-1] == "" {
-		return lines[:len(lines)-1]
+		return diffSide{lines: lines[:len(lines)-1], terminated: true}
 	}
-	lines[len(lines)-1] += noNewlineSentinel
-	return lines
+	return diffSide{lines: lines, terminated: false}
 }
 
-func emitLine(out *strings.Builder, mark byte, line string) {
-	if stripped, unterminated := strings.CutSuffix(line, noNewlineSentinel); unterminated {
-		out.WriteByte(mark)
-		out.WriteString(stripped)
-		out.WriteString("\n\\ No newline at end of file\n")
-		return
+// lineEqual compares by text AND final-line termination compatibility:
+// an unterminated final line never pairs with a terminated twin.
+func lineEqual(a diffSide, i int, b diffSide, j int) bool {
+	if a.lines[i] != b.lines[j] {
+		return false
 	}
+	aFinalUnterminated := i == len(a.lines)-1 && !a.terminated
+	bFinalUnterminated := j == len(b.lines)-1 && !b.terminated
+	return aFinalUnterminated == bFinalUnterminated
+}
+
+// emit writes one diff line; the no-newline marker follows a side's
+// unterminated final line.
+func emit(out *strings.Builder, mark byte, s diffSide, idx int) {
 	out.WriteByte(mark)
-	out.WriteString(line)
+	out.WriteString(s.lines[idx])
 	out.WriteByte('\n')
+	if idx == len(s.lines)-1 && !s.terminated {
+		out.WriteString("\\ No newline at end of file\n")
+	}
+}
+
+// maxDiffCells bounds the LCS matrix (4 bytes per cell); beyond it the
+// fallback keeps memory linear.
+const maxDiffCells = 4 << 20
+
+// MaxDiffInput bounds the combined content size the diff endpoint will
+// process — diffing materializes both versions plus output, so the
+// bound keeps a single request's memory at a small multiple of this.
+var MaxDiffInput = int64(64 << 20)
+
+// DiffTooLargeError reports versions beyond the documented diff bound.
+type DiffTooLargeError struct{ Combined int64 }
+
+func (e *DiffTooLargeError) Error() string {
+	return fmt.Sprintf("combined version size %d exceeds the %d-byte diff bound", e.Combined, MaxDiffInput)
+}
+
+// VersionSizesOK validates the two versions' combined stored size via
+// SQL length() BEFORE any content loads — the bound rejects without
+// materializing what it guards against.
+func VersionSizesOK(tx *sql.Tx, documentID string, from, to int64) error {
+	var combined sql.NullInt64
+	err := tx.QueryRow(`
+		SELECT SUM(length(content)) FROM doc_versions
+		WHERE document = ? AND number IN (?, ?)`, documentID, from, to).Scan(&combined)
+	if err != nil {
+		return fmt.Errorf("size versions %d,%d of %s: %w", from, to, documentID, err)
+	}
+	if combined.Int64 > MaxDiffInput {
+		return &DiffTooLargeError{Combined: combined.Int64}
+	}
+	return nil
 }
 
 // UnifiedDiff renders a line-based unified diff between two version
 // contents (AC-doc-history) that standard patch tooling can apply:
-// real line counts (no phantom trailing lines), no-newline markers,
-// and a whole-file hunk with full context. Common prefix and suffix
-// are trimmed first — planning docs change in small regions — and the
-// remaining middle uses a minimal LCS diff only while its matrix stays
-// within maxDiffCells; beyond that the middle is emitted as one exact
-// replacement hunk (still a correct old→new diff, just not minimal),
-// keeping memory linear regardless of document shape.
+// real line counts, no-newline markers via out-of-band termination
+// state, and a whole-file hunk with full context. Common prefix and
+// suffix are trimmed first; the remaining middle uses a minimal LCS
+// diff while its matrix stays within maxDiffCells and an exact
+// replacement hunk beyond that — correct output, linear memory.
 func UnifiedDiff(from, to Version) string {
-	a := splitLines(from.Content)
-	b := splitLines(to.Content)
+	a := splitSide(from.Content)
+	b := splitSide(to.Content)
 
 	prefix := 0
-	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+	for prefix < len(a.lines) && prefix < len(b.lines) && lineEqual(a, prefix, b, prefix) {
 		prefix++
 	}
 	suffix := 0
-	for suffix < len(a)-prefix && suffix < len(b)-prefix && a[len(a)-1-suffix] == b[len(b)-1-suffix] {
+	for suffix < len(a.lines)-prefix && suffix < len(b.lines)-prefix &&
+		lineEqual(a, len(a.lines)-1-suffix, b, len(b.lines)-1-suffix) {
 		suffix++
 	}
-	midA := a[prefix : len(a)-suffix]
-	midB := b[prefix : len(b)-suffix]
+	midA := len(a.lines) - prefix - suffix
+	midB := len(b.lines) - prefix - suffix
 
 	var out strings.Builder
 	fmt.Fprintf(&out, "--- v%d\n+++ v%d\n", from.Number, to.Number)
-	// Zero-length ranges start at 0 per the unified-diff format —
-	// empty-file creations and deletions must round-trip through
-	// standard patch tooling.
-	fmt.Fprintf(&out, "@@ -%d,%d +%d,%d @@\n", hunkStart(len(a)), len(a), hunkStart(len(b)), len(b))
-	for _, line := range a[:prefix] {
-		emitLine(&out, ' ', line)
+	// Zero-length ranges start at 0 per the unified-diff format.
+	fmt.Fprintf(&out, "@@ -%d,%d +%d,%d @@\n", hunkStart(len(a.lines)), len(a.lines), hunkStart(len(b.lines)), len(b.lines))
+	for i := 0; i < prefix; i++ {
+		emit(&out, ' ', a, i)
 	}
-	// Overflow-safe: the product form would wrap on 32-bit builds and
-	// select the quadratic matrix for exactly the inputs that must
-	// take the bounded fallback.
-	if len(midB) == 0 || len(midA) <= maxDiffCells/len(midB) {
-		writeLCSDiff(&out, midA, midB)
+	// Overflow-safe fallback selection: division, never product.
+	if midB == 0 || midA <= maxDiffCells/midB {
+		writeLCSDiff(&out, a, b, prefix, midA, midB)
 	} else {
-		for _, line := range midA {
-			emitLine(&out, '-', line)
+		for i := prefix; i < prefix+midA; i++ {
+			emit(&out, '-', a, i)
 		}
-		for _, line := range midB {
-			emitLine(&out, '+', line)
+		for j := prefix; j < prefix+midB; j++ {
+			emit(&out, '+', b, j)
 		}
 	}
-	for _, line := range a[len(a)-suffix:] {
-		emitLine(&out, ' ', line)
+	for i := len(a.lines) - suffix; i < len(a.lines); i++ {
+		emit(&out, ' ', a, i)
 	}
 	return out.String()
 }
@@ -342,35 +373,14 @@ func hunkStart(count int) int {
 	return 1
 }
 
-// MaxDiffInput bounds the combined content size the diff endpoint will
-// process — diffing materializes both versions plus output, so the
-// bound keeps a single request's memory at a small multiple of this.
-const MaxDiffInput = 64 << 20
-
-// DiffTooLargeError reports versions beyond the documented diff bound.
-type DiffTooLargeError struct{ Combined int }
-
-func (e *DiffTooLargeError) Error() string {
-	return fmt.Sprintf("combined version size %d exceeds the %d-byte diff bound", e.Combined, MaxDiffInput)
-}
-
-// CheckDiffable rejects version pairs beyond MaxDiffInput before any
-// diff work allocates.
-func CheckDiffable(from, to Version) error {
-	if combined := len(from.Content) + len(to.Content); combined > MaxDiffInput {
-		return &DiffTooLargeError{Combined: combined}
-	}
-	return nil
-}
-
-func writeLCSDiff(out *strings.Builder, a, b []string) {
-	lcs := make([][]int32, len(a)+1)
+func writeLCSDiff(out *strings.Builder, a, b diffSide, offset, lenA, lenB int) {
+	lcs := make([][]int32, lenA+1)
 	for i := range lcs {
-		lcs[i] = make([]int32, len(b)+1)
+		lcs[i] = make([]int32, lenB+1)
 	}
-	for i := len(a) - 1; i >= 0; i-- {
-		for j := len(b) - 1; j >= 0; j-- {
-			if a[i] == b[j] {
+	for i := lenA - 1; i >= 0; i-- {
+		for j := lenB - 1; j >= 0; j-- {
+			if lineEqual(a, offset+i, b, offset+j) {
 				lcs[i][j] = lcs[i+1][j+1] + 1
 			} else if lcs[i+1][j] >= lcs[i][j+1] {
 				lcs[i][j] = lcs[i+1][j]
@@ -380,25 +390,25 @@ func writeLCSDiff(out *strings.Builder, a, b []string) {
 		}
 	}
 	i, j := 0, 0
-	for i < len(a) && j < len(b) {
+	for i < lenA && j < lenB {
 		switch {
-		case a[i] == b[j]:
-			emitLine(out, ' ', a[i])
+		case lineEqual(a, offset+i, b, offset+j):
+			emit(out, ' ', a, offset+i)
 			i++
 			j++
 		case lcs[i+1][j] >= lcs[i][j+1]:
-			emitLine(out, '-', a[i])
+			emit(out, '-', a, offset+i)
 			i++
 		default:
-			emitLine(out, '+', b[j])
+			emit(out, '+', b, offset+j)
 			j++
 		}
 	}
-	for ; i < len(a); i++ {
-		emitLine(out, '-', a[i])
+	for ; i < lenA; i++ {
+		emit(out, '-', a, offset+i)
 	}
-	for ; j < len(b); j++ {
-		emitLine(out, '+', b[j])
+	for ; j < lenB; j++ {
+		emit(out, '+', b, offset+j)
 	}
 }
 

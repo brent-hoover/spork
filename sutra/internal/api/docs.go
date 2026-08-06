@@ -229,6 +229,15 @@ func (s *server) diffDocVersions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	id := r.PathValue("documentId")
+	if err := docs.VersionSizesOK(tx, id, from, to); err != nil {
+		var tooLarge *docs.DiffTooLargeError
+		if errors.As(err, &tooLarge) {
+			writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: err.Error()})
+			return
+		}
+		writeError(w, errorFrom(err))
+		return
+	}
 	fromVersion, err := docs.VersionAt(tx, id, from)
 	if err != nil {
 		writeError(w, docErrorFrom(err))
@@ -237,10 +246,6 @@ func (s *server) diffDocVersions(w http.ResponseWriter, r *http.Request) {
 	toVersion, err := docs.VersionAt(tx, id, to)
 	if err != nil {
 		writeError(w, docErrorFrom(err))
-		return
-	}
-	if err := docs.CheckDiffable(fromVersion, toVersion); err != nil {
-		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
