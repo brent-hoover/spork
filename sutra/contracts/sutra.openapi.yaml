@@ -2499,14 +2499,22 @@ components:
     ReviewExport:
       description: >-
         A Review as carried by ProjectExport: identical to Review with
-        submissions strengthened to ReviewSubmissionExport, so exported
-        review content always round-trips losslessly.
+        submissions strengthened to ReviewSubmissionExport and required
+        to be NON-EMPTY, so exported review content always round-trips
+        losslessly. importProject additionally validates — rejecting the
+        payload as malformed on violation — that submission revisions
+        are complete and contiguous from 1 through the review's current
+        revision, and that the latest submission's deliverable matches
+        the review's top-level deliverable fields, so no contract-valid
+        export can smuggle a content-free or history-torn code review.
       allOf:
         - $ref: '#/components/schemas/Review'
         - type: object
+          required: [submissions]
           properties:
             submissions:
               type: array
+              minItems: 1
               items: { $ref: '#/components/schemas/ReviewSubmissionExport' }
 
     ResubmitReview:
