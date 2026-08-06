@@ -7,6 +7,7 @@
 package review
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
@@ -155,7 +156,10 @@ func ResolveCode(repo Repo, commit string, f Fences) (baseCommit string, err err
 		return "", &ConflictError{Code: "expected-default-head-mismatch",
 			Message: fmt.Sprintf("default head is %s, expected %s", head, *f.ExpectedDefaultHead)}
 	}
-	base, err := gitOut(repo.Path, "merge-base", commit, "refs/heads/"+repo.DefaultBranch)
+	// The merge base is computed against the SAME head the fence saw —
+	// the immutable object id, not the mutable ref, so a branch advance
+	// between commands can never split the fence from the pin.
+	base, err := gitOut(repo.Path, "merge-base", commit, head)
 	if err != nil {
 		return "", &GitError{Message: fmt.Sprintf("merge base of %s unresolvable: %v", commit, err)}
 	}
@@ -167,7 +171,9 @@ func ResolveCode(repo Repo, commit string, f Fences) (baseCommit string, err err
 }
 
 func gitOut(dir string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}

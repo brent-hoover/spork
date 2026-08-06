@@ -8,10 +8,44 @@ import (
 	"net/http"
 
 	"sutra/internal/events"
+	"sutra/internal/identity"
 	"sutra/internal/issues"
 	"sutra/internal/projects"
 	"sutra/internal/review"
 )
+
+// requireHumanVerdictActor enforces the contract's human-approval rule:
+// verdict actors are HUMAN identities — an agent can never satisfy the
+// close gate by approving its own review.
+func requireHumanVerdictActor(tx *sql.Tx, actor string) *apiError {
+	if !isUUID(actor) {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: "actor must be an identity uuid"}
+	}
+	who, err := identity.Lookup(tx, actor)
+	if err != nil {
+		var notFound *identity.NotFoundError
+		if errors.As(err, &notFound) {
+			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("actor %q names no identity", actor)}
+		}
+		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: err.Error()}
+	}
+	if who.Kind != "human" {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request",
+			message: fmt.Sprintf("verdicts require a human identity; %q is %s", who.Handle, who.Kind)}
+	}
+	return nil
+}
+
+// guardReviewProject applies the archived write-guard through the
+// review's issue — archived projects are read-only for verdicts and
+// consumption too.
+func guardReviewProject(tx *sql.Tx, rev review.Review) *apiError {
+	issue, err := issues.Get(tx, rev.Issue)
+	if err != nil {
+		return issueErrorFrom(err)
+	}
+	return guardWritable(tx, issue.Project)
+}
 
 func reviewErrorFrom(err error) *apiError {
 	var notFound *review.NotFoundError
@@ -101,39 +135,65 @@ func resolveDeliverable(tx *sql.Tx, issueProject string, d deliverableFields, ex
 	return out, base, nil
 }
 
+type newReviewRequest struct {
+	deliverableFields
+	Issue               string  `json:"issue"`
+	Author              string  `json:"author"`
+	Summary             *string `json:"summary"`
+	ExpectedBaseCommit  *string `json:"expected_base_commit"`
+	ExpectedDefaultHead *string `json:"expected_default_head"`
+}
+
+// preparedReview carries the decoded request and the git-resolved pin
+// from the prepare stage into the transaction.
+type preparedReview struct {
+	req  newReviewRequest
+	d    review.Deliverable
+	base string
+}
+
 func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			deliverableFields
-			Issue               string  `json:"issue"`
-			Author              string  `json:"author"`
-			Summary             *string `json:"summary"`
-			ExpectedBaseCommit  *string `json:"expected_base_commit"`
-			ExpectedDefaultHead *string `json:"expected_default_head"`
-		}
+	// Git resolution runs in the prepare stage — bounded and OUTSIDE
+	// SQLite's write lock, so a slow repository never blocks unrelated
+	// mutations. The transaction revalidates the database-side facts.
+	prepare := func(r *http.Request) (any, *apiError) {
+		var req newReviewRequest
 		if apiErr := decodeBody(r, &req); apiErr != nil {
+			return nil, apiErr
+		}
+		read, err := s.db.Begin()
+		if err != nil {
+			return nil, errorFrom(err)
+		}
+		defer func() { _ = read.Rollback() }()
+		issue, err := issues.Get(read, req.Issue)
+		if err != nil {
+			return nil, issueErrorFrom(err)
+		}
+		d, base, apiErr := resolveDeliverable(read, issue.Project, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		if apiErr != nil {
+			return nil, apiErr
+		}
+		return preparedReview{req: req, d: d, base: base}, nil
+	}
+	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		p := prepped.(preparedReview)
+		if apiErr := requireActor(tx, p.req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		if apiErr := requireActor(tx, req.Author); apiErr != nil {
-			return 0, nil, apiErr
-		}
-		issue, err := issues.Get(tx, req.Issue)
+		issue, err := issues.Get(tx, p.req.Issue)
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		d, base, apiErr := resolveDeliverable(tx, issue.Project, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
-		if apiErr != nil {
-			return 0, nil, apiErr
-		}
-		created, err := review.Create(tx, req.Issue, req.Author, d, req.Summary, base)
+		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
 		payload := reviewPayload(created.ID)
-		if _, err := events.Emit(tx, "review.created", req.Issue, events.NewOperation(), req.Author, &payload); err != nil {
+		if _, err := events.Emit(tx, "review.created", p.req.Issue, events.NewOperation(), p.req.Author, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusCreated, created, nil
@@ -142,6 +202,15 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 
 func reviewPayload(reviewID string) string {
 	raw, _ := json.Marshal(map[string]string{"review": reviewID})
+	return string(raw)
+}
+
+func changesRequestedPayload(r review.Review) string {
+	body := map[string]any{"review": r.ID, "issue": r.Issue}
+	if r.Session != nil {
+		body["session"] = *r.Session
+	}
+	raw, _ := json.Marshal(body)
 	return string(raw)
 }
 
@@ -193,18 +262,25 @@ func (s *server) setReviewVerdict(w http.ResponseWriter, r *http.Request) {
 		if req.Revision == nil {
 			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "revision is required"}
 		}
-		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
+		if apiErr := requireHumanVerdictActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		current, err := review.Get(tx, id)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
+		if apiErr := guardReviewProject(tx, current); apiErr != nil {
+			return 0, nil, apiErr
+		}
 		kind := "review.approved"
+		payload := reviewPayload(id)
 		if req.Verdict == review.StateChangesRequested {
 			kind = "review.changes-requested"
+			// The rework payload carries the review's session and issue
+			// so a subscriber routes the resubmission back to the
+			// originating agent instance (AC-review-rework).
+			payload = changesRequestedPayload(current)
 		}
-		payload := reviewPayload(id)
 		eventID, err := events.Emit(tx, kind, current.Issue, events.NewOperation(), req.Actor, &payload)
 		if err != nil {
 			return 0, nil, errorFrom(err)
@@ -235,6 +311,13 @@ func (s *server) consumeReviewApproval(w http.ResponseWriter, r *http.Request) {
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
+		current, err := review.Get(tx, id)
+		if err != nil {
+			return 0, nil, reviewErrorFrom(err)
+		}
+		if apiErr := guardReviewProject(tx, current); apiErr != nil {
+			return 0, nil, apiErr
+		}
 		consumed, err := review.Consume(tx, id, *req.ExpectedRevision, req.ExpectedVerdictEvent)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
@@ -248,48 +331,69 @@ func (s *server) consumeReviewApproval(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type resubmitRequest struct {
+	deliverableFields
+	Author               string  `json:"author"`
+	Summary              *string `json:"summary"`
+	ExpectedRevision     *int64  `json:"expected_revision"`
+	ExpectedVerdictEvent string  `json:"expected_verdict_event"`
+	ExpectedBaseCommit   *string `json:"expected_base_commit"`
+	ExpectedDefaultHead  *string `json:"expected_default_head"`
+}
+
+type preparedResubmit struct {
+	req  resubmitRequest
+	d    review.Deliverable
+	base string
+}
+
 func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("reviewId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			deliverableFields
-			Author               string  `json:"author"`
-			Summary              *string `json:"summary"`
-			ExpectedRevision     *int64  `json:"expected_revision"`
-			ExpectedVerdictEvent string  `json:"expected_verdict_event"`
-			ExpectedBaseCommit   *string `json:"expected_base_commit"`
-			ExpectedDefaultHead  *string `json:"expected_default_head"`
-		}
+	prepare := func(r *http.Request) (any, *apiError) {
+		var req resubmitRequest
 		if apiErr := decodeBody(r, &req); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.ExpectedRevision == nil || !isUUID(req.ExpectedVerdictEvent) {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "expected_revision and expected_verdict_event are required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "expected_revision and expected_verdict_event are required"}
 		}
-		if apiErr := requireActor(tx, req.Author); apiErr != nil {
+		read, err := s.db.Begin()
+		if err != nil {
+			return nil, errorFrom(err)
+		}
+		defer func() { _ = read.Rollback() }()
+		current, err := review.Get(read, id)
+		if err != nil {
+			return nil, reviewErrorFrom(err)
+		}
+		issue, err := issues.Get(read, current.Issue)
+		if err != nil {
+			return nil, issueErrorFrom(err)
+		}
+		d, base, apiErr := resolveDeliverable(read, issue.Project, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		if apiErr != nil {
+			return nil, apiErr
+		}
+		return preparedResubmit{req: req, d: d, base: base}, nil
+	}
+	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		p := prepped.(preparedResubmit)
+		if apiErr := requireActor(tx, p.req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		current, err := review.Get(tx, id)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
-		issue, err := issues.Get(tx, current.Issue)
-		if err != nil {
-			return 0, nil, issueErrorFrom(err)
-		}
-		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
+		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		d, base, apiErr := resolveDeliverable(tx, issue.Project, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
-		if apiErr != nil {
-			return 0, nil, apiErr
-		}
-		updated, err := review.Resubmit(tx, id, *req.ExpectedRevision, req.ExpectedVerdictEvent, d, base)
+		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.base)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
 		payload := reviewPayload(id)
-		if _, err := events.Emit(tx, "review.resubmitted", current.Issue, events.NewOperation(), req.Author, &payload); err != nil {
+		if _, err := events.Emit(tx, "review.resubmitted", current.Issue, events.NewOperation(), p.req.Author, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusOK, updated, nil

@@ -115,6 +115,25 @@ func List(db *sql.DB, kind string) ([]Identity, error) {
 	return out, nil
 }
 
+// Lookup returns the identity an id names, or NotFoundError.
+func Lookup(tx *sql.Tx, id string) (Identity, error) {
+	var i Identity
+	err := tx.QueryRow(`SELECT id, handle, kind, display_name FROM identities WHERE id = ?`, id).
+		Scan(&i.ID, &i.Handle, &i.Kind, &i.DisplayName)
+	if err == sql.ErrNoRows {
+		return Identity{}, &NotFoundError{ID: id}
+	}
+	if err != nil {
+		return Identity{}, fmt.Errorf("lookup identity %s: %w", id, err)
+	}
+	return i, nil
+}
+
+// NotFoundError reports an id that names no identity.
+type NotFoundError struct{ ID string }
+
+func (e *NotFoundError) Error() string { return fmt.Sprintf("identity %s not found", e.ID) }
+
 // Exists reports whether an identity id names a real identity
 // (AC-identity-referenced: unknown ids are rejected, never created).
 func Exists(tx *sql.Tx, id string) (bool, error) {

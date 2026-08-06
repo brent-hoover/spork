@@ -44,6 +44,15 @@ func migrateIdempotency(db *sql.DB) error {
 // transaction rolls back its duplicate work and the winner's committed
 // response is replayed to both callers.
 func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *sql.Tx) (int, any, *apiError)) {
+	s.idempotentPrepared(w, r, nil, func(tx *sql.Tx, _ any) (int, any, *apiError) { return fn(tx) })
+}
+
+// idempotentPrepared adds a prepare stage running after the replay
+// check but BEFORE any transaction opens — the home for bounded
+// external I/O (git resolution) that must never run under SQLite's
+// write lock. A prepare rejection settles the (operation, key) pair
+// exactly like an in-transaction 4xx.
+func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prepare func(*http.Request) (any, *apiError), fn func(tx *sql.Tx, prepped any) (int, any, *apiError)) {
 	key := r.Header.Get("Idempotency-Key")
 	if key == "" {
 		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "Idempotency-Key header is required"})
@@ -66,7 +75,22 @@ func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *
 	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))
 
-	status, raw, apiErr := s.attempt(operation, key, fn)
+	var prepped any
+	if prepare != nil {
+		var apiErr *apiError
+		prepped, apiErr = prepare(r)
+		if apiErr != nil {
+			if apiErr.status >= http.StatusInternalServerError {
+				writeError(w, apiErr)
+				return
+			}
+			s.settleRejection(w, operation, key, apiErr)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+	}
+
+	status, raw, apiErr := s.attempt(operation, key, func(tx *sql.Tx) (int, any, *apiError) { return fn(tx, prepped) })
 	if apiErr != nil && apiErr.status >= http.StatusInternalServerError {
 		writeError(w, apiErr)
 		return

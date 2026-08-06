@@ -269,3 +269,134 @@ func TestExpectedBaseAndHeadFences(t *testing.T) {
 			issue, actor, repo.featureSHA, repo.baseSHA, repo.headSHA))
 	decode(status, body, http.StatusCreated, "fenced create")
 }
+
+// TestAgentVerdictsRejected pins the human-approval rule: an agent
+// identity can never satisfy the close gate by approving a review.
+func TestAgentVerdictsRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "human")
+	human := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/identities", "a", `{"handle":"bot","kind":"agent"}`)
+	decode(status, body, http.StatusCreated, "agent")
+	agent := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, human, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, human))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"session":"sess-1"}`, issue, agent, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v-agent",
+		fmt.Sprintf(`{"verdict":"approved","revision":1,"actor":%q}`, agent))
+	if status != http.StatusBadRequest {
+		t.Fatalf("agent verdict must reject: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID, "", "")
+	decode(status, body, http.StatusOK, "after")
+	if out["state"].(string) != "open" {
+		t.Fatalf("agent verdict mutated state: %s", body)
+	}
+
+	// The human's changes-requested payload routes rework: it carries
+	// the review, its issue, and the submitting session.
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v-human",
+		fmt.Sprintf(`{"verdict":"changes-requested","revision":1,"actor":%q}`, human))
+	decode(status, body, http.StatusOK, "human verdict")
+	status, body = req(t, srv, http.MethodGet, "/events?kind=review.changes-requested", "", "")
+	var page struct {
+		Events []struct {
+			Payload json.RawMessage `json:"payload"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(body), &page); err != nil || status != http.StatusOK || len(page.Events) != 1 {
+		t.Fatalf("feed: %d %s (%v)", status, body, err)
+	}
+	var payload struct {
+		Review  string `json:"review"`
+		Issue   string `json:"issue"`
+		Session string `json:"session"`
+	}
+	if err := json.Unmarshal(page.Events[0].Payload, &payload); err != nil {
+		t.Fatalf("payload: %v — %s", err, page.Events[0].Payload)
+	}
+	if payload.Review != reviewID || payload.Issue != issue || payload.Session != "sess-1" {
+		t.Fatalf("rework payload must carry review, issue, and session: %+v", payload)
+	}
+}
+
+// TestArchivedProjectFreezesReviewMutations pins the read-only rule for
+// verdict and consumption through the review's issue's project.
+func TestArchivedProjectFreezesReviewMutations(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "human")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v",
+		fmt.Sprintf(`{"verdict":"approved","revision":1,"actor":%q}`, actor))
+	decode(status, body, http.StatusOK, "approve")
+	approvalEvent := out["latest_verdict_event"].(string)
+
+	if status, body := req(t, srv, http.MethodPost, "/projects/"+project+"/archive", "arch",
+		fmt.Sprintf(`{"actor":%q}`, actor)); status != http.StatusOK {
+		t.Fatalf("archive: %d %s", status, body)
+	}
+
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v2",
+		fmt.Sprintf(`{"verdict":"changes-requested","revision":1,"actor":%q}`, actor))
+	if status != http.StatusConflict {
+		t.Fatalf("verdict into archived project must 409: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/consume", "c",
+		fmt.Sprintf(`{"expected_revision":1,"expected_verdict_event":%q,"actor":%q}`, approvalEvent, actor))
+	if status != http.StatusConflict {
+		t.Fatalf("consume into archived project must 409: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID, "", "")
+	decode(status, body, http.StatusOK, "after")
+	if out["state"].(string) != "approved" || out["consumed"] != nil {
+		t.Fatalf("archived-project review mutated: %s", body)
+	}
+}
