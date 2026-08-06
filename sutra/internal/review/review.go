@@ -580,6 +580,17 @@ func PinObjects(repoPath string, shas ...string) error {
 	return nil
 }
 
+// CanonicalRepoDir resolves a repository path to its canonical git
+// common directory — one identity across relative paths, symlinks, and
+// worktrees, so pin bookkeeping can never split or cross aliases.
+func CanonicalRepoDir(repoPath string) (string, error) {
+	dir, err := gitOut(repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", &GitError{Message: fmt.Sprintf("canonicalize %s: %v", repoPath, err)}
+	}
+	return dir, nil
+}
+
 // ListPins returns the shas currently pinned under refs/sutra/pins.
 func ListPins(repoPath string) ([]string, error) {
 	out, err := gitOut(repoPath, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/sutra/pins/")

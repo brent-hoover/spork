@@ -179,10 +179,18 @@ func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, exp
 // surplus that startup reconciliation prunes via the pending_pins
 // ledger recorded here first.
 func (s *server) stagePins(repoPath string, shas ...string) *apiError {
-	// Reconciliation rides the submission path: growth only happens
-	// here, so pruning here bounds it by construction — a long-running
-	// server never needs a restart to reclaim crash/race surplus.
-	if err := s.reconcileRepoPins(repoPath); err != nil {
+	canonical, err := s.canonicalRepo(repoPath)
+	if err != nil {
+		return reviewErrorFrom(err)
+	}
+	// The repository mutex covers reconcile AND stage: no unpin can
+	// interleave between a recheck and a fresh staging of the same sha
+	// (review 1773). Reconciliation riding the submission path bounds
+	// growth exactly where it happens.
+	mu := s.repoMutex(canonical)
+	mu.Lock()
+	defer mu.Unlock()
+	if err := s.reconcileRepoPinsLocked(repoPath, canonical); err != nil {
 		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("reconcile pins: %v", err)}
 	}
 	for _, sha := range shas {
@@ -190,7 +198,7 @@ func (s *server) stagePins(repoPath string, shas ...string) *apiError {
 			continue
 		}
 		if _, err := s.db.Exec(`INSERT OR IGNORE INTO pending_pins (repo, sha, created) VALUES (?, ?, ?)`,
-			repoPath, sha, timeNowRFC3339()); err != nil {
+			canonical, sha, timeNowRFC3339()); err != nil {
 			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record pending pin: %v", err)}
 		}
 	}
@@ -203,12 +211,16 @@ func (s *server) stagePins(repoPath string, shas ...string) *apiError {
 // settlePins converts pending pins into submission-covered pins inside
 // the accepting transaction: once the commit lands, the shas are
 // referenced by review_submissions and the pending rows go.
-func settlePins(tx *sql.Tx, repoPath string, shas ...string) *apiError {
+func (s *server) settlePins(tx *sql.Tx, repoPath string, shas ...string) *apiError {
+	canonical, err := s.canonicalRepo(repoPath)
+	if err != nil {
+		return reviewErrorFrom(err)
+	}
 	for _, sha := range shas {
 		if sha == "" {
 			continue
 		}
-		if _, err := tx.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, repoPath, sha); err != nil {
+		if _, err := tx.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, canonical, sha); err != nil {
 			return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("settle pin: %v", err)}
 		}
 	}
@@ -309,7 +321,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
-		if apiErr := settlePins(tx, p.repo.Path, *p.d.Commit, p.base); apiErr != nil {
+		if apiErr := s.settlePins(tx, p.repo.Path, *p.d.Commit, p.base); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		payload := reviewPayload(created.ID)
@@ -624,7 +636,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
-		if apiErr := settlePins(tx, p.repo.Path, *p.d.Commit, p.base); apiErr != nil {
+		if apiErr := s.settlePins(tx, p.repo.Path, *p.d.Commit, p.base); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		payload := reviewPayload(id)

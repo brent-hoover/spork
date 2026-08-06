@@ -1080,7 +1080,7 @@ func TestPinReconciliationAtStartup(t *testing.T) {
 	if out, err := pin.CombinedOutput(); err != nil {
 		t.Fatalf("orphan pin: %v — %s", err, out)
 	}
-	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, '2000-01-01T00:00:00Z')`, repo.path, orphan); err != nil {
+	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, '2000-01-01T00:00:00Z')`, canonicalDirOf(t, repo.path), orphan); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1111,6 +1111,17 @@ func TestPinReconciliationAtStartup(t *testing.T) {
 
 func timeNowRFC3339ForTest() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+// canonicalDirOf mirrors the server's pin key: the absolute git common
+// directory.
+func canonicalDirOf(t *testing.T, repoPath string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		t.Fatalf("canonicalize %s: %v", repoPath, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // TestRecheckProtectsInFlightPins pins the final unpin guard: a sha
@@ -1150,18 +1161,18 @@ func TestRecheckProtectsInFlightPins(t *testing.T) {
 		t.Fatalf("pin: %v — %s", err, out)
 	}
 	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, ?)`,
-		repo.path, sha, "2000-01-01T00:00:00Z"); err != nil {
+		canonicalDirOf(t, repo.path), sha, "2000-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 	// Startup reconciliation expires the old row AND prunes — that is
 	// the abandoned-pin path, proven elsewhere. Here: a FRESH pending
 	// row (in-flight submission) must survive reconciliation triggered
 	// by another submission.
-	if _, err := db.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, repo.path, sha); err != nil {
+	if _, err := db.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, canonicalDirOf(t, repo.path), sha); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, ?)`,
-		repo.path, sha, timeNowRFC3339ForTest()); err != nil {
+		canonicalDirOf(t, repo.path), sha, timeNowRFC3339ForTest()); err != nil {
 		t.Fatal(err)
 	}
 	status, body = req(t, srv, http.MethodPost, "/projects", "p2",

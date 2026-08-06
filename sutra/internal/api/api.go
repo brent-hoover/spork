@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"sutra/internal/events"
@@ -64,6 +66,31 @@ func New(db *sql.DB) (http.Handler, error) {
 
 type server struct {
 	db *sql.DB
+	// pinMu serializes pin staging and reconciliation per CANONICAL
+	// repository. The deployment model is one server over one SQLite
+	// store (the idempotency reservation already assumes a single
+	// writer), so an in-process mutex is authoritative.
+	pinMu sync.Map // canonical repo dir -> *sync.Mutex
+	// canonCache memoizes repo_path -> canonical git common dir.
+	canonCache sync.Map
+}
+
+func (s *server) repoMutex(canonical string) *sync.Mutex {
+	mu, _ := s.pinMu.LoadOrStore(canonical, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
+// canonicalRepo resolves and memoizes a repo_path's canonical identity.
+func (s *server) canonicalRepo(repoPath string) (string, error) {
+	if v, ok := s.canonCache.Load(repoPath); ok {
+		return v.(string), nil
+	}
+	canonical, err := review.CanonicalRepoDir(repoPath)
+	if err != nil {
+		return "", err
+	}
+	s.canonCache.Store(repoPath, canonical)
+	return canonical, nil
 }
 
 // pendingPinGrace is how long an unsettled pending pin is presumed to
@@ -103,12 +130,58 @@ func (s *server) reconcilePins() error {
 
 // reconcileRepoPins prunes one repository's pin refs that are neither
 // covered by an accepted submission OF A PROJECT ANCHORED TO THAT
-// REPOSITORY nor pending-recent for it, and expires stale pending
-// rows. Coverage and pending state key by (repo, sha) — clones share
-// shas, so one repository's acceptance must never mark another's
-// orphan as covered. Runs at startup and on every submission's prepare
-// path, where growth happens.
+// REPOSITORY (any path alias) nor pending-recent for it, and expires
+// stale pending rows. Coverage and pending state key by the CANONICAL
+// repo identity — clones share shas and aliases share refs, so neither
+// may split nor cross. Serialized against staging per repository.
 func (s *server) reconcileRepoPins(repoPath string) error {
+	canonical, err := s.canonicalRepo(repoPath)
+	if err != nil {
+		return err
+	}
+	mu := s.repoMutex(canonical)
+	mu.Lock()
+	defer mu.Unlock()
+	return s.reconcileRepoPinsLocked(repoPath, canonical)
+}
+
+// aliasPaths returns every project repo_path resolving to canonical.
+func (s *server) aliasPaths(canonical string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT repo_path FROM projects WHERE repo_path IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("alias scan: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("alias scan: %w", err)
+		}
+		c, err := s.canonicalRepo(p)
+		if err != nil {
+			continue // unresolvable alias covers nothing
+		}
+		if c == canonical {
+			out = append(out, p)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *server) reconcileRepoPinsLocked(repoPath, canonical string) error {
+	aliases, err := s.aliasPaths(canonical)
+	if err != nil {
+		return err
+	}
+	if len(aliases) == 0 {
+		aliases = []string{repoPath}
+	}
+	placeholders := strings.Repeat(",?", len(aliases))[1:]
+	args := make([]any, 0, len(aliases))
+	for _, a := range aliases {
+		args = append(args, a)
+	}
 	covered := map[string]bool{}
 	rows, err := s.db.Query(`
 		SELECT sub.commit_sha, sub.base_commit
@@ -116,7 +189,7 @@ func (s *server) reconcileRepoPins(repoPath string) error {
 		JOIN reviews r ON r.id = sub.review
 		JOIN issues i ON i.id = r.issue
 		JOIN projects p ON p.id = i.project
-		WHERE p.repo_path = ? AND sub.commit_sha IS NOT NULL`, repoPath)
+		WHERE p.repo_path IN (`+placeholders+`) AND sub.commit_sha IS NOT NULL`, args...)
 	if err != nil {
 		return fmt.Errorf("reconcile %s: read submissions: %w", repoPath, err)
 	}
@@ -140,7 +213,7 @@ func (s *server) reconcileRepoPins(repoPath string) error {
 
 	pendingRecent := map[string]bool{}
 	cutoff := time.Now().UTC().Add(-pendingPinGrace).Format(time.RFC3339Nano)
-	pending, err := s.db.Query(`SELECT sha, created FROM pending_pins WHERE repo = ?`, repoPath)
+	pending, err := s.db.Query(`SELECT sha, created FROM pending_pins WHERE repo = ?`, canonical)
 	if err != nil {
 		return fmt.Errorf("reconcile %s: read pending: %w", repoPath, err)
 	}
@@ -162,7 +235,7 @@ func (s *server) reconcileRepoPins(repoPath string) error {
 		return fmt.Errorf("reconcile %s: iterate pending: %w", repoPath, err)
 	}
 	for _, sha := range expired {
-		if _, err := s.db.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, repoPath, sha); err != nil {
+		if _, err := s.db.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, canonical, sha); err != nil {
 			return fmt.Errorf("reconcile %s: expire pending %s: %w", repoPath, sha, err)
 		}
 	}
@@ -182,7 +255,7 @@ func (s *server) reconcileRepoPins(repoPath string) error {
 		// transaction's commit instant and covered from it (settlement
 		// happens inside that transaction) — so any sha this recheck
 		// sees unprotected was truly abandoned, not in flight.
-		protected, err := s.shaProtected(repoPath, sha)
+		protected, err := s.shaProtected(aliases, canonical, sha)
 		if err != nil {
 			return err
 		}
@@ -194,10 +267,17 @@ func (s *server) reconcileRepoPins(repoPath string) error {
 }
 
 // shaProtected reports, in ONE query snapshot, whether a sha is covered
-// by an accepted submission of a project on this repository or pending
-// (any age — age gating belongs to candidate selection, not to this
-// final guard).
-func (s *server) shaProtected(repoPath, sha string) (bool, error) {
+// by an accepted submission of any project alias of this repository or
+// pending (any age — age gating belongs to candidate selection, not to
+// this final guard). Runs under the repository mutex, which excludes
+// concurrent staging through the unpin itself.
+func (s *server) shaProtected(aliases []string, canonical, sha string) (bool, error) {
+	placeholders := strings.Repeat(",?", len(aliases))[1:]
+	args := make([]any, 0, len(aliases)+4)
+	for _, a := range aliases {
+		args = append(args, a)
+	}
+	args = append(args, sha, sha, canonical, sha)
 	var protected bool
 	err := s.db.QueryRow(`
 		SELECT EXISTS(
@@ -205,10 +285,10 @@ func (s *server) shaProtected(repoPath, sha string) (bool, error) {
 			JOIN reviews r ON r.id = sub.review
 			JOIN issues i ON i.id = r.issue
 			JOIN projects p ON p.id = i.project
-			WHERE p.repo_path = ? AND (sub.commit_sha = ? OR sub.base_commit = ?)
+			WHERE p.repo_path IN (`+placeholders+`) AND (sub.commit_sha = ? OR sub.base_commit = ?)
 		) OR EXISTS(
 			SELECT 1 FROM pending_pins WHERE repo = ? AND sha = ?
-		)`, repoPath, sha, sha, repoPath, sha).Scan(&protected)
+		)`, args...).Scan(&protected)
 	if err != nil {
 		return false, fmt.Errorf("recheck pin %s: %w", sha, err)
 	}
