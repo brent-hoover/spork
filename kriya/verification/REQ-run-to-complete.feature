@@ -199,6 +199,21 @@ Feature: Run to complete
     And a new build-completion review is submitted for fresh human approval
     And recovery can never adopt the prior epoch's approved review — its key names the old epoch
 
+  Scenario: a detached reopen-and-recomplete cannot slip a stale completion
+    Given a detached target ticket reopened and recompleted before kriya consumed its events
+    And the live epic reads complete with no visible active target work
+    When completion is read from an untrusted stamp
+    Then done is withheld until the event stream drains to sutra's current subtree revision
+    And draining consumes the reopen, advances the epoch, and kills the stale claim — completion needs a fresh review
+
+  Scenario: an unattributed ticket in a multi-target project pauses completion
+    Given a project with two target mappings and an unbound blocked ticket attributed to neither
+    When completion detection runs for either target
+    Then it refuses to arm — the active ticket is ambiguous
+    And the ambiguity surfaces in the operator inbox
+    When the operator parents the ticket under one target's epic
+    Then the other target's completion detection arms normally
+
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close
     Then a durable Stall row records the condition and its cause
