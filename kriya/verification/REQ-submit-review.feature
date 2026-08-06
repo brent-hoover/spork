@@ -96,7 +96,7 @@ Feature: Review submission and merge
   Scenario Outline: sutra rejects any ungated submission
     Given the run's chain was gated with default head and base both at "D1"
     When a <operation> carries expected <field> "D1" and sutra resolves the actual <field> as "D2"
-    Then sutra rejects it atomically — no review, submission, event, or mutation exists
+    Then sutra rejects it atomically — nothing is created or mutated, and for a resubmission the existing review, its revision, and its deliverable remain unchanged
     And the run integrates the current base, reruns the full chain, and submits fresh
 
     Examples:

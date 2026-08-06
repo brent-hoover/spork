@@ -131,7 +131,7 @@ Feature: Review lifecycle
     Given a caller performs a <operation> expecting <field> "D1"
     And sutra resolves the actual <field> as "D2"
     When the request is processed
-    Then it is rejected with a conflict and no review, submission, event, or mutation exists
+    Then it is rejected with a conflict — nothing is created or mutated, no new submission or event exists, and for a resubmission the existing review, revision, and verdict remain unchanged
 
     Examples:
       | operation    | field               |

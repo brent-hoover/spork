@@ -666,6 +666,9 @@ data:
         - { name: event, type: string, required: true }
         - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, new-work, compensation] }
         - { name: operation, type: string }  # the server transaction id correlated during cascade verification — the evidence the check ran against
+        - { name: ticket, type: string }  # new-work advances — the created ticket this advance must parent
+        - { name: relation_key, type: string }  # new-work advances — deterministic Idempotency-Key of the parenting mutation, persisted with the advance; recovery replays it
+        - { name: parenting_state, type: enum, values: [pending, parented] }  # new-work advances — written pending with the advance, stamped parented once the keyed attachment lands; recovery resumes any pending parenting, so a crash between advance and attachment never strands a detached ticket (the advance replay colliding is exactly why this state lives here)
         - { name: cascade_verified, type: enum, values: [reached, unreached] }  # cascade-driven causes only — reached requires an issue.status-changed event for the epic, with its reopened status, under the same operation; recorded atomically with the advance
         - { name: reopen_owed, type: boolean }  # true exactly when verification recorded unreached — the durable explicit-reopen obligation recovery honors
         - { name: epoch, type: integer, required: true }  # the epoch value this advance produced
@@ -781,7 +784,10 @@ data:
         consuming the project's work events after a target completes,
         and a creation attributing to a completed target advances its
         epoch (cause new-work, keyed by the creating event), clears the
-        stamp, and parents the ticket under the epic through the keyed
+        stamp — persisting the ticket, the deterministic parenting
+        relation key, and parenting_state pending ON the advance record,
+        so recovery resumes an unfinished parenting by keyed replay —
+        and parents the ticket under the epic through that keyed
         relation mutation: ATTACHING active work beneath the complete
         epic is itself the reopen trigger — sutra cascades atomically —
         and kriya verifies that cascade through the mutation's

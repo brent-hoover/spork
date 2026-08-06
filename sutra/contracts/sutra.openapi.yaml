@@ -554,7 +554,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IssueRelation'
+                type: object
+                required: [relation, operation]
+                properties:
+                  relation: { $ref: '#/components/schemas/IssueRelation' }
+                  operation:
+                    type: string
+                    format: uuid
+                    description: The server transaction id this mutation ran under — the same id every event it emitted carries, cascades included, so the caller (and its idempotent replay, which returns this original response) can correlate the attachment's cascade directly.
         '404':
           $ref: '#/components/responses/NotFound'
         '409':

@@ -235,9 +235,12 @@ Feature: Run to complete
     And the ticket is parented under the epic through the keyed mutation — attaching active work beneath the complete epic cascades the reopen
     And kriya verifies the cascade through the mutation's operation id, issuing the explicit keyed reopen only if the epic provably went unreached
     And popping resumes; nothing strands
-    Given the creation is ambiguous in a multi-mapping project
+
+  Scenario: an ambiguous post-completion creation suppresses without advancing
+    Given two completed targets in a multi-mapping project
+    When a new active issue is created attributing to neither
     Then no epoch advances — the open ambiguity row suppresses completion for every candidate target
-    When the operator resolves the attribution
+    When the operator resolves the attribution to one target
     Then only the selected target advances, through its parenting attachment's cascade, and the other candidates resume untouched
 
   Scenario: a stall surfaces with its cause
