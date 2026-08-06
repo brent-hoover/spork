@@ -242,9 +242,15 @@ requirements:
       - id: AC-review-consume
         statement: A subscriber atomically consumes an approved review's approval, conditional on state approved at the expected current revision AND on the named expected verdict event still being the review's latest — a verdict ABA invalidates delayed consumptions even though revision and state match; consumption is durable and idempotent only under its original idempotency key — a distinct attempt against an already-consumed approval is rejected, so exactly one subscriber ever holds the success — permanently fences verdict changes, atomically records a review.consumed event carrying the actor, review, and consumed revision, and fails with a conflict — consuming nothing, recording nothing — if the verdict changed or the revision moved first.
         test: verification/REQ-code-review.feature#approval consumption fences reversal
-      - id: AC-review-verdict-event-fence
-        statement: Consume, complete, and resubmit each name the verdict event they act on, validated atomically as the review's latest — a superseded event conflicts with no mutation even when state and revision match, so a verdict ABA can never let a delayed operation act on feedback it has not seen.
+      - id: AC-review-consume-event-fence
+        statement: Consumption names the verdict event it acts on, validated atomically as the review's latest — a superseded approval event conflicts and consumes nothing even when state and revision match.
         test: verification/REQ-code-review.feature#a delayed consumption naming a superseded approval conflicts even against approved state
+      - id: AC-review-close-event-fence
+        statement: Completion names the verdict event it spends, validated atomically as the review's latest — a superseded approval event conflicts, leaving the review unspent and the issue open even when state and revision match.
+        test: verification/REQ-code-review.feature#a delayed close naming a superseded approval conflicts even against approved state
+      - id: AC-review-resubmit-event-fence
+        statement: Resubmission names the changes-requested event it answers, validated atomically as the review's latest — a superseded event conflicts with no mutation, so stale rework never replaces a deliverable without addressing the latest feedback.
+        test: verification/REQ-code-review.feature#a verdict ABA fences delayed operations
       - id: AC-review-resubmit-guard
         statement: Resubmission is valid only from changes-requested, only at the expected current revision the caller names, and only while the named changes-requested verdict event is still the review's latest — a verdict ABA at the same revision rejects the stale rework; open or approved reviews, and revision or verdict-event mismatches, reject it with no mutation.
         test: verification/REQ-code-review.feature#resubmission requires changes-requested

@@ -66,7 +66,7 @@ Feature: Run to complete
     And a crash before the review id lands is recovered by replaying the persisted request under the same submission key — sutra returns the original review if it landed and creates it otherwise, never a second one
     And retired tickets resting deferred under the epic do not block its close
     When the human approves the review
-    Then the epic close is attempted through sutra naming the attempt's completion review at its recorded revision, under the closing state's persisted idempotency key, and sutra's no-open-children gate is the authoritative check — a stale revision rejects instead of spending a later approval
+    Then the epic close is attempted through sutra naming the attempt's completion review at its recorded revision with its approval's verdict event, under the closing state's persisted idempotency key, and sutra's no-open-children gate is the authoritative check — a stale revision rejects instead of spending a later approval
     And a crash after the close succeeds but before kriya records it recovers by replaying under the same key — sutra returns the original success, never a close-used conflict
     And after the close succeeds, completion is stamped on the BuildTarget row — a CAS requiring the current epoch to still equal the immutable claim epoch recorded at submission — and popping stops for that target
 
