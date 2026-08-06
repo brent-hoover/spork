@@ -3,10 +3,10 @@ Feature: Closing requires an approved review
   has approved the deliverable.
 
   Scenario: approved review allows close
-    Given issue SUT-1 has a review of branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4" in state "approved"
+    Given issue SUT-1 has a review of branch "sut-1-fix" pinned at an immutable commit in state "approved"
     When SUT-1 is transitioned to "complete" naming that review at its approved revision with its approval's verdict event
     Then the transition succeeds
-    And the recorded approval names commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+    And the recorded approval names the pinned commit
     And the review is stamped close-used and its verdict frozen in the same transaction
     And a later verdict on that review is rejected with no mutation
 

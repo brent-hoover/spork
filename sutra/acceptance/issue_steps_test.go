@@ -211,7 +211,7 @@ func (iw *issueWorld) expectEvent(kind, issueName, byHandle string) error {
 	return fmt.Errorf("no %s event for %s by %s in %s", kind, issueName, byHandle, iw.s.lastBody)
 }
 
-func registerIssueSteps(sc *godog.ScenarioContext, s *testState) {
+func registerIssueSteps(sc *godog.ScenarioContext, s *testState) *issueWorld {
 	iw := &issueWorld{s: s}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		iw.reset()
@@ -523,4 +523,5 @@ func registerIssueSteps(sc *godog.ScenarioContext, s *testState) {
 		iw.s.lastResp = nil // signal: rejection already asserted here
 		return nil
 	})
+	return iw
 }

@@ -27,19 +27,28 @@ import (
 // implemented. It grows as modules land; the suite runs in strict mode,
 // so a listed feature with pending or undefined steps fails the build.
 var implementedFeatures = []string{
-	"../verification/REQ-identities.feature:4",       // identity is just a named kind
-	"../verification/REQ-notifications.feature:5",    // cursor polling resumes losslessly
-	"../verification/REQ-notifications.feature:12",   // filters narrow the feed
-	"../verification/REQ-notifications.feature:27",   // draining to a watermark is bounded and provable
-	"../verification/REQ-core-issues.feature:3",      // create mints uuid and display number
-	"../verification/REQ-core-issues.feature:11",     // updates persist
-	"../verification/REQ-status-workflow.feature:3",  // free transitions are recorded
-	"../verification/REQ-status-workflow.feature:45", // unknown statuses are rejected
-	"../verification/REQ-issue-hierarchy.feature:3",  // parent and child see each other
-	"../verification/REQ-issue-blocking.feature:3",   // both sides see the block
-	"../verification/REQ-issue-blocking.feature:19",  // cycles are rejected
-	"../verification/REQ-audit.feature:5",            // every mutation is recorded
-	"../verification/REQ-audit.feature:16",           // events are append-only
+	"../verification/REQ-identities.feature:4",             // identity is just a named kind
+	"../verification/REQ-notifications.feature:5",          // cursor polling resumes losslessly
+	"../verification/REQ-notifications.feature:12",         // filters narrow the feed
+	"../verification/REQ-notifications.feature:27",         // draining to a watermark is bounded and provable
+	"../verification/REQ-core-issues.feature:3",            // create mints uuid and display number
+	"../verification/REQ-core-issues.feature:11",           // updates persist
+	"../verification/REQ-status-workflow.feature:3",        // free transitions are recorded
+	"../verification/REQ-status-workflow.feature:45",       // unknown statuses are rejected
+	"../verification/REQ-issue-hierarchy.feature:3",        // parent and child see each other
+	"../verification/REQ-issue-blocking.feature:3",         // both sides see the block
+	"../verification/REQ-issue-blocking.feature:19",        // cycles are rejected
+	"../verification/REQ-audit.feature:5",                  // every mutation is recorded
+	"../verification/REQ-audit.feature:16",                 // events are append-only
+	"../verification/REQ-close-requires-review.feature:5",  // approved review allows close
+	"../verification/REQ-close-requires-review.feature:13", // a stale revision cannot authorize a close
+	"../verification/REQ-close-requires-review.feature:19", // a reversed approval cannot authorize a close
+	"../verification/REQ-close-requires-review.feature:24", // a merge-consumed approval still closes its issue
+	"../verification/REQ-close-requires-review.feature:29", // a spent review cannot close a reopened issue
+	"../verification/REQ-close-requires-review.feature:37", // naming the wrong review cannot close
+	"../verification/REQ-close-requires-review.feature:44", // no approval no close
+	"../verification/REQ-status-workflow.feature:9",        // complete can reopen
+	"../verification/REQ-status-workflow.feature:16",       // conditional transitions guard racing writers
 }
 
 var contractRouter routers.Router
@@ -219,7 +228,8 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	})
 	registerIdentitySteps(sc, s)
 	registerFeedSteps(sc, s)
-	registerIssueSteps(sc, s)
+	iw := registerIssueSteps(sc, s)
+	registerCloseSteps(sc, iw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

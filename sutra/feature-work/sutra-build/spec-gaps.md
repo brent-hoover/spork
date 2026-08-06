@@ -47,6 +47,12 @@ proposed home (avspec field / kriya context / convention).
   guard (found by roborev 1728) — resolved: parent_of confined to one
   project (AC-project-scoping intent); blocks may cross with both-sides
   guards — proposed home: an explicit AC on relation project scope.
+- 2026-08-06 — Unproducible constant in a scenario: the approved-close
+  scenario pinned a literal 40-hex commit sha, but no real repository
+  can mint a chosen sha, so the step could never execute against real
+  git — amended to reference the pinned commit abstractly (intent
+  preserved: approval covers the pin) — proposed home: scenario-writing
+  guidance to keep externally-minted identifiers symbolic.
 - 2026-08-06 — SQLite DDL (indexes, composite keys, on-delete) not
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,
