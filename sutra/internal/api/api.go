@@ -86,20 +86,22 @@ func decodeBody(r *http.Request, into any) *apiError {
 // --------------------------------------------------------------- identities
 
 func (s *server) createIdentity(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Handle      string  `json:"handle"`
-		Kind        string  `json:"kind"`
-		DisplayName *string `json:"display_name"`
-	}
-	if apiErr := decodeBody(r, &req); apiErr != nil {
-		writeError(w, apiErr)
-		return
-	}
-	if req.Handle == "" || (req.Kind != "human" && req.Kind != "agent") {
-		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "handle and kind (human|agent) are required"})
-		return
-	}
+	// Decoding and semantic validation run INSIDE the idempotent
+	// wrapper: a keyed 400 is a settled outcome, and replaying the key
+	// with a corrected body must return the original rejection, not
+	// perform the mutation.
 	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+		var req struct {
+			Handle      string  `json:"handle"`
+			Kind        string  `json:"kind"`
+			DisplayName *string `json:"display_name"`
+		}
+		if apiErr := decodeBody(r, &req); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		if req.Handle == "" || (req.Kind != "human" && req.Kind != "agent") {
+			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "handle and kind (human|agent) are required"}
+		}
 		created, err := identity.Create(tx, req.Handle, req.Kind, req.DisplayName)
 		if err != nil {
 			return 0, nil, errorFrom(err)

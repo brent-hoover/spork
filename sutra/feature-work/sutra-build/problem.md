@@ -128,11 +128,13 @@ All resolved 2026-08-06 with Brent:
       validates every HTTP response against the OpenAPI document via a
       validator library (kin-openapi — approved as a test-only
       dependency). Lives inside the existing `go test` gate; no new gate
-      command. Response validation alone cannot prove the server rejects
-      unknown fields on the closed schemas (`Issue`, `IssueRead`, the
-      status-transition bodies) — that is proven behaviorally: dedicated
-      steps submit unknown fields and assert rejection without mutation,
-      alongside the closed-schema scenarios already in verification/.
+      command. Response validation directly verifies `IssueRead`'s closed
+      shape (it is response-only). The closed REQUEST schemas — `Issue`
+      in import payloads and the status-transition bodies — are proven
+      behaviorally by integration tests that land with those endpoints:
+      each submits an unknown field and asserts rejection without
+      mutation. Until those endpoints exist, this is an open obligation
+      tracked here, not a claim.
 - [x] Browser-bound scenarios → **handler/HTML-level assertions**: godog
       asserts the server side of each behavior (the rejected move returns
       the error htmx uses to snap the card back; the doc-review server

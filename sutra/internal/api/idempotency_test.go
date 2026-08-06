@@ -140,3 +140,24 @@ func TestConcurrentSameKey(t *testing.T) {
 		t.Fatalf("same key applied %d times", count)
 	}
 }
+
+// TestKeyed400sReplay pins that early rejections settle their key: a
+// malformed body's 400 replays verbatim even when the retry is valid.
+func TestKeyed400sReplay(t *testing.T) {
+	srv, db := startAPI(t)
+	status1, body1 := post(t, srv, "/identities", "k400", `{"handle":""}`)
+	if status1 != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d %s", status1, body1)
+	}
+	status2, body2 := post(t, srv, "/identities", "k400", `{"handle":"now-valid","kind":"agent"}`)
+	if status2 != status1 || body2 != body1 {
+		t.Fatalf("corrected retry under same key must replay the 400: got %d %s", status2, body2)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("settled 400 key still mutated: %d identities", count)
+	}
+}
