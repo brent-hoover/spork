@@ -12,6 +12,22 @@ import (
 	"sutra/internal/identity"
 )
 
+// bodyLimit returns the request-body bound for a route pattern. The
+// 1 MiB default fits every entity mutation; endpoints whose contracts
+// promise large payloads carry their own bounds — a full-project
+// import aggregates every issue, comment, doc version, and stored
+// review deliverable, and comment bodies are unbounded by the spec.
+func bodyLimit(operation string) int64 {
+	switch operation {
+	case "POST /projects/import":
+		return 1 << 30 // 1 GiB: whole-project payloads incl. stored deliverables
+	case "POST /comments":
+		return 64 << 20 // 64 MiB: comment bodies are spec-unbounded
+	default:
+		return 1 << 20
+	}
+}
+
 // migrateIdempotency creates the replay table. The stored response is
 // the whole idempotency contract (CON-idempotent-mutations): replaying
 // a key returns the original response verbatim — success or rejection —
@@ -64,11 +80,12 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 		return
 	}
 
-	// Buffer the body — bounded — BEFORE any transaction opens, so a
-	// slow or oversized upload can never hold a database connection. A
-	// read failure (oversize included) is a settled 400: it records
-	// under the pair and replays like any other keyed rejection.
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	// Buffer the body — bounded per endpoint — BEFORE any transaction
+	// opens, so a slow or oversized upload can never hold a database
+	// connection. A read failure (oversize included) is a settled 400:
+	// it records under the pair and replays like any other keyed
+	// rejection.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit(operation)))
 	if err != nil {
 		s.settleRejection(w, operation, key, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
 		return
