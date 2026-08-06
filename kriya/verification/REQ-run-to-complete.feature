@@ -273,6 +273,18 @@ Feature: Run to complete
     And the keyed removal replays to removed — a crash on either side of it recovers by the same key
     And only then does the advance return to pending under an advanced generation, the ordinary keyed attachment completing the reclaim
     And a crash at any step never forgets the removal authorization or re-encounters the conflict blind
+    Given the removal instead returns not-found because another actor already removed the relation
+    Then the removal is accepted as removed and the attachment proceeds
+    Given the removal conflicts and the re-read shows a parent different from the authorized one
+    Then the advance returns to conflicting with the new parent recorded — fresh authorization required
+
+  Scenario: a permanent attachment failure resolves by correction or dismissal
+    Given a new-work advance conflicting with kind permanent-failure — an archived project
+    When the operator corrects the condition and retries through the parenting-resolution action
+    Then the generation rotates and the advance returns to pending, the keyed attachment completing normally
+    Given the operator instead dismisses
+    Then the advance stamps terminal dismissed
+    And the ticket still blocks completion through attribution until handled — dismissal hides nothing
 
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project

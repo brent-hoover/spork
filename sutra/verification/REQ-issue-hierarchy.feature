@@ -80,3 +80,14 @@ Feature: Issue hierarchy
     And a deferred issue SUT-41 whose own subtree contains an issue in status "open"
     When SUT-41 is attached as a child of SUT-40
     Then SUT-40 reopens in the same transaction — a deferred root cannot hide active work it carries in
+
+  Scenario Outline: relation conflicts carry their distinct codes
+    Given a relation request that fails because of <condition>
+    When it is rejected with a conflict
+    Then the error's code is exactly <code>, never inferred from message text
+
+    Examples:
+      | condition                        | code             |
+      | the relation already existing    | relation-exists  |
+      | an ancestry cycle                | ancestry-cycle   |
+      | the project being archived       | project-archived |
