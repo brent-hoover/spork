@@ -52,17 +52,23 @@ func (s *Server) Handler() http.Handler {
 }
 
 // sameOrigin rejects cross-origin mutations. Browsers send Origin (or
-// at least Sec-Fetch-Site) on form posts; a value naming another
-// origin is refused outright, and non-browser callers without either
-// header pass — they hold no ambient browser credentials to launder.
+// at least Sec-Fetch-Site) on form posts: an opaque "null" origin, a
+// cross-site fetch marker, or an origin whose SCHEME AND HOST differ
+// from this server's all refuse. Callers sending neither header are
+// non-browser processes — they hold no ambient browser authority to
+// launder, and the API itself is equally reachable to them directly.
 func (s *Server) sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 			http.Error(w, "cross-origin request refused", http.StatusForbidden)
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
-			if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			if origin == "null" || origin != scheme+"://"+r.Host {
 				http.Error(w, "cross-origin request refused", http.StatusForbidden)
 				return
 			}
@@ -426,7 +432,7 @@ var docTmpl = template.Must(template.New("doc").Parse(`<!doctype html>
 <input name="body" placeholder="comment on this version"><button>Comment</button>
 </form>
 </aside>
-<script>
+{{if .Live}}<script>
 // Poll for newer versions; refresh to the latest when one lands.
 (function () {
   var shown = {{.Doc.Version.Number}};
@@ -437,7 +443,7 @@ var docTmpl = template.Must(template.New("doc").Parse(`<!doctype html>
       .catch(function () {});
   }, 5000);
 })();
-</script>`))
+</script>{{end}}`))
 
 type docComment struct {
 	commentView
@@ -484,6 +490,9 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 	_ = docTmpl.Execute(w, map[string]any{
 		"Doc": doc, "Rendered": renderMarkdown(doc.Version.Content),
 		"Comments": all, "Versions": versions,
+		// A reader who CHOSE a historical version stays on it; only
+		// the latest view auto-refreshes to newer versions.
+		"Live": r.URL.Query().Get("version") == "",
 	})
 }
 
@@ -588,10 +597,12 @@ var reviewTmpl = template.Must(template.New("review").Parse(`<!doctype html>
 <p>{{.Body}}</p>
 <form class="reply-form" method="post" action="/r/{{$.Review.ID}}/comment">
 <input type="hidden" name="parent" value="{{.ID}}">
+<input type="hidden" name="review_revision" value="{{$.Review.Revision}}">
 <input name="body" placeholder="reply"><button>Reply</button>
 </form>
 </div>{{end}}
 <form class="comment-form" method="post" action="/r/{{$.Review.ID}}/comment">
+<input type="hidden" name="review_revision" value="{{.Review.Revision}}">
 <input name="body" placeholder="comment on this revision"><button>Comment</button>
 </form>
 </aside>
@@ -677,13 +688,16 @@ func (s *Server) reviewComment(w http.ResponseWriter, r *http.Request) {
 		htmlError(w, err)
 		return
 	}
-	var rev reviewView
-	if err := s.get("/reviews/"+id, &rev); err != nil {
-		htmlError(w, err)
+	// The form carries the revision the page SHOWED — a comment from a
+	// stale page must hit the API's stale-guard, never silently attach
+	// to unseen content.
+	revision, err := strconv.ParseInt(r.Form.Get("review_revision"), 10, 64)
+	if err != nil {
+		htmlError(w, fmt.Errorf("bad review_revision"))
 		return
 	}
 	payload := map[string]any{
-		"review": id, "review_revision": rev.Revision,
+		"review": id, "review_revision": revision,
 		"body": r.Form.Get("body"), "author": s.actor,
 	}
 	if parent := r.Form.Get("parent"); parent != "" {

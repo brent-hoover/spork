@@ -144,6 +144,34 @@ func (ie *ieWorld) seedRichProject() error {
 	}
 	ie.recordIDs["thread"] = thread.ID
 
+	// A removed relation: its relation-removed event (flat
+	// RelationRemovedPayload) must survive the round trip.
+	if _, err := iw.ensureIssue("SUT-2"); err != nil {
+		return err
+	}
+	actor := iw.identities["operator"]
+	if err := iw.s.call(http.MethodPost, "/issues/"+issueID+"/relations",
+		map[string]string{"to": iw.issues["SUT-2"], "kind": "blocks", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var created struct {
+		Relation struct {
+			ID string `json:"id"`
+		} `json:"relation"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodDelete, "/issues/"+issueID+"/relations/"+created.Relation.ID+"?actor="+actor, nil); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusNoContent); err != nil {
+		return err
+	}
+
 	// A consumed approval: approve, then consume at that revision.
 	if err := cw.approvedReview("SUT-1", "exported"); err != nil {
 		return err

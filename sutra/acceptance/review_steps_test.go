@@ -425,8 +425,9 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 		if err != nil {
 			return err
 		}
+		revision := fmt.Sprintf("%d", ref.revision)
 		if _, err := first.Client().PostForm(first.URL+"/r/"+ref.id+"/comment",
-			url.Values{"body": {"looks odd here"}}); err != nil {
+			url.Values{"body": {"looks odd here"}, "review_revision": {revision}}); err != nil {
 			return err
 		}
 		if err := iw.s.call(http.MethodGet, "/comments?review="+ref.id, nil); err != nil {
@@ -447,7 +448,7 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 			return err
 		}
 		if _, err := second.Client().PostForm(second.URL+"/r/"+ref.id+"/comment",
-			url.Values{"body": {"agreed"}, "parent": {created[0].ID}}); err != nil {
+			url.Values{"body": {"agreed"}, "parent": {created[0].ID}, "review_revision": {revision}}); err != nil {
 			return err
 		}
 		if err := iw.s.call(http.MethodGet, "/comments?review="+ref.id, nil); err != nil {

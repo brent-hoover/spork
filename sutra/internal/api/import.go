@@ -710,16 +710,13 @@ func validateImportShapes(p *importPayload) *apiError {
 				return malformedImport("event %s must carry a RelationRemovedPayload", e.ID)
 			}
 			var payload struct {
-				Relation *struct {
-					ID   string `json:"id"`
-					Kind string `json:"kind"`
-					From string `json:"from"`
-					To   string `json:"to"`
-				} `json:"relation"`
+				Relation string `json:"relation"`
+				Kind     string `json:"kind"`
+				From     string `json:"from"`
+				To       string `json:"to"`
 			}
-			if json.Unmarshal(raw, &payload) != nil || payload.Relation == nil ||
-				payload.Relation.ID == "" || payload.Relation.Kind == "" ||
-				payload.Relation.From == "" || payload.Relation.To == "" {
+			if json.Unmarshal(raw, &payload) != nil || payload.Relation == "" ||
+				payload.Kind == "" || payload.From == "" || payload.To == "" {
 				return malformedImport("event %s carries a malformed RelationRemovedPayload", e.ID)
 			}
 		}
