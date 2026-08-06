@@ -236,6 +236,19 @@ Feature: Run to complete
     And kriya verifies the cascade through the mutation's operation id, issuing the explicit keyed reopen only if the epic provably went unreached
     And popping resumes; nothing strands
 
+  Scenario: a parenting crash before the attachment recovers exactly once
+    Given a new-work advance persisted its ticket, relation key, and parenting_state pending, and the crash hit before the attachment landed
+    When recovery resumes the pending parenting
+    Then the keyed relation replay performs the attachment, the cascade is verified by its operation id, and parented stamps atomically with the verification result
+    And exactly one attachment exists
+
+  Scenario: a parenting crash after the relation lands recovers the verification
+    Given the keyed attachment landed but the crash hit before local reconciliation
+    When recovery resumes the still-pending parenting
+    Then the keyed replay returns the original response with its operation id
+    And cascade verification completes and parented, operation, cascade_verified, and any reopen_owed stamp in one transaction
+    And an unreached cascade's explicit-reopen obligation is never lost
+
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project
     When a new active issue is created attributing to neither

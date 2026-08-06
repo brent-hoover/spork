@@ -377,8 +377,11 @@ requirements:
         statement: An untrusted completion stamp never reports done from current state — the fallback reads live state with its atomically captured feed watermark and processes the feed through it first, so pending revision-advancing events, a detached reopen-and-recomplete included, are consumed before any completion verdict.
         test: verification/REQ-run-to-complete.feature#a detached reopen-and-recomplete cannot slip a stale completion
       - id: AC-complete-new-work
-        statement: Kriya keeps consuming project work events after a target completes — a new active issue attributing to a completed target advances its epoch, clears the stamp, and parents the ticket under the epic, whose attachment cascade reopens it; an ambiguous creation suppresses completion for every candidate through the open ambiguity record, without advancing epochs, until resolution wakes only the selected target.
+        statement: Kriya keeps consuming project work events after a target completes — a new active issue attributing to a completed target advances its epoch, clears the stamp, and parents the ticket under the epic, whose attachment cascade reopens it.
         test: verification/REQ-run-to-complete.feature#new work created after completion wakes the target
+      - id: AC-complete-ambiguous-new-work
+        statement: An ambiguous post-completion creation advances no epoch — the open ambiguity record suppresses completion for every candidate target — and resolution wakes only the selected target through its parenting attachment's cascade, the others resuming untouched.
+        test: verification/REQ-run-to-complete.feature#an ambiguous post-completion creation suppresses without advancing
       - id: AC-complete-stall
         statement: When nothing is workable, nothing is in flight, and the epic still cannot close, a durable Stall row records the condition and its cause and surfaces in the operator inbox; resolution stamps it — never silent spinning, never a false done.
         test: verification/REQ-run-to-complete.feature#a stall surfaces with its cause
@@ -668,7 +671,7 @@ data:
         - { name: operation, type: string }  # the server transaction id correlated during cascade verification — the evidence the check ran against
         - { name: ticket, type: string }  # new-work advances — the created ticket this advance must parent
         - { name: relation_key, type: string }  # new-work advances — deterministic Idempotency-Key of the parenting mutation, persisted with the advance; recovery replays it
-        - { name: parenting_state, type: enum, values: [pending, parented] }  # new-work advances — written pending with the advance, stamped parented once the keyed attachment lands; recovery resumes any pending parenting, so a crash between advance and attachment never strands a detached ticket (the advance replay colliding is exactly why this state lives here)
+        - { name: parenting_state, type: enum, values: [pending, parented] }  # new-work advances — written pending with the advance and held pending THROUGH cascade verification: parented is stamped only in the same transaction that records operation, cascade_verified, and (when unreached) reopen_owed, so recovery resuming every pending row always re-runs the keyed attachment replay AND the correlation — a crash at any point before the atomic stamp can never lose the explicit-reopen obligation or strand a detached ticket
         - { name: cascade_verified, type: enum, values: [reached, unreached] }  # cascade-driven causes only — reached requires an issue.status-changed event for the epic, with its reopened status, under the same operation; recorded atomically with the advance
         - { name: reopen_owed, type: boolean }  # true exactly when verification recorded unreached — the durable explicit-reopen obligation recovery honors
         - { name: epoch, type: integer, required: true }  # the epoch value this advance produced
@@ -791,7 +794,10 @@ data:
         relation mutation: ATTACHING active work beneath the complete
         epic is itself the reopen trigger — sutra cascades atomically —
         and kriya verifies that cascade through the mutation's
-        operation id exactly as for reopens, issuing the explicit keyed
+        operation id exactly as for reopens — parenting_state staying
+        pending until verification completes and stamping parented
+        atomically with operation, cascade_verified, and any
+        reopen_owed — issuing the explicit keyed
         reopen only if the epic provably went unreached. An AMBIGUOUS
         creation in a multi-mapping project advances NO epoch: the open
         AttributionAmbiguity row itself suppresses completion for every
