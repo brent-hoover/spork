@@ -70,6 +70,14 @@ Feature: Run to complete
     And any completion claim recorded before the detach fails its revision fence
     And the detached ticket still blocks completion detection through its target scope
 
+  Scenario: reattachment reconciliation closes the claim-after-detach race
+    Given a target ticket was detached and then completed
+    When a completion attempt begins
+    Then reattachment reconciliation re-parents it beneath the epic before the claim's subtree revision is captured
+    And a later reopen of that ticket is a descendant reopen — the cascade reopens the epic and the revision moves
+    Given the ticket is instead detached after the claim was captured
+    Then the removal advanced the epic's revision and the claim fails its fence
+
   Scenario: completion is the head plan done and the epic closable
     Given the activated head plan bears its completed stamp
     And every ticket of the activated head plan is complete

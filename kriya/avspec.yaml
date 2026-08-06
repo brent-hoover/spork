@@ -666,7 +666,16 @@ data:
         this row, which is why tickets never re-parent. Build-level
         completion lives here as a write-ahead lifecycle, not a bare
         timestamp: when every ticket of the activated head plan is
-        complete, kriya first records review-submitting — rotating the
+        complete, REATTACHMENT RECONCILIATION precedes every claim: every
+        target-scoped ticket — plan membership or mapping-bound — not
+        currently parented beneath the epic is re-parented through
+        keyed relation mutations BEFORE the claim's subtree revision is
+        captured, so every later reopen of any target ticket is a
+        descendant reopen with its ancestor cascade, and a detach after
+        capture advances the epic's revision (removal increments the
+        former parent's chain) and fails the claim's fence — a
+        detached-while-complete ticket can never reopen past a captured
+        claim. Then kriya first records review-submitting — rotating the
         ENTIRE claim-field set (submission key, doc key, pending report
         reference, review id and revision, claim epoch, and the epic's
         observed subtree_revision) transactionally as one unit for THIS
@@ -781,7 +790,9 @@ data:
         reopening, atomically advances the epoch and clears completed;
         whether an EXTERNAL reopen is owed depends on WHAT advanced the
         epoch, and the durable advance cause is AUTHORITATIVE — every advance INSERTS a CompletionAdvance record keyed uniquely by (target, event) in the advancing transaction, so any replayed event, in any order, collides and is a no-op; the record carries the cause recovery reads: every
-        sutra-cascade-driven advance — a ticket reopening, deferred
+        sutra-cascade-driven advance — a ticket reopening (always a
+        descendant reopen, since binds parent under the epic and
+        reattachment reconciliation precedes every claim), deferred
         work activating, an active subtree attached — NEVER calls
         sutra, regardless of prior completion state, because the
         ancestor cascade already reopened the epic atomically in the
