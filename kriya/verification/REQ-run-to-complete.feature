@@ -78,6 +78,12 @@ Feature: Run to complete
     Given the ticket is instead detached after the claim was captured
     Then the removal advanced the epic's revision and the claim fails its fence
 
+  Scenario: a detach between reattachment and capture aborts the attempt
+    Given reattachment reconciliation completed and a target ticket was then detached before the revision capture
+    When the post-capture membership verification runs
+    Then the ticket reads as missing from the epic's subtree — the capture already includes the detach's increment
+    And the attempt aborts and reconciliation re-runs, so no claim is ever captured over a hole in the subtree
+
   Scenario: completion is the head plan done and the epic closable
     Given the activated head plan bears its completed stamp
     And every ticket of the activated head plan is complete

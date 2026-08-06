@@ -670,12 +670,18 @@ data:
         target-scoped ticket — plan membership or mapping-bound — not
         currently parented beneath the epic is re-parented through
         keyed relation mutations BEFORE the claim's subtree revision is
-        captured, so every later reopen of any target ticket is a
-        descendant reopen with its ancestor cascade, and a detach after
-        capture advances the epic's revision (removal increments the
-        former parent's chain) and fails the claim's fence — a
-        detached-while-complete ticket can never reopen past a captured
-        claim. Then kriya first records review-submitting — rotating the
+        captured — and membership is then VERIFIED after the capture:
+        every target-scoped ticket must read as a descendant of the
+        epic. The ordering makes the vulnerable window empty: a detach
+        interleaving reattachment and capture is caught by the
+        verification (the capture already includes the detach's
+        increment and the ticket reads missing), aborting the attempt
+        and re-running reconciliation; a detach after the capture
+        advances the epic's revision (removal increments the former
+        parent's chain) past the claim and fails its fence. Either way
+        every later reopen of any target ticket is a descendant reopen
+        with its ancestor cascade — a detached-while-complete ticket
+        can never reopen past a captured claim. Then kriya first records review-submitting — rotating the
         ENTIRE claim-field set (submission key, doc key, pending report
         reference, review id and revision, claim epoch, and the epic's
         observed subtree_revision) transactionally as one unit for THIS
