@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sutra/internal/comments"
+	"sutra/internal/docs"
 	"sutra/internal/events"
 	"sutra/internal/identity"
 	"sutra/internal/issues"
@@ -39,45 +40,244 @@ func malformedImport(format string, args ...any) *apiError {
 }
 
 // importProject reconstructs a project from an export
-// (AC-import-round-trip): UUIDs preserved, records inserted verbatim,
-// rejected whole on any collision (AC-import-collision) or invariant
-// violation — no partial imports.
+// (AC-import-round-trip) in two STREAMING passes over the spooled
+// body, so memory holds record metadata plus one content field at a
+// time — never the whole payload. Pass A (the prepare stage, before
+// the idempotency reservation takes the write lock) walks the payload
+// stripping unbounded content to presence-preserving sentinels and
+// validates the resulting metadata. Pass B rewinds the body and walks
+// it again inside the transaction, inserting each record verbatim under
+// deferred foreign keys, so caller-chosen field order cannot break
+// referential inserts. Rejected whole on any collision
+// (AC-import-collision) or invariant violation — no partial imports.
 func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 	actor := r.URL.Query().Get("actor")
-	// Decode and payload validation run in the PREPARE stage — before
-	// the idempotency reservation takes SQLite's write lock — so a
-	// multi-gigabyte decode never blocks other mutations. Only the
-	// collision probe and the inserts hold the writer.
 	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		var p importPayload
-		if err := dec.Decode(&p); err != nil {
-			return nil, malformedImport("decode export: %v", err)
-		}
-		if err := dec.Decode(new(any)); err != io.EOF {
-			return nil, malformedImport("trailing data after the export payload")
-		}
-		if apiErr := validateImport(&p, actor); apiErr != nil {
+		meta, apiErr := collectImportMeta(r.Body)
+		if apiErr != nil {
 			return nil, apiErr
 		}
-		return &p, nil
+		if apiErr := validateImport(meta, actor); apiErr != nil {
+			return nil, apiErr
+		}
+		return meta, nil
 	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
-		p := prepped.(*importPayload)
-		if apiErr := s.checkImportCollisions(tx, p); apiErr != nil {
+		meta := prepped.(*importPayload)
+		if apiErr := s.checkImportCollisions(tx, meta); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		if apiErr := insertImport(tx, p); apiErr != nil {
+		// Deferred FKs let pass B insert in payload order regardless
+		// of reference direction; enforcement lands at commit.
+		if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		if apiErr := insertImportStream(tx, r.Body, meta); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		// Exactly one appended audit event; per-record events arrived
 		// verbatim above and are never re-stamped.
-		payload := fmt.Sprintf(`{"project":%q}`, p.Project.ID)
-		if _, err := events.Emit(tx, "project.imported", p.Project.ID, events.NewOperation(), actor, &payload); err != nil {
+		payload := fmt.Sprintf(`{"project":%q}`, meta.Project.ID)
+		if _, err := events.Emit(tx, "project.imported", meta.Project.ID, events.NewOperation(), actor, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
-		return http.StatusCreated, p.Project, nil
+		return http.StatusCreated, meta.Project, nil
 	})
+}
+
+// collectImportMeta is pass A: stream the payload, strip unbounded
+// content to short presence-preserving sentinels, and return the
+// bounded metadata for validation.
+func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
+	meta := &importPayload{}
+	const sentinel = "x"
+	apiErr := walkImport(body, importCallbacks{
+		project:  func(p projects.Project) error { meta.Project = p; return nil },
+		identity: func(v identity.Identity) error { meta.Identities = append(meta.Identities, v); return nil },
+		issue:    func(v issues.Issue) error { meta.Issues = append(meta.Issues, v); return nil },
+		comment: func(c comments.Comment) error {
+			if c.Body != "" {
+				c.Body = sentinel
+			}
+			meta.Comments = append(meta.Comments, c)
+			return nil
+		},
+		label:    func(v issues.Label) error { meta.Labels = append(meta.Labels, v); return nil },
+		relation: func(v issues.Relation) error { meta.IssueRelations = append(meta.IssueRelations, v); return nil },
+		document: func(d docs.Document) error {
+			meta.Documents = append(meta.Documents, documentExport{Document: d})
+			return nil
+		},
+		docVersion: func(v docs.Version) error {
+			v.Content = ""
+			last := &meta.Documents[len(meta.Documents)-1]
+			last.Versions = append(last.Versions, v)
+			return nil
+		},
+		thread: func(t threads.Thread) error {
+			if len(t.Transcript) > 0 {
+				t.Transcript = json.RawMessage(`0`)
+			}
+			meta.Threads = append(meta.Threads, t)
+			return nil
+		},
+		review: func(rv review.Review) error { meta.Reviews = append(meta.Reviews, rv); return nil },
+		submission: func(sub review.Submission, _ string) error {
+			if sub.Content != nil && *sub.Content != "" {
+				s := sentinel
+				sub.Content = &s
+			}
+			last := &meta.Reviews[len(meta.Reviews)-1]
+			last.Submissions = append(last.Submissions, sub)
+			return nil
+		},
+		event: func(e events.Event) error { meta.Events = append(meta.Events, e); return nil },
+	})
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	return meta, nil
+}
+
+// insertImportStream is pass B: re-walk the payload and insert every
+// record verbatim — UUIDs, timestamps, and server-stamped fields
+// preserved, never recomputed. Validation already passed on the
+// metadata, so failures here are internal.
+func insertImportStream(tx *sql.Tx, body io.Reader, meta *importPayload) *apiError {
+	fail := func(what string, err error) error {
+		return fmt.Errorf("import %s: %w", what, err)
+	}
+	apiErr := walkImport(body, importCallbacks{
+		project: func(p projects.Project) error {
+			defaultBranch := "main"
+			if p.DefaultBranch != nil {
+				defaultBranch = *p.DefaultBranch
+			}
+			if _, err := tx.Exec(`INSERT INTO projects (id, key, name, description, repo_path, default_branch, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				p.ID, p.Key, p.Name, p.Description, p.RepoPath, defaultBranch, p.ArchivedAt); err != nil {
+				return fail("project", err)
+			}
+			return nil
+		},
+		identity: func(v identity.Identity) error {
+			if _, err := tx.Exec(`INSERT INTO identities (id, handle, kind, display_name) VALUES (?, ?, ?, ?)`,
+				v.ID, v.Handle, v.Kind, v.DisplayName); err != nil {
+				return fail("identity", err)
+			}
+			return nil
+		},
+		issue: func(i issues.Issue) error {
+			// assigned_at is internal FIFO state absent from the
+			// contract (spec gap); imported assignees inherit the
+			// issue's updated stamp as their queue position.
+			var assignedAt *string
+			if i.Assignee != nil {
+				at := i.Updated
+				assignedAt = &at
+			}
+			if _, err := tx.Exec(`INSERT INTO issues (id, project, number, title, body, status, assignee, assigned_at, subtree_revision, created, updated)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				i.ID, i.Project, i.Number, i.Title, i.Body, i.Status, i.Assignee, assignedAt, i.SubtreeRevision, i.Created, i.Updated); err != nil {
+				return fail("issue", err)
+			}
+			for _, l := range i.Labels {
+				if _, err := tx.Exec(`INSERT INTO issue_labels (issue, label) VALUES (?, ?)`, i.ID, l.ID); err != nil {
+					return fail("issue label", err)
+				}
+			}
+			return nil
+		},
+		comment: func(c comments.Comment) error {
+			if _, err := tx.Exec(`INSERT INTO comments (id, issue, doc_version, review, review_revision, parent, anchor, author, body, created)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				c.ID, c.Issue, c.DocVersion, c.Review, c.ReviewRevision, c.Parent, c.Anchor, c.Author, c.Body, c.Created); err != nil {
+				return fail("comment", err)
+			}
+			return nil
+		},
+		label: func(l issues.Label) error {
+			if _, err := tx.Exec(`INSERT INTO labels (id, name, color) VALUES (?, ?, ?)`, l.ID, l.Name, l.Color); err != nil {
+				return fail("label", err)
+			}
+			return nil
+		},
+		relation: func(rel issues.Relation) error {
+			if _, err := tx.Exec(`INSERT INTO issue_relations (id, kind, from_issue, to_issue) VALUES (?, ?, ?, ?)`,
+				rel.ID, rel.Kind, rel.From, rel.To); err != nil {
+				return fail("relation", err)
+			}
+			return nil
+		},
+		document: func(d docs.Document) error {
+			if _, err := tx.Exec(`INSERT INTO documents (id, project, issue, title, current_version) VALUES (?, ?, ?, ?, ?)`,
+				d.ID, d.Project, d.Issue, d.Title, d.CurrentVersion); err != nil {
+				return fail("document", err)
+			}
+			return nil
+		},
+		docVersion: func(v docs.Version) error {
+			if _, err := tx.Exec(`INSERT INTO doc_versions (id, document, number, content, author, created) VALUES (?, ?, ?, ?, ?, ?)`,
+				v.ID, v.Document, v.Number, v.Content, v.Author, v.Created); err != nil {
+				return fail("doc version", err)
+			}
+			return nil
+		},
+		thread: func(th threads.Thread) error {
+			if _, err := tx.Exec(`INSERT INTO threads (id, title, transcript, session, project, issue, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				th.ID, th.Title, string(th.Transcript), th.Session, th.Project, th.Issue, th.ImportedAt); err != nil {
+				return fail("thread", err)
+			}
+			return nil
+		},
+		review: func(rv review.Review) error {
+			if _, err := tx.Exec(`INSERT INTO reviews (id, issue, author, state, revision, session, summary, branch, commit_sha, doc_version, latest_verdict_event, consumed, consumed_revision, close_used, created)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				rv.ID, rv.Issue, rv.Author, rv.State, rv.Revision, rv.Session, rv.Summary, rv.Branch, rv.Commit, rv.DocVersion,
+				rv.LatestVerdictEvent, rv.Consumed, rv.ConsumedRevision, rv.CloseUsed, rv.Created); err != nil {
+				return fail("review", err)
+			}
+			return nil
+		},
+		submission: func(sub review.Submission, reviewID string) error {
+			if _, err := tx.Exec(`INSERT INTO review_submissions (id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				sub.ID, reviewID, sub.Revision, sub.Branch, sub.Commit, sub.BaseCommit, sub.DocVersion, sub.Session, sub.Content, sub.Created); err != nil {
+				return fail("submission", err)
+			}
+			return nil
+		},
+		event: func(e events.Event) error {
+			var payload *string
+			if e.Payload != nil {
+				raw, err := json.Marshal(e.Payload)
+				if err != nil {
+					return fail("event payload", err)
+				}
+				str := string(raw)
+				payload = &str
+			}
+			if _, err := tx.Exec(`INSERT INTO events (id, kind, subject, operation, actor, payload, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				e.ID, e.Kind, e.Subject, e.Operation, e.Actor, payload, e.Created); err != nil {
+				return fail("event", err)
+			}
+			return nil
+		},
+	})
+	if apiErr != nil {
+		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: apiErr.message}
+	}
+	maxNumber := int64(0)
+	for _, i := range meta.Issues {
+		if i.Number > maxNumber {
+			maxNumber = i.Number
+		}
+	}
+	if maxNumber > 0 {
+		// Future creates continue the display sequence past the import.
+		if _, err := tx.Exec(`INSERT INTO issue_numbers (project, next) VALUES (?, ?)`, meta.Project.ID, maxNumber); err != nil {
+			return errorFrom(fmt.Errorf("import issue numbers: %w", err))
+		}
+	}
+	return nil
 }
 
 // validateImport checks internal consistency: every reference resolves
@@ -698,126 +898,4 @@ func chunkIDs(ids []string, size int) [][]string {
 		out = append(out, ids)
 	}
 	return out
-}
-
-// insertImport writes every record verbatim — UUIDs, timestamps, and
-// server-stamped fields preserved, never recomputed.
-func insertImport(tx *sql.Tx, p *importPayload) *apiError {
-	fail := func(what string, err error) *apiError {
-		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("import %s: %v", what, err)}
-	}
-	proj := p.Project
-	defaultBranch := "main"
-	if proj.DefaultBranch != nil {
-		defaultBranch = *proj.DefaultBranch
-	}
-	if _, err := tx.Exec(`INSERT INTO projects (id, key, name, description, repo_path, default_branch, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		proj.ID, proj.Key, proj.Name, proj.Description, proj.RepoPath, defaultBranch, proj.ArchivedAt); err != nil {
-		return fail("project", err)
-	}
-	for _, i := range p.Identities {
-		if _, err := tx.Exec(`INSERT INTO identities (id, handle, kind, display_name) VALUES (?, ?, ?, ?)`,
-			i.ID, i.Handle, i.Kind, i.DisplayName); err != nil {
-			return fail("identity", err)
-		}
-	}
-	maxNumber := int64(0)
-	for _, i := range p.Issues {
-		// assigned_at is internal FIFO state absent from the contract
-		// (spec gap); imported assignees inherit the issue's updated
-		// stamp as their queue position.
-		var assignedAt *string
-		if i.Assignee != nil {
-			at := i.Updated
-			assignedAt = &at
-		}
-		if _, err := tx.Exec(`INSERT INTO issues (id, project, number, title, body, status, assignee, assigned_at, subtree_revision, created, updated)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			i.ID, i.Project, i.Number, i.Title, i.Body, i.Status, i.Assignee, assignedAt, i.SubtreeRevision, i.Created, i.Updated); err != nil {
-			return fail("issue", err)
-		}
-		if i.Number > maxNumber {
-			maxNumber = i.Number
-		}
-	}
-	if maxNumber > 0 {
-		// Future creates continue the display sequence past the import.
-		if _, err := tx.Exec(`INSERT INTO issue_numbers (project, next) VALUES (?, ?)`, proj.ID, maxNumber); err != nil {
-			return fail("issue numbers", err)
-		}
-	}
-	for _, l := range p.Labels {
-		if _, err := tx.Exec(`INSERT INTO labels (id, name, color) VALUES (?, ?, ?)`, l.ID, l.Name, l.Color); err != nil {
-			return fail("label", err)
-		}
-	}
-	for _, i := range p.Issues {
-		for _, l := range i.Labels {
-			if _, err := tx.Exec(`INSERT INTO issue_labels (issue, label) VALUES (?, ?)`, i.ID, l.ID); err != nil {
-				return fail("issue label", err)
-			}
-		}
-	}
-	for _, r := range p.IssueRelations {
-		if _, err := tx.Exec(`INSERT INTO issue_relations (id, kind, from_issue, to_issue) VALUES (?, ?, ?, ?)`,
-			r.ID, r.Kind, r.From, r.To); err != nil {
-			return fail("relation", err)
-		}
-	}
-	for _, d := range p.Documents {
-		if _, err := tx.Exec(`INSERT INTO documents (id, project, issue, title, current_version) VALUES (?, ?, ?, ?, ?)`,
-			d.Document.ID, d.Document.Project, d.Document.Issue, d.Document.Title, d.Document.CurrentVersion); err != nil {
-			return fail("document", err)
-		}
-		for _, v := range d.Versions {
-			if _, err := tx.Exec(`INSERT INTO doc_versions (id, document, number, content, author, created) VALUES (?, ?, ?, ?, ?, ?)`,
-				v.ID, v.Document, v.Number, v.Content, v.Author, v.Created); err != nil {
-				return fail("doc version", err)
-			}
-		}
-	}
-	for _, t := range p.Threads {
-		if _, err := tx.Exec(`INSERT INTO threads (id, title, transcript, session, project, issue, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			t.ID, t.Title, string(t.Transcript), t.Session, t.Project, t.Issue, t.ImportedAt); err != nil {
-			return fail("thread", err)
-		}
-	}
-	for _, r := range p.Reviews {
-		if _, err := tx.Exec(`INSERT INTO reviews (id, issue, author, state, revision, session, summary, branch, commit_sha, doc_version, latest_verdict_event, consumed, consumed_revision, close_used, created)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.Issue, r.Author, r.State, r.Revision, r.Session, r.Summary, r.Branch, r.Commit, r.DocVersion,
-			r.LatestVerdictEvent, r.Consumed, r.ConsumedRevision, r.CloseUsed, r.Created); err != nil {
-			return fail("review", err)
-		}
-		for _, sub := range r.Submissions {
-			if _, err := tx.Exec(`INSERT INTO review_submissions (id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				sub.ID, sub.Review, sub.Revision, sub.Branch, sub.Commit, sub.BaseCommit, sub.DocVersion, sub.Session, sub.Content, sub.Created); err != nil {
-				return fail("submission", err)
-			}
-		}
-	}
-	for _, c := range p.Comments {
-		if _, err := tx.Exec(`INSERT INTO comments (id, issue, doc_version, review, review_revision, parent, anchor, author, body, created)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.ID, c.Issue, c.DocVersion, c.Review, c.ReviewRevision, c.Parent, c.Anchor, c.Author, c.Body, c.Created); err != nil {
-			return fail("comment", err)
-		}
-	}
-	for _, e := range p.Events {
-		var payload *string
-		if e.Payload != nil {
-			raw, err := json.Marshal(e.Payload)
-			if err != nil {
-				return fail("event payload", err)
-			}
-			str := string(raw)
-			payload = &str
-		}
-		if _, err := tx.Exec(`INSERT INTO events (id, kind, subject, operation, actor, payload, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.Kind, e.Subject, e.Operation, e.Actor, payload, e.Created); err != nil {
-			return fail("event", err)
-		}
-	}
-	return nil
 }
