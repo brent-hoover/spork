@@ -253,3 +253,29 @@ func TestCrossProjectArchiveGuard(t *testing.T) {
 		t.Fatalf("cross-project relation into archived project must 409, got %d %s", status, body)
 	}
 }
+
+// TestCrossProjectParentRejected pins the one-project hierarchy rule:
+// a parent_of across projects would let a live descendant mutate an
+// archived ancestor project, so it rejects outright.
+func TestCrossProjectParentRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	w := buildWorld(t, srv, 1, false)
+	var out struct {
+		ID string `json:"id"`
+	}
+	status, body := req(t, srv, http.MethodPost, "/projects", "xp",
+		fmt.Sprintf(`{"key":"OTH","name":"Other","actor":%q}`, w.actor))
+	if err := json.Unmarshal([]byte(body), &out); err != nil || status != http.StatusCreated {
+		t.Fatalf("project: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodPost, "/projects/"+out.ID+"/issues", "xp-i",
+		fmt.Sprintf(`{"title":"other","actor":%q}`, w.actor))
+	if err := json.Unmarshal([]byte(body), &out); err != nil || status != http.StatusCreated {
+		t.Fatalf("issue: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodPost, "/issues/"+w.issues[0]+"/relations", "xp-rel",
+		fmt.Sprintf(`{"kind":"parent_of","to":%q,"actor":%q}`, out.ID, w.actor))
+	if status != http.StatusBadRequest {
+		t.Fatalf("cross-project parent_of must 400, got %d %s", status, body)
+	}
+}

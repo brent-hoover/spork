@@ -475,10 +475,18 @@ func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
-		// Relations may cross projects; the archive write-guard covers
-		// BOTH sides — an archived project stays read-only from either
-		// end of the edge.
 		if toIssue.Project != fromIssue.Project {
+			// parent_of stays within ONE project: the reopen cascade
+			// and subtree_revision walk the ancestor chain, and a
+			// cross-project chain would let a live descendant mutate an
+			// archived ancestor project past its write guard
+			// (AC-project-scoping: content belongs to exactly one
+			// project). blocks relations may cross, with both sides
+			// guarded — they never cascade.
+			if req.Kind == "parent_of" {
+				return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request",
+					message: "parent_of relations must stay within one project"}
+			}
 			if apiErr := guardWritable(tx, toIssue.Project); apiErr != nil {
 				return 0, nil, apiErr
 			}

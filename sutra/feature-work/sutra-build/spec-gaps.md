@@ -40,6 +40,13 @@ proposed home (avspec field / kriya context / convention).
   floor at go 1.25 — resolved by bumping both specs to 1.25 — proposed
   home: avspec could flag EOL language pins at verify time, or the pin
   belongs at major-version altitude.
+- 2026-08-06 — Cross-project hierarchy unspecified: the spec never says
+  whether parent_of may cross projects, but the reopen cascade and
+  subtree_revision walk ancestor chains — a cross-project chain lets a
+  live descendant mutate an archived ancestor project past its write
+  guard (found by roborev 1728) — resolved: parent_of confined to one
+  project (AC-project-scoping intent); blocks may cross with both-sides
+  guards — proposed home: an explicit AC on relation project scope.
 - 2026-08-06 — SQLite DDL (indexes, composite keys, on-delete) not
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,
