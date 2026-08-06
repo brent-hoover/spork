@@ -376,6 +376,9 @@ requirements:
       - id: AC-complete-drained
         statement: An untrusted completion stamp never reports done from current state — the fallback reads live state with its atomically captured feed watermark and processes the feed through it first, so pending revision-advancing events, a detached reopen-and-recomplete included, are consumed before any completion verdict.
         test: verification/REQ-run-to-complete.feature#a detached reopen-and-recomplete cannot slip a stale completion
+      - id: AC-complete-drain-first
+        statement: Every completion read drains the project feed through an atomically captured watermark BEFORE trusting even a revision-matching stamp — a newly created, unparented target ticket advances no subtree revision, so the revision match alone never proves quiescence; the drain consumes the creation and fires the new-work advance before any done verdict.
+        test: verification/REQ-run-to-complete.feature#a creation in the event lag cannot hide behind a trusted stamp
       - id: AC-complete-new-work
         statement: Kriya keeps consuming project work events after a target completes — a new active issue attributing to a completed target advances its epoch, clears the stamp, and parents the ticket under the epic, whose attachment cascade reopens it.
         test: verification/REQ-run-to-complete.feature#new work created after completion wakes the target
@@ -872,7 +875,7 @@ data:
         supersession installing a new head, or a completed ticket
         reopening, atomically advances the epoch and clears completed;
         whether an EXTERNAL reopen is owed depends on WHAT advanced the
-        epoch, and the durable advance cause is AUTHORITATIVE — every advance INSERTS a CompletionAdvance record keyed uniquely by (target, event) in the advancing transaction, so any replayed event, in any order, collides and is a no-op; the record carries the cause recovery reads: every
+        epoch, and the durable advance cause is AUTHORITATIVE — every advance INSERTS a CompletionAdvance record in the advancing transaction — event-consumption advances keyed by (target, event) so any replayed event, in any order, collides and is a no-op; ambiguity-resolution advances keyed by (ambiguity_key, resolution_generation, target_key), event present only when a parenting operation ran and absent on the adopted path — and the record carries the cause recovery reads: every
         sutra-cascade-driven advance — a ticket reopening, deferred
         work activating, an active subtree attached — SKIPS the call
         only after VERIFYING the cascade actually reached the epic —
