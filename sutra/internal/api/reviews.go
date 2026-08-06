@@ -167,6 +167,14 @@ func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, exp
 	}
 	// Pin both objects durably: a later branch deletion or force-push
 	// must never let gc prune what an accepted review resolves from.
+	// Pinning runs WRITE-AHEAD of the database transaction by design:
+	// the failure asymmetry is what decides the order. A pin without a
+	// submission (rejection, lost race, crash) is a benign extra
+	// reachability root — content-addressed, idempotent, retaining
+	// only objects that already exist. A submission without a pin is
+	// the actual corruption: an accepted review whose deliverable gc
+	// can destroy. Pin-then-commit makes every crash window err toward
+	// harmless surplus, exactly like the idempotency reservation.
 	if err := review.PinObjects(repo.Path, *d.Commit, base); err != nil {
 		return review.Deliverable{}, "", reviewErrorFrom(err)
 	}

@@ -778,15 +778,26 @@ func TestSubmoduleChangesNeverIgnored(t *testing.T) {
 			t.Fatalf("git %v: %v — %s", args, err, out)
 		}
 	}
-	run(repo.path, "checkout", "feature")
+	// The submodule (and .gitmodules) exists on MAIN — the base side —
+	// so the feature diff contains ONLY the gitlink change; a
+	// suppressed gitlink cannot hide behind a .gitmodules hunk.
 	run(repo.path, "submodule", "add", sub.path, "vendored")
-	run(repo.path, "commit", "-m", "add submodule")
+	run(repo.path, "commit", "-m", "add submodule on main")
+	oldPin, err := exec.Command("git", "-C", filepath.Join(repo.path, "vendored"), "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(repo.path, "checkout", "-b", "feature-sub")
 	// Configure the repo to ignore submodule changes entirely.
 	run(repo.path, "config", "diff.ignoreSubmodules", "all")
-	// Advance the submodule gitlink.
+	// Advance ONLY the submodule gitlink on the feature branch.
 	run(filepath.Join(repo.path, "vendored"), "checkout", "feature")
+	newPin, err := exec.Command("git", "-C", filepath.Join(repo.path, "vendored"), "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
 	run(repo.path, "add", "vendored")
-	run(repo.path, "commit", "-m", "bump submodule")
+	run(repo.path, "commit", "-m", "bump submodule only")
 	out, err := exec.Command("git", "-C", repo.path, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -817,15 +828,17 @@ func TestSubmoduleChangesNeverIgnored(t *testing.T) {
 	decode(status, body, http.StatusCreated, "issue")
 	issue := decoded["id"].(string)
 	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
-		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, headSHA))
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature-sub","commit":%q}`, issue, actor, headSHA))
 	decode(status, body, http.StatusCreated, "review")
 	reviewID := decoded["id"].(string)
 
 	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
 	decode(status, body, http.StatusOK, "deliverable")
 	content := decoded["content"].(string)
-	if !strings.Contains(content, "vendored") {
-		t.Fatalf("ignored-submodule config hid the gitlink change: %.300s", content)
+	oldSHA := strings.TrimSpace(string(oldPin))
+	newSHA := strings.TrimSpace(string(newPin))
+	if !strings.Contains(content, "-Subproject commit "+oldSHA) || !strings.Contains(content, "+Subproject commit "+newSHA) {
+		t.Fatalf("gitlink change must show exact old/new pins (%s -> %s): %.400s", oldSHA, newSHA, content)
 	}
 }
 
