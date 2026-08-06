@@ -60,6 +60,17 @@ var implementedFeatures = []string{
 	"../verification/REQ-issue-hierarchy.feature:73",       // attaching an open child reopens a complete parent
 	"../verification/REQ-issue-hierarchy.feature:78",       // an attached deferred subtree carrying active work reopens the parent
 	"../verification/REQ-issue-hierarchy.feature:84",       // relation conflicts carry their distinct codes
+	"../verification/REQ-agent-queue.feature:5",            // pop claims the issue
+	"../verification/REQ-agent-queue.feature:12",           // concurrent pops never collide
+	"../verification/REQ-agent-queue.feature:17",           // oldest issue comes first
+	"../verification/REQ-agent-queue.feature:22",           // blocker is worked first
+	"../verification/REQ-agent-queue.feature:28",           // externally blocked issues are skipped
+	"../verification/REQ-agent-queue.feature:35",           // non-open statuses are never handed out
+	"../verification/REQ-agent-queue.feature:45",           // empty stack is not an error
+	"../verification/REQ-agent-queue.feature:50",           // archived project issues are never handed out
+	"../verification/REQ-agent-queue.feature:57",           // same-key replay claims nothing new
+	"../verification/REQ-status-workflow.feature:22",       // pop wins the race over a conditional defer
+	"../verification/REQ-status-workflow.feature:29",       // conditional defer wins the race over a pop
 }
 
 var contractRouter routers.Router
@@ -200,6 +211,31 @@ func (s *testState) validateAgainstContract(req *http.Request, reqBody []byte, r
 	return nil
 }
 
+// callKeyed performs a mutation under an EXPLICIT idempotency key and
+// returns the raw exchange — for replay scenarios.
+func (s *testState) callKeyed(method, path string, body any, key string) (int, string, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequest(method, s.server.URL+path, bytes.NewReader(raw))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := s.server.Client().Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, "", err
+	}
+	return resp.StatusCode, string(out), nil
+}
+
 // expectStatus asserts the last response's status code.
 func (s *testState) expectStatus(want int) error {
 	if s.lastResp.StatusCode != want {
@@ -242,6 +278,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	iw := registerIssueSteps(sc, s)
 	cw := registerCloseSteps(sc, iw)
 	registerHierarchySteps(sc, cw)
+	registerQueueSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

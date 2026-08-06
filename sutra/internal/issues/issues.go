@@ -97,6 +97,7 @@ func Migrate(db *sql.DB) error {
 			status           TEXT NOT NULL DEFAULT 'open'
 				CHECK (status IN ('open', 'in-progress', 'blocked', 'deferred', 'complete')),
 			assignee         TEXT,
+			assigned_at      TEXT,
 			subtree_revision INTEGER NOT NULL DEFAULT 0,
 			created          TEXT NOT NULL,
 			updated          TEXT NOT NULL,
@@ -409,6 +410,114 @@ func SetStatus(tx *sql.Tx, id, status string) error {
 		return &NotFoundError{ID: id}
 	}
 	return nil
+}
+
+// Assign sets or clears the assignee (AC-issue-assign); assignment
+// order feeds the work stack, so assigned_at stamps on set and clears
+// with the assignee.
+func Assign(tx *sql.Tx, id string, assignee *string) (Issue, error) {
+	if _, err := Get(tx, id); err != nil {
+		return Issue{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var assignedAt *string
+	if assignee != nil {
+		assignedAt = &now
+	}
+	if _, err := tx.Exec(`UPDATE issues SET assignee = ?, assigned_at = ?, updated = ? WHERE id = ?`,
+		assignee, assignedAt, now, id); err != nil {
+		return Issue{}, fmt.Errorf("assign issue %s: %w", id, err)
+	}
+	return Get(tx, id)
+}
+
+// PopCandidate resolves the issue a pop should claim for an identity:
+// the oldest-assigned workable issue, walked to the deepest open
+// self-assigned blocker (AC-pop-fifo, AC-pop-blocker-first). An issue
+// blocked by live work assigned elsewhere — or otherwise unworkable —
+// is skipped (AC-pop-skips-blocked); archived projects' issues are
+// excluded by the caller's join. Returns nil when nothing is workable.
+func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
+	rows, err := tx.Query(`
+		SELECT `+prefixedIssueColumns("i")+` FROM issues i
+		JOIN projects p ON p.id = i.project
+		WHERE i.assignee = ? AND i.status = 'open' AND p.archived_at IS NULL
+		ORDER BY i.assigned_at, i.number`, identity)
+	if err != nil {
+		return nil, fmt.Errorf("pop candidates for %s: %w", identity, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var candidates []Issue
+	for rows.Next() {
+		i, err := scanIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan candidate: %w", err)
+		}
+		candidates = append(candidates, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate candidates: %w", err)
+	}
+	for _, candidate := range candidates {
+		claim, err := walkBlockers(tx, identity, candidate, map[string]bool{})
+		if err != nil {
+			return nil, err
+		}
+		if claim != nil {
+			return claim, nil
+		}
+	}
+	return nil, nil
+}
+
+// walkBlockers resolves what to claim for a candidate: itself when
+// unblocked, the deepest open self-assigned blocker when the chain is
+// self-owned, nil when any live blocker is external or unworkable.
+func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[string]bool) (*Issue, error) {
+	if visited[candidate.ID] {
+		return nil, nil
+	}
+	visited[candidate.ID] = true
+	rows, err := tx.Query(`
+		SELECT `+prefixedIssueColumns("b")+` FROM issue_relations r
+		JOIN issues b ON b.id = r.from_issue
+		WHERE r.kind = 'blocks' AND r.to_issue = ? AND b.status != 'complete'
+		ORDER BY b.number`, candidate.ID)
+	if err != nil {
+		return nil, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var blockers []Issue
+	for rows.Next() {
+		b, err := scanIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan blocker: %w", err)
+		}
+		blockers = append(blockers, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blockers: %w", err)
+	}
+	if len(blockers) == 0 {
+		return &candidate, nil
+	}
+	for _, blocker := range blockers {
+		if blocker.Assignee == nil || *blocker.Assignee != identity || blocker.Status != StatusOpen {
+			// Live work assigned elsewhere (or unworkable) blocks the
+			// whole chain for this identity.
+			return nil, nil
+		}
+	}
+	// Every live blocker is self-assigned and open: work the deepest.
+	return walkBlockers(tx, identity, blockers[0], visited)
+}
+
+func prefixedIssueColumns(alias string) string {
+	cols := strings.Split(issueColumns, ", ")
+	for i, c := range cols {
+		cols[i] = alias + "." + c
+	}
+	return strings.Join(cols, ", ")
 }
 
 // CompleteAncestors returns id's complete ancestors, nearest first —

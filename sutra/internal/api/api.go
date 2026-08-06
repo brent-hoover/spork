@@ -43,6 +43,8 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("GET /issues/{issueId}", s.getIssue)
 	mux.HandleFunc("PATCH /issues/{issueId}", s.updateIssue)
 	mux.HandleFunc("POST /issues/{issueId}/status", s.updateIssueStatus)
+	mux.HandleFunc("POST /issues/{issueId}/assign", s.assignIssue)
+	mux.HandleFunc("POST /identities/{identityId}/work-stack/pop", s.popWorkStack)
 	mux.HandleFunc("POST /issues/{issueId}/relations", s.addIssueRelation)
 	mux.HandleFunc("GET /issues/{issueId}/relations", s.listIssueRelations)
 	mux.HandleFunc("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation)

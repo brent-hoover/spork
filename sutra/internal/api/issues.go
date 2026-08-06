@@ -359,46 +359,155 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 			return s.closeIssue(tx, id, current, req)
 		}
 
-		operation := events.NewOperation()
-		affected := []string{id}
-		if err := issues.SetStatus(tx, id, req.Status); err != nil {
-			return 0, nil, issueErrorFrom(err)
-		}
-		if _, err := events.Emit(tx, "issue.status-changed", id, operation, req.Actor, nil); err != nil {
-			return 0, nil, errorFrom(err)
-		}
-		// An issue entering an active status reopens every complete
-		// ancestor atomically, one status event each, same operation.
-		if issues.Active(req.Status) {
-			reopened, err := issues.CompleteAncestors(tx, id)
-			if err != nil {
-				return 0, nil, errorFrom(err)
-			}
-			for _, ancestor := range reopened {
-				if err := issues.SetStatus(tx, ancestor, issues.StatusOpen); err != nil {
-					return 0, nil, issueErrorFrom(err)
-				}
-				if _, err := events.Emit(tx, "issue.status-changed", ancestor, operation, req.Actor, nil); err != nil {
-					return 0, nil, errorFrom(err)
-				}
-			}
-		}
-		ancestors, err := issues.Ancestors(tx, id)
-		if err != nil {
-			return 0, nil, errorFrom(err)
-		}
-		if err := issues.BumpSubtree(tx, append(affected, ancestors...)); err != nil {
-			return 0, nil, errorFrom(err)
-		}
-		final, err := issues.Get(tx, id)
-		if err != nil {
-			return 0, nil, issueErrorFrom(err)
+		final, apiErr := applyTransition(tx, id, req.Status, req.Actor)
+		if apiErr != nil {
+			return 0, nil, apiErr
 		}
 		watermark, err := events.Watermark(tx)
 		if err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusOK, issueRead{Issue: final, FeedWatermark: watermark}, nil
+	})
+}
+
+// applyTransition performs a non-complete status change with its full
+// consequence set — status event, complete-ancestor reopen cascade
+// under one operation id, and the once-per-transaction subtree bump —
+// shared by the transition endpoint and the work-stack pop.
+func applyTransition(tx *sql.Tx, id, status, actor string) (issues.Issue, *apiError) {
+	operation := events.NewOperation()
+	if err := issues.SetStatus(tx, id, status); err != nil {
+		return issues.Issue{}, issueErrorFrom(err)
+	}
+	if _, err := events.Emit(tx, "issue.status-changed", id, operation, actor, nil); err != nil {
+		return issues.Issue{}, errorFrom(err)
+	}
+	// An issue entering an active status reopens every complete
+	// ancestor atomically, one status event each, same operation.
+	if issues.Active(status) {
+		reopened, err := issues.CompleteAncestors(tx, id)
+		if err != nil {
+			return issues.Issue{}, errorFrom(err)
+		}
+		for _, ancestor := range reopened {
+			if err := issues.SetStatus(tx, ancestor, issues.StatusOpen); err != nil {
+				return issues.Issue{}, issueErrorFrom(err)
+			}
+			if _, err := events.Emit(tx, "issue.status-changed", ancestor, operation, actor, nil); err != nil {
+				return issues.Issue{}, errorFrom(err)
+			}
+		}
+	}
+	ancestors, err := issues.Ancestors(tx, id)
+	if err != nil {
+		return issues.Issue{}, errorFrom(err)
+	}
+	if err := issues.BumpSubtree(tx, append([]string{id}, ancestors...)); err != nil {
+		return issues.Issue{}, errorFrom(err)
+	}
+	final, err := issues.Get(tx, id)
+	if err != nil {
+		return issues.Issue{}, issueErrorFrom(err)
+	}
+	return final, nil
+}
+
+// assignIssue sets or clears the assignee. assignee is REQUIRED but
+// nullable: absent is invalid, explicit null clears (AC-issue-assign).
+func (s *server) assignIssue(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("issueId")
+	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+		var raw map[string]json.RawMessage
+		if apiErr := decodeBody(r, &raw); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		assigneeRaw, present := raw["assignee"]
+		if !present {
+			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee is required; send null to clear"}
+		}
+		var req struct {
+			Assignee *string `json:"assignee"`
+			Actor    string  `json:"actor"`
+		}
+		reencoded, err := json.Marshal(raw)
+		if err == nil {
+			err = json.Unmarshal(reencoded, &req)
+		}
+		if err != nil {
+			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+		}
+		if string(assigneeRaw) != "null" && (req.Assignee == nil || !isUUID(*req.Assignee)) {
+			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee must be an identity uuid or null"}
+		}
+		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		current, err := issues.Get(tx, id)
+		if err != nil {
+			return 0, nil, issueErrorFrom(err)
+		}
+		if apiErr := guardWritable(tx, current.Project); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		if req.Assignee != nil {
+			if apiErr := requireActor(tx, *req.Assignee); apiErr != nil {
+				return 0, nil, apiErr
+			}
+		}
+		updated, err := issues.Assign(tx, id, req.Assignee)
+		if err != nil {
+			return 0, nil, issueErrorFrom(err)
+		}
+		kind := "issue.assigned"
+		if req.Assignee == nil {
+			kind = "issue.unassigned"
+		}
+		if _, err := events.Emit(tx, kind, id, events.NewOperation(), req.Actor, nil); err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		watermark, err := events.Watermark(tx)
+		if err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		return http.StatusOK, issueRead{Issue: updated, FeedWatermark: watermark}, nil
+	})
+}
+
+// popWorkStack atomically claims the next workable issue for an
+// identity: oldest-assigned, walked to the deepest open self-assigned
+// blocker, skipping external blocks and archived projects; the claim
+// is a full in-progress transition with the popping identity as actor.
+// An empty stack is an explicit result, never an error (AC-pop-empty).
+func (s *server) popWorkStack(w http.ResponseWriter, r *http.Request) {
+	identityID := r.PathValue("identityId")
+	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+		if apiErr := requireActor(tx, identityID); apiErr != nil {
+			if apiErr.status == http.StatusBadRequest {
+				return 0, nil, &apiError{status: http.StatusNotFound, code: "not-found", message: fmt.Sprintf("identity %s not found", identityID)}
+			}
+			return 0, nil, apiErr
+		}
+		candidate, err := issues.PopCandidate(tx, identityID)
+		if err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		if candidate == nil {
+			watermark, err := events.Watermark(tx)
+			if err != nil {
+				return 0, nil, errorFrom(err)
+			}
+			return http.StatusOK, map[string]any{"feed_watermark": watermark}, nil
+		}
+		claimed, apiErr := applyTransition(tx, candidate.ID, issues.StatusInProgress, identityID)
+		if apiErr != nil {
+			return 0, nil, apiErr
+		}
+		watermark, err := events.Watermark(tx)
+		if err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		return http.StatusOK, map[string]any{"feed_watermark": watermark, "issue": claimed}, nil
 	})
 }
 
