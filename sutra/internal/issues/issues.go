@@ -187,16 +187,26 @@ func Get(tx *sql.Tx, id string) (Issue, error) {
 	return i, nil
 }
 
-// Filters narrows List. Text search and label filtering arrive with
-// the search and labels modules.
+// Filters narrows List; every filter composes with the others by AND
+// (AC-search-filters). Q is a free-text term over title, body, and
+// comment bodies (AC-search-text); Labels are label NAMES the issue
+// must all carry.
 type Filters struct {
 	Number   *int64
 	Statuses []string
 	Assignee string
+	Labels   []string
+	Q        string
 }
 
-// List returns a project's issues, filterable by number, status, and
-// assignee.
+// escapeLike neutralizes LIKE wildcards in a user term.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// List returns a project's issues, filterable per Filters. With Q set,
+// results rank by where the term matched — title first, then body,
+// then comments — and by display number within a rank.
 func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
 	query := `SELECT ` + issueColumns + ` FROM issues WHERE project = ?`
 	args := []any{project}
@@ -214,7 +224,26 @@ func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
 		query += ` AND assignee = ?`
 		args = append(args, f.Assignee)
 	}
-	query += ` ORDER BY number`
+	for _, name := range f.Labels {
+		query += ` AND EXISTS (SELECT 1 FROM issue_labels il JOIN labels l ON l.id = il.label
+			WHERE il.issue = issues.id AND l.name = ?)`
+		args = append(args, name)
+	}
+	order := ` ORDER BY number`
+	if f.Q != "" {
+		term := "%" + escapeLike(f.Q) + "%"
+		// The comments table joins by column, not by package import —
+		// module boundaries constrain code, the schema is shared.
+		query += ` AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM comments c WHERE c.issue = issues.id AND c.body LIKE ? ESCAPE '\'))`
+		args = append(args, term, term, term)
+		order = ` ORDER BY CASE WHEN title LIKE ? ESCAPE '\' THEN 0 WHEN body LIKE ? ESCAPE '\' THEN 1 ELSE 2 END, number`
+	}
+	query += order
+	if f.Q != "" {
+		term := "%" + escapeLike(f.Q) + "%"
+		args = append(args, term, term)
+	}
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)

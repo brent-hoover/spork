@@ -131,13 +131,28 @@ func ListByProject(tx *sql.Tx, project string) ([]Document, error) {
 	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE project = ? ORDER BY title`, project)
 }
 
+// Search returns documents whose title or ANY version content matches
+// the term, optionally project-scoped (AC-search-cross).
+func Search(tx *sql.Tx, project *string, q string) ([]Document, error) {
+	term := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q) + "%"
+	query := `SELECT id, project, issue, title, current_version FROM documents
+		WHERE (title LIKE ? ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM doc_versions v WHERE v.document = documents.id AND v.content LIKE ? ESCAPE '\'))`
+	args := []any{term, term}
+	if project != nil {
+		query += ` AND project = ?`
+		args = append(args, *project)
+	}
+	return list(tx, query+` ORDER BY title`, args...)
+}
+
 // ListByIssue returns the documents tied to an issue.
 func ListByIssue(tx *sql.Tx, issue string) ([]Document, error) {
 	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE issue = ? ORDER BY title`, issue)
 }
 
-func list(tx *sql.Tx, query string, arg any) ([]Document, error) {
-	rows, err := tx.Query(query, arg)
+func list(tx *sql.Tx, query string, args ...any) ([]Document, error) {
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}

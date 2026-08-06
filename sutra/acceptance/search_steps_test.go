@@ -1,0 +1,472 @@
+package acceptance_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/cucumber/godog"
+)
+
+// searchWorld drives the REQ-search scenarios.
+type searchWorld struct {
+	iw *issueWorld
+	cw *closeWorld
+
+	matching    map[string]string // rank kind (title/body/comment) -> issue id
+	nonMatching string
+	filterHits  []string // ids expected from the three-way filter
+	textHit     string   // the one also matching the text term
+
+	crossDoc    string
+	crossThread string
+	crossIssue  string
+
+	sessionReview   string
+	unrelatedReview string
+	sessionThread   string
+	sessionIssues   []string
+}
+
+func (sw *searchWorld) reset() {
+	*sw = searchWorld{iw: sw.iw, cw: sw.cw}
+}
+
+// createIssueWith mints an issue with explicit body/status/assignee/
+// label plumbing on top of the shared world helpers.
+func (sw *searchWorld) createIssueWith(title, body, status, assigneeHandle string, labelIDs []string) (string, error) {
+	iw := sw.iw
+	if err := sw.cw.ensureGitProject(); err != nil {
+		return "", err
+	}
+	actor := iw.identities["operator"]
+	payload := map[string]any{"title": title, "actor": actor}
+	if body != "" {
+		payload["body"] = body
+	}
+	if assigneeHandle != "" {
+		assignee, err := iw.identity(assigneeHandle)
+		if err != nil {
+			return "", err
+		}
+		payload["assignee"] = assignee
+	}
+	if err := iw.s.call(http.MethodPost, "/projects/"+iw.project+"/issues", payload); err != nil {
+		return "", err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", err
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+		return "", err
+	}
+	for _, labelID := range labelIDs {
+		if err := iw.s.call(http.MethodPost, "/issues/"+created.ID+"/labels",
+			map[string]string{"label": labelID, "actor": actor}); err != nil {
+			return "", err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return "", err
+		}
+	}
+	if status != "" && status != "open" {
+		if err := iw.s.call(http.MethodPost, "/issues/"+created.ID+"/status",
+			map[string]any{"status": status, "actor": actor}); err != nil {
+			return "", err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return "", err
+		}
+	}
+	return created.ID, nil
+}
+
+func (sw *searchWorld) createLabel(name string) (string, error) {
+	iw := sw.iw
+	if err := iw.s.call(http.MethodPost, "/labels", map[string]string{"name": name}); err != nil {
+		return "", err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", err
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+		return "", err
+	}
+	return created.ID, nil
+}
+
+func (sw *searchWorld) listIssueIDs(query string) ([]string, error) {
+	iw := sw.iw
+	if err := iw.s.call(http.MethodGet, "/projects/"+iw.project+"/issues"+query, nil); err != nil {
+		return nil, err
+	}
+	if err := iw.s.expectStatus(http.StatusOK); err != nil {
+		return nil, err
+	}
+	var page struct {
+		Issues []struct {
+			ID string `json:"id"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(page.Issues))
+	for _, i := range page.Issues {
+		ids = append(ids, i.ID)
+	}
+	return ids, nil
+}
+
+func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
+	iw := cw.iw
+	sw := &searchWorld{iw: iw, cw: cw}
+	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		sw.reset()
+		return ctx, nil
+	})
+
+	// --- text search over issues
+	sc.Step(`^issues exist mentioning "([^"]*)" in title, body, or comments$`, func(term string) error {
+		sw.matching = map[string]string{}
+		titleHit, err := sw.createIssueWith("the "+term+" crashes", "", "", "", nil)
+		if err != nil {
+			return err
+		}
+		sw.matching["title"] = titleHit
+		bodyHit, err := sw.createIssueWith("parser regression", "traced to the "+term+" table", "", "", nil)
+		if err != nil {
+			return err
+		}
+		sw.matching["body"] = bodyHit
+		commentHit, err := sw.createIssueWith("nightly failure", "no details yet", "", "", nil)
+		if err != nil {
+			return err
+		}
+		author, err := iw.identity("claude")
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodPost, "/comments",
+			map[string]any{"issue": commentHit, "author": author, "body": "the " + term + " needs a rebuild"}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		sw.matching["comment"] = commentHit
+		other, err := sw.createIssueWith("unrelated work", "nothing to see", "", "", nil)
+		if err != nil {
+			return err
+		}
+		sw.nonMatching = other
+		return nil
+	})
+	sc.Step(`^project "SUT" is searched for "([^"]*)"$`, func(term string) error {
+		_, err := sw.listIssueIDs("?q=" + url.QueryEscape(term))
+		return err
+	})
+	sc.Step(`^those issues are returned ranked$`, func() error {
+		var page struct {
+			Issues []struct {
+				ID string `json:"id"`
+			} `json:"issues"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
+			return err
+		}
+		pos := map[string]int{}
+		for idx, i := range page.Issues {
+			pos[i.ID] = idx
+			if i.ID == sw.nonMatching {
+				return fmt.Errorf("non-matching issue returned")
+			}
+		}
+		for kind, id := range sw.matching {
+			if _, ok := pos[id]; !ok {
+				return fmt.Errorf("%s-matched issue missing from results", kind)
+			}
+		}
+		if pos[sw.matching["title"]] >= pos[sw.matching["body"]] || pos[sw.matching["body"]] >= pos[sw.matching["comment"]] {
+			return fmt.Errorf("ranking wrong: title=%d body=%d comment=%d",
+				pos[sw.matching["title"]], pos[sw.matching["body"]], pos[sw.matching["comment"]])
+		}
+		return nil
+	})
+
+	// --- filters compose
+	sc.Step(`^a mix of issues in project "SUT"$`, func() error {
+		bug, err := sw.createLabel("bug")
+		if err != nil {
+			return err
+		}
+		full, err := sw.createIssueWith("all filters and text", "alpha tokenizer notes", "open", "claude", []string{bug})
+		if err != nil {
+			return err
+		}
+		sw.textHit = full
+		plain, err := sw.createIssueWith("all filters no text", "plain body", "open", "claude", []string{bug})
+		if err != nil {
+			return err
+		}
+		sw.filterHits = []string{full, plain}
+		if _, err := sw.createIssueWith("wrong label", "alpha tokenizer notes", "open", "claude", nil); err != nil {
+			return err
+		}
+		if _, err := sw.createIssueWith("wrong assignee", "", "open", "human-brent", []string{bug}); err != nil {
+			return err
+		}
+		if _, err := sw.createIssueWith("wrong status", "", "in-progress", "claude", []string{bug}); err != nil {
+			return err
+		}
+		return nil
+	})
+	sc.Step(`^issues are listed with status "([^"]*)", assignee "([^"]*)", label "([^"]*)"$`, func(status, handle, label string) error {
+		assignee := iw.identities[handle]
+		ids, err := sw.listIssueIDs("?status=" + status + "&assignee=" + assignee + "&label=" + url.QueryEscape(label))
+		if err != nil {
+			return err
+		}
+		if len(ids) != len(sw.filterHits) {
+			return fmt.Errorf("expected %d issues, got %d: %v", len(sw.filterHits), len(ids), ids)
+		}
+		for _, want := range sw.filterHits {
+			if !strings.Contains(strings.Join(ids, ","), want) {
+				return fmt.Errorf("issue %s missing from filtered list", want)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^only issues matching all three are returned$`, func() error {
+		return nil // asserted in the listing step, where the filter values are in scope
+	})
+	sc.Step(`^adding a text term narrows the same result set$`, func() error {
+		assignee := iw.identities["claude"]
+		ids, err := sw.listIssueIDs("?status=open&assignee=" + assignee + "&label=bug&q=tokenizer")
+		if err != nil {
+			return err
+		}
+		if len(ids) != 1 || ids[0] != sw.textHit {
+			return fmt.Errorf("text term did not narrow to the matching issue: %v", ids)
+		}
+		return nil
+	})
+
+	// --- one surface over all content
+	sc.Step(`^a doc and a thread in "SUT" mention "([^"]*)"$`, func(phrase string) error {
+		if err := cw.ensureGitProject(); err != nil {
+			return err
+		}
+		author := iw.identities["operator"]
+		if err := iw.s.call(http.MethodPost, "/projects/"+iw.project+"/documents",
+			map[string]string{"title": "ops runbook", "content": "our " + phrase + " is exponential backoff", "author": author}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		var doc struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &doc); err != nil {
+			return err
+		}
+		sw.crossDoc = doc.ID
+		transcript, err := json.Marshal([]map[string]string{{"speaker": "claude", "text": "we should revisit the " + phrase}})
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodPost, "/threads", map[string]any{
+			"title": "retry discussion", "transcript": json.RawMessage(transcript),
+			"project": iw.project, "actor": author}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		var thread struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &thread); err != nil {
+			return err
+		}
+		sw.crossThread = thread.ID
+		issueID, err := sw.createIssueWith("flaky uploads", "the "+phrase+" masks the real bug", "", "", nil)
+		if err != nil {
+			return err
+		}
+		sw.crossIssue = issueID
+		return nil
+	})
+	sc.Step(`^"SUT" is searched for "([^"]*)" across all content$`, func(phrase string) error {
+		if err := iw.s.call(http.MethodGet, "/search?project="+iw.project+"&q="+url.QueryEscape(phrase), nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^the doc and the thread appear alongside matching issues$`, func() error {
+		var results struct {
+			Issues    []struct{ ID string }
+			Documents []struct{ ID string }
+			Threads   []struct{ ID string }
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &results); err != nil {
+			return err
+		}
+		body := string(iw.s.lastBody)
+		for name, id := range map[string]string{"doc": sw.crossDoc, "thread": sw.crossThread, "issue": sw.crossIssue} {
+			if !strings.Contains(body, id) {
+				return fmt.Errorf("%s %s missing from search results", name, id)
+			}
+		}
+		return nil
+	})
+
+	// --- session id joins an instance's work
+	sc.Step(`^a review whose revision 1 was submitted under session "([^"]*)" and revision 2 under session "([^"]*)"$`, func(s1, s2 string) error {
+		if err := sw.reviewWithSession("SUT-1", "sessioned", s1); err != nil {
+			return err
+		}
+		sw.sessionReview = cw.reviews["SUT-1"].id
+		sw.sessionIssues = append(sw.sessionIssues, iw.issues["SUT-1"])
+		if err := cw.verdict("SUT-1", "changes-requested"); err != nil {
+			return err
+		}
+		ref := cw.reviews["SUT-1"]
+		sha, err := cw.mintCommit()
+		if err != nil {
+			return err
+		}
+		author := iw.identities["operator"]
+		if err := iw.s.call(http.MethodPost, "/reviews/"+ref.id+"/resubmit", map[string]any{
+			"author": author, "expected_revision": ref.revision, "expected_verdict_event": ref.verdictEvent,
+			"branch": "sessioned", "commit": sha, "session": s2,
+		}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^an unrelated review whose submissions never carried "([^"]*)"$`, func(string) error {
+		if err := sw.reviewWithSession("SUT-2", "other", "sess-99"); err != nil {
+			return err
+		}
+		sw.unrelatedReview = cw.reviews["SUT-2"].id
+		return nil
+	})
+	sc.Step(`^an imported thread carrying session "([^"]*)"$`, func(session string) error {
+		transcript, err := json.Marshal([]map[string]string{{"speaker": "claude", "text": "instance notes"}})
+		if err != nil {
+			return err
+		}
+		issueID, err := iw.ensureIssue("SUT-3")
+		if err != nil {
+			return err
+		}
+		actor := iw.identities["operator"]
+		if err := iw.s.call(http.MethodPost, "/threads", map[string]any{
+			"title": "instance transcript", "transcript": json.RawMessage(transcript),
+			"session": session, "issue": issueID, "actor": actor}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		var thread struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &thread); err != nil {
+			return err
+		}
+		sw.sessionThread = thread.ID
+		sw.sessionIssues = append(sw.sessionIssues, issueID)
+		return nil
+	})
+	sc.Step(`^"([^"]*)" is searched$`, func(session string) error {
+		if err := iw.s.call(http.MethodGet, "/search?session="+url.QueryEscape(session), nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^the review, the thread, and their linked issues are returned$`, func() error {
+		body := string(iw.s.lastBody)
+		if !strings.Contains(body, sw.sessionReview) {
+			return fmt.Errorf("session review missing")
+		}
+		if !strings.Contains(body, sw.sessionThread) {
+			return fmt.Errorf("session thread missing")
+		}
+		for _, id := range sw.sessionIssues {
+			if !strings.Contains(body, id) {
+				return fmt.Errorf("linked issue %s missing", id)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^the unrelated review is not returned$`, func() error {
+		if strings.Contains(string(iw.s.lastBody), sw.unrelatedReview) {
+			return fmt.Errorf("unrelated review leaked into session results")
+		}
+		return nil
+	})
+	sc.Step(`^listing reviews filtered by session "([^"]*)" also returns the review and excludes the unrelated one$`, func(session string) error {
+		if err := iw.s.call(http.MethodGet, "/reviews?session="+url.QueryEscape(session), nil); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		body := string(iw.s.lastBody)
+		if !strings.Contains(body, sw.sessionReview) {
+			return fmt.Errorf("session review missing from listing")
+		}
+		if strings.Contains(body, sw.unrelatedReview) {
+			return fmt.Errorf("unrelated review present in listing")
+		}
+		return nil
+	})
+}
+
+// reviewWithSession mirrors closeWorld.createReview with a session
+// stamp, registering the ref under the issue name for verdict reuse.
+func (sw *searchWorld) reviewWithSession(issueName, branch, session string) error {
+	cw := sw.cw
+	iw := sw.iw
+	if err := cw.ensureGitProject(); err != nil {
+		return err
+	}
+	issueID, err := iw.ensureIssue(issueName)
+	if err != nil {
+		return err
+	}
+	sha, err := cw.mintCommit()
+	if err != nil {
+		return err
+	}
+	author := iw.identities["operator"]
+	if err := iw.s.call(http.MethodPost, "/reviews", map[string]string{
+		"issue": issueID, "author": author, "branch": branch, "commit": sha, "session": session,
+	}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var created struct {
+		ID       string `json:"id"`
+		Revision int64  `json:"revision"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+		return err
+	}
+	cw.reviews[issueName] = reviewRef{id: created.ID, revision: created.Revision, commit: sha}
+	return nil
+}

@@ -87,6 +87,10 @@ var implementedFeatures = []string{
 	"../verification/REQ-comments.feature:8",               // replies nest without depth limit
 	"../verification/REQ-comments.feature:13",              // no artificial caps
 	"../verification/REQ-core-issues.feature:17",           // labels attach and detach
+	"../verification/REQ-search.feature:3",                 // text search over issues
+	"../verification/REQ-search.feature:8",                 // filters compose
+	"../verification/REQ-search.feature:14",                // one surface over all content
+	"../verification/REQ-search.feature:19",                // session id joins an instance's work
 }
 
 var contractRouter routers.Router
@@ -304,6 +308,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerDocsSteps(sc, cw)
 	registerThreadsSteps(sc, cw)
 	registerCommentsSteps(sc, iw)
+	registerSearchSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

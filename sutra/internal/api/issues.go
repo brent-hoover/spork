@@ -122,16 +122,11 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	// label filtering and ranked text search over comments belong to
-	// the labels and search modules; until they exist these parameters
-	// reject explicitly rather than return silently wrong results.
-	if q.Get("q") != "" || len(q["label"]) > 0 {
-		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "q and label filters are not implemented yet"})
-		return
-	}
 	f := issues.Filters{
 		Statuses: q["status"],
 		Assignee: q.Get("assignee"),
+		Labels:   q["label"],
+		Q:        q.Get("q"),
 	}
 	if raw := q.Get("number"); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)

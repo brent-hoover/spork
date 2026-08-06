@@ -70,6 +70,7 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("DELETE /issues/{issueId}/labels/{labelId}", s.detachLabel)
 	mux.HandleFunc("POST /threads", s.importThread)
 	mux.HandleFunc("GET /threads/search", s.searchThreads)
+	mux.HandleFunc("GET /search", s.search)
 	mux.HandleFunc("GET /threads/{threadId}", s.getThread)
 	mux.HandleFunc("POST /threads/{threadId}/anchor", s.setThreadAnchor)
 	mux.HandleFunc("GET /issues/{issueId}/threads", s.listIssueThreads)
