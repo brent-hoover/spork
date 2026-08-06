@@ -146,6 +146,9 @@ func TestTransitionClosedSchemas(t *testing.T) {
 		{"complete missing review_revision", fmt.Sprintf(`{"status":"complete","review":"00000000-0000-7000-8000-000000000001","review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q}`, w.actor)},
 		{"complete missing review entirely", fmt.Sprintf(`{"status":"complete","actor":%q}`, w.actor)},
 		{"unknown field on complete", fmt.Sprintf(`{"status":"complete","review":"00000000-0000-7000-8000-000000000001","review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q,"extra":true}`, w.actor)},
+		{"invalid expected_status enum", fmt.Sprintf(`{"status":"in-progress","actor":%q,"expected_status":"invalid"}`, w.actor)},
+		{"null review on complete", fmt.Sprintf(`{"status":"complete","review":null,"review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q}`, w.actor)},
+		{"malformed review uuid", fmt.Sprintf(`{"status":"complete","review":"not-a-uuid","review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q}`, w.actor)},
 	}
 	for i, tc := range cases {
 		status, body := req(t, srv, http.MethodPost, "/issues/"+issue+"/status", fmt.Sprintf("tc-%d", i), tc.body)
@@ -187,5 +190,64 @@ func TestValidCompleteTransitionIs409UntilReviews(t *testing.T) {
 	status, resp := req(t, srv, http.MethodPost, "/issues/"+w.issues[0]+"/status", "close-1", body)
 	if status != http.StatusConflict {
 		t.Fatalf("expected 409 ownership conflict, got %d %s", status, resp)
+	}
+}
+
+// TestSubtreeRevisionFence pins the history-aware fence: a schema-valid
+// complete with a mismatched expected_subtree_revision conflicts with
+// the revision code before any review gate runs; a matching revision
+// proceeds to the ownership conflict.
+func TestSubtreeRevisionFence(t *testing.T) {
+	srv, _ := startAPI(t)
+	w := buildWorld(t, srv, 1, false)
+	base := `{"status":"complete","review":"00000000-0000-7000-8000-000000000001","review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q,"expected_subtree_revision":%d}`
+
+	status, body := req(t, srv, http.MethodPost, "/issues/"+w.issues[0]+"/status", "fence-miss",
+		fmt.Sprintf(base, w.actor, 99))
+	if status != http.StatusConflict {
+		t.Fatalf("expected 409, got %d %s", status, body)
+	}
+	var envelope struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil || envelope.Code != "expected-subtree-revision-mismatch" {
+		t.Fatalf("expected expected-subtree-revision-mismatch, got %s", body)
+	}
+
+	status, body = req(t, srv, http.MethodPost, "/issues/"+w.issues[0]+"/status", "fence-match",
+		fmt.Sprintf(base, w.actor, 0))
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil || status != http.StatusConflict || envelope.Code != "missing-approval" {
+		t.Fatalf("matching fence must reach the ownership gate: %d %s", status, body)
+	}
+}
+
+// TestCrossProjectArchiveGuard pins that an archived TARGET project
+// rejects relation mutations from a live source project.
+func TestCrossProjectArchiveGuard(t *testing.T) {
+	srv, _ := startAPI(t)
+	w := buildWorld(t, srv, 1, false)
+	var out struct {
+		ID string `json:"id"`
+	}
+	status, body := req(t, srv, http.MethodPost, "/projects", "p2",
+		fmt.Sprintf(`{"key":"OTH","name":"Other","actor":%q}`, w.actor))
+	if err := json.Unmarshal([]byte(body), &out); err != nil || status != http.StatusCreated {
+		t.Fatalf("second project: %d %s", status, body)
+	}
+	otherProject := out.ID
+	status, body = req(t, srv, http.MethodPost, "/projects/"+otherProject+"/issues", "p2-issue",
+		fmt.Sprintf(`{"title":"other","actor":%q}`, w.actor))
+	if err := json.Unmarshal([]byte(body), &out); err != nil || status != http.StatusCreated {
+		t.Fatalf("other issue: %d %s", status, body)
+	}
+	otherIssue := out.ID
+	if status, body := req(t, srv, http.MethodPost, "/projects/"+otherProject+"/archive", "p2-arch",
+		fmt.Sprintf(`{"actor":%q}`, w.actor)); status != http.StatusOK {
+		t.Fatalf("archive: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodPost, "/issues/"+w.issues[0]+"/relations", "p2-rel",
+		fmt.Sprintf(`{"kind":"blocks","to":%q,"actor":%q}`, otherIssue, w.actor))
+	if status != http.StatusConflict {
+		t.Fatalf("cross-project relation into archived project must 409, got %d %s", status, body)
 	}
 }

@@ -311,7 +311,31 @@ func registerIssueSteps(sc *godog.ScenarioContext, s *testState) {
 	})
 	sc.Step(`^each transition succeeds$`, func() error { return nil }) // asserted per-transition above
 	sc.Step(`^each is recorded as an event with actor and time$`, func() error {
-		return iw.expectEvent("issue.status-changed", "SUT-1", "operator")
+		subject := iw.issues["SUT-1"]
+		actor := iw.identities["operator"]
+		if err := iw.s.call(http.MethodGet, "/events?kind=issue.status-changed&subject="+subject, nil); err != nil {
+			return err
+		}
+		var page struct {
+			Events []struct {
+				ID      string `json:"id"`
+				Actor   string `json:"actor"`
+				Created string `json:"created"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
+			return fmt.Errorf("decode events: %w", err)
+		}
+		distinct := map[string]bool{}
+		for _, e := range page.Events {
+			if e.Actor == actor && e.Created != "" {
+				distinct[e.ID] = true
+			}
+		}
+		if len(distinct) != 3 {
+			return fmt.Errorf("expected 3 distinct status-change events, got %d: %s", len(distinct), iw.s.lastBody)
+		}
+		return nil
 	})
 	sc.Step(`^issue SUT-1 is set to status "someday"$`, func() error {
 		return iw.transition("SUT-1", "someday")

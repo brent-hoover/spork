@@ -260,7 +260,51 @@ func decodeTransition(r *http.Request) (transitionRequest, *apiError) {
 			return transitionRequest{}, apiErr
 		}
 	}
+	// Value constraints are schema too: enum membership, non-null
+	// required scalars, and uuid formats reject as 400 before any gate.
+	if req.ExpectedStatus != nil {
+		switch *req.ExpectedStatus {
+		case issues.StatusOpen, issues.StatusInProgress, issues.StatusBlocked, issues.StatusDeferred, issues.StatusComplete:
+		default:
+			return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("expected_status %q is not a valid status", *req.ExpectedStatus)}
+		}
+	}
+	if !isUUID(req.Actor) {
+		return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "actor must be an identity uuid"}
+	}
+	if req.Status == issues.StatusComplete {
+		if !isUUID(req.Review) {
+			return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "review must be a uuid"}
+		}
+		if !isUUID(req.ReviewVerdictEvent) {
+			return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "review_verdict_event must be a uuid"}
+		}
+		if req.ReviewRevision == nil {
+			return transitionRequest{}, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "review_revision must be an integer"}
+		}
+	}
 	return req, nil
+}
+
+// isUUID accepts the canonical 8-4-4-4-12 hex form.
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // updateIssueStatus is the review-gated, cascade-carrying transition
@@ -289,6 +333,14 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		if req.ExpectedStatus != nil && *req.ExpectedStatus != current.Status {
 			return 0, nil, &apiError{status: http.StatusConflict, code: "expected-status-mismatch",
 				message: fmt.Sprintf("expected status %q, current is %q", *req.ExpectedStatus, current.Status)}
+		}
+		// The history-aware fence: a mismatch conflicts even when
+		// current state matches, so a descendant that reopened and
+		// recompleted since the caller's observation still rejects
+		// (AC-subtree-revision).
+		if req.ExpectedSubtreeRevision != nil && *req.ExpectedSubtreeRevision != current.SubtreeRevision {
+			return 0, nil, &apiError{status: http.StatusConflict, code: "expected-subtree-revision-mismatch",
+				message: fmt.Sprintf("expected subtree_revision %d, current is %d", *req.ExpectedSubtreeRevision, current.SubtreeRevision)}
 		}
 		if req.Status == issues.StatusComplete {
 			// No review can belong to this issue until the review
@@ -364,6 +416,18 @@ func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 		}
 		if apiErr := guardWritable(tx, fromIssue.Project); apiErr != nil {
 			return 0, nil, apiErr
+		}
+		toIssue, err := issues.Get(tx, req.To)
+		if err != nil {
+			return 0, nil, issueErrorFrom(err)
+		}
+		// Relations may cross projects; the archive write-guard covers
+		// BOTH sides — an archived project stays read-only from either
+		// end of the edge.
+		if toIssue.Project != fromIssue.Project {
+			if apiErr := guardWritable(tx, toIssue.Project); apiErr != nil {
+				return 0, nil, apiErr
+			}
 		}
 		rel, err := issues.AddRelation(tx, req.Kind, from, req.To)
 		if err != nil {
@@ -455,6 +519,15 @@ func (s *server) removeIssueRelation(w http.ResponseWriter, r *http.Request) {
 		}
 		if apiErr := guardWritable(tx, fromIssue.Project); apiErr != nil {
 			return 0, nil, apiErr
+		}
+		toIssue, err := issues.Get(tx, rel.To)
+		if err != nil {
+			return 0, nil, issueErrorFrom(err)
+		}
+		if toIssue.Project != fromIssue.Project {
+			if apiErr := guardWritable(tx, toIssue.Project); apiErr != nil {
+				return 0, nil, apiErr
+			}
 		}
 		payload, err := json.Marshal(map[string]string{
 			"relation": rel.ID, "kind": rel.Kind, "from": rel.From, "to": rel.To,
