@@ -463,12 +463,21 @@ func streamProjectEvents(tx *sql.Tx, projectID string, issueIDs []string, arr *j
 		if !scope[e.Subject] {
 			continue
 		}
-		if payload.Valid {
-			e.Payload = json.RawMessage(payload.String)
-		}
-		if err := arr.marshalElem(e); err != nil {
+		// Payload bytes splice VERBATIM around the marshaled metadata —
+		// json.Marshal would compact them, and imports promise the
+		// original bytes back.
+		shadow := e
+		shadow.Payload = nil
+		raw, err := json.Marshal(shadow)
+		if err != nil {
 			return err
 		}
+		if payload.Valid {
+			raw = append(raw[:len(raw)-1], []byte(`,"payload":`)...)
+			raw = append(raw, payload.String...)
+			raw = append(raw, '}')
+		}
+		arr.elem(raw)
 	}
 	return rows.Err()
 }
