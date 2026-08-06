@@ -258,14 +258,25 @@ Feature: Run to complete
       | parentage                              | outcome                                                                                             |
       | the desired epic already parenting it  | parented stamps with no reopen owed — sutra's attach invariant already kept the epic honest         |
       | a different parent holding it          | parenting_state records conflicting with the parent in parenting_error, and the inbox lists it      |
-      | no parent at all                       | parenting_generation advances durably first, and the retry issues under the next generation's key   |
+      | no parent at all, a concurrency race   | parenting_generation advances durably first, and the retry issues under the next generation's key   |
+      | no parent, a permanent failure cause   | parenting_state records conflicting with the failure details in parenting_error — never retried blindly |
+
+  Scenario: the operator resolves a conflicting parentage
+    Given a new-work advance in state conflicting because another epic holds the ticket
+    When the operator cedes through the parenting-resolution action
+    Then the advance stamps terminal ceded and the ticket counts for the target that holds it
+    Given the operator instead reclaims
+    Then the choice persists, the generation advances, and the advance returns to pending
+    And reconciliation removes the conflicting relation and attaches under this epic through keyed mutations
 
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project
     When a new active issue is created attributing to neither
-    Then no epoch advances — the open ambiguity row suppresses completion for every candidate target
+    Then no epoch advances — the ambiguity row suppresses completion for every candidate target while open or resolving
     When the operator resolves the attribution to one target
-    Then only the selected target advances, through its parenting attachment's cascade, and the other candidates resume untouched
+    Then only the selected target advances, through its parenting attachment's cascade
+    And the candidates release only when the row stamps resolved — after parenting, epoch advance, and cascade reconciliation all complete
+    And the other candidates resume untouched
 
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close

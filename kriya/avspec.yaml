@@ -386,7 +386,7 @@ requirements:
         statement: A crash after the attachment lands but before reconciliation recovers through the keyed replay's original response and completes the verification stamp in one transaction; a conflicting replay re-reads parentage — accepting the desired parent, surfacing a different one, retrying a transient conflict under a fresh key.
         test: verification/REQ-run-to-complete.feature#a parenting crash after the relation lands recovers the verification
       - id: AC-complete-ambiguous-new-work
-        statement: An ambiguous post-completion creation advances no epoch — the open ambiguity record suppresses completion for every candidate target — and resolution wakes only the selected target through its parenting attachment's cascade, the others resuming untouched.
+        statement: An ambiguous post-completion creation advances no epoch — the ambiguity record suppresses completion for every candidate target while open or resolving, releasing them only when it stamps resolved after the selected target's parenting, epoch advance, and cascade reconciliation complete — and resolution wakes only the selected target, the others resuming untouched.
         test: verification/REQ-run-to-complete.feature#an ambiguous post-completion creation suppresses without advancing
       - id: AC-complete-stall
         statement: When nothing is workable, nothing is in flight, and the epic still cannot close, a durable Stall row records the condition and its cause and surfaces in the operator inbox; resolution stamps it — never silent spinning, never a false done.
@@ -430,7 +430,7 @@ requirements:
         statement: "Everything requiring the operator lands in one inbox with its cause: SA scope escalations, invalidating spike findings, awaiting-operator plans, awaiting-operator BuildRuns with their durable error cause — binding ambiguity, missing mappings, vanished worktrees — workspace cleanup refusals with their dirty state (from the Workspace row, the run's terminal state untouched), conflicting new-work parentage with the offending parent, expired review-round claims, unresolved enqueue attempts — pending ones and completed ones whose id is not their round's accepted external id — and unresolved orphans, and build stalls."
         test: verification/REQ-tui.feature#everything needing the operator lands in one inbox
       - id: AC-tui-act
-        statement: "The protocol's operator actions are executable from the TUI, not just visible: restore or retry a parked plan, reconcile and reset a review round, resolve an enqueue attempt — stamping it resolved after the required liveness checks — attribute an ambiguous ticket by parenting it under a target's epic, and approve or reject an escalated scope change."
+        statement: "The protocol's operator actions are executable from the TUI, not just visible: restore or retry a parked plan, reconcile and reset a review round, resolve an enqueue attempt — stamping it resolved after the required liveness checks — attribute an ambiguous ticket by parenting it under a target's epic, resolve a conflicting new-work parentage by ceding or reclaiming, and approve or reject an escalated scope change."
         test: verification/REQ-tui.feature#operator actions run from the TUI
       - id: AC-tui-truth
         statement: Drilling into a run shows its durable history — commits, rounds, gate results, verdicts, escalations — read from the same records recovery uses; the TUI holds no second source of truth.
@@ -531,7 +531,7 @@ modules:
           invocation: kriya tui (inbox pane)
           purpose: Everything requiring the operator, each with its cause — escalations, invalidating spikes, parked plans, expired claims and orphans, stalls.
           shows: [ENT-escalation.kind, ENT-escalation.question, ENT-plan.state, ENT-plan.error, ENT-planned-ticket.error, ENT-build-run.state, ENT-build-run.error, ENT-workspace.cleanup_error, ENT-review-round.enqueue_state, ENT-review-round.claimed_at, ENT-enqueue-attempt.round, ENT-enqueue-attempt.external_id, ENT-enqueue-attempt.created, ENT-enqueue-attempt.resolved, ENT-orphan-observation.external_id, ENT-orphan-observation.discovered, ENT-stall.cause, ENT-stall.state, ENT-attribution-ambiguity.ticket, ENT-attribution-ambiguity.state, ENT-completion-advance.parenting_state, ENT-completion-advance.parenting_error]
-          actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-attempt-resolve, ACT-ticket-attribute, ACT-scope-decide]
+          actions: [ACT-plan-restore, ACT-plan-retry, ACT-round-reconcile, ACT-attempt-resolve, ACT-ticket-attribute, ACT-parenting-resolve, ACT-scope-decide]
           navigates_to: [VIEW-tui-run]
           satisfies: [AC-tui-inbox, AC-tui-act]
         - id: VIEW-tui-run
@@ -551,6 +551,8 @@ modules:
           name: attempt_resolve
         - id: ACT-ticket-attribute
           name: ticket_attribute
+        - id: ACT-parenting-resolve
+          name: parenting_resolve
         - id: ACT-scope-decide
           name: scope_decide
 
@@ -679,7 +681,7 @@ data:
         - { name: relation_key, type: string }  # new-work advances — deterministic Idempotency-Key of the parenting mutation, derived per (advance, parenting_generation); recovery replays it
         - { name: parenting_generation, type: integer }  # init 0; a transient conflict advances it durably BEFORE retrying, so the retry issues under the next generation's key — the write-ahead rotation that escapes a cached 409
         - { name: parenting_error, type: string }  # the offending parent recorded when a different parent holds the ticket — what the inbox displays
-        - { name: parenting_state, type: enum, values: [pending, parented, conflicting] }  # conflicting is the awaiting-operator condition — a different parent holds the ticket, recorded in parenting_error and listed by the inbox;  # new-work advances — written pending with the advance and held pending THROUGH cascade verification: parented is stamped only in the same transaction that records operation, cascade_verified, and (when unreached) reopen_owed, so recovery resuming every pending row always re-runs the keyed attachment replay AND the correlation — a crash at any point before the atomic stamp can never lose the explicit-reopen obligation or strand a detached ticket. A CONFLICT on the attachment replay is resolved by re-reading the ticket's parentage: the desired parent already in place means a concurrent actor parented it — stamp parented with no reopen owed, sutra's attach invariant having already kept the epic honest; a DIFFERENT parent transitions parenting_state to conflicting with the offending parent recorded in parenting_error — an inbox item the operator resolves; a transient conflict with no parent advances parenting_generation durably and retries under the next generation's key — a pending advance can never sit permanently behind a cached 409
+        - { name: parenting_state, type: enum, values: [pending, parented, conflicting, ceded] }  # conflicting is the awaiting-operator condition — a different parent holds the ticket OR the attachment failed permanently, recorded in parenting_error and listed by the inbox; ceded is terminal — the operator accepted the other parent, the ticket counts for the target that holds it;  # new-work advances — written pending with the advance and held pending THROUGH cascade verification: parented is stamped only in the same transaction that records operation, cascade_verified, and (when unreached) reopen_owed, so recovery resuming every pending row always re-runs the keyed attachment replay AND the correlation — a crash at any point before the atomic stamp can never lose the explicit-reopen obligation or strand a detached ticket. A CONFLICT on the attachment replay is resolved by re-reading the ticket's parentage: the desired parent already in place means a concurrent actor parented it — stamp parented with no reopen owed, sutra's attach invariant having already kept the epic honest; a DIFFERENT parent transitions parenting_state to conflicting with the offending parent recorded in parenting_error — an inbox item the operator resolves; a parentless conflict is CLASSIFIED by its recorded cause: a concurrency race is transient — parenting_generation advances durably and the retry issues under the next generation's key — while a permanent condition (an ancestry cycle, an archived project) transitions to conflicting with the error details in parenting_error, never retried blindly; a pending advance can never sit permanently behind a cached 409 or spin forever on a permanent failure. The operator resolves a conflicting advance through the parenting-resolution action, itself crash-safe: CEDE stamps the terminal ceded state — the ticket henceforth counts for the parent that holds it — while RECLAIM persists the choice, advances the generation, and returns the advance to pending, the normal reconciliation loop then removing the conflicting relation and attaching under this epic through keyed mutations
         - { name: cascade_verified, type: enum, values: [reached, unreached] }  # cascade-driven causes only — reached requires an issue.status-changed event for the epic, with its reopened status, under the same operation; recorded atomically with the advance
         - { name: reopen_owed, type: boolean }  # true exactly when verification recorded unreached — the durable explicit-reopen obligation recovery honors
         - { name: epoch, type: integer, required: true }  # the epoch value this advance produced
@@ -807,10 +809,13 @@ data:
         atomically with operation, cascade_verified, and any
         reopen_owed — issuing the explicit keyed
         reopen only if the epic provably went unreached. An AMBIGUOUS
-        creation in a multi-mapping project advances NO epoch: the open
-        AttributionAmbiguity row itself suppresses completion for every
-        candidate target — no stamp reports done and no attempt starts
-        while an open ambiguity names the project — and resolution
+        creation in a multi-mapping project advances NO epoch: the
+        AttributionAmbiguity row suppresses completion for every
+        candidate target while it is open OR resolving — no stamp
+        reports done and no attempt starts until the row stamps
+        resolved, which happens only after the selected target's
+        parenting, epoch advance, and cascade reconciliation complete —
+        and resolution
         advances only the selected target through its parenting
         attachment's cascade, the other candidates resuming untouched
         with their stamps and epics intact (none of
@@ -1359,9 +1364,11 @@ data:
         the resolution action, itself write-ahead: the selected target
         and the parenting mutation's idempotency key persist with state
         resolving BEFORE sutra is called, recovery replays the keyed
-        mutation and stamps resolved transactionally with the outcome —
-        a crash after the relation lands but before the stamp can never
-        strand an open inbox entry. A
+        mutation and stamps resolved transactionally only once the
+        parenting, epoch advance, and cascade reconciliation have all
+        completed — suppression holds through resolving, and a crash
+        after the relation lands but before the stamp can never
+        strand an open inbox entry or prematurely release a candidate. A
         re-detected same ticket reopens its row, never duplicating.
       fields:
         - { name: ambiguity_key, type: string, required: true, unique: true }  # deterministic per (project_key, ticket)
