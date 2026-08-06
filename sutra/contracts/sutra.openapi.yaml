@@ -1248,8 +1248,10 @@ paths:
         client-supplied, so the rendered diff never shifts as the default
         branch moves. A code deliverable with an unset project `repo_path`
         or an unresolvable `commit`/`base_commit` is rejected 409 at
-        submission time. A supplied `session` is recorded on the
-        submission.
+        submission time — as is one whose pinned diff cannot be rendered
+        within the server's 10 MiB deliverable limit, so every accepted
+        review's content is openable by a reviewer. A supplied `session`
+        is recorded on the submission.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1461,9 +1463,10 @@ paths:
       summary: Get a review's deliverable content, resolved for rendering
       description: >-
         For a doc deliverable, the doc version's content; for a code
-        deliverable, the complete pinned diff/content — never a summary in
-        its place, so approval never happens against a summary
-        (AC-review-web). For code deliverables, content is resolved via the
+        deliverable, the complete pinned diff/content — binary-capable,
+        bounded by the server's 10 MiB deliverable limit (which submission
+        already enforced), and never a summary in its place, so approval
+        never happens against a summary (AC-review-web). For code deliverables, content is resolved via the
         project's repo_path as the diff between the resolved submission's
         pinned `base_commit` and `commit` — never recomputed against the
         project's current default branch, since `base_commit` was already

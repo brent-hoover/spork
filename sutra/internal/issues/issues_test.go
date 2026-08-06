@@ -172,3 +172,54 @@ func TestPopDeepestAcrossBranches(t *testing.T) {
 		return nil
 	})
 }
+
+// TestPopDiamondBlockerGraph pins converging DAGs: a shared descendant
+// reached first through a short branch must still contribute its full
+// depth to the longer branch — the deepest blocker wins regardless of
+// traversal order.
+func TestPopDiamondBlockerGraph(t *testing.T) {
+	db := openDB(t)
+	agent := "00000000-0000-7000-8000-00000000000a"
+	var deepest issues.Issue
+	inTx(t, db, func(tx *sql.Tx) error {
+		project, err := projects.Create(tx, projects.New{Key: "SUT", Name: "S"})
+		if err != nil {
+			return err
+		}
+		mk := func(title string) issues.Issue {
+			i, err := issues.Create(tx, project.ID, title, nil, &agent)
+			if err != nil {
+				t.Fatalf("create %s: %v", title, err)
+			}
+			return i
+		}
+		// candidate <- a <- shared ; candidate <- b <- shared <- deepest
+		// (a sits before b by number so the SHORT path visits shared
+		// first; the long path must still see shared's full subtree.)
+		candidate := mk("candidate")
+		a := mk("a short")
+		shared := mk("shared")
+		deepest = mk("deepest")
+		for _, rel := range [][2]string{
+			{a.ID, candidate.ID},
+			{shared.ID, a.ID},
+			{shared.ID, candidate.ID},
+			{deepest.ID, shared.ID},
+		} {
+			if _, err := issues.AddRelation(tx, "blocks", rel[0], rel[1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	inTx(t, db, func(tx *sql.Tx) error {
+		claim, err := issues.PopCandidate(tx, agent)
+		if err != nil {
+			return err
+		}
+		if claim == nil || claim.ID != deepest.ID {
+			return fmt.Errorf("diamond graph: expected deepest %s, got %+v", deepest.ID, claim)
+		}
+		return nil
+	})
+}

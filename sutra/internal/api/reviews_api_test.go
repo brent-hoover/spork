@@ -611,50 +611,6 @@ func TestDiffIgnoresRepoDiffConfig(t *testing.T) {
 	}
 }
 
-// TestDiffSizeCap pins the documented output bound.
-func TestDiffSizeCap(t *testing.T) {
-	old := review.MaxDiffBytes
-	review.MaxDiffBytes = 16
-	t.Cleanup(func() { review.MaxDiffBytes = old })
-
-	srv, _ := startAPI(t)
-	repo := newGitRepo(t)
-	var out map[string]any
-	decode := func(status int, body string, want int, label string) {
-		t.Helper()
-		if status != want {
-			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
-		}
-		out = nil
-		if err := json.Unmarshal([]byte(body), &out); err != nil {
-			t.Fatalf("%s: decode: %v", label, err)
-		}
-	}
-	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
-	decode(status, body, http.StatusCreated, "identity")
-	actor := out["id"].(string)
-	status, body = req(t, srv, http.MethodPost, "/projects", "p",
-		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
-	decode(status, body, http.StatusCreated, "project")
-	project := out["id"].(string)
-	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
-		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
-	decode(status, body, http.StatusCreated, "issue")
-	issue := out["id"].(string)
-	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
-		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
-	decode(status, body, http.StatusCreated, "review")
-	reviewID := out["id"].(string)
-
-	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
-	if status != http.StatusConflict {
-		t.Fatalf("oversized diff must 409, got %d %s", status, body)
-	}
-	if !strings.Contains(body, "limit") {
-		t.Fatalf("expected the limit named: %s", body)
-	}
-}
-
 // TestRevisionSyntaxBranchRejected pins exact-ref resolution: a
 // default_branch like "main~1" must fail, never resolve to an ancestor.
 func TestRevisionSyntaxBranchRejected(t *testing.T) {
@@ -686,5 +642,107 @@ func TestRevisionSyntaxBranchRejected(t *testing.T) {
 		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
 	if status != http.StatusConflict {
 		t.Fatalf("revision-syntax branch must fail resolution: %d %s", status, body)
+	}
+}
+
+// TestBinaryDiffServed pins --binary: a commit changing a binary file
+// yields a patch carrying the change, not a "Binary files differ" stub.
+func TestBinaryDiffServed(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	blob := make([]byte, 64)
+	for i := range blob {
+		blob[i] = byte(i)
+	}
+	if err := os.WriteFile(filepath.Join(repo.path, "asset.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"checkout", "feature"}, {"add", "."}, {"commit", "-m", "binary"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v — %s", args, err, out)
+		}
+	}
+	out, err := exec.Command("git", "-C", repo.path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binSHA := strings.TrimSpace(string(out))
+
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, binSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := decoded["id"].(string)
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	decode(status, body, http.StatusOK, "deliverable")
+	content := decoded["content"].(string)
+	if !strings.Contains(content, "GIT binary patch") {
+		t.Fatalf("binary change must serve a binary-capable patch, got: %.200s", content)
+	}
+}
+
+// TestOversizedDeliverableRejectedAtSubmission pins that a review whose
+// pinned diff exceeds the limit is never created.
+func TestOversizedDeliverableRejectedAtSubmission(t *testing.T) {
+	old := review.MaxDiffBytes
+	review.MaxDiffBytes = 16
+	t.Cleanup(func() { review.MaxDiffBytes = old })
+
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	if status != http.StatusConflict {
+		t.Fatalf("oversized deliverable must reject at submission: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews?issue="+issue, "", "")
+	if status != http.StatusOK || body != "[]" {
+		t.Fatalf("oversized submission created a review: %d %s", status, body)
 	}
 }

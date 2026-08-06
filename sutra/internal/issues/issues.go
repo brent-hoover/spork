@@ -491,29 +491,54 @@ func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate candidates: %w", err)
 	}
+	w := &blockerWalk{tx: tx, identity: identity, memo: map[string]walkResult{}, onPath: map[string]bool{}}
 	for _, candidate := range candidates {
-		claim, _, err := walkBlockers(tx, identity, candidate, map[string]bool{})
+		res, err := w.resolve(candidate)
 		if err != nil {
 			return nil, err
 		}
-		if claim != nil {
-			return claim, nil
+		if res.claim != nil {
+			return res.claim, nil
 		}
 	}
 	return nil, nil
 }
 
-// walkBlockers resolves what to claim for a candidate: itself when
+// blockerWalk memoizes each node's deepest workable claim — correct on
+// converging DAGs, where a shared descendant reached first through a
+// short path must still contribute its full depth to a longer path.
+// Blocking cycles are rejected at relation creation; onPath guards
+// termination against corrupted data only.
+type blockerWalk struct {
+	tx       *sql.Tx
+	identity string
+	memo     map[string]walkResult
+	onPath   map[string]bool
+}
+
+type walkResult struct {
+	claim *Issue
+	depth int
+}
+
+// resolve computes what to claim for a candidate: itself when
 // unblocked, the DEEPEST open self-assigned blocker across every
 // branch when the whole blocker set is self-owned, nil when any live
 // blocker is external or unworkable. Depth is the chain length to the
 // returned claim; ties break toward the lower display number via the
 // ordered blocker query.
-func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[string]bool) (*Issue, int, error) {
-	if visited[candidate.ID] {
-		return nil, 0, nil
+func (w *blockerWalk) resolve(candidate Issue) (walkResult, error) {
+	if cached, ok := w.memo[candidate.ID]; ok {
+		return cached, nil
 	}
-	visited[candidate.ID] = true
+	if w.onPath[candidate.ID] {
+		// Only reachable through corrupted data — cycles reject at
+		// creation. Treat as unworkable rather than recurse forever.
+		return walkResult{}, nil
+	}
+	w.onPath[candidate.ID] = true
+	defer delete(w.onPath, candidate.ID)
+	tx, identity := w.tx, w.identity
 	rows, err := tx.Query(`
 		SELECT `+prefixedIssueColumns("b")+`, (bp.archived_at IS NOT NULL) FROM issue_relations r
 		JOIN issues b ON b.id = r.from_issue
@@ -521,7 +546,7 @@ func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[stri
 		WHERE r.kind = 'blocks' AND r.to_issue = ? AND b.status != 'complete'
 		ORDER BY b.number`, candidate.ID)
 	if err != nil {
-		return nil, 0, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
+		return walkResult{}, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
 	}
 	defer func() { _ = rows.Close() }()
 	type blockerRow struct {
@@ -535,42 +560,49 @@ func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[stri
 		cols := scanTargets(&b)
 		cols = append(cols, &archived)
 		if err := rows.Scan(cols...); err != nil {
-			return nil, 0, fmt.Errorf("scan blocker: %w", err)
+			return walkResult{}, fmt.Errorf("scan blocker: %w", err)
 		}
 		blockers = append(blockers, blockerRow{issue: b, archived: archived})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate blockers: %w", err)
+		return walkResult{}, fmt.Errorf("iterate blockers: %w", err)
 	}
-	if len(blockers) == 0 {
-		return &candidate, 0, nil
-	}
-	for _, b := range blockers {
-		if b.archived || b.issue.Assignee == nil || *b.issue.Assignee != identity || b.issue.Status != StatusOpen {
-			// Live work assigned elsewhere, unworkable, or frozen in an
-			// archived project blocks the whole chain for this identity
-			// — an archived project's issue must never be claimed.
-			return nil, 0, nil
+	result := walkResult{}
+	switch {
+	case len(blockers) == 0:
+		result = walkResult{claim: &candidate, depth: 0}
+	default:
+		eligible := true
+		for _, b := range blockers {
+			if b.archived || b.issue.Assignee == nil || *b.issue.Assignee != identity || b.issue.Status != StatusOpen {
+				// Live work assigned elsewhere, unworkable, or frozen
+				// in an archived project blocks the whole chain — an
+				// archived project's issue must never be claimed.
+				eligible = false
+				break
+			}
+		}
+		if eligible {
+			// Walk EVERY branch and claim the deepest — a shallow
+			// branch must not shadow deeper prerequisite work.
+			bestDepth := -1
+			var best *Issue
+			for _, b := range blockers {
+				sub, err := w.resolve(b.issue)
+				if err != nil {
+					return walkResult{}, err
+				}
+				if sub.claim != nil && sub.depth > bestDepth {
+					best, bestDepth = sub.claim, sub.depth
+				}
+			}
+			if best != nil {
+				result = walkResult{claim: best, depth: bestDepth + 1}
+			}
 		}
 	}
-	// Every live blocker is self-assigned and open: walk EVERY branch
-	// and claim the deepest — a shallow branch must not shadow deeper
-	// prerequisite work on another branch.
-	var best *Issue
-	bestDepth := -1
-	for _, b := range blockers {
-		claim, depth, err := walkBlockers(tx, identity, b.issue, visited)
-		if err != nil {
-			return nil, 0, err
-		}
-		if claim != nil && depth > bestDepth {
-			best, bestDepth = claim, depth
-		}
-	}
-	if best == nil {
-		return nil, 0, nil
-	}
-	return best, bestDepth + 1, nil
+	w.memo[candidate.ID] = result
+	return result, nil
 }
 
 // scanTargets returns scan destinations matching issueColumns order.

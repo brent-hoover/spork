@@ -512,7 +512,7 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", repoPath,
-		"-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+		"-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary",
 		baseCommit, commit)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -539,6 +539,15 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s unresolvable: %v", baseCommit, commit, waitErr)}
 	}
 	return string(raw), nil
+}
+
+// CheckRenderable verifies at submission time that the pinned diff can
+// actually be served to a reviewer — within MaxDiffBytes and
+// resolvable. A review whose content nobody could ever open must never
+// be created, let alone approved.
+func CheckRenderable(repoPath, baseCommit, commit string) error {
+	_, err := Diff(repoPath, baseCommit, commit)
+	return err
 }
 
 // RevalidateFences re-checks BOTH submission fences with bounded git

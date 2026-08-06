@@ -159,6 +159,12 @@ func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, exp
 	if err != nil {
 		return review.Deliverable{}, "", reviewErrorFrom(err)
 	}
+	// A deliverable that could never be rendered must not become a
+	// review: renderability (resolvable, within the size limit) is
+	// checked at submission, in prepare, with no lock held.
+	if err := review.CheckRenderable(repo.Path, base, *d.Commit); err != nil {
+		return review.Deliverable{}, "", reviewErrorFrom(err)
+	}
 	return out, base, nil
 }
 
