@@ -140,10 +140,16 @@ func Create(tx *sql.Tx, project, title string, body, assignee *string) (Issue, e
 		Status: StatusOpen, Project: project, Assignee: assignee,
 		Created: now, Updated: now,
 	}
+	// A creation-time assignee joins the work stack NOW: assigned_at
+	// stamps here too, or FIFO ordering would put the null first.
+	var assignedAt *string
+	if assignee != nil {
+		assignedAt = &now
+	}
 	_, err = tx.Exec(`
-		INSERT INTO issues (id, project, number, title, body, status, assignee, subtree_revision, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-		issue.ID, project, number, title, body, StatusOpen, assignee, now, now)
+		INSERT INTO issues (id, project, number, title, body, status, assignee, assigned_at, subtree_revision, created, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		issue.ID, project, number, title, body, StatusOpen, assignee, assignedAt, now, now)
 	if err != nil {
 		return Issue{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -491,21 +497,29 @@ func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[stri
 	}
 	visited[candidate.ID] = true
 	rows, err := tx.Query(`
-		SELECT `+prefixedIssueColumns("b")+` FROM issue_relations r
+		SELECT `+prefixedIssueColumns("b")+`, (bp.archived_at IS NOT NULL) FROM issue_relations r
 		JOIN issues b ON b.id = r.from_issue
+		JOIN projects bp ON bp.id = b.project
 		WHERE r.kind = 'blocks' AND r.to_issue = ? AND b.status != 'complete'
 		ORDER BY b.number`, candidate.ID)
 	if err != nil {
 		return nil, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
 	}
 	defer func() { _ = rows.Close() }()
-	var blockers []Issue
+	type blockerRow struct {
+		issue    Issue
+		archived bool
+	}
+	var blockers []blockerRow
 	for rows.Next() {
-		b, err := scanIssue(rows)
-		if err != nil {
+		var b Issue
+		var archived bool
+		cols := scanTargets(&b)
+		cols = append(cols, &archived)
+		if err := rows.Scan(cols...); err != nil {
 			return nil, fmt.Errorf("scan blocker: %w", err)
 		}
-		blockers = append(blockers, b)
+		blockers = append(blockers, blockerRow{issue: b, archived: archived})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate blockers: %w", err)
@@ -513,15 +527,21 @@ func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[stri
 	if len(blockers) == 0 {
 		return &candidate, nil
 	}
-	for _, blocker := range blockers {
-		if blocker.Assignee == nil || *blocker.Assignee != identity || blocker.Status != StatusOpen {
-			// Live work assigned elsewhere (or unworkable) blocks the
-			// whole chain for this identity.
+	for _, b := range blockers {
+		if b.archived || b.issue.Assignee == nil || *b.issue.Assignee != identity || b.issue.Status != StatusOpen {
+			// Live work assigned elsewhere, unworkable, or frozen in an
+			// archived project blocks the whole chain for this identity
+			// — an archived project's issue must never be claimed.
 			return nil, nil
 		}
 	}
 	// Every live blocker is self-assigned and open: work the deepest.
-	return walkBlockers(tx, identity, blockers[0], visited)
+	return walkBlockers(tx, identity, blockers[0].issue, visited)
+}
+
+// scanTargets returns scan destinations matching issueColumns order.
+func scanTargets(i *Issue) []any {
+	return []any{&i.ID, &i.Number, &i.Title, &i.Body, &i.Status, &i.Project, &i.Assignee, &i.Created, &i.Updated, &i.SubtreeRevision}
 }
 
 func prefixedIssueColumns(alias string) string {

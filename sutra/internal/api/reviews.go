@@ -210,6 +210,19 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr != nil {
 			return nil, apiErr
 		}
+		// Fences revalidate as prepare's LAST step — bounded git with
+		// no database lock held. The residual window from here to
+		// COMMIT is inherent to fencing an external store: even an
+		// in-transaction recheck leaves the same gap between its
+		// rev-parse and the commit, so this placement trades nothing
+		// while keeping git out of the SQLite writer entirely.
+		if req.ExpectedBaseCommit != nil || req.ExpectedDefaultHead != nil {
+			if err := review.RevalidateFences(repo, *d.Commit, review.Fences{
+				ExpectedBaseCommit: req.ExpectedBaseCommit, ExpectedDefaultHead: req.ExpectedDefaultHead,
+			}); err != nil {
+				return nil, reviewErrorFrom(err)
+			}
+		}
 		return preparedReview{req: req, d: d, base: base, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
@@ -223,16 +236,6 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		}
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
-		}
-		// Fenced submissions revalidate at the linearization point —
-		// bounded git — so a branch that advanced after preparation
-		// cannot slip a stale head OR a stale merge base past a fence.
-		if p.req.ExpectedDefaultHead != nil || p.req.ExpectedBaseCommit != nil {
-			if err := review.RevalidateFences(p.repo, *p.d.Commit, review.Fences{
-				ExpectedBaseCommit: p.req.ExpectedBaseCommit, ExpectedDefaultHead: p.req.ExpectedDefaultHead,
-			}); err != nil {
-				return 0, nil, reviewErrorFrom(err)
-			}
 		}
 		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base)
 		if err != nil {
@@ -497,6 +500,13 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr != nil {
 			return nil, apiErr
 		}
+		if req.ExpectedBaseCommit != nil || req.ExpectedDefaultHead != nil {
+			if err := review.RevalidateFences(repo, *d.Commit, review.Fences{
+				ExpectedBaseCommit: req.ExpectedBaseCommit, ExpectedDefaultHead: req.ExpectedDefaultHead,
+			}); err != nil {
+				return nil, reviewErrorFrom(err)
+			}
+		}
 		return preparedResubmit{req: req, d: d, base: base, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
@@ -510,13 +520,6 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		}
 		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
-		}
-		if p.req.ExpectedDefaultHead != nil || p.req.ExpectedBaseCommit != nil {
-			if err := review.RevalidateFences(p.repo, *p.d.Commit, review.Fences{
-				ExpectedBaseCommit: p.req.ExpectedBaseCommit, ExpectedDefaultHead: p.req.ExpectedDefaultHead,
-			}); err != nil {
-				return 0, nil, reviewErrorFrom(err)
-			}
 		}
 		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base)
 		if err != nil {
