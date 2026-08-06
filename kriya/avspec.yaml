@@ -1426,11 +1426,15 @@ data:
         and reopening atomically clears the WHOLE prior resolution —
         selected target, error, conflict cause, the linked advance, and
         every reclaim field — while rotating resolution_generation and
-        resolution_key, and recovery honors advance and reclaim state
-        only when it belongs to the current generation, so re-selecting
+        resolution_key, and every write that links an advance, stamps reclaim state, or
+        resolves the row is a CAS conditional on resolution_generation
+        still equaling the value the resolver started under — a stale
+        resolver finishing after a reopen loses that CAS and mutates
+        nothing — so re-selecting
         even the same target issues a fresh mutation with a fresh
         linked advance and can never mistake an old completed advance
-        or removal for the current resolution.
+        or removal for the current resolution, and a prior-generation
+        resolver can never relink, stamp, or resolve the reopened row.
       fields:
         - { name: ambiguity_key, type: string, required: true, unique: true }  # deterministic per (project_key, ticket)
         - { name: project_key, type: string, required: true }
