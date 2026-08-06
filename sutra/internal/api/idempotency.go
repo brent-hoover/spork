@@ -56,10 +56,12 @@ func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *
 	}
 
 	// Buffer the body — bounded — BEFORE any transaction opens, so a
-	// slow or oversized upload can never hold a database connection.
+	// slow or oversized upload can never hold a database connection. A
+	// read failure (oversize included) is a settled 400: it records
+	// under the pair and replays like any other keyed rejection.
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
-		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
+		s.settleRejection(w, operation, key, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))
@@ -77,6 +79,28 @@ func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	_, _ = w.Write(raw)
+}
+
+// settleRejection records a pre-handler 400 under the pair — first
+// writer wins, and a lost race replays the winner's response.
+func (s *server) settleRejection(w http.ResponseWriter, operation, key string, apiErr *apiError) {
+	raw, err := json.Marshal(errorEnvelope(apiErr))
+	if err != nil {
+		writeError(w, apiErr)
+		return
+	}
+	if _, err := s.db.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, ?, ?)`,
+		operation, key, apiErr.status, string(raw)); err != nil {
+		if identity.IsUniqueViolation(err) {
+			s.awaitReplay(w, operation, key)
+			return
+		}
+		writeError(w, apiErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(apiErr.status)
 	_, _ = w.Write(raw)
 }
 

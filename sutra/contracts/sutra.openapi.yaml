@@ -1528,6 +1528,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
 
   # -------------------------------------------------------------- identities
   /identities:

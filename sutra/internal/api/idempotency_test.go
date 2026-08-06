@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -217,5 +218,27 @@ func TestTrailingJSON400Replays(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("settled trailing-400 key still mutated: %d identities", count)
+	}
+}
+
+// TestOversizedBody400Replays pins that a body-read failure settles its
+// key: the valid same-key retry replays the 400 without mutating.
+func TestOversizedBody400Replays(t *testing.T) {
+	srv, db := startAPI(t)
+	huge := `{"handle":"` + strings.Repeat("x", 1<<20) + `","kind":"agent"}`
+	status1, body1 := post(t, srv, "/identities", "kbig", huge)
+	if status1 != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d", status1)
+	}
+	status2, body2 := post(t, srv, "/identities", "kbig", `{"handle":"small","kind":"agent"}`)
+	if status2 != status1 || body2 != body1 {
+		t.Fatalf("valid retry must replay the oversize 400: got %d %s", status2, body2)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("settled oversize-400 key still mutated: %d identities", count)
 	}
 }

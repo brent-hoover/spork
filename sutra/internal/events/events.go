@@ -101,8 +101,21 @@ func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Pa
 	if err != nil {
 		return Page{}, err
 	}
+	var bound int64
+	if until != "" {
+		if bound, err = parseCursor(until); err != nil {
+			return Page{}, err
+		}
+	}
 	query := `SELECT seq, id, kind, subject, operation, actor, payload, created FROM events WHERE seq > ?`
 	args := []any{after}
+	if until != "" {
+		// The bound constrains the page itself: an event appended past
+		// the fixed watermark never enters a drain's pages and never
+		// advances its cursor beyond the bound.
+		query += ` AND seq <= ?`
+		args = append(args, bound)
+	}
 	if kind != "" {
 		query += ` AND kind = ?`
 		args = append(args, kind)
@@ -140,10 +153,6 @@ func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Pa
 	page.NextCursor = strconv.FormatInt(last, 10)
 
 	if until != "" {
-		bound, err := parseCursor(until)
-		if err != nil {
-			return Page{}, err
-		}
 		remaining := `SELECT COUNT(*) FROM events WHERE seq > ? AND seq <= ?`
 		remArgs := []any{last, bound}
 		if kind != "" {

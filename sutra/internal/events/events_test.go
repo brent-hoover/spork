@@ -129,6 +129,39 @@ func TestDrainBoundIsFixed(t *testing.T) {
 	}
 }
 
+// TestUntilBoundsThePageItself pins that a post-watermark event never
+// enters a drain's pages even with spare page capacity, and the cursor
+// never advances past the bound.
+func TestUntilBoundsThePageItself(t *testing.T) {
+	db := openDB(t)
+	emit(t, db, "a", "s")
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	watermark, err := events.Watermark(tx)
+	if err != nil {
+		t.Fatalf("watermark: %v", err)
+	}
+	_ = tx.Rollback()
+
+	emit(t, db, "past-bound", "s")
+
+	page, err := events.List(db, "", "", "", 100, watermark)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Kind != "a" {
+		t.Fatalf("post-watermark event leaked into the drain: %+v", page.Events)
+	}
+	if page.NextCursor != watermark {
+		t.Fatalf("cursor advanced past the bound: %s > %s", page.NextCursor, watermark)
+	}
+	if !page.Drained {
+		t.Fatal("drain through the bound must report drained true")
+	}
+}
+
 func TestNoUntilMeansDrainedFalse(t *testing.T) {
 	db := openDB(t)
 	emit(t, db, "a", "s")
