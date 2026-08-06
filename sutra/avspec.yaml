@@ -496,7 +496,7 @@ data:
       fields:
         - { name: kind, type: string, required: true }
         - { name: subject, type: string, required: true }
-        - { name: operation, type: string, required: true }  # the Idempotency-Key of the mutating request that produced this event; every event one API transaction emits — cascades included — shares it, so subscribers can attribute a cascade to its trigger
+        - { name: operation, type: string, required: true }  # SERVER-GENERATED globally unique transaction id (uuid), minted per mutating transaction; every event that transaction emits — cascades included — shares it, so subscribers can attribute a cascade to its trigger; client idempotency keys are request-scoped and deliberately NOT used here, since nothing requires them unique across endpoints
         - { name: actor, type: ref, ref: ENT-identity, required: true }
         - { name: payload, type: json }
         - { name: created, type: datetime, required: true }

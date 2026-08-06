@@ -2091,7 +2091,8 @@ components:
         kind: { type: string }
         operation:
           type: string
-          description: The Idempotency-Key of the mutating request that produced this event. Every event one API transaction emits — ancestor-cascade events included — shares it, so subscribers can attribute a cascade to its trigger and verify which ancestors it reached.
+          format: uuid
+          description: Server-generated globally unique transaction id, minted per mutating transaction. Every event that transaction emits — ancestor-cascade events included — shares it, so subscribers can attribute a cascade to its trigger and verify which ancestors it reached. Deliberately not the client's Idempotency-Key, which is never required to be globally unique across endpoints.
         subject:
           type: string
           format: uuid
