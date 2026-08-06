@@ -15,6 +15,7 @@ import (
 
 	"sutra/internal/events"
 	"sutra/internal/identity"
+	"sutra/internal/issues"
 	"sutra/internal/projects"
 )
 
@@ -22,7 +23,7 @@ import (
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, migrateIdempotency} {
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, migrateIdempotency} {
 		if err := migrate(db); err != nil {
 			return nil, err
 		}
@@ -36,6 +37,14 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("GET /projects/{projectId}", s.getProject)
 	mux.HandleFunc("POST /projects/{projectId}/archive", s.archiveProject)
 	mux.HandleFunc("GET /events", s.listEvents)
+	mux.HandleFunc("POST /projects/{projectId}/issues", s.createIssue)
+	mux.HandleFunc("GET /projects/{projectId}/issues", s.listIssues)
+	mux.HandleFunc("GET /issues/{issueId}", s.getIssue)
+	mux.HandleFunc("PATCH /issues/{issueId}", s.updateIssue)
+	mux.HandleFunc("POST /issues/{issueId}/status", s.updateIssueStatus)
+	mux.HandleFunc("POST /issues/{issueId}/relations", s.addIssueRelation)
+	mux.HandleFunc("GET /issues/{issueId}/relations", s.listIssueRelations)
+	mux.HandleFunc("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation)
 	return mux, nil
 }
 

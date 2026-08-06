@@ -107,6 +107,21 @@ func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Pa
 			return Page{}, err
 		}
 	}
+	// Positions the feed never issued are rejected, not silently
+	// honored: a cursor beyond the head would skip events forever, and
+	// a fabricated future until would report drained before events
+	// inside its bound exist. The head only grows, so a value valid
+	// here can never become invalid mid-drain.
+	var head sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(seq) FROM events`).Scan(&head); err != nil {
+		return Page{}, fmt.Errorf("read feed head: %w", err)
+	}
+	if after > head.Int64 {
+		return Page{}, &BadCursorError{Cursor: cursor}
+	}
+	if until != "" && bound > head.Int64 {
+		return Page{}, &BadCursorError{Cursor: until}
+	}
 	query := `SELECT seq, id, kind, subject, operation, actor, payload, created FROM events WHERE seq > ?`
 	args := []any{after}
 	if until != "" {

@@ -77,6 +77,15 @@ func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *
 		s.awaitReplay(w, operation, key)
 		return
 	}
+	writeRecorded(w, status, raw)
+}
+
+// writeRecorded writes a settled response; a 204 carries no body.
+func writeRecorded(w http.ResponseWriter, status int, raw []byte) {
+	if status == http.StatusNoContent {
+		w.WriteHeader(status)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
@@ -90,13 +99,14 @@ func (s *server) settleRejection(w http.ResponseWriter, operation, key string, a
 		writeError(w, apiErr)
 		return
 	}
-	if _, err := s.db.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, ?, ?)`,
-		operation, key, apiErr.status, string(raw)); err != nil {
+	if err := s.recordSettled(operation, key, apiErr.status, raw); err != nil {
 		if identity.IsUniqueViolation(err) {
 			s.awaitReplay(w, operation, key)
 			return
 		}
-		writeError(w, apiErr)
+		// The key is NOT settled; returning the 400 would let a retry
+		// mutate. An unsettled 500 keeps the pair fresh, like attempt.
+		writeError(w, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record idempotency key: %v", err)})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -113,20 +123,30 @@ func (s *server) replayed(w http.ResponseWriter, operation, key string) bool {
 	if err != nil {
 		return false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
+	writeRecorded(w, status, []byte(body))
 	return true
 }
 
 // attempt executes fn and records its settled response. It returns
 // (0, nil, nil) when a concurrent request already settled the pair.
+// The pair is RESERVED as the transaction's first statement: the insert
+// takes SQLite's write lock immediately — no deferred-read lock to
+// upgrade, so concurrent mutations serialize instead of failing BUSY —
+// and a same-key race is detected before any work runs. The reservation
+// commits only with the mutation; a crash leaves nothing behind.
 func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *apiError)) (int, []byte, *apiError) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("begin: %v", err)}
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, 0, '')`, operation, key); err != nil {
+		if identity.IsUniqueViolation(err) {
+			return 0, nil, nil
+		}
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("reserve idempotency key: %v", err)}
+	}
 
 	status, body, apiErr := fn(tx)
 	if apiErr != nil && apiErr.status >= http.StatusInternalServerError {
@@ -139,25 +159,21 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 	if apiErr != nil {
 		status = apiErr.status
 		raw, err = json.Marshal(errorEnvelope(apiErr))
-	} else {
+	} else if body != nil {
 		raw, err = json.Marshal(body)
+	} else {
+		raw = []byte{}
 	}
 	if err != nil {
 		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("encode response: %v", err)}
 	}
 
-	record := func(q interface {
-		Exec(string, ...any) (sql.Result, error)
-	}) error {
-		_, err := q.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, ?, ?)`, operation, key, status, string(raw))
-		return err
-	}
-
 	if apiErr != nil {
 		// Rejections settle the pair but must not keep the mutation's
-		// partial work: drop the transaction, record standalone.
+		// partial work: drop the transaction (reservation included),
+		// then record the settled rejection standalone.
 		_ = tx.Rollback()
-		if err := record(s.db); err != nil {
+		if err := s.recordSettled(operation, key, status, raw); err != nil {
 			if identity.IsUniqueViolation(err) {
 				return 0, nil, nil
 			}
@@ -166,16 +182,20 @@ func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *
 		return status, raw, nil
 	}
 
-	if err := record(tx); err != nil {
-		if identity.IsUniqueViolation(err) {
-			return 0, nil, nil
-		}
+	if _, err := tx.Exec(`UPDATE idempotency_keys SET status = ?, body = ? WHERE operation = ? AND key = ?`,
+		status, string(raw), operation, key); err != nil {
 		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record idempotency key: %v", err)}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("commit: %v", err)}
 	}
 	return status, raw, nil
+}
+
+func (s *server) recordSettled(operation, key string, status int, raw []byte) error {
+	_, err := s.db.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, ?, ?)`,
+		operation, key, status, string(raw))
+	return err
 }
 
 // awaitReplay returns the response committed by the request that won the
