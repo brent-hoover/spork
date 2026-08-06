@@ -90,4 +90,5 @@ Feature: Issue hierarchy
       | condition                        | code             |
       | the relation already existing    | relation-exists  |
       | an ancestry cycle                | ancestry-cycle   |
+      | a blocking cycle                 | blocking-cycle   |
       | the project being archived       | project-archived |

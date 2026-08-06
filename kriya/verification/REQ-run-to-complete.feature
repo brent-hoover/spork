@@ -221,6 +221,10 @@ Feature: Run to complete
     Then the selected target and the parenting mutation's key persist with state resolving before sutra is called
     And a crash after the relation lands is recovered by replaying the keyed mutation, stamping resolved with the outcome
     And the row stamps resolved and the other target's completion detection arms normally
+    Given a resolution's parenting call instead finds a concurrent parent on re-read
+    Then that parent IS the attribution and the row stamps resolved in place
+    Given the call fails with a permanent conflict
+    Then the row records conflicting, and reselection rotates the resolution generation and key atomically — no cached conflict suppresses the candidates forever
 
   Scenario: a previously bound unplanned ticket is never ambiguous
     Given a multi-mapping project where an unplanned ticket was once bound to target "A", then detached and reopened
@@ -277,6 +281,9 @@ Feature: Run to complete
     Then the removal is accepted as removed and the attachment proceeds
     Given the removal conflicts and the re-read shows a parent different from the authorized one
     Then the advance returns to conflicting with the new parent recorded — fresh authorization required
+    Given the removal fails unrecoverably and reclaim_state records failed
+    When the operator corrects the condition
+    Then the removal generation and key rotate atomically, the fresh removal reconciles, and only then does attachment resume
 
   Scenario: a permanent attachment failure resolves by correction or dismissal
     Given a new-work advance conflicting with kind permanent-failure — an ancestry cycle the attachment would create
