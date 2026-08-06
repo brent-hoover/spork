@@ -379,6 +379,9 @@ requirements:
       - id: AC-complete-drain-first
         statement: Every completion read drains the project feed through an atomically captured watermark BEFORE trusting even a revision-matching stamp — a newly created, unparented target ticket advances no subtree revision, so the revision match alone never proves quiescence; the drain consumes the creation and fires the new-work advance before any done verdict.
         test: verification/REQ-run-to-complete.feature#a creation in the event lag cannot hide behind a trusted stamp
+      - id: AC-complete-local-advance-once
+        statement: A local-operation epoch advance — a supersession or a stale-close compensation — inserts its CompletionAdvance in the advancing operation's own transaction, keyed by that operation's immutable local source (the new PlanHead generation, or the close attempt's completion_operation_key), so a crash-replay of either transaction collides on the key and the epoch never advances twice.
+        test: verification/REQ-run-to-complete.feature#a replayed local operation advances the epoch exactly once
       - id: AC-complete-new-work
         statement: Kriya keeps consuming project work events after a target completes — a new active issue attributing to a completed target advances its epoch, clears the stamp, and parents the ticket under the epic, whose attachment cascade reopens it.
         test: verification/REQ-run-to-complete.feature#new work created after completion wakes the target
