@@ -224,11 +224,13 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		// Fenced submissions revalidate the head at the linearization
-		// point — one bounded rev-parse — so a branch that advanced
-		// after preparation cannot slip past a stale fence.
-		if p.req.ExpectedDefaultHead != nil {
-			if err := review.RevalidateHead(p.repo, *p.req.ExpectedDefaultHead); err != nil {
+		// Fenced submissions revalidate at the linearization point —
+		// bounded git — so a branch that advanced after preparation
+		// cannot slip a stale head OR a stale merge base past a fence.
+		if p.req.ExpectedDefaultHead != nil || p.req.ExpectedBaseCommit != nil {
+			if err := review.RevalidateFences(p.repo, *p.d.Commit, review.Fences{
+				ExpectedBaseCommit: p.req.ExpectedBaseCommit, ExpectedDefaultHead: p.req.ExpectedDefaultHead,
+			}); err != nil {
 				return 0, nil, reviewErrorFrom(err)
 			}
 		}
@@ -509,8 +511,10 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		if p.req.ExpectedDefaultHead != nil {
-			if err := review.RevalidateHead(p.repo, *p.req.ExpectedDefaultHead); err != nil {
+		if p.req.ExpectedDefaultHead != nil || p.req.ExpectedBaseCommit != nil {
+			if err := review.RevalidateFences(p.repo, *p.d.Commit, review.Fences{
+				ExpectedBaseCommit: p.req.ExpectedBaseCommit, ExpectedDefaultHead: p.req.ExpectedDefaultHead,
+			}); err != nil {
 				return 0, nil, reviewErrorFrom(err)
 			}
 		}

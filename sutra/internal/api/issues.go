@@ -520,13 +520,14 @@ func (s *server) popWorkStack(w http.ResponseWriter, r *http.Request) {
 // matching, never close-used), stamping close_used and freezing the
 // verdict in the same transaction as the status change.
 func (s *server) closeIssue(tx *sql.Tx, id string, current issues.Issue, req transitionRequest) (int, any, *apiError) {
-	activeBelow, err := issues.ActiveInSubtree(tx, id)
+	activeBelow, err := issues.ActiveDescendants(tx, id)
 	if err != nil {
 		return 0, nil, errorFrom(err)
 	}
-	if activeBelow {
+	if len(activeBelow) > 0 {
 		return 0, nil, &apiError{status: http.StatusConflict, code: "open-children",
-			message: fmt.Sprintf("issue %s has active descendants; close them first", id)}
+			message:   fmt.Sprintf("issue %s has active descendants %v; close them first", id, activeBelow),
+			conflicts: activeBelow}
 	}
 	if _, err := review.SpendForClose(tx, req.Review, id, *req.ReviewRevision, req.ReviewVerdictEvent); err != nil {
 		return 0, nil, reviewErrorFrom(err)

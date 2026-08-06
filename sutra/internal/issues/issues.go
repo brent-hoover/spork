@@ -265,25 +265,37 @@ func Ancestors(tx *sql.Tx, id string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// ActiveInSubtree reports whether id's subtree — id excluded — holds
-// any open, in-progress, or blocked issue at any depth, including
-// beneath deferred children (AC-parent-close-gate).
-func ActiveInSubtree(tx *sql.Tx, id string) (bool, error) {
-	var one int
-	err := tx.QueryRow(`
+// ActiveDescendants returns the open, in-progress, or blocked issues in
+// id's subtree — id excluded — at any depth, including beneath deferred
+// children (AC-parent-close-gate). The ids name exactly the work a
+// rejected close must surface.
+func ActiveDescendants(tx *sql.Tx, id string) ([]string, error) {
+	rows, err := tx.Query(`
 		WITH RECURSIVE sub(id) AS (
 			SELECT to_issue FROM issue_relations WHERE kind = 'parent_of' AND from_issue = ?
 			UNION
 			SELECT r.to_issue FROM issue_relations r JOIN sub s ON r.from_issue = s.id AND r.kind = 'parent_of'
-		) SELECT 1 FROM issues WHERE id IN (SELECT id FROM sub)
-		  AND status IN ('open', 'in-progress', 'blocked') LIMIT 1`, id).Scan(&one)
-	switch {
-	case err == sql.ErrNoRows:
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("active-descendant check for %s: %w", id, err)
+		) SELECT id FROM issues WHERE id IN (SELECT id FROM sub)
+		  AND status IN ('open', 'in-progress', 'blocked') ORDER BY number`, id)
+	if err != nil {
+		return nil, fmt.Errorf("active-descendant check for %s: %w", id, err)
 	}
-	return true, nil
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("scan active descendant: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// ActiveInSubtree reports whether ActiveDescendants is non-empty.
+func ActiveInSubtree(tx *sql.Tx, id string) (bool, error) {
+	active, err := ActiveDescendants(tx, id)
+	return len(active) > 0, err
 }
 
 // AddRelation creates a parent_of or blocks relation after cycle,

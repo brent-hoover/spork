@@ -25,7 +25,9 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return iw.s.expectStatus(http.StatusCreated)
 	}
-	// complete closes an issue through a fresh approved review.
+	// complete closes an issue through a fresh approved review and
+	// asserts the status PERSISTED — a 200 with an unclosed issue must
+	// fail the scenario that relied on it.
 	complete := func(name string) error {
 		if err := cw.ensureGitProject(); err != nil {
 			return err
@@ -36,7 +38,16 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err := cw.close(name, 0, ""); err != nil {
 			return err
 		}
-		return iw.s.expectStatus(http.StatusOK)
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		if err := iw.readIssue(name); err != nil {
+			return err
+		}
+		if iw.lastIssue.Status != "complete" {
+			return fmt.Errorf("close of %s returned 200 but persisted %q", name, iw.lastIssue.Status)
+		}
+		return nil
 	}
 	transition := func(name, status string) error {
 		if err := iw.transition(name, status); err != nil {
@@ -67,11 +78,28 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	sc.Step(`^(SUT-\d+) is transitioned to "complete" naming its approved review at its current revision with its approval's verdict event$`, func(name string) error {
 		return cw.close(name, 0, "")
 	})
-	sc.Step(`^the transition is rejected naming the open child, not the review gate$`, func() error {
+	expectOpenChildrenNaming := func(descendant string) error {
 		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
 			return err
 		}
-		return iw.s.expectErrorCode("open-children")
+		if err := iw.s.expectErrorCode("open-children"); err != nil {
+			return err
+		}
+		var envelope struct {
+			Conflicts []string `json:"conflicts"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &envelope); err != nil {
+			return err
+		}
+		for _, id := range envelope.Conflicts {
+			if id == iw.issues[descendant] {
+				return nil
+			}
+		}
+		return fmt.Errorf("conflicts %v does not name %s (%s)", envelope.Conflicts, descendant, iw.issues[descendant])
+	}
+	sc.Step(`^the transition is rejected naming the open child, not the review gate$`, func() error {
+		return expectOpenChildrenNaming("SUT-90")
 	})
 	sc.Step(`^the child moves to status "deferred"$`, func() error {
 		return transition("SUT-90", "deferred")
@@ -97,10 +125,7 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return cw.close(name, 0, "")
 	})
 	sc.Step(`^the transition is rejected naming the active descendant — deferred nodes cannot hide active work$`, func() error {
-		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
-			return err
-		}
-		return iw.s.expectErrorCode("open-children")
+		return expectOpenChildrenNaming("SUT-91")
 	})
 
 	// --- subtree revision fences history, not just state
@@ -334,9 +359,40 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return expectStatusOf(b, "open")
 	})
 	sc.Step(`^a status event is recorded for each reopened ancestor$`, func() error {
+		// The reopen transaction's operation id is the newest status
+		// event on the LEAF; every reopened ancestor must carry a
+		// status event under that SAME operation — setup-time closes
+		// cannot satisfy this.
+		if err := iw.s.call(http.MethodGet, "/events?kind=issue.status-changed&subject="+iw.issues["SUT-12"], nil); err != nil {
+			return err
+		}
+		var page struct {
+			Events []struct {
+				Operation string `json:"operation"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
+			return err
+		}
+		if len(page.Events) == 0 {
+			return fmt.Errorf("no status events on the leaf")
+		}
+		reopenOp := page.Events[len(page.Events)-1].Operation
 		for _, name := range []string{"SUT-11", "SUT-10"} {
-			if err := iw.expectEvent("issue.status-changed", name, "operator"); err != nil {
+			if err := iw.s.call(http.MethodGet, "/events?kind=issue.status-changed&subject="+iw.issues[name], nil); err != nil {
 				return err
+			}
+			if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
+				return err
+			}
+			found := false
+			for _, e := range page.Events {
+				if e.Operation == reopenOp {
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("%s has no status event under the reopen operation %s", name, reopenOp)
 			}
 		}
 		return nil
@@ -380,10 +436,7 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return cw.approvedReview(parent, "blocked-desc")
 	})
 	sc.Step(`^the transition is rejected naming the blocked descendant$`, func() error {
-		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
-			return err
-		}
-		return iw.s.expectErrorCode("open-children")
+		return expectOpenChildrenNaming("SUT-29")
 	})
 
 	// --- attachments reopening complete parents
@@ -423,19 +476,27 @@ func registerHierarchySteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			}
 		}
 		actor := iw.identities["operator"]
+		mustCreate := func(kind, from, to string) error {
+			if err := iw.addRelation(kind, from, to, "operator"); err != nil {
+				return err
+			}
+			// The prerequisite must actually exist — an implementation
+			// rejecting everything with the right code must not pass.
+			return iw.s.expectStatus(http.StatusCreated)
+		}
 		switch condition {
 		case "the relation already existing":
-			if err := iw.addRelation("blocks", "SUT-60", "SUT-61", "operator"); err != nil {
+			if err := mustCreate("blocks", "SUT-60", "SUT-61"); err != nil {
 				return err
 			}
 			return iw.addRelation("blocks", "SUT-60", "SUT-61", "operator")
 		case "an ancestry cycle":
-			if err := iw.addRelation("parent_of", "SUT-60", "SUT-61", "operator"); err != nil {
+			if err := mustCreate("parent_of", "SUT-60", "SUT-61"); err != nil {
 				return err
 			}
 			return iw.addRelation("parent_of", "SUT-61", "SUT-60", "operator")
 		case "a blocking cycle":
-			if err := iw.addRelation("blocks", "SUT-60", "SUT-61", "operator"); err != nil {
+			if err := mustCreate("blocks", "SUT-60", "SUT-61"); err != nil {
 				return err
 			}
 			return iw.addRelation("blocks", "SUT-61", "SUT-60", "operator")

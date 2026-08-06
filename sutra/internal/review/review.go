@@ -530,21 +530,32 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 	return string(raw), nil
 }
 
-// RevalidateHead re-reads the default branch head — one rev-parse with
-// a 500ms bound, far inside the database's 5s busy budget, because it
-// runs under the mutation's write lock — for fenced submissions at the
-// linearization point: a head that advanced after preparation rejects
-// rather than letting a stale fence pass. A local rev-parse answers in
-// milliseconds; one that cannot answer in 500ms fails the request
-// unsettled rather than starving concurrent writers.
-func RevalidateHead(repo Repo, expectedHead string) error {
+// RevalidateFences re-checks BOTH submission fences at the mutation's
+// linearization point — bounded git (500ms per command), under the
+// write lock only for fenced submissions. The head is resolved once;
+// when a base fence is supplied the merge base is recomputed against
+// that same immutable head sha, so a default branch that moved after
+// preparation can never commit a stale base past either fence. Local
+// commands answer in milliseconds; ones that cannot answer in 500ms
+// fail the request unsettled rather than starving concurrent writers.
+func RevalidateFences(repo Repo, commit string, f Fences) error {
 	head, err := gitOutTimeout(repo.Path, 500*time.Millisecond, "rev-parse", "refs/heads/"+repo.DefaultBranch)
 	if err != nil {
 		return &GitError{Message: fmt.Sprintf("default branch %q unresolvable: %v", repo.DefaultBranch, err)}
 	}
-	if head != expectedHead {
+	if f.ExpectedDefaultHead != nil && *f.ExpectedDefaultHead != head {
 		return &ConflictError{Code: "expected-default-head-mismatch",
-			Message: fmt.Sprintf("default head moved to %s after preparation, expected %s", head, expectedHead)}
+			Message: fmt.Sprintf("default head moved to %s after preparation, expected %s", head, *f.ExpectedDefaultHead)}
+	}
+	if f.ExpectedBaseCommit != nil {
+		base, err := gitOutTimeout(repo.Path, 500*time.Millisecond, "merge-base", commit, head)
+		if err != nil {
+			return &GitError{Message: fmt.Sprintf("merge base of %s unresolvable: %v", commit, err)}
+		}
+		if *f.ExpectedBaseCommit != base {
+			return &ConflictError{Code: "expected-base-mismatch",
+				Message: fmt.Sprintf("merge base moved to %s after preparation, expected %s", base, *f.ExpectedBaseCommit)}
+		}
 	}
 	return nil
 }
