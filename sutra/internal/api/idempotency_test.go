@@ -161,3 +161,20 @@ func TestKeyed400sReplay(t *testing.T) {
 		t.Fatalf("settled 400 key still mutated: %d identities", count)
 	}
 }
+
+// TestTrailingJSONRejected pins that a body with data after the first
+// JSON value is malformed: 400, no mutation.
+func TestTrailingJSONRejected(t *testing.T) {
+	srv, db := startAPI(t)
+	status, body := post(t, srv, "/identities", "ktrail", `{"handle":"a","kind":"agent"}{"extra":true}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("trailing JSON accepted: %d %s", status, body)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("trailing-JSON request mutated: %d identities", count)
+	}
+}

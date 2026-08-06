@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"sutra/internal/identity"
@@ -79,6 +80,9 @@ func decodeBody(r *http.Request, into any) *apiError {
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(into); err != nil {
 		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: trailing data after JSON value"}
 	}
 	return nil
 }
