@@ -232,10 +232,14 @@ func Create(tx *sql.Tx, issue, author string, d Deliverable, summary *string, ba
 }
 
 func appendSubmission(tx *sql.Tx, reviewID string, revision int64, d Deliverable, baseCommit string, content *string, now string) (Submission, error) {
+	// content goes to the ROW only: metadata responses (create included)
+	// stay content-free — the deliverable endpoint and export paths are
+	// the only readers, so create responses match GET shapes and the
+	// idempotency store never duplicates multi-megabyte diffs.
 	sub := Submission{
 		ID: newUUIDv7(), Review: reviewID, Revision: revision,
 		Branch: d.Branch, Commit: d.Commit, DocVersion: d.DocVersion,
-		Session: d.Session, Content: content, Created: now,
+		Session: d.Session, Created: now,
 	}
 	if baseCommit != "" {
 		sub.BaseCommit = &baseCommit

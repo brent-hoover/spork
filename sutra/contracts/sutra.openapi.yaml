@@ -2483,6 +2483,32 @@ components:
               - required: [commit]
               - required: [base_commit]
 
+    ReviewSubmissionExport:
+      description: >-
+        A ReviewSubmission as carried by export payloads: code
+        submissions MUST include content — the durable deliverable copy
+        is the only one once git objects go unreachable, so a
+        contract-valid export can never omit it. Doc submissions carry
+        their doc_version reference as usual.
+      allOf:
+        - $ref: '#/components/schemas/ReviewSubmission'
+        - anyOf:
+            - required: [content]
+            - required: [doc_version]
+
+    ReviewExport:
+      description: >-
+        A Review as carried by ProjectExport: identical to Review with
+        submissions strengthened to ReviewSubmissionExport, so exported
+        review content always round-trips losslessly.
+      allOf:
+        - $ref: '#/components/schemas/Review'
+        - type: object
+          properties:
+            submissions:
+              type: array
+              items: { $ref: '#/components/schemas/ReviewSubmissionExport' }
+
     ResubmitReview:
       type: object
       description: >-
@@ -2623,7 +2649,7 @@ components:
           items: { $ref: '#/components/schemas/Thread' }
         reviews:
           type: array
-          items: { $ref: '#/components/schemas/Review' }
+          items: { $ref: '#/components/schemas/ReviewExport' }
         events:
           type: array
           items: { $ref: '#/components/schemas/Event' }
