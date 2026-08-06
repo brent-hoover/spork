@@ -71,6 +71,15 @@ var implementedFeatures = []string{
 	"../verification/REQ-agent-queue.feature:57",           // same-key replay claims nothing new
 	"../verification/REQ-status-workflow.feature:22",       // pop wins the race over a conditional defer
 	"../verification/REQ-status-workflow.feature:29",       // conditional defer wins the race over a pop
+	"../verification/REQ-doc-database.feature:4",           // doc files under its project
+	"../verification/REQ-doc-database.feature:12",          // saves append immutable versions
+	"../verification/REQ-doc-database.feature:18",          // latest by default
+	"../verification/REQ-doc-database.feature:23",          // history lists and diffs versions
+	"../verification/REQ-doc-templates.feature:3",          // templates are managed by name
+	"../verification/REQ-doc-templates.feature:10",         // template seeds the first version
+	"../verification/REQ-doc-issue-links.feature:3",        // link and unlink after creation
+	"../verification/REQ-doc-issue-links.feature:12",       // both sides see the link
+	"../verification/REQ-close-requires-review.feature:50", // doc deliverables gate like code
 }
 
 var contractRouter routers.Router
@@ -279,6 +288,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	cw := registerCloseSteps(sc, iw)
 	registerHierarchySteps(sc, cw)
 	registerQueueSteps(sc, cw)
+	registerDocsSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

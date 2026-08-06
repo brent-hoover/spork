@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"sutra/internal/docs"
 	"sutra/internal/events"
 	"sutra/internal/identity"
 	"sutra/internal/issues"
@@ -24,7 +25,7 @@ import (
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, migrateIdempotency} {
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, docs.Migrate, migrateIdempotency} {
 		if err := migrate(db); err != nil {
 			return nil, err
 		}
@@ -55,6 +56,21 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("POST /reviews/{reviewId}/consume", s.consumeReviewApproval)
 	mux.HandleFunc("POST /reviews/{reviewId}/resubmit", s.resubmitReview)
 	mux.HandleFunc("GET /reviews/{reviewId}/deliverable", s.getReviewDeliverable)
+	mux.HandleFunc("POST /projects/{projectId}/documents", s.createDocument)
+	mux.HandleFunc("GET /projects/{projectId}/documents", s.listProjectDocuments)
+	mux.HandleFunc("GET /issues/{issueId}/documents", s.listIssueDocuments)
+	mux.HandleFunc("GET /documents/{documentId}", s.getDocument)
+	mux.HandleFunc("POST /documents/{documentId}/versions", s.saveDocVersion)
+	mux.HandleFunc("GET /documents/{documentId}/versions", s.listDocVersions)
+	mux.HandleFunc("GET /doc-versions/{docVersionId}", s.getDocVersion)
+	mux.HandleFunc("GET /documents/{documentId}/diff", s.diffDocVersions)
+	mux.HandleFunc("POST /documents/{documentId}/issue", s.linkDocumentToIssue)
+	mux.HandleFunc("DELETE /documents/{documentId}/issue", s.unlinkDocumentFromIssue)
+	mux.HandleFunc("POST /templates", s.createTemplate)
+	mux.HandleFunc("GET /templates", s.listTemplates)
+	mux.HandleFunc("GET /templates/{templateId}", s.getTemplate)
+	mux.HandleFunc("PUT /templates/{templateId}", s.updateTemplate)
+	mux.HandleFunc("DELETE /templates/{templateId}", s.deleteTemplate)
 	return mux, nil
 }
 

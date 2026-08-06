@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,7 +31,7 @@ func run() error {
 	dbPath := flag.String("db", envOr("SUTRA_DB", "sutra.db"), "SQLite database path")
 	flag.Parse()
 
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", *dbPath))
+	db, err := sql.Open("sqlite", "file:"+escapeSQLitePath(*dbPath)+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return fmt.Errorf("open %s: %w", *dbPath, err)
 	}
@@ -70,6 +71,15 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+// escapeSQLitePath percent-encodes the characters SQLite's URI parser
+// would otherwise misread as syntax — %, ?, # and & — so a database
+// path containing them opens the intended file instead of a mangled
+// one. Slashes stay literal: they are path structure.
+func escapeSQLitePath(p string) string {
+	r := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23", "&", "%26")
+	return r.Replace(p)
 }
 
 func envOr(key, fallback string) string {

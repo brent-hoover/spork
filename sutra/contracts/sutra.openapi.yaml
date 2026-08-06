@@ -849,6 +849,23 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listProjectDocuments
+      summary: List a project's documents
+      description: Documents file under their project (AC-doc-create) — the project-side listing the doc database scenarios read back.
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          description: The project's documents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Document' }
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /documents/{documentId}:
     get:

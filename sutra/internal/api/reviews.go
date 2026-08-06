@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"sutra/internal/docs"
 	"sutra/internal/events"
 	"sutra/internal/identity"
 	"sutra/internal/issues"
@@ -142,17 +143,13 @@ func repoFacts(p projects.Project) review.Repo {
 // resolveDeliverable validates the shape and, for code deliverables,
 // resolves and fences base_commit against the snapshotted repo facts.
 // Runs git — the caller must have closed its read transaction. Doc
-// deliverables reject truthfully until the docs module exists — no
-// doc_version can name a stored version yet.
+// deliverables are validated by the caller against the docs store (a
+// database concern), so they never reach this function.
 func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, expectedHead *string) (review.Deliverable, string, string, *apiError) {
 	if apiErr := d.validate(); apiErr != nil {
 		return review.Deliverable{}, "", "", apiErr
 	}
 	out := review.Deliverable{Branch: d.Branch, Commit: d.Commit, DocVersion: d.DocVersion, Session: d.Session}
-	if d.DocVersion != nil {
-		return review.Deliverable{}, "", "", &apiError{status: http.StatusNotFound, code: "not-found",
-			message: fmt.Sprintf("doc version %s does not exist", *d.DocVersion)}
-	}
 	base, err := review.ResolveCode(repo, *d.Commit, review.Fences{
 		ExpectedBaseCommit: expectedBase, ExpectedDefaultHead: expectedHead,
 	})
@@ -221,6 +218,22 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardWritable(read, issue.Project); apiErr != nil {
 			_ = read.Rollback()
 			return nil, apiErr
+		}
+		if apiErr := req.validate(); apiErr != nil {
+			_ = read.Rollback()
+			return nil, apiErr
+		}
+		if req.DocVersion != nil {
+			// Doc deliverable: the version must exist; its immutable
+			// content becomes the stored deliverable (docs need
+			// approval like code — AC-review-deliverable-kinds).
+			version, err := docs.VersionByID(read, *req.DocVersion)
+			_ = read.Rollback()
+			if err != nil {
+				return nil, docErrorFrom(err)
+			}
+			d := review.Deliverable{DocVersion: req.DocVersion, Session: req.Session}
+			return preparedReview{req: req, d: d, content: version.Content}, nil
 		}
 		project, err := projects.GetTx(read, issue.Project)
 		_ = read.Rollback()
@@ -317,11 +330,9 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &apiError{status: http.StatusNotFound, code: "not-found", message: fmt.Sprintf("no submission at revision %d", revision)})
 		return
 	}
+	kind := "code"
 	if sub.Commit == nil {
-		_ = tx.Rollback()
-		// Doc deliverables resolve once the docs module stores content.
-		writeError(w, &apiError{status: http.StatusConflict, code: "not-found", message: "doc deliverable content is not resolvable yet"})
-		return
+		kind = "doc"
 	}
 	content, found, err := review.ContentAt(tx, rev.ID, revision)
 	_ = tx.Rollback()
@@ -336,7 +347,7 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 	// Served verbatim from the submission-time render: immutable by
 	// construction — no git, no repository configuration, no
 	// reachability concerns can alter what approval covered.
-	resolved := map[string]any{"kind": "code", "content": *content}
+	resolved := map[string]any{"kind": kind, "content": *content}
 	if rev.Summary != nil {
 		resolved["summary"] = *rev.Summary
 	}
@@ -526,6 +537,19 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardWritable(read, issue.Project); apiErr != nil {
 			_ = read.Rollback()
 			return nil, apiErr
+		}
+		if apiErr := req.validate(); apiErr != nil {
+			_ = read.Rollback()
+			return nil, apiErr
+		}
+		if req.DocVersion != nil {
+			version, err := docs.VersionByID(read, *req.DocVersion)
+			_ = read.Rollback()
+			if err != nil {
+				return nil, docErrorFrom(err)
+			}
+			d := review.Deliverable{DocVersion: req.DocVersion, Session: req.Session}
+			return preparedResubmit{req: req, d: d, content: version.Content}, nil
 		}
 		project, err := projects.GetTx(read, issue.Project)
 		_ = read.Rollback()

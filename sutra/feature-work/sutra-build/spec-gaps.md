@@ -63,6 +63,12 @@ proposed home (avspec field / kriya context / convention).
   fence rejects stale caller knowledge; the pinned base stays
   authoritative) — proposed home: spec guidance that cross-store
   atomicity claims name which store's clock they linearize on.
+- 2026-08-06 — Missing listing operation: the doc-database scenario
+  reads documents back "under SUT" (the project side), but the contract
+  declared only POST on /projects/{projectId}/documents — no GET
+  existed for the listing the scenario requires — fixed by adding
+  listProjectDocuments — proposed home: a verifier check that every
+  scenario read-back has a contract operation to serve it.
 - 2026-08-06 — SQLite DDL (indexes, composite keys, on-delete) not
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,

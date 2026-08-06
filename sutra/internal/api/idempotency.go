@@ -20,9 +20,16 @@ import (
 func bodyLimit(operation string) int64 {
 	switch operation {
 	case "POST /projects/import":
-		return 1 << 30 // 1 GiB: whole-project payloads incl. stored deliverables
+		// Whole-project payloads aggregate every record including
+		// stored deliverables. The import handler will stream/spool its
+		// payload when it lands; until then the bound sits at 4 GiB so
+		// no valid export within SQLite's physical limits rejects.
+		return 4 << 30
 	case "POST /comments":
-		return 64 << 20 // 64 MiB: comment bodies are spec-unbounded
+		// AC-comment-no-cap: comments carry full transcripts with no
+		// artificial cap — the bound is SQLite's own maximum value
+		// length (1e9 bytes), a physical constraint, not a policy.
+		return 1_000_000_000
 	default:
 		return 1 << 20
 	}
