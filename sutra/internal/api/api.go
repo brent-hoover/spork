@@ -11,24 +11,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
+	"sutra/internal/events"
 	"sutra/internal/identity"
+	"sutra/internal/projects"
 )
 
 // New wires the HTTP API over the given database, running each domain
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	if err := identity.Migrate(db); err != nil {
-		return nil, err
-	}
-	if err := migrateIdempotency(db); err != nil {
-		return nil, err
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, migrateIdempotency} {
+		if err := migrate(db); err != nil {
+			return nil, err
+		}
 	}
 	s := &server{db: db}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /identities", s.createIdentity)
 	mux.HandleFunc("GET /identities", s.listIdentities)
+	mux.HandleFunc("POST /projects", s.createProject)
+	mux.HandleFunc("GET /projects", s.listProjects)
+	mux.HandleFunc("GET /projects/{projectId}", s.getProject)
+	mux.HandleFunc("POST /projects/{projectId}/archive", s.archiveProject)
+	mux.HandleFunc("GET /events", s.listEvents)
 	return mux, nil
 }
 
@@ -49,16 +56,44 @@ type apiError struct {
 func (e *apiError) Error() string { return e.message }
 
 func errorFrom(err error) *apiError {
-	var dup *identity.DuplicateHandleError
-	if errors.As(err, &dup) {
-		return &apiError{
-			status:    http.StatusConflict,
-			code:      "unique-violation",
-			message:   err.Error(),
-			conflicts: []string{dup.ExistingID},
-		}
+	var dupHandle *identity.DuplicateHandleError
+	if errors.As(err, &dupHandle) {
+		return &apiError{status: http.StatusConflict, code: "unique-violation", message: err.Error(), conflicts: []string{dupHandle.ExistingID}}
+	}
+	var dupKey *projects.DuplicateKeyError
+	if errors.As(err, &dupKey) {
+		return &apiError{status: http.StatusConflict, code: "unique-violation", message: err.Error(), conflicts: []string{dupKey.ExistingID}}
+	}
+	var archived *projects.AlreadyArchivedError
+	if errors.As(err, &archived) {
+		return &apiError{status: http.StatusConflict, code: "project-archived", message: err.Error()}
+	}
+	var notFound *projects.NotFoundError
+	if errors.As(err, &notFound) {
+		return &apiError{status: http.StatusNotFound, code: "not-found", message: err.Error()}
+	}
+	var badCursor *events.BadCursorError
+	if errors.As(err, &badCursor) {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: err.Error()}
 	}
 	return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: err.Error()}
+}
+
+// requireActor enforces AC-identity-referenced inside the mutating
+// transaction: actor is an identity id, and an unknown id is rejected,
+// never silently created.
+func requireActor(tx *sql.Tx, actor string) *apiError {
+	if actor == "" {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: "actor is required"}
+	}
+	ok, err := identity.Exists(tx, actor)
+	if err != nil {
+		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: err.Error()}
+	}
+	if !ok {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("actor %q names no identity", actor)}
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -112,6 +147,103 @@ func (s *server) createIdentity(w http.ResponseWriter, r *http.Request) {
 		}
 		return http.StatusCreated, created, nil
 	})
+}
+
+// ---------------------------------------------------------------- projects
+
+func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
+	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+		var req struct {
+			Key           string  `json:"key"`
+			Name          string  `json:"name"`
+			Description   *string `json:"description"`
+			RepoPath      *string `json:"repo_path"`
+			DefaultBranch *string `json:"default_branch"`
+			Actor         string  `json:"actor"`
+		}
+		if apiErr := decodeBody(r, &req); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		if req.Key == "" || req.Name == "" {
+			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key and name are required"}
+		}
+		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		created, err := projects.Create(tx, projects.New{
+			Key: req.Key, Name: req.Name, Description: req.Description,
+			RepoPath: req.RepoPath, DefaultBranch: req.DefaultBranch,
+		})
+		if err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		if err := events.Emit(tx, "project.created", created.ID, events.NewOperation(), req.Actor, nil); err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		return http.StatusCreated, created, nil
+	})
+}
+
+func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
+	include := r.URL.Query().Get("includeArchived") == "true"
+	list, err := projects.List(s.db, include)
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *server) getProject(w http.ResponseWriter, r *http.Request) {
+	p, err := projects.Get(s.db, r.PathValue("projectId"))
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *server) archiveProject(w http.ResponseWriter, r *http.Request) {
+	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+		var req struct {
+			Actor string `json:"actor"`
+		}
+		if apiErr := decodeBody(r, &req); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
+			return 0, nil, apiErr
+		}
+		archived, err := projects.Archive(tx, r.PathValue("projectId"))
+		if err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		if err := events.Emit(tx, "project.archived", archived.ID, events.NewOperation(), req.Actor, nil); err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		return http.StatusOK, archived, nil
+	})
+}
+
+// ------------------------------------------------------------------ events
+
+func (s *server) listEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 100
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 1000 {
+			writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("limit %q out of range [1,1000]", raw)})
+			return
+		}
+		limit = n
+	}
+	page, err := events.List(s.db, q.Get("cursor"), q.Get("kind"), q.Get("subject"), limit, q.Get("until"))
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *server) listIdentities(w http.ResponseWriter, r *http.Request) {

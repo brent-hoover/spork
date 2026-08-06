@@ -27,7 +27,10 @@ import (
 // implemented. It grows as modules land; the suite runs in strict mode,
 // so a listed feature with pending or undefined steps fails the build.
 var implementedFeatures = []string{
-	"../verification/REQ-identities.feature:4", // identity is just a named kind
+	"../verification/REQ-identities.feature:4",     // identity is just a named kind
+	"../verification/REQ-notifications.feature:5",  // cursor polling resumes losslessly
+	"../verification/REQ-notifications.feature:12", // filters narrow the feed
+	"../verification/REQ-notifications.feature:27", // draining to a watermark is bounded and provable
 }
 
 var contractRouter routers.Router
@@ -206,6 +209,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 		return ctx, nil
 	})
 	registerIdentitySteps(sc, s)
+	registerFeedSteps(sc, s)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

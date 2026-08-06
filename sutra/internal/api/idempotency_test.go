@@ -178,3 +178,44 @@ func TestTrailingJSONRejected(t *testing.T) {
 		t.Fatalf("trailing-JSON request mutated: %d identities", count)
 	}
 }
+
+// TestKeyedSyntacticallyMalformed400Replays pins that a parse-failure
+// 400 settles its key: the valid retry replays the rejection.
+func TestKeyedSyntacticallyMalformed400Replays(t *testing.T) {
+	srv, db := startAPI(t)
+	status1, body1 := post(t, srv, "/identities", "kparse", `{"handle": !!!`)
+	if status1 != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d %s", status1, body1)
+	}
+	status2, body2 := post(t, srv, "/identities", "kparse", `{"handle":"fine","kind":"agent"}`)
+	if status2 != status1 || body2 != body1 {
+		t.Fatalf("valid retry must replay the parse 400: got %d %s", status2, body2)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("settled parse-400 key still mutated: %d identities", count)
+	}
+}
+
+// TestTrailingJSON400Replays pins the same for the trailing-data 400.
+func TestTrailingJSON400Replays(t *testing.T) {
+	srv, db := startAPI(t)
+	status1, body1 := post(t, srv, "/identities", "ktrail2", `{"handle":"a","kind":"agent"}{"x":1}`)
+	if status1 != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d %s", status1, body1)
+	}
+	status2, body2 := post(t, srv, "/identities", "ktrail2", `{"handle":"a","kind":"agent"}`)
+	if status2 != status1 || body2 != body1 {
+		t.Fatalf("valid retry must replay the trailing-data 400: got %d %s", status2, body2)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("settled trailing-400 key still mutated: %d identities", count)
+	}
+}

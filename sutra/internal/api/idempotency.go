@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -52,6 +54,15 @@ func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *
 	if s.replayed(w, operation, key) {
 		return
 	}
+
+	// Buffer the body — bounded — BEFORE any transaction opens, so a
+	// slow or oversized upload can never hold a database connection.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
 
 	status, raw, apiErr := s.attempt(operation, key, fn)
 	if apiErr != nil && apiErr.status >= http.StatusInternalServerError {
