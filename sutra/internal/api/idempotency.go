@@ -20,8 +20,10 @@ import (
 func migratePendingPins(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS pending_pins (
-			sha     TEXT PRIMARY KEY,
-			created TEXT NOT NULL
+			repo    TEXT NOT NULL,
+			sha     TEXT NOT NULL,
+			created TEXT NOT NULL,
+			PRIMARY KEY (repo, sha)
 		)`)
 	if err != nil {
 		return fmt.Errorf("migrate pending_pins: %w", err)

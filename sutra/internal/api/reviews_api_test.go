@@ -1079,7 +1079,7 @@ func TestPinReconciliationAtStartup(t *testing.T) {
 	if out, err := pin.CombinedOutput(); err != nil {
 		t.Fatalf("orphan pin: %v — %s", err, out)
 	}
-	if _, err := db.Exec(`INSERT INTO pending_pins (sha, created) VALUES (?, '2000-01-01T00:00:00Z')`, orphan); err != nil {
+	if _, err := db.Exec(`INSERT INTO pending_pins (repo, sha, created) VALUES (?, ?, '2000-01-01T00:00:00Z')`, repo.path, orphan); err != nil {
 		t.Fatal(err)
 	}
 

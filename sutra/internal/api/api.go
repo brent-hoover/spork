@@ -70,63 +70,10 @@ type server struct {
 // belong to an in-flight submission before reconciliation prunes it.
 const pendingPinGrace = time.Hour
 
-// reconcilePins runs at startup: every refs/sutra/pins ref that is
-// neither referenced by an accepted submission nor covered by a recent
-// pending row is removed, together with expired pending rows — the
-// cleanup half of the write-ahead pin protocol.
+// reconcilePins runs at startup: every repository's pin refs are
+// reconciled against ITS OWN accepted submissions and recent pending
+// rows — crash recovery for windows no in-band sweep saw.
 func (s *server) reconcilePins() error {
-	covered := map[string]bool{}
-	rows, err := s.db.Query(`SELECT commit_sha, base_commit FROM review_submissions WHERE commit_sha IS NOT NULL`)
-	if err != nil {
-		return fmt.Errorf("reconcile pins: read submissions: %w", err)
-	}
-	for rows.Next() {
-		var commit, base sql.NullString
-		if err := rows.Scan(&commit, &base); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("reconcile pins: scan: %w", err)
-		}
-		if commit.Valid {
-			covered[commit.String] = true
-		}
-		if base.Valid {
-			covered[base.String] = true
-		}
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("reconcile pins: iterate: %w", err)
-	}
-
-	pendingRecent := map[string]bool{}
-	cutoff := time.Now().UTC().Add(-pendingPinGrace).Format(time.RFC3339Nano)
-	pending, err := s.db.Query(`SELECT sha, created FROM pending_pins`)
-	if err != nil {
-		return fmt.Errorf("reconcile pins: read pending: %w", err)
-	}
-	var expired []string
-	for pending.Next() {
-		var sha, created string
-		if err := pending.Scan(&sha, &created); err != nil {
-			_ = pending.Close()
-			return fmt.Errorf("reconcile pins: scan pending: %w", err)
-		}
-		if created >= cutoff {
-			pendingRecent[sha] = true
-		} else {
-			expired = append(expired, sha)
-		}
-	}
-	_ = pending.Close()
-	if err := pending.Err(); err != nil {
-		return fmt.Errorf("reconcile pins: iterate pending: %w", err)
-	}
-	for _, sha := range expired {
-		if _, err := s.db.Exec(`DELETE FROM pending_pins WHERE sha = ?`, sha); err != nil {
-			return fmt.Errorf("reconcile pins: expire pending %s: %w", sha, err)
-		}
-	}
-
 	repos, err := s.db.Query(`SELECT DISTINCT repo_path FROM projects WHERE repo_path IS NOT NULL`)
 	if err != nil {
 		return fmt.Errorf("reconcile pins: read repos: %w", err)
@@ -145,16 +92,88 @@ func (s *server) reconcilePins() error {
 		return fmt.Errorf("reconcile pins: iterate repos: %w", err)
 	}
 	for _, path := range paths {
-		// A missing or broken repo must not block startup — its pins
-		// are unreachable anyway.
-		pins, err := review.ListPins(path)
-		if err != nil {
+		if err := s.reconcileRepoPins(path); err != nil {
+			// A missing or broken repo must not block startup — its
+			// pins are unreachable anyway.
 			continue
 		}
-		for _, sha := range pins {
-			if !covered[sha] && !pendingRecent[sha] {
-				_ = review.Unpin(path, sha)
-			}
+	}
+	return nil
+}
+
+// reconcileRepoPins prunes one repository's pin refs that are neither
+// covered by an accepted submission OF A PROJECT ANCHORED TO THAT
+// REPOSITORY nor pending-recent for it, and expires stale pending
+// rows. Coverage and pending state key by (repo, sha) — clones share
+// shas, so one repository's acceptance must never mark another's
+// orphan as covered. Runs at startup and on every submission's prepare
+// path, where growth happens.
+func (s *server) reconcileRepoPins(repoPath string) error {
+	covered := map[string]bool{}
+	rows, err := s.db.Query(`
+		SELECT sub.commit_sha, sub.base_commit
+		FROM review_submissions sub
+		JOIN reviews r ON r.id = sub.review
+		JOIN issues i ON i.id = r.issue
+		JOIN projects p ON p.id = i.project
+		WHERE p.repo_path = ? AND sub.commit_sha IS NOT NULL`, repoPath)
+	if err != nil {
+		return fmt.Errorf("reconcile %s: read submissions: %w", repoPath, err)
+	}
+	for rows.Next() {
+		var commit, base sql.NullString
+		if err := rows.Scan(&commit, &base); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("reconcile %s: scan: %w", repoPath, err)
+		}
+		if commit.Valid {
+			covered[commit.String] = true
+		}
+		if base.Valid {
+			covered[base.String] = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reconcile %s: iterate: %w", repoPath, err)
+	}
+
+	pendingRecent := map[string]bool{}
+	cutoff := time.Now().UTC().Add(-pendingPinGrace).Format(time.RFC3339Nano)
+	pending, err := s.db.Query(`SELECT sha, created FROM pending_pins WHERE repo = ?`, repoPath)
+	if err != nil {
+		return fmt.Errorf("reconcile %s: read pending: %w", repoPath, err)
+	}
+	var expired []string
+	for pending.Next() {
+		var sha, created string
+		if err := pending.Scan(&sha, &created); err != nil {
+			_ = pending.Close()
+			return fmt.Errorf("reconcile %s: scan pending: %w", repoPath, err)
+		}
+		if created >= cutoff {
+			pendingRecent[sha] = true
+		} else {
+			expired = append(expired, sha)
+		}
+	}
+	_ = pending.Close()
+	if err := pending.Err(); err != nil {
+		return fmt.Errorf("reconcile %s: iterate pending: %w", repoPath, err)
+	}
+	for _, sha := range expired {
+		if _, err := s.db.Exec(`DELETE FROM pending_pins WHERE repo = ? AND sha = ?`, repoPath, sha); err != nil {
+			return fmt.Errorf("reconcile %s: expire pending %s: %w", repoPath, sha, err)
+		}
+	}
+
+	pins, err := review.ListPins(repoPath)
+	if err != nil {
+		return err
+	}
+	for _, sha := range pins {
+		if !covered[sha] && !pendingRecent[sha] {
+			_ = review.Unpin(repoPath, sha)
 		}
 	}
 	return nil
