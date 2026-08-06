@@ -149,9 +149,9 @@ func ResolveCode(repo Repo, commit string, f Fences) (baseCommit string, err err
 	if repo.Path == "" {
 		return "", &GitError{Message: "project has no repo_path; code deliverables cannot be resolved"}
 	}
-	head, err := gitOut(repo.Path, "rev-parse", "refs/heads/"+repo.DefaultBranch)
+	head, err := resolveHead(repo, 10*time.Second)
 	if err != nil {
-		return "", &GitError{Message: fmt.Sprintf("default branch %q unresolvable: %v", repo.DefaultBranch, err)}
+		return "", err
 	}
 	if f.ExpectedDefaultHead != nil && *f.ExpectedDefaultHead != head {
 		return "", &ConflictError{Code: "expected-default-head-mismatch",
@@ -173,6 +173,17 @@ func ResolveCode(repo Repo, commit string, f Fences) (baseCommit string, err err
 
 func gitOut(dir string, args ...string) (string, error) {
 	return gitOutTimeout(dir, 10*time.Second, args...)
+}
+
+// resolveHead resolves the default branch's EXACT ref via
+// show-ref --verify — never rev-parse, whose revision syntax would let
+// a value like "main~1" resolve to an ancestor instead of failing.
+func resolveHead(repo Repo, timeout time.Duration) (string, error) {
+	head, err := gitOutTimeout(repo.Path, timeout, "show-ref", "--verify", "--hash", "refs/heads/"+repo.DefaultBranch)
+	if err != nil {
+		return "", &GitError{Message: fmt.Sprintf("default branch %q unresolvable: %v", repo.DefaultBranch, err)}
+	}
+	return head, nil
 }
 
 func gitOutTimeout(dir string, timeout time.Duration, args ...string) (string, error) {
@@ -540,9 +551,9 @@ func Diff(repoPath, baseCommit, commit string) (string, error) {
 // knowledge) and nothing serializes against concurrent pushes — see
 // the contract's expected_base_commit/expected_default_head.
 func RevalidateFences(repo Repo, commit string, f Fences) error {
-	head, err := gitOutTimeout(repo.Path, 500*time.Millisecond, "rev-parse", "refs/heads/"+repo.DefaultBranch)
+	head, err := resolveHead(repo, 500*time.Millisecond)
 	if err != nil {
-		return &GitError{Message: fmt.Sprintf("default branch %q unresolvable: %v", repo.DefaultBranch, err)}
+		return err
 	}
 	if f.ExpectedDefaultHead != nil && *f.ExpectedDefaultHead != head {
 		return &ConflictError{Code: "expected-default-head-mismatch",

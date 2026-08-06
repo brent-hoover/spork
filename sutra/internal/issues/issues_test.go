@@ -126,3 +126,49 @@ func TestPopSkipsArchivedBlockerChains(t *testing.T) {
 		return nil
 	})
 }
+
+// TestPopDeepestAcrossBranches pins branched blocker graphs: with two
+// direct blockers of unequal chain depth, the DEEPEST open blocker is
+// claimed, not the first shallow branch.
+func TestPopDeepestAcrossBranches(t *testing.T) {
+	db := openDB(t)
+	agent := "00000000-0000-7000-8000-00000000000a"
+	var deep issues.Issue
+	inTx(t, db, func(tx *sql.Tx) error {
+		project, err := projects.Create(tx, projects.New{Key: "SUT", Name: "S"})
+		if err != nil {
+			return err
+		}
+		mk := func(title string) issues.Issue {
+			i, err := issues.Create(tx, project.ID, title, nil, &agent)
+			if err != nil {
+				t.Fatalf("create %s: %v", title, err)
+			}
+			return i
+		}
+		candidate := mk("candidate")
+		shallow := mk("shallow blocker")
+		mid := mk("mid blocker")
+		deep = mk("deep blocker")
+		for _, rel := range [][2]string{
+			{shallow.ID, candidate.ID}, // branch 1: depth 1
+			{mid.ID, candidate.ID},     // branch 2: depth 2 via deep
+			{deep.ID, mid.ID},
+		} {
+			if _, err := issues.AddRelation(tx, "blocks", rel[0], rel[1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	inTx(t, db, func(tx *sql.Tx) error {
+		claim, err := issues.PopCandidate(tx, agent)
+		if err != nil {
+			return err
+		}
+		if claim == nil || claim.ID != deep.ID {
+			return fmt.Errorf("expected the deepest blocker %s, got %+v", deep.ID, claim)
+		}
+		return nil
+	})
+}

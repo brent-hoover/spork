@@ -654,3 +654,37 @@ func TestDiffSizeCap(t *testing.T) {
 		t.Fatalf("expected the limit named: %s", body)
 	}
 }
+
+// TestRevisionSyntaxBranchRejected pins exact-ref resolution: a
+// default_branch like "main~1" must fail, never resolve to an ancestor.
+func TestRevisionSyntaxBranchRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q,"default_branch":"main~1"}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	if status != http.StatusConflict {
+		t.Fatalf("revision-syntax branch must fail resolution: %d %s", status, body)
+	}
+}

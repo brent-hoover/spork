@@ -492,7 +492,7 @@ func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
 		return nil, fmt.Errorf("iterate candidates: %w", err)
 	}
 	for _, candidate := range candidates {
-		claim, err := walkBlockers(tx, identity, candidate, map[string]bool{})
+		claim, _, err := walkBlockers(tx, identity, candidate, map[string]bool{})
 		if err != nil {
 			return nil, err
 		}
@@ -504,11 +504,14 @@ func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
 }
 
 // walkBlockers resolves what to claim for a candidate: itself when
-// unblocked, the deepest open self-assigned blocker when the chain is
-// self-owned, nil when any live blocker is external or unworkable.
-func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[string]bool) (*Issue, error) {
+// unblocked, the DEEPEST open self-assigned blocker across every
+// branch when the whole blocker set is self-owned, nil when any live
+// blocker is external or unworkable. Depth is the chain length to the
+// returned claim; ties break toward the lower display number via the
+// ordered blocker query.
+func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[string]bool) (*Issue, int, error) {
 	if visited[candidate.ID] {
-		return nil, nil
+		return nil, 0, nil
 	}
 	visited[candidate.ID] = true
 	rows, err := tx.Query(`
@@ -518,7 +521,7 @@ func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[stri
 		WHERE r.kind = 'blocks' AND r.to_issue = ? AND b.status != 'complete'
 		ORDER BY b.number`, candidate.ID)
 	if err != nil {
-		return nil, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
+		return nil, 0, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
 	}
 	defer func() { _ = rows.Close() }()
 	type blockerRow struct {
@@ -532,26 +535,42 @@ func walkBlockers(tx *sql.Tx, identity string, candidate Issue, visited map[stri
 		cols := scanTargets(&b)
 		cols = append(cols, &archived)
 		if err := rows.Scan(cols...); err != nil {
-			return nil, fmt.Errorf("scan blocker: %w", err)
+			return nil, 0, fmt.Errorf("scan blocker: %w", err)
 		}
 		blockers = append(blockers, blockerRow{issue: b, archived: archived})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate blockers: %w", err)
+		return nil, 0, fmt.Errorf("iterate blockers: %w", err)
 	}
 	if len(blockers) == 0 {
-		return &candidate, nil
+		return &candidate, 0, nil
 	}
 	for _, b := range blockers {
 		if b.archived || b.issue.Assignee == nil || *b.issue.Assignee != identity || b.issue.Status != StatusOpen {
 			// Live work assigned elsewhere, unworkable, or frozen in an
 			// archived project blocks the whole chain for this identity
 			// — an archived project's issue must never be claimed.
-			return nil, nil
+			return nil, 0, nil
 		}
 	}
-	// Every live blocker is self-assigned and open: work the deepest.
-	return walkBlockers(tx, identity, blockers[0].issue, visited)
+	// Every live blocker is self-assigned and open: walk EVERY branch
+	// and claim the deepest — a shallow branch must not shadow deeper
+	// prerequisite work on another branch.
+	var best *Issue
+	bestDepth := -1
+	for _, b := range blockers {
+		claim, depth, err := walkBlockers(tx, identity, b.issue, visited)
+		if err != nil {
+			return nil, 0, err
+		}
+		if claim != nil && depth > bestDepth {
+			best, bestDepth = claim, depth
+		}
+	}
+	if best == nil {
+		return nil, 0, nil
+	}
+	return best, bestDepth + 1, nil
 }
 
 // scanTargets returns scan destinations matching issueColumns order.
