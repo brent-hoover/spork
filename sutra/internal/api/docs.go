@@ -239,6 +239,10 @@ func (s *server) diffDocVersions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, docErrorFrom(err))
 		return
 	}
+	if err := docs.CheckDiffable(fromVersion, toVersion); err != nil {
+		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"from": from, "to": to, "diff": docs.UnifiedDiff(fromVersion, toVersion),
 	})

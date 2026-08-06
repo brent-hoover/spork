@@ -21,6 +21,16 @@ import (
 // gigabyte fixtures; set only via export_test.go.
 var testBodyLimit int64
 
+// largeBodyThreshold divides ordinary mutations from large-content
+// ones; largeBodySlot admits ONE large body at a time, so concurrent
+// contract-valid large requests serialize instead of multiplying
+// gigabyte buffers — AC-comment-no-cap keeps its physical-limit
+// semantics while memory stays bounded by one large payload plus
+// small-request noise. Duration is already bounded by ReadTimeout.
+const largeBodyThreshold = 4 << 20
+
+var largeBodySlot = make(chan struct{}, 1)
+
 func bodyLimit(operation string) int64 {
 	if testBodyLimit != 0 {
 		return testBodyLimit
@@ -97,9 +107,14 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 
 	// Buffer the body — bounded per endpoint — BEFORE any transaction
 	// opens, so a slow or oversized upload can never hold a database
-	// connection. A read failure (oversize included) is a settled 400:
-	// it records under the pair and replays like any other keyed
-	// rejection.
+	// connection. Large bodies (or unknown lengths) additionally take
+	// the single large-body slot first. A read failure (oversize
+	// included) is a settled 400: it records under the pair and
+	// replays like any other keyed rejection.
+	if r.ContentLength > largeBodyThreshold || r.ContentLength < 0 {
+		largeBodySlot <- struct{}{}
+		defer func() { <-largeBodySlot }()
+	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit(operation)))
 	if err != nil {
 		s.settleRejection(w, operation, key, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})

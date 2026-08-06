@@ -309,11 +309,17 @@ func UnifiedDiff(from, to Version) string {
 
 	var out strings.Builder
 	fmt.Fprintf(&out, "--- v%d\n+++ v%d\n", from.Number, to.Number)
-	fmt.Fprintf(&out, "@@ -1,%d +1,%d @@\n", len(a), len(b))
+	// Zero-length ranges start at 0 per the unified-diff format —
+	// empty-file creations and deletions must round-trip through
+	// standard patch tooling.
+	fmt.Fprintf(&out, "@@ -%d,%d +%d,%d @@\n", hunkStart(len(a)), len(a), hunkStart(len(b)), len(b))
 	for _, line := range a[:prefix] {
 		emitLine(&out, ' ', line)
 	}
-	if len(midA)*len(midB) <= maxDiffCells {
+	// Overflow-safe: the product form would wrap on 32-bit builds and
+	// select the quadratic matrix for exactly the inputs that must
+	// take the bounded fallback.
+	if len(midB) == 0 || len(midA) <= maxDiffCells/len(midB) {
 		writeLCSDiff(&out, midA, midB)
 	} else {
 		for _, line := range midA {
@@ -327,6 +333,34 @@ func UnifiedDiff(from, to Version) string {
 		emitLine(&out, ' ', line)
 	}
 	return out.String()
+}
+
+func hunkStart(count int) int {
+	if count == 0 {
+		return 0
+	}
+	return 1
+}
+
+// MaxDiffInput bounds the combined content size the diff endpoint will
+// process — diffing materializes both versions plus output, so the
+// bound keeps a single request's memory at a small multiple of this.
+const MaxDiffInput = 64 << 20
+
+// DiffTooLargeError reports versions beyond the documented diff bound.
+type DiffTooLargeError struct{ Combined int }
+
+func (e *DiffTooLargeError) Error() string {
+	return fmt.Sprintf("combined version size %d exceeds the %d-byte diff bound", e.Combined, MaxDiffInput)
+}
+
+// CheckDiffable rejects version pairs beyond MaxDiffInput before any
+// diff work allocates.
+func CheckDiffable(from, to Version) error {
+	if combined := len(from.Content) + len(to.Content); combined > MaxDiffInput {
+		return &DiffTooLargeError{Combined: combined}
+	}
+	return nil
 }
 
 func writeLCSDiff(out *strings.Builder, a, b []string) {

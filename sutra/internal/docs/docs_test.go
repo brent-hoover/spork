@@ -39,8 +39,14 @@ func TestUnifiedDiffNewlineSemantics(t *testing.T) {
 
 	// Empty to content.
 	diff = docs.UnifiedDiff(version(1, ""), version(2, "a\n"))
-	if !strings.Contains(diff, "@@ -1,0 +1,1 @@") || !strings.Contains(diff, "+a\n") {
-		t.Fatalf("empty-to-content diff malformed:\n%s", diff)
+	if !strings.Contains(diff, "@@ -0,0 +1,1 @@") || !strings.Contains(diff, "+a\n") {
+		t.Fatalf("empty-to-content diff must start the empty range at 0:\n%s", diff)
+	}
+
+	// Content to empty: the empty side's range starts at 0 too.
+	diff = docs.UnifiedDiff(version(1, "a\n"), version(2, ""))
+	if !strings.Contains(diff, "@@ -1,1 +0,0 @@") || !strings.Contains(diff, "-a\n") {
+		t.Fatalf("content-to-empty diff malformed:\n%s", diff)
 	}
 }
 
