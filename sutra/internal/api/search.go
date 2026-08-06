@@ -71,6 +71,19 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A project-only query enumerates the project's reviews too — all
+	// content in scope when q is omitted.
+	if project != nil && session == nil && q == nil {
+		for _, iss := range issueSet {
+			matched, err := review.List(tx, iss.ID, "", "")
+			if err != nil {
+				writeError(w, reviewErrorFrom(err))
+				return
+			}
+			reviewList = append(reviewList, matched...)
+		}
+	}
+
 	// Session joins: reviews by any submission, plus their issues —
 	// both confined to the project scope when one is given.
 	if session != nil {

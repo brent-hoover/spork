@@ -87,7 +87,9 @@ func Create(tx *sql.Tx, n New) (Comment, error) {
 		if err != nil {
 			return Comment{}, err
 		}
-		if !sameAnchor(parent.Issue, n.Issue) || !sameAnchor(parent.DocVersion, n.DocVersion) || !sameAnchor(parent.Review, n.Review) {
+		if !sameAnchor(parent.Issue, n.Issue) || !sameAnchor(parent.DocVersion, n.DocVersion) || !sameAnchor(parent.Review, n.Review) ||
+			!sameRevision(parent.ReviewRevision, n.ReviewRevision) {
+			// Review revisions are immutable; a thread never spans them.
 			return Comment{}, &ParentAnchorError{Parent: *n.Parent}
 		}
 	}
@@ -105,6 +107,13 @@ func Create(tx *sql.Tx, n New) (Comment, error) {
 		return Comment{}, fmt.Errorf("insert comment: %w", err)
 	}
 	return c, nil
+}
+
+func sameRevision(a, b *int64) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || *a == *b
 }
 
 func sameAnchor(a, b *string) bool {

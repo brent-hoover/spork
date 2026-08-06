@@ -125,7 +125,7 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			if sub.Content != nil && *sub.Content != "" {
 				s := sentinel
 				sub.Content = &s
-			}
+			} // present-but-empty stays "", distinct from absent
 			last := &meta.Reviews[len(meta.Reviews)-1]
 			last.Submissions = append(last.Submissions, sub)
 			return nil
@@ -712,8 +712,10 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanS
 			if !isCommitSHA(*sub.Commit) || !isCommitSHA(*sub.BaseCommit) {
 				return malformedImport("review %s code submission %d carries a malformed object id", r.ID, sub.Revision)
 			}
-			if sub.Content == nil || *sub.Content == "" {
-				// ReviewSubmissionExport: the durable copy is the only one.
+			if sub.Content == nil {
+				// ReviewSubmissionExport: the durable copy is the only
+				// one. Present-but-empty is valid — a commit identical
+				// to its base renders an empty diff.
 				return malformedImport("review %s code submission %d omits its content", r.ID, sub.Revision)
 			}
 			if sub.DocVersion != nil {

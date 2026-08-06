@@ -25,10 +25,8 @@ import (
 type exportMeta struct {
 	Project        projects.Project    `json:"project"`
 	Identities     []identity.Identity `json:"identities"`
-	Issues         []issues.Issue      `json:"issues"`
 	Labels         []issues.Label      `json:"labels"`
 	IssueRelations []issues.Relation   `json:"issue_relations"`
-	Events         []events.Event      `json:"events"`
 }
 
 // documentExport mirrors the contract's DocumentExport; import decodes
@@ -48,8 +46,10 @@ type exportPlan struct {
 	threadIDs  []string
 }
 
-// assembleExportPlan collects metadata and identity references in one
-// read transaction (AC-export-full) WITHOUT loading unbounded content.
+// assembleExportPlan collects id lists and identity references in one
+// read transaction (AC-export-full) WITHOUT loading unbounded content —
+// issue bodies, event payload sets, and every content group stream at
+// write time.
 // Cross-project blocks relations cannot round-trip through a
 // single-project export and are excluded — normative on the
 // exportProject contract description and logged in spec-gaps.md.
@@ -59,30 +59,40 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 	if plan.meta.Project, err = projects.GetTx(tx, projectID); err != nil {
 		return plan, err
 	}
-	if plan.meta.Issues, err = issues.List(tx, projectID, issues.Filters{}); err != nil {
-		return plan, err
-	}
 	issueIDSet := map[string]bool{}
 	labelSet := map[string]issues.Label{}
 	identityIDs := map[string]bool{}
-	for i := range plan.meta.Issues {
-		issue := &plan.meta.Issues[i]
-		issueIDSet[issue.ID] = true
-		labels, err := issues.LabelsOf(tx, issue.ID)
-		if err != nil {
+	irows, err := tx.Query(`SELECT id, assignee FROM issues WHERE project = ? ORDER BY number`, projectID)
+	if err != nil {
+		return plan, err
+	}
+	for irows.Next() {
+		var id string
+		var assignee *string
+		if err := irows.Scan(&id, &assignee); err != nil {
+			_ = irows.Close()
 			return plan, err
 		}
-		if len(labels) > 0 {
-			issue.Labels = labels
+		issueIDSet[id] = true
+		plan.issueIDs = append(plan.issueIDs, id) // number order for streaming
+		if assignee != nil {
+			identityIDs[*assignee] = true
+		}
+	}
+	if err := irows.Err(); err != nil {
+		_ = irows.Close()
+		return plan, err
+	}
+	_ = irows.Close()
+	for _, id := range plan.issueIDs {
+		labels, err := issues.LabelsOf(tx, id)
+		if err != nil {
+			return plan, err
 		}
 		for _, l := range labels {
 			labelSet[l.ID] = l
 		}
-		if issue.Assignee != nil {
-			identityIDs[*issue.Assignee] = true
-		}
 	}
-	plan.issueIDs = sortedKeys(issueIDSet)
 	plan.meta.Labels = make([]issues.Label, 0, len(labelSet))
 	for _, l := range labelSet {
 		plan.meta.Labels = append(plan.meta.Labels, l)
@@ -196,21 +206,33 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 		}
 	}
 
-	// Events whose subject is the project or one of its issues.
-	subjects := append([]string{projectID}, plan.issueIDs...)
-	slices.Sort(subjects)
-	plan.meta.Events = []events.Event{}
-	for _, subject := range subjects {
-		list, err := events.BySubject(tx, subject)
-		if err != nil {
+	// Event actors, collected without materializing event rows; the
+	// rows themselves stream in feed order at write time.
+	arows, err := tx.Query(`SELECT DISTINCT actor FROM events`)
+	if err != nil {
+		return plan, err
+	}
+	for arows.Next() {
+		var actor, probe string
+		if err := arows.Scan(&actor); err != nil {
+			_ = arows.Close()
 			return plan, err
 		}
-		for _, e := range list {
-			identityIDs[e.Actor] = true
+		// Only actors of in-scope events join the export's identities.
+		err := tx.QueryRow(`SELECT id FROM events WHERE actor = ? AND (subject = ? OR subject IN (SELECT id FROM issues WHERE project = ?)) LIMIT 1`,
+			actor, projectID, projectID).Scan(&probe)
+		if err == nil {
+			identityIDs[actor] = true
+		} else if err != sql.ErrNoRows {
+			_ = arows.Close()
+			return plan, err
 		}
-		plan.meta.Events = append(plan.meta.Events, list...)
 	}
-	events.SortByFeedOrder(plan.meta.Events)
+	if err := arows.Err(); err != nil {
+		_ = arows.Close()
+		return plan, err
+	}
+	_ = arows.Close()
 
 	plan.meta.Identities = []identity.Identity{}
 	for _, id := range sortedKeys(identityIDs) {
@@ -312,6 +334,27 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw[:len(raw)-1])
 	arr := &jsonArrayWriter{w: w}
 
+	// Issues stream one row at a time — bodies are unbounded strings.
+	arr.open("issues")
+	for _, id := range plan.issueIDs {
+		issue, err := issues.Get(tx, id)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		if err := arr.marshalElem(issue); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	// Events stream in feed order; out-of-scope subjects skip in the
+	// scan, so one ordered pass serves any number of subjects.
+	arr.open("events")
+	if err := streamProjectEvents(tx, plan.meta.Project.ID, plan.issueIDs, arr); err != nil {
+		return
+	}
+	arr.close()
+
 	arr.open("comments")
 	reviewIDs := make([]string, 0, len(plan.reviews))
 	for _, rv := range plan.reviews {
@@ -397,6 +440,37 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	}
 	arr.close()
 	_, _ = w.Write([]byte{'}'})
+}
+
+// streamProjectEvents walks the whole feed in order, emitting events
+// whose subject is the project or one of its issues.
+func streamProjectEvents(tx *sql.Tx, projectID string, issueIDs []string, arr *jsonArrayWriter) error {
+	scope := map[string]bool{projectID: true}
+	for _, id := range issueIDs {
+		scope[id] = true
+	}
+	rows, err := tx.Query(`SELECT id, kind, subject, operation, actor, payload, created FROM events ORDER BY seq`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var e events.Event
+		var payload sql.NullString
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Subject, &e.Operation, &e.Actor, &payload, &e.Created); err != nil {
+			return err
+		}
+		if !scope[e.Subject] {
+			continue
+		}
+		if payload.Valid {
+			e.Payload = json.RawMessage(payload.String)
+		}
+		if err := arr.marshalElem(e); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // eachSubmission streams a review's full submission history including

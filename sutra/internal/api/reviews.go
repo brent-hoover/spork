@@ -533,11 +533,23 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 		kind = "doc"
 	}
 	content, found, err := review.ContentAt(tx, rev.ID, revision)
-	_ = tx.Rollback()
 	if err != nil {
+		_ = tx.Rollback()
 		writeError(w, errorFrom(err))
 		return
 	}
+	if (!found || content == nil) && sub.DocVersion != nil {
+		// Doc deliverables may carry no stored render (imports omit
+		// it); the immutable document version IS the deliverable.
+		version, err := docs.VersionByID(tx, *sub.DocVersion)
+		if err != nil {
+			_ = tx.Rollback()
+			writeError(w, docErrorFrom(err))
+			return
+		}
+		content, found = &version.Content, true
+	}
+	_ = tx.Rollback()
 	if !found || content == nil {
 		writeError(w, &apiError{status: http.StatusConflict, code: "bad-request", message: "submission predates stored content"})
 		return
