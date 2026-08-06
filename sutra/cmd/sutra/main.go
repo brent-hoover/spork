@@ -46,6 +46,10 @@ func run() error {
 		Addr:              *addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		// The full-request read bound: a slow or stalled upload can
+		// never occupy a handler indefinitely. Five minutes clears any
+		// legitimate localhost payload within the physical body bounds.
+		ReadTimeout: 5 * time.Minute,
 	}
 
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -249,16 +249,52 @@ func SetIssue(tx *sql.Tx, documentID string, issue *string) (Document, error) {
 // 200 MB avoided; the fallback keeps memory linear).
 const maxDiffCells = 4 << 20
 
+// noNewlineSentinel marks a side's final line as unterminated. It is
+// appended before diffing — making termination part of line identity,
+// so an unterminated line never pairs with a terminated twin as
+// context anywhere (prefix, suffix, or LCS) — and stripped at emission
+// into the standard \ No newline at end of file marker.
+const noNewlineSentinel = "\x00"
+
+// splitLines splits content into real lines: a trailing newline is a
+// terminator, never a phantom empty line, and an unterminated final
+// line carries the sentinel.
+func splitLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	if lines[len(lines)-1] == "" {
+		return lines[:len(lines)-1]
+	}
+	lines[len(lines)-1] += noNewlineSentinel
+	return lines
+}
+
+func emitLine(out *strings.Builder, mark byte, line string) {
+	if stripped, unterminated := strings.CutSuffix(line, noNewlineSentinel); unterminated {
+		out.WriteByte(mark)
+		out.WriteString(stripped)
+		out.WriteString("\n\\ No newline at end of file\n")
+		return
+	}
+	out.WriteByte(mark)
+	out.WriteString(line)
+	out.WriteByte('\n')
+}
+
 // UnifiedDiff renders a line-based unified diff between two version
-// contents (AC-doc-history). Common prefix and suffix are trimmed
-// first — planning docs change in small regions — and the remaining
-// middle uses a minimal LCS diff only while its matrix stays within
-// maxDiffCells; beyond that the middle is emitted as one exact
+// contents (AC-doc-history) that standard patch tooling can apply:
+// real line counts (no phantom trailing lines), no-newline markers,
+// and a whole-file hunk with full context. Common prefix and suffix
+// are trimmed first — planning docs change in small regions — and the
+// remaining middle uses a minimal LCS diff only while its matrix stays
+// within maxDiffCells; beyond that the middle is emitted as one exact
 // replacement hunk (still a correct old→new diff, just not minimal),
 // keeping memory linear regardless of document shape.
 func UnifiedDiff(from, to Version) string {
-	a := strings.Split(from.Content, "\n")
-	b := strings.Split(to.Content, "\n")
+	a := splitLines(from.Content)
+	b := splitLines(to.Content)
 
 	prefix := 0
 	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
@@ -273,24 +309,22 @@ func UnifiedDiff(from, to Version) string {
 
 	var out strings.Builder
 	fmt.Fprintf(&out, "--- v%d\n+++ v%d\n", from.Number, to.Number)
-	// One whole-file hunk with full context — valid unified diff for
-	// standard patch tooling.
 	fmt.Fprintf(&out, "@@ -1,%d +1,%d @@\n", len(a), len(b))
 	for _, line := range a[:prefix] {
-		out.WriteString(" " + line + "\n")
+		emitLine(&out, ' ', line)
 	}
 	if len(midA)*len(midB) <= maxDiffCells {
 		writeLCSDiff(&out, midA, midB)
 	} else {
 		for _, line := range midA {
-			out.WriteString("-" + line + "\n")
+			emitLine(&out, '-', line)
 		}
 		for _, line := range midB {
-			out.WriteString("+" + line + "\n")
+			emitLine(&out, '+', line)
 		}
 	}
 	for _, line := range a[len(a)-suffix:] {
-		out.WriteString(" " + line + "\n")
+		emitLine(&out, ' ', line)
 	}
 	return out.String()
 }
@@ -315,22 +349,22 @@ func writeLCSDiff(out *strings.Builder, a, b []string) {
 	for i < len(a) && j < len(b) {
 		switch {
 		case a[i] == b[j]:
-			out.WriteString(" " + a[i] + "\n")
+			emitLine(out, ' ', a[i])
 			i++
 			j++
 		case lcs[i+1][j] >= lcs[i][j+1]:
-			out.WriteString("-" + a[i] + "\n")
+			emitLine(out, '-', a[i])
 			i++
 		default:
-			out.WriteString("+" + b[j] + "\n")
+			emitLine(out, '+', b[j])
 			j++
 		}
 	}
 	for ; i < len(a); i++ {
-		out.WriteString("-" + a[i] + "\n")
+		emitLine(out, '-', a[i])
 	}
 	for ; j < len(b); j++ {
-		out.WriteString("+" + b[j] + "\n")
+		emitLine(out, '+', b[j])
 	}
 }
 
