@@ -19,13 +19,14 @@ import (
 	"sutra/internal/issues"
 	"sutra/internal/projects"
 	"sutra/internal/review"
+	"sutra/internal/threads"
 )
 
 // New wires the HTTP API over the given database, running each domain
 // module's migrations. The composition root and the acceptance harness
 // are its only callers.
 func New(db *sql.DB) (http.Handler, error) {
-	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, docs.Migrate, migrateIdempotency} {
+	for _, migrate := range []func(*sql.DB) error{identity.Migrate, projects.Migrate, events.Migrate, issues.Migrate, review.Migrate, docs.Migrate, threads.Migrate, migrateIdempotency} {
 		if err := migrate(db); err != nil {
 			return nil, err
 		}
@@ -59,6 +60,11 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("POST /projects/{projectId}/documents", s.createDocument)
 	mux.HandleFunc("GET /projects/{projectId}/documents", s.listProjectDocuments)
 	mux.HandleFunc("GET /issues/{issueId}/documents", s.listIssueDocuments)
+	mux.HandleFunc("POST /threads", s.importThread)
+	mux.HandleFunc("GET /threads/search", s.searchThreads)
+	mux.HandleFunc("GET /threads/{threadId}", s.getThread)
+	mux.HandleFunc("POST /threads/{threadId}/anchor", s.setThreadAnchor)
+	mux.HandleFunc("GET /issues/{issueId}/threads", s.listIssueThreads)
 	mux.HandleFunc("GET /documents/{documentId}", s.getDocument)
 	mux.HandleFunc("POST /documents/{documentId}/versions", s.saveDocVersion)
 	mux.HandleFunc("GET /documents/{documentId}/versions", s.listDocVersions)

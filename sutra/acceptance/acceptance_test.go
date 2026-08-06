@@ -80,6 +80,9 @@ var implementedFeatures = []string{
 	"../verification/REQ-doc-issue-links.feature:3",        // link and unlink after creation
 	"../verification/REQ-doc-issue-links.feature:12",       // both sides see the link
 	"../verification/REQ-close-requires-review.feature:50", // doc deliverables gate like code
+	"../verification/REQ-thread-catalog.feature:4",         // import preserves the transcript
+	"../verification/REQ-thread-catalog.feature:15",        // thread content is searchable
+	"../verification/REQ-thread-links.feature:3",           // threads anchor to their work
 }
 
 var contractRouter routers.Router
@@ -289,6 +292,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerHierarchySteps(sc, cw)
 	registerQueueSteps(sc, cw)
 	registerDocsSteps(sc, cw)
+	registerThreadsSteps(sc, cw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.

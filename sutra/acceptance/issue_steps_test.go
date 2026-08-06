@@ -189,7 +189,12 @@ func (iw *issueWorld) relationsOf(name string) ([]map[string]string, error) {
 // expectEvent asserts the feed holds an event of kind for the named
 // issue with the given actor handle, carrying a timestamp.
 func (iw *issueWorld) expectEvent(kind, issueName, byHandle string) error {
-	subject := iw.issues[issueName]
+	return iw.expectEventBySubject(kind, iw.issues[issueName], byHandle)
+}
+
+// expectEventBySubject asserts an event exists for a raw subject id —
+// project-subject events (thread anchors) use it directly.
+func (iw *issueWorld) expectEventBySubject(kind, subject, byHandle string) error {
 	actor := iw.identities[byHandle]
 	if err := iw.s.call(http.MethodGet, "/events?kind="+url.QueryEscape(kind)+"&subject="+subject, nil); err != nil {
 		return err
@@ -208,7 +213,7 @@ func (iw *issueWorld) expectEvent(kind, issueName, byHandle string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("no %s event for %s by %s in %s", kind, issueName, byHandle, iw.s.lastBody)
+	return fmt.Errorf("no %s event for subject %s by %s in %s", kind, subject, byHandle, iw.s.lastBody)
 }
 
 func registerIssueSteps(sc *godog.ScenarioContext, s *testState) *issueWorld {
