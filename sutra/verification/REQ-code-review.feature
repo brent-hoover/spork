@@ -101,8 +101,16 @@ Feature: Review lifecycle
     Given a review whose verdict went changes-requested, then approved, then changes-requested again at the same revision
     When a delayed resubmission arrives naming the FIRST changes-requested event
     Then it is rejected with a conflict — that event is no longer the review's latest verdict
-    Given a delayed consumption names an approval event that a later verdict superseded
-    Then it too is rejected with a conflict and consumes nothing
+
+  Scenario: a delayed consumption naming a superseded approval conflicts even against approved state
+    Given a review approved by event "A", reversed, then approved again by event "B" at the same revision
+    When a delayed consumption arrives expecting verdict event "A"
+    Then it is rejected with a conflict and consumes nothing — the current approved state does not excuse the superseded event
+
+  Scenario: a delayed close naming a superseded approval conflicts even against approved state
+    Given an issue whose review was approved by event "A", reversed, then approved again by event "B" at the same revision
+    When a delayed complete transition arrives naming the review, its revision, and verdict event "A"
+    Then it is rejected with a conflict — the review is not close-used and the issue is not complete
 
   Scenario: a stale resubmission cannot land on a newer revision
     Given a review at revision 3 in state "changes-requested"

@@ -30,7 +30,7 @@ Feature: Review submission and merge
     And the pair loop resumes
     When the agent finishes rework at a new head commit
     And every machine gate — review, test, structure, typing, arch, branch coverage, mutation — and PO validation pass again at the new head commit
-    Then the resubmitting state, its key, expected revision, and pinned commit persist transactionally before sutra is called
+    Then the resubmitting state, its key, expected revision, answered verdict event, and pinned commit persist transactionally before sutra is called
     And resubmission goes through sutra's resubmit path and the review's revision increments
     And no resubmission happens before those gates pass
 
@@ -41,7 +41,7 @@ Feature: Review submission and merge
     Given sutra accepted the resubmission and the crash hit before kriya recorded it
     When recovery replays under the same key
     Then sutra returns the original response and the recorded revision reconciles as expected plus one
-    And the branch moving after the crash cannot change the pinned commit the replay names
+    And the replay names the persisted verdict event and pinned commit — neither a moved branch nor a later verdict can change what the replay requests
 
   Scenario: approval merges exactly once
     Given a review enters approved and the event is published
