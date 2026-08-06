@@ -206,9 +206,11 @@ Feature: Run to complete
     And recovery can never adopt the prior epoch's approved review — its key names the old epoch
 
   Scenario Outline: a replayed local operation advances the epoch exactly once
-    Given a <operation> transaction inserted its advance keyed by its <local_source>
-    When crash recovery replays that transaction
-    Then the insert collides on its local-source-derived key and the epoch never advances twice
+    Given a <operation> is in flight, its primary mutation and its advance insert bound to one transaction keyed by its <local_source>
+    When a crash lands before the commit
+    Then neither the mutation nor the advance is visible and the retried operation performs both
+    When a crash lands after the commit and recovery replays the operation
+    Then the advance insert collides on its local-source-derived key, the replay is a no-op, and the epoch never advances twice
 
     Examples:
       | operation              | local_source                        |
