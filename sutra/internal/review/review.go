@@ -570,7 +570,10 @@ func PinObjects(repoPath string, shas ...string) error {
 		if sha == "" {
 			continue
 		}
-		if _, err := gitOut(repoPath, "update-ref", "refs/sutra/pins/"+sha, sha); err != nil {
+		// core.hooksPath is voided so repository-configured
+		// reference-transaction hooks can neither run arbitrary code
+		// under sutra's identity nor veto sutra's internal pin refs.
+		if _, err := gitOut(repoPath, "-c", "core.hooksPath=/dev/null", "update-ref", "refs/sutra/pins/"+sha, sha); err != nil {
 			return &GitError{Message: fmt.Sprintf("pin %s: %v", sha, err)}
 		}
 	}

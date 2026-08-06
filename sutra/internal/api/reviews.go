@@ -210,14 +210,26 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		}
 		// Snapshot database facts, CLOSE the read transaction, and only
 		// then run git — no connection is held across a git process.
+		// EVERY deterministic validation runs here, before any durable
+		// pin lands: a validation-rejected request pins nothing; only
+		// crash/lost-race windows can leave (benign, content-addressed)
+		// surplus pins. The transaction revalidates authoritatively.
 		read, err := s.db.Begin()
 		if err != nil {
 			return nil, errorFrom(err)
+		}
+		if apiErr := requireActor(read, req.Author); apiErr != nil {
+			_ = read.Rollback()
+			return nil, apiErr
 		}
 		issue, err := issues.Get(read, req.Issue)
 		if err != nil {
 			_ = read.Rollback()
 			return nil, issueErrorFrom(err)
+		}
+		if apiErr := guardWritable(read, issue.Project); apiErr != nil {
+			_ = read.Rollback()
+			return nil, apiErr
 		}
 		project, err := projects.GetTx(read, issue.Project)
 		_ = read.Rollback()
@@ -499,15 +511,40 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, errorFrom(err)
 		}
+		if apiErr := requireActor(read, req.Author); apiErr != nil {
+			_ = read.Rollback()
+			return nil, apiErr
+		}
 		current, err := review.Get(read, id)
 		if err != nil {
 			_ = read.Rollback()
 			return nil, reviewErrorFrom(err)
 		}
+		// Best-effort state/fence validation before any pin lands; the
+		// transaction re-runs these authoritatively via Resubmit.
+		if current.State != review.StateChangesRequested {
+			_ = read.Rollback()
+			return nil, &apiError{status: http.StatusConflict, code: "expected-status-mismatch",
+				message: fmt.Sprintf("review %s is %s; only changes-requested resubmits", id, current.State)}
+		}
+		if current.Revision != *req.ExpectedRevision {
+			_ = read.Rollback()
+			return nil, &apiError{status: http.StatusConflict, code: "expected-revision-mismatch",
+				message: fmt.Sprintf("review %s is at revision %d, expected %d", id, current.Revision, *req.ExpectedRevision)}
+		}
+		if current.LatestVerdictEvent == nil || *current.LatestVerdictEvent != req.ExpectedVerdictEvent {
+			_ = read.Rollback()
+			return nil, &apiError{status: http.StatusConflict, code: "expected-verdict-event-mismatch",
+				message: fmt.Sprintf("review %s verdict event moved; rework must answer the latest feedback", id)}
+		}
 		issue, err := issues.Get(read, current.Issue)
 		if err != nil {
 			_ = read.Rollback()
 			return nil, issueErrorFrom(err)
+		}
+		if apiErr := guardWritable(read, issue.Project); apiErr != nil {
+			_ = read.Rollback()
+			return nil, apiErr
 		}
 		project, err := projects.GetTx(read, issue.Project)
 		_ = read.Rollback()

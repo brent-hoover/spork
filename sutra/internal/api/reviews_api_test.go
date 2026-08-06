@@ -950,3 +950,49 @@ func TestDeliverableSurvivesBranchDeletionAndGC(t *testing.T) {
 		t.Fatalf("pinned content lost after gc: %.200s", decoded["content"].(string))
 	}
 }
+
+// TestValidationRejectionsPinNothing pins the ordering: a request
+// failing deterministic validation (archived project) leaves no
+// refs/sutra/pins in the repository.
+func TestValidationRejectionsPinNothing(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var decoded map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		decoded = nil
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := decoded["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := decoded["id"].(string)
+	if status, body := req(t, srv, http.MethodPost, "/projects/"+project+"/archive", "arch",
+		fmt.Sprintf(`{"actor":%q}`, actor)); status != http.StatusOK {
+		t.Fatalf("archive: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	if status != http.StatusConflict {
+		t.Fatalf("archived-project submission must 409: %d %s", status, body)
+	}
+	out, err := exec.Command("git", "-C", repo.path, "for-each-ref", "refs/sutra/").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("validation rejection left pins: %s", out)
+	}
+}
