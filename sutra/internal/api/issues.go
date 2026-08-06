@@ -216,6 +216,12 @@ func decodeTransition(r *http.Request) (transitionRequest, *apiError) {
 		if !ok {
 			return nil
 		}
+		// No transition field is nullable in the contract: an explicit
+		// null is not an absent field — it would silently disarm the
+		// optional fences (expected_status, expected_subtree_revision).
+		if string(v) == "null" {
+			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("%s must not be null", field)}
+		}
 		if err := json.Unmarshal(v, into); err != nil {
 			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed %s: %v", field, err)}
 		}

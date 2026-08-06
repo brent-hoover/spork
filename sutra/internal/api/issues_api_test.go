@@ -149,6 +149,8 @@ func TestTransitionClosedSchemas(t *testing.T) {
 		{"invalid expected_status enum", fmt.Sprintf(`{"status":"in-progress","actor":%q,"expected_status":"invalid"}`, w.actor)},
 		{"null review on complete", fmt.Sprintf(`{"status":"complete","review":null,"review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q}`, w.actor)},
 		{"malformed review uuid", fmt.Sprintf(`{"status":"complete","review":"not-a-uuid","review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q}`, w.actor)},
+		{"null expected_status disarms no fence", fmt.Sprintf(`{"status":"in-progress","actor":%q,"expected_status":null}`, w.actor)},
+		{"null expected_subtree_revision disarms no fence", fmt.Sprintf(`{"status":"complete","review":"00000000-0000-7000-8000-000000000001","review_revision":1,"review_verdict_event":"00000000-0000-7000-8000-000000000002","actor":%q,"expected_subtree_revision":null}`, w.actor)},
 	}
 	for i, tc := range cases {
 		status, body := req(t, srv, http.MethodPost, "/issues/"+issue+"/status", fmt.Sprintf("tc-%d", i), tc.body)
