@@ -23,4 +23,9 @@ Feature: Identities without auth
       | a duplicate handle        |
       | a duplicate label name    |
       | a duplicate template name |
-      | a template renamed to an existing name |
+
+  Scenario: renaming a template into an existing name collides
+    Given templates "daily-standup" and "retro" exist
+    When "retro" is renamed to "daily-standup"
+    Then the update is rejected with code "unique-violation"
+    And conflicts names the existing "daily-standup" template's id

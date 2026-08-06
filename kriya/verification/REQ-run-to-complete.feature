@@ -236,8 +236,8 @@ Feature: Run to complete
   Scenario: a reopened ambiguity never replays a stale resolution
     Given an ambiguity resolved to target "A" whose parenting relation was later removed, and the same ticket is re-detected
     When the row reopens
-    Then the prior resolution clears and the resolution generation and key rotate atomically
-    And re-selecting target "A" issues a fresh keyed mutation — the stale success can never replay
+    Then the whole prior resolution clears — selected target, linked advance, and reclaim fields included — and the resolution generation and key rotate atomically
+    And re-selecting target "A" issues a fresh keyed mutation that creates and links a FRESH advance — neither the stale success nor the old advance can ever stand in for the new resolution
 
   Scenario: a previously bound unplanned ticket is never ambiguous
     Given a multi-mapping project where an unplanned ticket was once bound to target "A", then detached and reopened

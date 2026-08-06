@@ -1423,11 +1423,14 @@ data:
         atomically — or returns the row to open for a fresh choice, so
         no cached conflict can suppress every candidate forever. A
         re-detected same ticket REOPENS its row, never duplicating —
-        and reopening atomically clears the prior resolution (selected
-        target, error, conflict cause) and rotates resolution_generation
-        and resolution_key, so re-selecting even the same target issues
-        a fresh mutation and can never replay a stale success from a
-        relation that has since been removed.
+        and reopening atomically clears the WHOLE prior resolution —
+        selected target, error, conflict cause, the linked advance, and
+        every reclaim field — while rotating resolution_generation and
+        resolution_key, and recovery honors advance and reclaim state
+        only when it belongs to the current generation, so re-selecting
+        even the same target issues a fresh mutation with a fresh
+        linked advance and can never mistake an old completed advance
+        or removal for the current resolution.
       fields:
         - { name: ambiguity_key, type: string, required: true, unique: true }  # deterministic per (project_key, ticket)
         - { name: project_key, type: string, required: true }
