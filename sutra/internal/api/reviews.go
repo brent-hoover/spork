@@ -177,6 +177,7 @@ type preparedReview struct {
 	req  newReviewRequest
 	d    review.Deliverable
 	base string
+	repo review.Repo
 }
 
 func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
@@ -204,11 +205,12 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, errorFrom(err)
 		}
-		d, base, apiErr := resolveDeliverable(repoFacts(project), req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		repo := repoFacts(project)
+		d, base, apiErr := resolveDeliverable(repo, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
 		if apiErr != nil {
 			return nil, apiErr
 		}
-		return preparedReview{req: req, d: d, base: base}, nil
+		return preparedReview{req: req, d: d, base: base, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
 		p := prepped.(preparedReview)
@@ -221,6 +223,14 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		}
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
+		}
+		// Fenced submissions revalidate the head at the linearization
+		// point — one bounded rev-parse — so a branch that advanced
+		// after preparation cannot slip past a stale fence.
+		if p.req.ExpectedDefaultHead != nil {
+			if err := review.RevalidateHead(p.repo, *p.req.ExpectedDefaultHead); err != nil {
+				return 0, nil, reviewErrorFrom(err)
+			}
 		}
 		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base)
 		if err != nil {
@@ -448,6 +458,7 @@ type preparedResubmit struct {
 	req  resubmitRequest
 	d    review.Deliverable
 	base string
+	repo review.Repo
 }
 
 func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
@@ -479,11 +490,12 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, errorFrom(err)
 		}
-		d, base, apiErr := resolveDeliverable(repoFacts(project), req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		repo := repoFacts(project)
+		d, base, apiErr := resolveDeliverable(repo, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
 		if apiErr != nil {
 			return nil, apiErr
 		}
-		return preparedResubmit{req: req, d: d, base: base}, nil
+		return preparedResubmit{req: req, d: d, base: base, repo: repo}, nil
 	}
 	s.idempotentPrepared(w, r, prepare, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
 		p := prepped.(preparedResubmit)
@@ -496,6 +508,11 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		}
 		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
+		}
+		if p.req.ExpectedDefaultHead != nil {
+			if err := review.RevalidateHead(p.repo, *p.req.ExpectedDefaultHead); err != nil {
+				return 0, nil, reviewErrorFrom(err)
+			}
 		}
 		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base)
 		if err != nil {

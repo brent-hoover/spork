@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -477,19 +478,63 @@ func SpendForClose(tx *sql.Tx, id, issue string, revision int64, verdictEvent st
 	return Get(tx, id)
 }
 
+// MaxDiffBytes bounds deliverable content: a diff larger than this is
+// rejected rather than buffered into memory. Variable for tests.
+var MaxDiffBytes int64 = 10 << 20
+
 // Diff resolves a code submission's complete pinned content: the diff
 // between its immutable base_commit and commit, computed from the
 // pinned object ids — never recomputed against the current default
-// branch (AC-review-web).
+// branch (AC-review-web). Repository-configured helpers are disabled
+// (--no-ext-diff --no-textconv --no-color): the pinned patch is the
+// bytes git produces, never a transformed rendering and never a
+// repo-configured command execution. Output is returned untrimmed and
+// bounded by MaxDiffBytes.
 func Diff(repoPath, baseCommit, commit string) (string, error) {
 	if repoPath == "" {
 		return "", &GitError{Message: "project has no repo_path; the pinned diff cannot be resolved"}
 	}
-	out, err := gitOut(repoPath, "diff", baseCommit, commit)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath,
+		"-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+		baseCommit, commit)
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s unresolvable: %v", baseCommit, commit, err)}
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s: %v", baseCommit, commit, err)}
 	}
-	return out, nil
+	if err := cmd.Start(); err != nil {
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s: %v", baseCommit, commit, err)}
+	}
+	limited := io.LimitReader(stdout, MaxDiffBytes+1)
+	raw, readErr := io.ReadAll(limited)
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s: %v", baseCommit, commit, readErr)}
+	}
+	if int64(len(raw)) > MaxDiffBytes {
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s exceeds the %d-byte limit", baseCommit, commit, MaxDiffBytes)}
+	}
+	if waitErr != nil {
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s unresolvable: %v", baseCommit, commit, waitErr)}
+	}
+	return string(raw), nil
+}
+
+// RevalidateHead re-reads the default branch head — one bounded
+// rev-parse — for fenced submissions at the mutation's linearization
+// point: a head that advanced after preparation rejects rather than
+// letting a stale fence pass.
+func RevalidateHead(repo Repo, expectedHead string) error {
+	head, err := gitOut(repo.Path, "rev-parse", "refs/heads/"+repo.DefaultBranch)
+	if err != nil {
+		return &GitError{Message: fmt.Sprintf("default branch %q unresolvable: %v", repo.DefaultBranch, err)}
+	}
+	if head != expectedHead {
+		return &ConflictError{Code: "expected-default-head-mismatch",
+			Message: fmt.Sprintf("default head moved to %s after preparation, expected %s", head, expectedHead)}
+	}
+	return nil
 }
 
 // SubmissionAt returns the submission for a revision, or the latest

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sutra/internal/review"
 )
 
 // gitRepo builds a throwaway repository: one commit on main (the merge
@@ -502,5 +504,98 @@ func TestNullSubmissionFencesRejected(t *testing.T) {
 	status, body = req(t, srv, http.MethodGet, "/reviews?issue="+issue, "", "")
 	if status != http.StatusOK || body != "[]" {
 		t.Fatalf("null-fence rejection created a review: %d %s", status, body)
+	}
+}
+
+// TestDiffIgnoresRepoDiffConfig pins that repository-configured diff
+// helpers never execute or transform the pinned patch.
+func TestDiffIgnoresRepoDiffConfig(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	// A hostile or cosmetic external diff configured in the repo must
+	// not run: the endpoint serves git's own patch bytes.
+	cfg := exec.Command("git", "-C", repo.path, "config", "diff.external", "echo HIJACKED")
+	if out, err := cfg.CombinedOutput(); err != nil {
+		t.Fatalf("config: %v — %s", err, out)
+	}
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	decode(status, body, http.StatusOK, "deliverable")
+	content := out["content"].(string)
+	if strings.Contains(content, "HIJACKED") {
+		t.Fatalf("repo-configured external diff executed: %s", content)
+	}
+	if !strings.Contains(content, "feature work") {
+		t.Fatalf("expected the real patch: %s", content)
+	}
+}
+
+// TestDiffSizeCap pins the documented output bound.
+func TestDiffSizeCap(t *testing.T) {
+	old := review.MaxDiffBytes
+	review.MaxDiffBytes = 16
+	t.Cleanup(func() { review.MaxDiffBytes = old })
+
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	if status != http.StatusConflict {
+		t.Fatalf("oversized diff must 409, got %d %s", status, body)
+	}
+	if !strings.Contains(body, "limit") {
+		t.Fatalf("expected the limit named: %s", body)
 	}
 }
