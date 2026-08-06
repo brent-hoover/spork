@@ -389,7 +389,7 @@ func Consume(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent
 // expected revision AND the expected latest verdict event — stale
 // rework can never replace a deliverable without addressing the latest
 // feedback. revision++, new immutable submission, state open.
-func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent string, d Deliverable, baseCommit string) (Review, error) {
+func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent string, d Deliverable, summary *string, baseCommit string) (Review, error) {
 	r, err := Get(tx, id)
 	if err != nil {
 		return Review{}, err
@@ -409,8 +409,9 @@ func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEven
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	next := r.Revision + 1
 	if _, err := tx.Exec(`
-		UPDATE reviews SET state = 'open', revision = ?, branch = ?, commit_sha = ?, doc_version = ?, session = ?
-		WHERE id = ?`, next, d.Branch, d.Commit, d.DocVersion, d.Session, id); err != nil {
+		UPDATE reviews SET state = 'open', revision = ?, branch = ?, commit_sha = ?, doc_version = ?, session = ?,
+			summary = COALESCE(?, summary)
+		WHERE id = ?`, next, d.Branch, d.Commit, d.DocVersion, d.Session, summary, id); err != nil {
 		return Review{}, fmt.Errorf("resubmit %s: %w", id, err)
 	}
 	if _, err := appendSubmission(tx, id, next, d, baseCommit, now); err != nil {
@@ -474,6 +475,38 @@ func SpendForClose(tx *sql.Tx, id, issue string, revision int64, verdictEvent st
 		return Review{}, &ConflictError{Code: "review-close-used", Message: fmt.Sprintf("review %s close raced", id)}
 	}
 	return Get(tx, id)
+}
+
+// Diff resolves a code submission's complete pinned content: the diff
+// between its immutable base_commit and commit, computed from the
+// pinned object ids — never recomputed against the current default
+// branch (AC-review-web).
+func Diff(repoPath, baseCommit, commit string) (string, error) {
+	if repoPath == "" {
+		return "", &GitError{Message: "project has no repo_path; the pinned diff cannot be resolved"}
+	}
+	out, err := gitOut(repoPath, "diff", baseCommit, commit)
+	if err != nil {
+		return "", &GitError{Message: fmt.Sprintf("pinned diff %s..%s unresolvable: %v", baseCommit, commit, err)}
+	}
+	return out, nil
+}
+
+// SubmissionAt returns the submission for a revision, or the latest
+// when revision is 0.
+func SubmissionAt(r Review, revision int64) (Submission, bool) {
+	if len(r.Submissions) == 0 {
+		return Submission{}, false
+	}
+	if revision == 0 {
+		return r.Submissions[len(r.Submissions)-1], true
+	}
+	for _, s := range r.Submissions {
+		if s.Revision == revision {
+			return s, true
+		}
+	}
+	return Submission{}, false
 }
 
 // newUUIDv7 returns an RFC 9562 UUIDv7 (CON-uuid-keys). Duplicated

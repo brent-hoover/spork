@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sutra/internal/events"
 	"sutra/internal/identity"
@@ -102,11 +103,48 @@ func isCommitSHA(s string) bool {
 	return true
 }
 
+// rejectExplicitNulls decodes the request body while rejecting an
+// explicit null on any of the named fields — a null fence is not an
+// absent fence and must never silently disarm one.
+func rejectExplicitNulls(r *http.Request, into any, fields ...string) *apiError {
+	var raw map[string]json.RawMessage
+	if apiErr := decodeBody(r, &raw); apiErr != nil {
+		return apiErr
+	}
+	for _, field := range fields {
+		if v, ok := raw[field]; ok && string(v) == "null" {
+			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("%s must not be null", field)}
+		}
+	}
+	reencoded, err := json.Marshal(raw)
+	if err != nil {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+	}
+	if err := json.Unmarshal(reencoded, into); err != nil {
+		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+	}
+	return nil
+}
+
+// repoFacts snapshots the project fields git resolution needs, so the
+// read transaction closes BEFORE any git process runs.
+func repoFacts(p projects.Project) review.Repo {
+	repo := review.Repo{DefaultBranch: "main"}
+	if p.RepoPath != nil {
+		repo.Path = *p.RepoPath
+	}
+	if p.DefaultBranch != nil {
+		repo.DefaultBranch = *p.DefaultBranch
+	}
+	return repo
+}
+
 // resolveDeliverable validates the shape and, for code deliverables,
-// resolves and fences base_commit via the issue's project repo. Doc
+// resolves and fences base_commit against the snapshotted repo facts.
+// Runs git — the caller must have closed its read transaction. Doc
 // deliverables reject truthfully until the docs module exists — no
 // doc_version can name a stored version yet.
-func resolveDeliverable(tx *sql.Tx, issueProject string, d deliverableFields, expectedBase, expectedHead *string) (review.Deliverable, string, *apiError) {
+func resolveDeliverable(repo review.Repo, d deliverableFields, expectedBase, expectedHead *string) (review.Deliverable, string, *apiError) {
 	if apiErr := d.validate(); apiErr != nil {
 		return review.Deliverable{}, "", apiErr
 	}
@@ -114,17 +152,6 @@ func resolveDeliverable(tx *sql.Tx, issueProject string, d deliverableFields, ex
 	if d.DocVersion != nil {
 		return review.Deliverable{}, "", &apiError{status: http.StatusNotFound, code: "not-found",
 			message: fmt.Sprintf("doc version %s does not exist", *d.DocVersion)}
-	}
-	p, err := projects.GetTx(tx, issueProject)
-	if err != nil {
-		return review.Deliverable{}, "", errorFrom(err)
-	}
-	repo := review.Repo{DefaultBranch: "main"}
-	if p.RepoPath != nil {
-		repo.Path = *p.RepoPath
-	}
-	if p.DefaultBranch != nil {
-		repo.DefaultBranch = *p.DefaultBranch
 	}
 	base, err := review.ResolveCode(repo, *d.Commit, review.Fences{
 		ExpectedBaseCommit: expectedBase, ExpectedDefaultHead: expectedHead,
@@ -158,19 +185,26 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 	// mutations. The transaction revalidates the database-side facts.
 	prepare := func(r *http.Request) (any, *apiError) {
 		var req newReviewRequest
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "expected_base_commit", "expected_default_head"); apiErr != nil {
 			return nil, apiErr
 		}
+		// Snapshot database facts, CLOSE the read transaction, and only
+		// then run git — no connection is held across a git process.
 		read, err := s.db.Begin()
 		if err != nil {
 			return nil, errorFrom(err)
 		}
-		defer func() { _ = read.Rollback() }()
 		issue, err := issues.Get(read, req.Issue)
 		if err != nil {
+			_ = read.Rollback()
 			return nil, issueErrorFrom(err)
 		}
-		d, base, apiErr := resolveDeliverable(read, issue.Project, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		project, err := projects.GetTx(read, issue.Project)
+		_ = read.Rollback()
+		if err != nil {
+			return nil, errorFrom(err)
+		}
+		d, base, apiErr := resolveDeliverable(repoFacts(project), req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
 		if apiErr != nil {
 			return nil, apiErr
 		}
@@ -212,6 +246,75 @@ func changesRequestedPayload(r review.Review) string {
 	}
 	raw, _ := json.Marshal(body)
 	return string(raw)
+}
+
+// getReviewDeliverable resolves the pinned content approval covers —
+// the complete diff between the selected submission's immutable
+// base_commit and commit, never recomputed against the current default
+// branch and never a summary in content's place (AC-review-web).
+func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
+	revisionParam := r.URL.Query().Get("revision")
+	var revision int64
+	if revisionParam != "" {
+		n, err := strconv.ParseInt(revisionParam, 10, 64)
+		if err != nil || n < 1 {
+			writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("revision %q must be a positive integer", revisionParam)})
+			return
+		}
+		revision = n
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	rev, err := review.Get(tx, r.PathValue("reviewId"))
+	if err != nil {
+		_ = tx.Rollback()
+		writeError(w, reviewErrorFrom(err))
+		return
+	}
+	sub, ok := review.SubmissionAt(rev, revision)
+	if !ok {
+		_ = tx.Rollback()
+		writeError(w, &apiError{status: http.StatusNotFound, code: "not-found", message: fmt.Sprintf("no submission at revision %d", revision)})
+		return
+	}
+	var repoPath string
+	if sub.Commit != nil {
+		issue, err := issues.Get(tx, rev.Issue)
+		if err != nil {
+			_ = tx.Rollback()
+			writeError(w, issueErrorFrom(err))
+			return
+		}
+		project, err := projects.GetTx(tx, issue.Project)
+		if err != nil {
+			_ = tx.Rollback()
+			writeError(w, errorFrom(err))
+			return
+		}
+		if project.RepoPath != nil {
+			repoPath = *project.RepoPath
+		}
+	}
+	_ = tx.Rollback() // snapshot taken; git runs with no connection held
+
+	if sub.Commit == nil {
+		// Doc deliverables resolve once the docs module stores content.
+		writeError(w, &apiError{status: http.StatusConflict, code: "not-found", message: "doc deliverable content is not resolvable yet"})
+		return
+	}
+	content, err := review.Diff(repoPath, *sub.BaseCommit, *sub.Commit)
+	if err != nil {
+		writeError(w, reviewErrorFrom(err))
+		return
+	}
+	resolved := map[string]any{"kind": "code", "content": content}
+	if rev.Summary != nil {
+		resolved["summary"] = *rev.Summary
+	}
+	writeJSON(w, http.StatusOK, resolved)
 }
 
 func (s *server) getReview(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +454,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("reviewId")
 	prepare := func(r *http.Request) (any, *apiError) {
 		var req resubmitRequest
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		if apiErr := rejectExplicitNulls(r, &req, "expected_base_commit", "expected_default_head"); apiErr != nil {
 			return nil, apiErr
 		}
 		if req.ExpectedRevision == nil || !isUUID(req.ExpectedVerdictEvent) {
@@ -361,16 +464,22 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, errorFrom(err)
 		}
-		defer func() { _ = read.Rollback() }()
 		current, err := review.Get(read, id)
 		if err != nil {
+			_ = read.Rollback()
 			return nil, reviewErrorFrom(err)
 		}
 		issue, err := issues.Get(read, current.Issue)
 		if err != nil {
+			_ = read.Rollback()
 			return nil, issueErrorFrom(err)
 		}
-		d, base, apiErr := resolveDeliverable(read, issue.Project, req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
+		project, err := projects.GetTx(read, issue.Project)
+		_ = read.Rollback()
+		if err != nil {
+			return nil, errorFrom(err)
+		}
+		d, base, apiErr := resolveDeliverable(repoFacts(project), req.deliverableFields, req.ExpectedBaseCommit, req.ExpectedDefaultHead)
 		if apiErr != nil {
 			return nil, apiErr
 		}
@@ -388,7 +497,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.base)
+		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}

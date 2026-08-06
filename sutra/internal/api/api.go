@@ -52,6 +52,7 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("POST /reviews/{reviewId}/verdict", s.setReviewVerdict)
 	mux.HandleFunc("POST /reviews/{reviewId}/consume", s.consumeReviewApproval)
 	mux.HandleFunc("POST /reviews/{reviewId}/resubmit", s.resubmitReview)
+	mux.HandleFunc("GET /reviews/{reviewId}/deliverable", s.getReviewDeliverable)
 	return mux, nil
 }
 

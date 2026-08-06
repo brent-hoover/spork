@@ -400,3 +400,107 @@ func TestArchivedProjectFreezesReviewMutations(t *testing.T) {
 		t.Fatalf("archived-project review mutated: %s", body)
 	}
 }
+
+// TestDeliverableResolvesPinnedDiff pins AC-review-web: content is the
+// complete diff between the submission's pinned commits, per revision,
+// with historical revisions still resolvable after resubmission.
+func TestDeliverableResolvesPinnedDiff(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews", "r",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q}`, issue, actor, repo.featureSHA))
+	decode(status, body, http.StatusCreated, "review")
+	reviewID := out["id"].(string)
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	decode(status, body, http.StatusOK, "deliverable")
+	if out["kind"].(string) != "code" || !strings.Contains(out["content"].(string), "feature work") {
+		t.Fatalf("deliverable must carry the pinned diff: %s", body)
+	}
+
+	// After a resubmission, revision 1's deliverable still resolves to
+	// ITS pinned diff — history never shifts.
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "v",
+		fmt.Sprintf(`{"verdict":"changes-requested","revision":1,"actor":%q}`, actor))
+	decode(status, body, http.StatusOK, "cr")
+	crEvent := out["latest_verdict_event"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/resubmit", "rs",
+		fmt.Sprintf(`{"author":%q,"expected_revision":1,"expected_verdict_event":%q,"branch":"feature","commit":%q,"summary":"rework summary"}`,
+			actor, crEvent, repo.featureSHA2))
+	decode(status, body, http.StatusOK, "resubmit")
+	if out["summary"].(string) != "rework summary" {
+		t.Fatalf("resubmit summary discarded: %s", body)
+	}
+
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable?revision=1", "", "")
+	decode(status, body, http.StatusOK, "historical deliverable")
+	if strings.Contains(out["content"].(string), "rework") {
+		t.Fatalf("revision 1 deliverable leaked revision 2 content: %s", body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID+"/deliverable", "", "")
+	decode(status, body, http.StatusOK, "latest deliverable")
+	if !strings.Contains(out["content"].(string), "rework") {
+		t.Fatalf("latest deliverable missing revision 2 content: %s", body)
+	}
+}
+
+// TestNullSubmissionFencesRejected pins that explicit nulls never
+// disarm the creation fences.
+func TestNullSubmissionFencesRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	repo := newGitRepo(t)
+	var out map[string]any
+	decode := func(status int, body string, want int, label string) {
+		t.Helper()
+		if status != want {
+			t.Fatalf("%s: expected %d, got %d: %s", label, want, status, body)
+		}
+		out = nil
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+	}
+	status, body := req(t, srv, http.MethodPost, "/identities", "h", `{"handle":"op","kind":"human"}`)
+	decode(status, body, http.StatusCreated, "identity")
+	actor := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects", "p",
+		fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q,"repo_path":%q}`, actor, repo.path))
+	decode(status, body, http.StatusCreated, "project")
+	project := out["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/projects/"+project+"/issues", "i",
+		fmt.Sprintf(`{"title":"w","actor":%q}`, actor))
+	decode(status, body, http.StatusCreated, "issue")
+	issue := out["id"].(string)
+
+	status, body = req(t, srv, http.MethodPost, "/reviews", "null-fence",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"expected_base_commit":null}`, issue, actor, repo.featureSHA))
+	if status != http.StatusBadRequest {
+		t.Fatalf("null fence must 400: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews?issue="+issue, "", "")
+	if status != http.StatusOK || body != "[]" {
+		t.Fatalf("null-fence rejection created a review: %d %s", status, body)
+	}
+}
