@@ -317,21 +317,26 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &apiError{status: http.StatusNotFound, code: "not-found", message: fmt.Sprintf("no submission at revision %d", revision)})
 		return
 	}
-	_ = tx.Rollback()
-
 	if sub.Commit == nil {
+		_ = tx.Rollback()
 		// Doc deliverables resolve once the docs module stores content.
 		writeError(w, &apiError{status: http.StatusConflict, code: "not-found", message: "doc deliverable content is not resolvable yet"})
 		return
 	}
-	if sub.Content == nil {
+	content, found, err := review.ContentAt(tx, rev.ID, revision)
+	_ = tx.Rollback()
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	if !found || content == nil {
 		writeError(w, &apiError{status: http.StatusConflict, code: "bad-request", message: "submission predates stored content"})
 		return
 	}
 	// Served verbatim from the submission-time render: immutable by
 	// construction — no git, no repository configuration, no
 	// reachability concerns can alter what approval covered.
-	resolved := map[string]any{"kind": "code", "content": *sub.Content}
+	resolved := map[string]any{"kind": "code", "content": *content}
 	if rev.Summary != nil {
 		resolved["summary"] = *rev.Summary
 	}

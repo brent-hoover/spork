@@ -53,8 +53,13 @@ type Submission struct {
 	BaseCommit *string `json:"base_commit,omitempty"`
 	DocVersion *string `json:"doc_version,omitempty"`
 	Session    *string `json:"session,omitempty"`
-	Content    *string `json:"-"`
-	Created    string  `json:"created"`
+	// Content is the durable deliverable copy. Ordinary review reads
+	// leave it nil (metadata queries exclude the column), so it is
+	// omitted from metadata responses; the deliverable endpoint fetches
+	// one submission's content directly, and export payloads carry it —
+	// it is the ONLY durable copy once git objects go unreachable.
+	Content *string `json:"content,omitempty"`
+	Created string  `json:"created"`
 }
 
 // States of a review.
@@ -257,8 +262,10 @@ func Get(tx *sql.Tx, id string) (Review, error) {
 	if err != nil {
 		return Review{}, fmt.Errorf("get review %s: %w", id, err)
 	}
+	// Metadata only: content is fetched lazily by ContentAt, so review
+	// lookups never load the full deliverable history into memory.
 	rows, err := tx.Query(`
-		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created
+		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, created
 		FROM review_submissions WHERE review = ? ORDER BY revision`, id)
 	if err != nil {
 		return Review{}, fmt.Errorf("submissions of %s: %w", id, err)
@@ -266,7 +273,7 @@ func Get(tx *sql.Tx, id string) (Review, error) {
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var s Submission
-		if err := rows.Scan(&s.ID, &s.Review, &s.Revision, &s.Branch, &s.Commit, &s.BaseCommit, &s.DocVersion, &s.Session, &s.Content, &s.Created); err != nil {
+		if err := rows.Scan(&s.ID, &s.Review, &s.Revision, &s.Branch, &s.Commit, &s.BaseCommit, &s.DocVersion, &s.Session, &s.Created); err != nil {
 			return Review{}, fmt.Errorf("scan submission: %w", err)
 		}
 		r.Submissions = append(r.Submissions, s)
@@ -595,6 +602,26 @@ func RevalidateFences(repo Repo, commit string, f Fences) error {
 		}
 	}
 	return nil
+}
+
+// ContentAt fetches exactly one submission's stored content — the
+// deliverable endpoint's single-row read; 0 selects the latest.
+func ContentAt(tx *sql.Tx, reviewID string, revision int64) (*string, bool, error) {
+	query := `SELECT content FROM review_submissions WHERE review = ? ORDER BY revision DESC LIMIT 1`
+	args := []any{reviewID}
+	if revision != 0 {
+		query = `SELECT content FROM review_submissions WHERE review = ? AND revision = ?`
+		args = []any{reviewID, revision}
+	}
+	var content *string
+	err := tx.QueryRow(query, args...).Scan(&content)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("content of %s r%d: %w", reviewID, revision, err)
+	}
+	return content, true, nil
 }
 
 // SubmissionAt returns the submission for a revision, or the latest

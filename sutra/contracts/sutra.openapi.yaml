@@ -2461,6 +2461,16 @@ components:
           description: >-
             The submitting instance's session id, preserved per revision;
             Review.session mirrors the latest submission's value.
+        content:
+          type: string
+          description: >-
+            The deliverable exactly as validated and rendered at
+            submission time — the DURABLE copy served by the deliverable
+            endpoint and the only one once the referenced git objects go
+            unreachable. Omitted from ordinary review metadata responses;
+            present in export payloads so review content round-trips
+            through export/import losslessly, and accepted verbatim on
+            import.
         created: { type: string, format: date-time }
       oneOf:
         - required: [branch, commit, base_commit]
