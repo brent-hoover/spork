@@ -72,11 +72,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 func writeError(w http.ResponseWriter, e *apiError) {
-	body := map[string]any{"code": e.code, "message": e.message}
-	if len(e.conflicts) > 0 {
-		body["conflicts"] = e.conflicts
-	}
-	writeJSON(w, e.status, body)
+	writeJSON(w, e.status, errorEnvelope(e))
 }
 
 func decodeBody(r *http.Request, into any) *apiError {

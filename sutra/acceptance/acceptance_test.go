@@ -79,7 +79,7 @@ type testState struct {
 
 func (s *testState) reset() error {
 	s.close()
-	db, err := sql.Open("sqlite", "file::memory:?cache=shared&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
