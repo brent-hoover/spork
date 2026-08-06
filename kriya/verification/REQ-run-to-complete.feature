@@ -228,6 +228,15 @@ Feature: Run to complete
     Then the ticket attributes to "A" through its BuildRun's persisted target binding
     And no ambiguity row is created and target "B" is unaffected
 
+  Scenario: new work created after completion wakes the target
+    Given a completed target whose stamp is trusted
+    When a new active issue is created and attributes to that target
+    Then the epoch advances with cause new-work, keyed by the creating event, and the stamp clears
+    And the ticket is parented under the epic, which is explicitly reopened under the keyed reopen — a creation cannot cascade
+    And popping resumes; nothing strands
+    Given the creation is ambiguous in a multi-mapping project
+    Then every candidate target's epoch advances and stamp clears until the ambiguity resolves
+
   Scenario: a stall surfaces with its cause
     Given no ticket is workable, none are in flight, and the epic cannot close
     Then a durable Stall row records the condition and its cause

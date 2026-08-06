@@ -127,6 +127,19 @@ Feature: Review lifecycle
     Then the resubmission is rejected with a conflict
     And no submission, state change, or event results
 
+  Scenario Outline: both fences guard creation and resubmission
+    Given a caller performs a <operation> expecting <field> "D1"
+    And sutra resolves the actual <field> as "D2"
+    When the request is processed
+    Then it is rejected with a conflict and no review, submission, event, or mutation exists
+
+    Examples:
+      | operation    | field               |
+      | submission   | expected base       |
+      | submission   | expected default head |
+      | resubmission | expected base       |
+      | resubmission | expected default head |
+
   Scenario: a stale expected base rejects submission before the review exists
     Given a caller submits a code deliverable expecting base "D1"
     And sutra resolves the merge base as "D2"

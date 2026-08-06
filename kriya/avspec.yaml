@@ -345,7 +345,7 @@ requirements:
         test: verification/REQ-submit-review.feature#a PO pass becomes a sutra Review
       - id: AC-submit-gated-diff
         statement: Every code submission and resubmission carries expected_default_head and expected_base_commit equal to the run's frozen gated_base, so sutra atomically rejects anything whose diff was not gated — a moved default head and a stale-based branch alike — before any review, submission, or event exists.
-        test: verification/REQ-submit-review.feature#a stale-based branch is rejected even under an unchanged default head
+        test: verification/REQ-submit-review.feature#sutra rejects any ungated submission
       - id: AC-submit-rework
         statement: "A changes-requested event routes the feedback back to the run — the same agent instance where possible, via the session id; the pair loop resumes, and resubmission happens only after the full gate chain — review, test, structure, typing, architecture, branch coverage, mutation, and PO validation — passes again at the new head commit, and it is write-ahead: the resubmitting state, its idempotency key, expected revision, answered verdict event, and pinned commit persist transactionally before sutra's resubmit call, recovery replays under the same key on either side of acceptance, and the revision increments exactly once."
         test: verification/REQ-submit-review.feature#rework routes back by session
@@ -661,7 +661,7 @@ data:
         - { name: advance_key, type: string, required: true, unique: true }  # deterministic per (target_key, event id)
         - { name: target_key, type: string, required: true }
         - { name: event, type: string, required: true }
-        - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, compensation] }
+        - { name: cause, type: enum, required: true, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, new-work, compensation] }
         - { name: operation, type: string }  # the server transaction id correlated during cascade verification — the evidence the check ran against
         - { name: cascade_verified, type: enum, values: [reached, unreached] }  # cascade-driven causes only — reached requires an issue.status-changed event for the epic, with its reopened status, under the same operation; recorded atomically with the advance
         - { name: reopen_owed, type: boolean }  # true exactly when verification recorded unreached — the durable explicit-reopen obligation recovery honors
@@ -773,7 +773,17 @@ data:
         removal advances the revision without reopening the epic;
         advancing the epoch rotates the epoch-scoped claim keys, so a
         stamp invalidated by a detach can revalidate on a FRESH attempt
-        and a spent review can never replay) (none of
+        and a spent review can never replay), and EVERY new active
+        target-scoped issue created after completion — kriya keeps
+        consuming the project's work events after a target completes,
+        and a creation attributing to a completed target advances its
+        epoch (cause new-work, keyed by the creating event), clears the
+        stamp, parents the ticket under the epic, and explicitly
+        reopens the epic under the keyed reopen, since a creation
+        cannot cascade (the ticket was never a descendant); in a
+        multi-mapping project an AMBIGUOUS creation advances the epoch
+        of EVERY candidate target until the ambiguity resolves, so no
+        completed target sleeps through work that might be its own (none of
         which move the PlanHead generation, so the generation alone
         cannot fence them). Because the submission key embeds the
         epoch, any such reopen forces recompletion onto a NEW key and a
@@ -859,7 +869,7 @@ data:
         - { name: completed_generation, type: integer }  # the PlanHead generation the completion claim is about
         - { name: completion_epoch, type: integer, required: true }  # init 0; the CURRENT epoch — advanced atomically on every supersession, every event that reopens the epic (ticket reopen, deferred activation, active-subtree attachment), and every post-close detachment of a target ticket
         - { name: last_advance_event, type: string }  # convenience mirror of the newest CompletionAdvance record's event; the record set, not this field, is the dedup authority
-        - { name: last_advance_cause, type: enum, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, compensation] }  # convenience mirror of the newest CompletionAdvance record's cause; the durable per-event records are what recovery reads
+        - { name: last_advance_cause, type: enum, values: [supersession, ticket-reopen, deferred-activation, subtree-attachment, detachment, new-work, compensation] }  # convenience mirror of the newest CompletionAdvance record's cause; the durable per-event records are what recovery reads
         - { name: completion_rework_event, type: string }  # immutable id of the changes-requested event the pending rework answers; part of both rework keys, so each distinct rework attempt rotates them
         - { name: completion_resubmission_key, type: string }  # derived from (submission key, next revision, rework event); persisted in the review-resubmitting transaction, reconciled (cleared) once the resubmission is recorded
         - { name: completion_report_key, type: string }  # deterministic idempotency key for the report doc-version mutation, derived from the governing submission or resubmission key (and therefore rotating with the rework event); persisted before the doc call so a recovery replay returns the SAME version instead of appending
@@ -869,7 +879,7 @@ data:
         - { name: completion_approval_event, type: string }  # immutable id of the approval event the pending close acts on, recorded with the exact review and revision before the close key derives — a reapproval after a reversal-induced conflict is a NEW event and therefore a fresh close key, never a replay of the cached conflict
         - { name: completion_operation_key, type: string }  # deterministic per (target_key, completion_epoch, operation) — always derivable, even before any completion attempt exists; the CLOSE key additionally includes completion_approval_event; written atomically with the closing or reopening state, and the external reopen is issued for supersession-driven advances where completion_state shows a close ever ran, for stale-close compensation, AND for any reopen whose persisted cascade verification failed — an uncascaded detached-ticket reopen enters this keyed reopening lifecycle; a cascade-driven advance skips it only when cascade_verified records reached — a matching issue.status-changed event for the epic, with its reopened status, under the same operation; subject presence alone never suppresses the call
         - { name: completion_claim_epoch, type: integer }  # immutable — the epoch captured when the completion review was submitted, recorded with completion_review/revision; the completed CAS requires completion_epoch to still equal it
-        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically by EVERY completion_epoch advance, whatever its cause — supersession, ticket reopen, deferred activation, subtree attachment, detachment, or compensation
+        - { name: completed, type: datetime }  # completion claim for the CURRENT head; cleared atomically by EVERY completion_epoch advance, whatever its cause — supersession, ticket reopen, deferred activation, subtree attachment, detachment, new work after completion, or compensation
         - { name: created, type: datetime, required: true }
     - id: ENT-plan
       name: Plan
