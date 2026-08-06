@@ -2383,10 +2383,28 @@ components:
         issue: { type: string, format: uuid }
         expected_base_commit:
           type: string
-          description: Code deliverables only — the merge base the caller expects. Validated atomically against the resolved base_commit BEFORE the review is created; a mismatch rejects 409 and no review, submission, or event exists.
+          description: >-
+            Code deliverables only — the merge base the caller expects.
+            Validated against the base_commit resolved at submission time;
+            a mismatch rejects 409 and no review, submission, or event
+            exists. The fence catches STALE CALLER KNOWLEDGE — the
+            repository is an external store no tracker transaction can
+            lock, so validation is against the ref as observed at
+            submission (bounded staleness), and the pinned base_commit
+            remains authoritative for what approval covers regardless of
+            concurrent branch movement.
         expected_default_head:
           type: string
-          description: Code deliverables only — the default-branch head the caller expects. Validated atomically against the CURRENT default-branch ref while the review is created; a mismatch rejects 409 with nothing created. The head, not the merge base, is the real movement fence — a fast-forwarded default branch keeps the old merge base.
+          description: >-
+            Code deliverables only — the default-branch head the caller
+            expects. Validated against the ref as observed at submission
+            time; a mismatch rejects 409 with nothing created. The head,
+            not the merge base, is the real movement fence — a
+            fast-forwarded default branch keeps the old merge base. As
+            with expected_base_commit, the repository is external: the
+            fence rejects stale caller observations; it does not — and
+            cannot — serialize against pushes concurrent with the
+            submission transaction.
         branch: { type: string }
         commit:
           type: string
@@ -2466,10 +2484,10 @@ components:
           description: The changes-requested verdict event this rework answers; rejected with a conflict if it is no longer the review's latest — stale rework can never replace a deliverable without addressing the latest feedback.
         expected_base_commit:
           type: string
-          description: Code deliverables only — validated atomically against the newly resolved base_commit before the resubmission lands; mismatch rejects 409 with no mutation.
+          description: Code deliverables only — validated against the base_commit resolved at resubmission time; mismatch rejects 409 with no mutation. Observed-at-submission semantics — see NewReview.expected_base_commit.
         expected_default_head:
           type: string
-          description: Code deliverables only — validated atomically against the current default-branch ref before the resubmission lands; mismatch rejects 409 with no mutation.
+          description: Code deliverables only — validated against the default-branch ref as observed at resubmission time; mismatch rejects 409 with no mutation. Observed-at-submission semantics — see NewReview.expected_default_head.
         expected_revision:
           type: integer
           description: The current revision the caller believes it is replacing; the resubmission is rejected with a conflict if the review's revision differs — a delayed request can never apply stale content to a newer revision.

@@ -279,3 +279,46 @@ func TestCrossProjectParentRejected(t *testing.T) {
 		t.Fatalf("cross-project parent_of must 400, got %d %s", status, body)
 	}
 }
+
+// TestUpdateIssueNullFieldsRejected pins that explicit null title/body
+// are malformed — no mutation, no timestamp change, no event.
+func TestUpdateIssueNullFieldsRejected(t *testing.T) {
+	srv, _ := startAPI(t)
+	w := buildWorld(t, srv, 1, false)
+	status, before := req(t, srv, http.MethodGet, "/issues/"+w.issues[0], "", "")
+	if status != http.StatusOK {
+		t.Fatalf("read: %d %s", status, before)
+	}
+	status, body := req(t, srv, http.MethodPatch, "/issues/"+w.issues[0], "null-title",
+		fmt.Sprintf(`{"title":null,"actor":%q}`, w.actor))
+	if status != http.StatusBadRequest {
+		t.Fatalf("null title must 400, got %d %s", status, body)
+	}
+	status, after := req(t, srv, http.MethodGet, "/issues/"+w.issues[0], "", "")
+	if status != http.StatusOK {
+		t.Fatalf("read: %d %s", status, after)
+	}
+	var b1, b2 struct {
+		Title   string `json:"title"`
+		Updated string `json:"updated"`
+	}
+	if err := json.Unmarshal([]byte(before), &b1); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(after), &b2); err != nil {
+		t.Fatal(err)
+	}
+	if b1.Title != b2.Title || b1.Updated != b2.Updated {
+		t.Fatalf("null patch mutated: %+v -> %+v", b1, b2)
+	}
+	status, body = req(t, srv, http.MethodGet, "/events?kind=issue.updated", "", "")
+	var page struct {
+		Events []any `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(body), &page); err != nil || status != http.StatusOK {
+		t.Fatalf("feed: %d %s (%v)", status, body, err)
+	}
+	if len(page.Events) != 0 {
+		t.Fatalf("null patch emitted events: %s", body)
+	}
+}

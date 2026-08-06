@@ -53,6 +53,16 @@ proposed home (avspec field / kriya context / convention).
   git — amended to reference the pinned commit abstractly (intent
   preserved: approval covers the pin) — proposed home: scenario-writing
   guidance to keep externally-minted identifiers symbolic.
+- 2026-08-06 — Unachievable atomicity in the contract: the submission
+  fences claimed validation "atomically against the CURRENT ref while
+  the review is created", but the repository is an external store no
+  tracker transaction can lock — external pushes race any
+  implementation, and three review rounds (1730/1735/1741/1744)
+  ping-ponged between fence-tightness and lock-health before the root
+  cause surfaced — amended to observed-at-submission semantics (the
+  fence rejects stale caller knowledge; the pinned base stays
+  authoritative) — proposed home: spec guidance that cross-store
+  atomicity claims name which store's clock they linearize on.
 - 2026-08-06 — SQLite DDL (indexes, composite keys, on-delete) not
   derivable mechanically from entities — resolved by convention (derive
   1:1, decide the rest in code) — proposed home: deferred item 7,

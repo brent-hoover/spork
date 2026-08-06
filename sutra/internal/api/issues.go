@@ -168,7 +168,9 @@ func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {
 			Body  *string `json:"body"`
 			Actor string  `json:"actor"`
 		}
-		if apiErr := decodeBody(r, &req); apiErr != nil {
+		// title and body are non-null strings in UpdateIssue: explicit
+		// null is malformed, never treated as omission.
+		if apiErr := rejectExplicitNulls(r, &req, "title", "body", "actor"); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {

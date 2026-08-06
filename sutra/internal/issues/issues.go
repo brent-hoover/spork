@@ -298,10 +298,25 @@ func ActiveDescendants(tx *sql.Tx, id string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// ActiveInSubtree reports whether ActiveDescendants is non-empty.
+// ActiveInSubtree reports whether any active descendant exists —
+// LIMIT 1, never materializing the subtree; the close gate uses
+// ActiveDescendants when it must NAME the blockers.
 func ActiveInSubtree(tx *sql.Tx, id string) (bool, error) {
-	active, err := ActiveDescendants(tx, id)
-	return len(active) > 0, err
+	var one int
+	err := tx.QueryRow(`
+		WITH RECURSIVE sub(id) AS (
+			SELECT to_issue FROM issue_relations WHERE kind = 'parent_of' AND from_issue = ?
+			UNION
+			SELECT r.to_issue FROM issue_relations r JOIN sub s ON r.from_issue = s.id AND r.kind = 'parent_of'
+		) SELECT 1 FROM issues WHERE id IN (SELECT id FROM sub)
+		  AND status IN ('open', 'in-progress', 'blocked') LIMIT 1`, id).Scan(&one)
+	switch {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("active-descendant check for %s: %w", id, err)
+	}
+	return true, nil
 }
 
 // AddRelation creates a parent_of or blocks relation after cycle,
