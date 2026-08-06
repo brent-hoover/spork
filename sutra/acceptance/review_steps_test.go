@@ -216,7 +216,7 @@ func (rw *crWorld) unchanged() error {
 	return nil
 }
 
-func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) {
+func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 	iw := cw.iw
 	rw := &crWorld{iw: iw, cw: cw, sha: map[string]string{}, verdictEvents: map[string]string{}}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -1102,6 +1102,7 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	sc.Step(`^no submission, state change, or event results$`, func() error {
 		return rw.unchanged()
 	})
+	return rw
 }
 
 // expectSubmissionSessions asserts the session of numbered submissions.

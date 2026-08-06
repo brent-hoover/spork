@@ -126,6 +126,11 @@ var implementedFeatures = []string{
 	"../verification/REQ-code-review.feature:110",          // delayed close naming a superseded approval
 	"../verification/REQ-code-review.feature:115",          // a stale resubmission cannot land on a newer revision
 	"../verification/REQ-code-review.feature:120",          // resubmission requires changes-requested
+	"../verification/REQ-code-review.feature:130",          // both fences guard creation and resubmission
+	"../verification/REQ-code-review.feature:143",          // stale expected base rejects before the review exists
+	"../verification/REQ-code-review.feature:149",          // moved default head rejects despite unchanged merge base
+	"../verification/REQ-code-review.feature:155",          // resubmission enforces the same base and head fences
+	"../verification/REQ-code-review.feature:165",          // unresolvable repository rejects submission
 }
 
 var contractRouter routers.Router
@@ -346,7 +351,8 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerSearchSteps(sc, cw)
 	registerImportExportSteps(sc, cw)
 	registerMiscSteps(sc, cw)
-	registerReviewSteps(sc, cw)
+	rw := registerReviewSteps(sc, cw)
+	registerReviewFenceSteps(sc, cw, rw)
 }
 
 // newIdempotencyKey returns a fresh random key for a mutating call.
