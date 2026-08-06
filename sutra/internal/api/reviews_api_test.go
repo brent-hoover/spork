@@ -265,11 +265,66 @@ func TestExpectedBaseAndHeadFences(t *testing.T) {
 		t.Fatalf("fence rejection must create nothing: %d %s", status, body)
 	}
 
+	// A wrong expected_default_head rejects with nothing created — the
+	// head fence is exercised independently of the base fence.
+	status, body = req(t, srv, http.MethodPost, "/reviews", "fence-head",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"expected_default_head":%q}`,
+			issue, actor, repo.featureSHA, repo.featureSHA2))
+	if status != http.StatusConflict {
+		t.Fatalf("head fence must 409: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews?issue="+issue, "", "")
+	if status != http.StatusOK || body != "[]" {
+		t.Fatalf("head-fence rejection must create nothing: %d %s", status, body)
+	}
+
 	// Matching fences pass.
 	status, body = req(t, srv, http.MethodPost, "/reviews", "fence-2",
 		fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"feature","commit":%q,"expected_base_commit":%q,"expected_default_head":%q}`,
 			issue, actor, repo.featureSHA, repo.baseSHA, repo.headSHA))
 	decode(status, body, http.StatusCreated, "fenced create")
+
+	// Resubmission fences guard the same way: request changes, move the
+	// default branch so BOTH the head and the recomputed merge base
+	// differ from the caller's stale observation, and assert rejection
+	// with no mutation. (Movement BETWEEN resolution and revalidation
+	// inside one request is not injectable through the public API; both
+	// checks run the same comparison, so stale-observation coverage
+	// exercises the identical rejection paths.)
+	var created map[string]any
+	if err := json.Unmarshal([]byte(body), &created); err != nil {
+		t.Fatalf("decode fenced create: %v", err)
+	}
+	reviewID := created["id"].(string)
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/verdict", "fence-cr",
+		fmt.Sprintf(`{"verdict":"changes-requested","revision":1,"actor":%q}`, actor))
+	if status != http.StatusOK {
+		t.Fatalf("cr: %d %s", status, body)
+	}
+	if err := json.Unmarshal([]byte(body), &created); err != nil {
+		t.Fatalf("decode cr: %v", err)
+	}
+	crEvent := created["latest_verdict_event"].(string)
+
+	move := exec.Command("git", "-C", repo.path, "merge", "--ff-only", "feature")
+	move.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := move.CombinedOutput(); err != nil {
+		t.Fatalf("advance default branch: %v — %s", err, out)
+	}
+
+	status, body = req(t, srv, http.MethodPost, "/reviews/"+reviewID+"/resubmit", "fence-rs",
+		fmt.Sprintf(`{"author":%q,"expected_revision":1,"expected_verdict_event":%q,"branch":"feature","commit":%q,"expected_default_head":%q}`,
+			actor, crEvent, repo.featureSHA2, repo.headSHA))
+	if status != http.StatusConflict {
+		t.Fatalf("stale head on resubmit must 409 after branch movement: %d %s", status, body)
+	}
+	status, body = req(t, srv, http.MethodGet, "/reviews/"+reviewID, "", "")
+	if err := json.Unmarshal([]byte(body), &created); err != nil || status != http.StatusOK {
+		t.Fatalf("read: %d %s (%v)", status, body, err)
+	}
+	if created["revision"].(float64) != 1 || created["state"].(string) != "changes-requested" {
+		t.Fatalf("rejected resubmission mutated the review: %s", body)
+	}
 }
 
 // TestAgentVerdictsRejected pins the human-approval rule: an agent

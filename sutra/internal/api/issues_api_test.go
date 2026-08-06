@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -324,31 +325,42 @@ func TestUpdateIssueNullFieldsRejected(t *testing.T) {
 }
 
 // TestOptionalFieldNullsRejectedEverywhere sweeps representative
-// endpoints: explicit null on an optional non-nullable field is 400
-// with nothing created.
+// endpoints with VALID prerequisites in place, so the only rejection
+// cause is the explicit null — a regression in null handling cannot
+// hide behind an unknown-actor 400.
 func TestOptionalFieldNullsRejectedEverywhere(t *testing.T) {
 	srv, db := startAPI(t)
+	w := buildWorld(t, srv, 1, false)
 	cases := []struct {
 		name, path, body string
 	}{
-		{"identity display_name", "/identities", `{"handle":"x","kind":"human","display_name":null}`},
-		{"project default_branch", "/projects", `{"key":"NUL","name":"n","actor":"00000000-0000-7000-8000-000000000001","default_branch":null}`},
-		{"project description", "/projects", `{"key":"NUL","name":"n","actor":"00000000-0000-7000-8000-000000000001","description":null}`},
+		{"identity display_name", "/identities", `{"handle":"nully","kind":"human","display_name":null}`},
+		{"project default_branch", "/projects", fmt.Sprintf(`{"key":"NUL","name":"n","actor":%q,"default_branch":null}`, w.actor)},
+		{"project description", "/projects", fmt.Sprintf(`{"key":"NUL","name":"n","actor":%q,"description":null}`, w.actor)},
+		{"issue body", "/projects/" + w.project + "/issues", fmt.Sprintf(`{"title":"t","actor":%q,"body":null}`, w.actor)},
+		{"issue assignee", "/projects/" + w.project + "/issues", fmt.Sprintf(`{"title":"t","actor":%q,"assignee":null}`, w.actor)},
+		{"review summary", "/reviews", fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"b","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","summary":null}`, w.issues[0], w.actor)},
+		{"review session", "/reviews", fmt.Sprintf(`{"issue":%q,"author":%q,"branch":"b","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","session":null}`, w.issues[0], w.actor)},
 	}
 	for i, tc := range cases {
 		status, body := req(t, srv, http.MethodPost, tc.path, fmt.Sprintf("null-%d", i), tc.body)
 		if status != http.StatusBadRequest {
 			t.Fatalf("%s: expected 400, got %d %s", tc.name, status, body)
 		}
+		if !strings.Contains(body, "null") {
+			t.Fatalf("%s: rejection must name the null, got %s", tc.name, body)
+		}
 	}
-	var identities, projects int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&identities); err != nil {
-		t.Fatal(err)
+	counts := map[string]int{}
+	for _, table := range []string{"identities", "projects", "issues", "reviews"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		counts[table] = n
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&projects); err != nil {
-		t.Fatal(err)
-	}
-	if identities != 0 || projects != 0 {
-		t.Fatalf("null requests created resources: %d identities, %d projects", identities, projects)
+	// buildWorld made exactly one identity, one project, one issue.
+	if counts["identities"] != 1 || counts["projects"] != 1 || counts["issues"] != 1 || counts["reviews"] != 0 {
+		t.Fatalf("null requests created resources: %v", counts)
 	}
 }
