@@ -31,18 +31,40 @@ func New(apiBase, actor string) *Server {
 	return &Server{api: strings.TrimRight(apiBase, "/"), client: &http.Client{}, actor: actor}
 }
 
-// Handler routes the UI.
+// Handler routes the UI. Mutating routes pass the same-origin guard:
+// a cross-origin form post must never spend the server-configured
+// actor's authority (review 1817).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.projects)
 	mux.HandleFunc("GET /p/{key}", s.board)
-	mux.HandleFunc("POST /p/{key}/i/{num}/move", s.moveCard)
+	mux.HandleFunc("POST /p/{key}/i/{num}/move", s.sameOrigin(s.moveCard))
 	mux.HandleFunc("GET /p/{key}/i/{num}", s.issue)
 	mux.HandleFunc("GET /d/{documentId}", s.document)
-	mux.HandleFunc("POST /d/{documentId}/comment", s.commentDoc)
+	mux.HandleFunc("POST /d/{documentId}/comment", s.sameOrigin(s.commentDoc))
 	mux.HandleFunc("GET /d/{documentId}/poll", s.pollDocument)
 	mux.HandleFunc("GET /t/{threadId}", s.thread)
 	return mux
+}
+
+// sameOrigin rejects cross-origin mutations. Browsers send Origin (or
+// at least Sec-Fetch-Site) on form posts; a value naming another
+// origin is refused outright, and non-browser callers without either
+// header pass — they hold no ambient browser credentials to launder.
+func (s *Server) sameOrigin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+			http.Error(w, "cross-origin request refused", http.StatusForbidden)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+			if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
+				http.Error(w, "cross-origin request refused", http.StatusForbidden)
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 // get fetches an API path into out.
@@ -135,9 +157,10 @@ type issueView struct {
 var statusColumns = []string{"open", "in-progress", "blocked", "deferred", "complete"}
 
 type boardData struct {
-	Key     string
-	Columns []boardColumn
-	Error   string
+	Key      string
+	Columns  []boardColumn
+	Statuses []string
+	Error    string
 }
 
 type boardColumn struct {
@@ -149,14 +172,42 @@ var boardTmpl = template.Must(template.New("board").Parse(`<!doctype html>
 <title>{{.Key}} board</title><h1>{{.Key}}</h1>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 <div class="board">
-{{range .Columns}}<section class="column" data-status="{{.Status}}"><h2>{{.Status}}</h2>
-{{range .Cards}}<article class="card" data-issue="{{.ID}}">
+{{range $col := .Columns}}<section class="column" data-status="{{$col.Status}}"><h2>{{$col.Status}}</h2>
+{{range $col.Cards}}<article class="card" draggable="true" data-issue="{{.ID}}">
 <a href="/p/{{$.Key}}/i/{{.Number}}">{{$.Key}}-{{.Number}} {{.Title}}</a>
 {{if .Assignee}}<span class="assignee">{{.Assignee}}</span>{{end}}
 {{range .Labels}}<span class="label">{{.Name}}</span>{{end}}
+<form class="move" method="post" action="/p/{{$.Key}}/i/{{.Number}}/move">
+{{range $.Statuses}}{{if ne . $col.Status}}<button name="status" value="{{.}}">→ {{.}}</button>{{end}}{{end}}
+</form>
 </article>{{end}}
 </section>{{end}}
-</div>`))
+</div>
+<script>
+// Dragging a card to a column posts the SAME move form target — the
+// drop is a real transition, never a client-side illusion.
+document.querySelectorAll('.card').forEach(function (card) {
+  card.addEventListener('dragstart', function (e) {
+    e.dataTransfer.setData('text/plain', card.querySelector('form.move').action);
+  });
+});
+document.querySelectorAll('.column').forEach(function (col) {
+  col.addEventListener('dragover', function (e) { e.preventDefault(); });
+  col.addEventListener('drop', function (e) {
+    e.preventDefault();
+    var action = e.dataTransfer.getData('text/plain');
+    var form = document.createElement('form');
+    form.method = 'post';
+    form.action = action;
+    var input = document.createElement('input');
+    input.name = 'status';
+    input.value = col.dataset.status;
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+  });
+});
+</script>`))
 
 func (s *Server) renderBoard(w http.ResponseWriter, key, errMsg string) {
 	p, err := s.projectByKey(key)
@@ -171,7 +222,7 @@ func (s *Server) renderBoard(w http.ResponseWriter, key, errMsg string) {
 		htmlError(w, err)
 		return
 	}
-	data := boardData{Key: key, Error: errMsg}
+	data := boardData{Key: key, Statuses: statusColumns, Error: errMsg}
 	for _, status := range statusColumns {
 		col := boardColumn{Status: status}
 		for _, i := range page.Issues {
@@ -224,18 +275,31 @@ func (s *Server) moveCard(w http.ResponseWriter, r *http.Request) {
 			ID                 string  `json:"id"`
 			Revision           int64   `json:"revision"`
 			LatestVerdictEvent *string `json:"latest_verdict_event"`
+			CloseUsed          *string `json:"close_used"`
+			Created            string  `json:"created"`
 		}
 		if err := s.get("/reviews?issue="+url.QueryEscape(page.Issues[0].ID)+"&state=approved", &approved); err != nil {
 			htmlError(w, err)
 			return
 		}
-		if len(approved) == 0 || approved[0].LatestVerdictEvent == nil {
-			s.renderBoard(w, key, "missing-approval: no approved review authorizes closing this issue")
+		// A spent review stays approved; only an UNSPENT approval
+		// authorizes a close — pick the newest usable one.
+		chosen := -1
+		for i, r := range approved {
+			if r.CloseUsed != nil || r.LatestVerdictEvent == nil {
+				continue
+			}
+			if chosen < 0 || r.Created > approved[chosen].Created {
+				chosen = i
+			}
+		}
+		if chosen < 0 {
+			s.renderBoard(w, key, "missing-approval: no unspent approved review authorizes closing this issue")
 			return
 		}
-		transition["review"] = approved[0].ID
-		transition["review_revision"] = approved[0].Revision
-		transition["review_verdict_event"] = *approved[0].LatestVerdictEvent
+		transition["review"] = approved[chosen].ID
+		transition["review_revision"] = approved[chosen].Revision
+		transition["review_verdict_event"] = *approved[chosen].LatestVerdictEvent
 	}
 	status, body, err := s.post("/issues/"+page.Issues[0].ID+"/status", transition)
 	if err != nil {
@@ -338,17 +402,43 @@ var docTmpl = template.Must(template.New("doc").Parse(`<!doctype html>
 <title>{{.Doc.Title}}</title>
 <h1>{{.Doc.Title}}</h1>
 <p class="version" data-version="{{.Doc.Version.Number}}">version {{.Doc.Version.Number}}</p>
+<nav class="versions">
+{{range .Versions}}<a href="/d/{{$.Doc.ID}}?version={{.Number}}">v{{.Number}}</a> {{end}}
+</nav>
 <main class="doc">{{.Rendered}}</main>
 <aside class="discussion">
 {{range .Comments}}<div class="comment{{if .Parent}} reply{{end}}" data-comment="{{.ID}}"{{if .Anchor}} data-anchor="{{.Anchor}}"{{end}} data-version="{{.VersionNumber}}">
 <span class="author">{{.Author}}</span> <span class="on-version">on v{{.VersionNumber}}</span>
 <p>{{.Body}}</p>
+<form class="reply-form" method="post" action="/d/{{$.Doc.ID}}/comment">
+<input type="hidden" name="doc_version" value="{{.DocVersionID}}">
+<input type="hidden" name="parent" value="{{.ID}}">
+<input name="body" placeholder="reply"><button>Reply</button>
+</form>
 </div>{{end}}
-</aside>`))
+<form class="comment-form" method="post" action="/d/{{$.Doc.ID}}/comment">
+<input type="hidden" name="doc_version" value="{{.Doc.Version.ID}}">
+<input name="anchor" placeholder="block-1">
+<input name="body" placeholder="comment on this version"><button>Comment</button>
+</form>
+</aside>
+<script>
+// Poll for newer versions; refresh to the latest when one lands.
+(function () {
+  var shown = {{.Doc.Version.Number}};
+  setInterval(function () {
+    fetch('/d/{{.Doc.ID}}/poll?since=' + shown)
+      .then(function (r) { return r.json(); })
+      .then(function (p) { if (p.refresh) { window.location = '/d/{{.Doc.ID}}'; } })
+      .catch(function () {});
+  }, 5000);
+})();
+</script>`))
 
 type docComment struct {
 	commentView
 	VersionNumber int64
+	DocVersionID  string
 }
 
 // document renders a doc version (latest unless ?version= chosen) with
@@ -384,11 +474,12 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, c := range list {
-			all = append(all, docComment{commentView: c, VersionNumber: v.Number})
+			all = append(all, docComment{commentView: c, VersionNumber: v.Number, DocVersionID: v.ID})
 		}
 	}
 	_ = docTmpl.Execute(w, map[string]any{
-		"Doc": doc, "Rendered": renderMarkdown(doc.Version.Content), "Comments": all,
+		"Doc": doc, "Rendered": renderMarkdown(doc.Version.Content),
+		"Comments": all, "Versions": versions,
 	})
 }
 
@@ -400,12 +491,18 @@ func (s *Server) commentDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	versionID := r.Form.Get("doc_version")
-	status, body, err := s.post("/comments", map[string]any{
+	payload := map[string]any{
 		"doc_version": versionID,
-		"anchor":      r.Form.Get("anchor"),
 		"body":        r.Form.Get("body"),
 		"author":      s.actor,
-	})
+	}
+	if anchor := r.Form.Get("anchor"); anchor != "" {
+		payload["anchor"] = anchor
+	}
+	if parent := r.Form.Get("parent"); parent != "" {
+		payload["parent"] = parent
+	}
+	status, body, err := s.post("/comments", payload)
 	if err != nil {
 		htmlError(w, err)
 		return

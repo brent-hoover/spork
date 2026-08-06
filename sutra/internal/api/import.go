@@ -144,7 +144,9 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			// the verdict-event agreement checks. Everything else
 			// strips — the insert pass re-reads the original bytes.
 			switch e.Kind {
-			case "review.approved", "review.changes-requested":
+			case "review.approved", "review.changes-requested", "issue.relation-removed":
+				// Verdict agreement and the RelationRemovedPayload
+				// requirement read these payloads; both are small.
 			default:
 				e.Payload = nil
 			}
@@ -563,6 +565,11 @@ func validateImportShapes(p *importPayload) *apiError {
 	if p.Project.Key == "" || p.Project.Name == "" {
 		return malformedImport("project key and name are required")
 	}
+	if p.Project.ArchivedAt != nil {
+		if apiErr := timeOf("project archived_at", *p.Project.ArchivedAt); apiErr != nil {
+			return apiErr
+		}
+	}
 	for _, i := range p.Identities {
 		if apiErr := uuidOf("identity", i.ID); apiErr != nil {
 			return apiErr
@@ -639,6 +646,16 @@ func validateImportShapes(p *importPayload) *apiError {
 		if apiErr := timeOf("review created", r.Created); apiErr != nil {
 			return apiErr
 		}
+		if r.Consumed != nil {
+			if apiErr := timeOf("review consumed", *r.Consumed); apiErr != nil {
+				return apiErr
+			}
+		}
+		if r.CloseUsed != nil {
+			if apiErr := timeOf("review close_used", *r.CloseUsed); apiErr != nil {
+				return apiErr
+			}
+		}
 		code := r.Branch != nil && r.Commit != nil
 		doc := r.DocVersion != nil
 		if code == doc || (r.Branch != nil) != (r.Commit != nil) {
@@ -673,11 +690,35 @@ func validateImportShapes(p *importPayload) *apiError {
 		if apiErr := uuidOf("event", e.ID); apiErr != nil {
 			return apiErr
 		}
+		if apiErr := uuidOf("event operation", e.Operation); apiErr != nil {
+			return apiErr
+		}
 		if e.Kind == "" {
 			return malformedImport("event %s has no kind", e.ID)
 		}
 		if apiErr := timeOf("event created", e.Created); apiErr != nil {
 			return apiErr
+		}
+		if e.Kind == "issue.relation-removed" {
+			// The contract's discriminated variant REQUIRES a relation
+			// snapshot payload on every relation-removed event.
+			raw, err := json.Marshal(e.Payload)
+			if err != nil || e.Payload == nil {
+				return malformedImport("event %s must carry a RelationRemovedPayload", e.ID)
+			}
+			var payload struct {
+				Relation *struct {
+					ID   string `json:"id"`
+					Kind string `json:"kind"`
+					From string `json:"from"`
+					To   string `json:"to"`
+				} `json:"relation"`
+			}
+			if json.Unmarshal(raw, &payload) != nil || payload.Relation == nil ||
+				payload.Relation.ID == "" || payload.Relation.Kind == "" ||
+				payload.Relation.From == "" || payload.Relation.To == "" {
+				return malformedImport("event %s carries a malformed RelationRemovedPayload", e.ID)
+			}
 		}
 	}
 	return nil

@@ -18,13 +18,39 @@ import (
 	_ "modernc.org/sqlite"
 
 	"sutra/internal/api"
+	"sutra/internal/cli"
 	"sutra/internal/web"
 )
 
 func main() {
+	// CLI subcommands dispatch to the CLI client; anything else is the
+	// daemon. `sutra init` must never start a server.
+	if len(os.Args) > 1 && isCLICommand(os.Args[1]) {
+		workdir, err := os.Getwd()
+		if err != nil {
+			log.Fatal(err)
+		}
+		os.Exit(cli.Run(cli.Env{
+			Args:    os.Args[1:],
+			Stdout:  os.Stdout,
+			Stderr:  os.Stderr,
+			Workdir: workdir,
+			Getenv:  os.Getenv,
+		}))
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// isCLICommand reports whether the first argument selects the CLI
+// surface rather than the daemon.
+func isCLICommand(arg string) bool {
+	switch arg {
+	case "init", "issue", "api":
+		return true
+	}
+	return false
 }
 
 func run() error {

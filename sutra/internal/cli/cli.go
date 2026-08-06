@@ -440,6 +440,10 @@ func writeYAML(w io.Writer, v any, indent int) {
 	pad := strings.Repeat("  ", indent)
 	switch val := v.(type) {
 	case map[string]any:
+		if len(val) == 0 {
+			_, _ = fmt.Fprintf(w, "%s{}\n", pad)
+			return
+		}
 		keys := make([]string, 0, len(val))
 		for k := range val {
 			keys = append(keys, k)
@@ -459,9 +463,17 @@ func writeYAML(w io.Writer, v any, indent int) {
 			}
 		}
 	case []any:
+		if len(val) == 0 {
+			_, _ = fmt.Fprintf(w, "%s[]\n", pad)
+			return
+		}
 		for _, item := range val {
 			switch child := item.(type) {
 			case map[string]any, []any:
+				if isEmptyContainer(child) {
+					_, _ = fmt.Fprintf(w, "%s- %s\n", pad, emptyLiteral(child))
+					continue
+				}
 				_, _ = fmt.Fprintf(w, "%s-\n", pad)
 				writeYAML(w, child, indent+1)
 			default:

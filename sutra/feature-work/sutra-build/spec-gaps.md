@@ -121,3 +121,11 @@ gobco runs each package's OWN tests, but sutra's behavior coverage lives
 in the acceptance package driving the system over HTTP — per-package
 condition coverage cannot see it. The gate needs respecification against
 this architecture, not just tool fixes.
+
+Gremlins (the mutation gate, pinned 100/100) DOES run — first
+measurement 2026-08-06: killed 454, lived 73, not covered 1030;
+test efficacy 86.15%, mutator coverage 33.85%. The mutator-coverage
+number has the same structural cause: coverage attribution is
+per-package, so the acceptance suite exercising internal packages over
+HTTP does not count toward their mutants. Both quality gates need a
+spec decision on measurement architecture and attainable bars.
