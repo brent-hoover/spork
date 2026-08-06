@@ -386,7 +386,7 @@ requirements:
         statement: A crash after the attachment lands but before reconciliation recovers through the keyed replay's original response and completes the verification stamp in one transaction; a conflicting replay re-reads parentage — accepting the desired parent, surfacing a different one, retrying a transient conflict under a fresh key.
         test: verification/REQ-run-to-complete.feature#a parenting crash after the relation lands recovers the verification
       - id: AC-complete-ambiguous-new-work
-        statement: An ambiguous post-completion creation advances no epoch — the ambiguity record suppresses completion for every candidate target while open, resolving, or conflicting, releasing them only when it stamps resolved after the selected target's parenting, epoch advance, and cascade reconciliation complete — and resolution wakes only the selected target, the others resuming untouched.
+        statement: An ambiguous post-completion creation advances no epoch — the ambiguity record suppresses completion for every candidate target while open, resolving, conflicting, or adopted, releasing them only when it stamps resolved after the selected target's parenting, epoch advance, and cascade reconciliation complete — and resolution wakes only the selected target, the others resuming untouched.
         test: verification/REQ-run-to-complete.feature#an ambiguous post-completion creation suppresses without advancing
       - id: AC-complete-ambiguity-reopen
         statement: Reopening a resolved ambiguity atomically clears the prior resolution and rotates the resolution generation and key, so re-selecting even the same target issues a fresh mutation — a stale success from a since-removed relation can never resolve a new ambiguity.
@@ -819,7 +819,7 @@ data:
         reopen only if the epic provably went unreached. An AMBIGUOUS
         creation in a multi-mapping project advances NO epoch: the
         AttributionAmbiguity row suppresses completion for every
-        candidate target while it is open, resolving, OR conflicting — no stamp
+        candidate target while it is open, resolving, conflicting, OR adopted — no stamp
         reports done and no attempt starts until the row stamps
         resolved, which happens only after the selected target's
         parenting, epoch advance, and cascade reconciliation complete —
@@ -1382,18 +1382,26 @@ data:
         lifecycle as new-work advances: a concurrent parent found on
         re-read is fed back through the target-attribution algorithm —
         a parent attributing to exactly ONE target is ADOPTED:
-        selected_target updates to that target AND resolution_generation
-        and key rotate, all in one transaction — the prior key's request
-        targeted a different epic and must never replay — so recovery
-        resuming the still-resolving row always holds a key that belongs
-        to the adopted target; the row
+        selected_target updates to that target and the row moves to the
+        distinct ADOPTED state in one transaction — the prior key's
+        request targeted a different epic and is dead, and adopted
+        recovery resumes ONLY the adopted target's epoch advance and
+        cascade reconciliation, never an attachment replay (the ticket
+        already has its parent; replaying would conflict with sutra's
+        one-parent invariant forever); the row
         stamps resolved only after THAT target's epoch advance and
         cascade reconciliation complete, so resolution can never wake
         the wrong target or skip the adopted one's reconciliation; a
         parent attributing to none or several
         retains a conflicting ambiguity, suppression intact, with the
         observed parent and the attribution failure recorded, because
-        sutra permits arbitrary issues as parents;
+        sutra permits arbitrary issues as parents — and reselection over
+        that foreign parent runs the operator-authorized reclaim
+        lifecycle (recorded relation, keyed generation-rotated removal
+        reconciled first, parent changes re-read and re-authorized)
+        BEFORE the keyed attachment to the selected epic, since sutra's
+        one-parent invariant would otherwise reject the attachment
+        indefinitely;
         a permanent conflict records conflicting with its code and
         details in resolution_error, and
         the operator reselects — rotating resolution_generation and key
@@ -1414,7 +1422,11 @@ data:
         - { name: resolution_generation, type: integer }  # init 0; rotated atomically with the key on reselection after a conflict AND on reopening a resolved row, so no cached result — conflict or success — ever replays
         - { name: resolution_error, type: string }  # the conflicting cause — a permanent mutation conflict's code and details, or the attribution failure for a concurrent parent mapping to zero or several targets — what recovery and the inbox read
         - { name: observed_parent, type: string }  # the concurrent parent found on re-read when its attribution failed; recorded with resolution_error so the operator sees exactly what holds the ticket
-        - { name: state, type: enum, required: true, values: [open, resolving, conflicting, resolved] }
+        - { name: reclaim_relation, type: string }  # reselection over a foreign parent — the observed relation recorded with the operator's authorization, before any call
+        - { name: reclaim_removal_key, type: string }  # keyed removal of the foreign parent, derived per (row, reclaim_generation) and rotated with it atomically
+        - { name: reclaim_generation, type: integer }  # init 0; rotates atomically with the removal key on correction and whenever the authorized relation changes
+        - { name: reclaim_state, type: enum, values: [pending, failed, removed] }  # write-ahead around the removal — the SAME operator-authorized reclaim lifecycle as new-work parenting conflicts, parent changes re-read and re-authorized; only after removed does the keyed attachment to the selected epic proceed
+        - { name: state, type: enum, required: true, values: [open, resolving, conflicting, adopted, resolved] }  # adopted is the post-adoption phase: the ticket already has its parent, so recovery resumes ONLY the adopted target's epoch advance and cascade reconciliation — never an attachment replay, which would conflict with sutra's one-parent invariant forever
         - { name: created, type: datetime, required: true }
         - { name: resolved, type: datetime }
     - id: ENT-stall

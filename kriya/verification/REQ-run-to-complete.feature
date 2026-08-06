@@ -223,10 +223,13 @@ Feature: Run to complete
     And the row stamps resolved and the other target's completion detection arms normally
     Given a resolution's parenting call instead finds a concurrent parent on re-read
     Then the observed parent is fed back through the attribution algorithm
-    And a parent attributing to exactly one target is adopted — selected_target updates and the resolution generation and key rotate in one transaction, the row resolving only after that target's epoch advance and cascade reconciliation complete
+    And a parent attributing to exactly one target is adopted — selected_target updates and the row moves to the adopted state in one transaction
+    And adopted recovery resumes only the adopted target's epoch advance and cascade reconciliation — never an attachment replay against the already-parented ticket
+    And the row resolves only after that reconciliation completes
     And a parent attributing to none or several retains a conflicting ambiguity with suppression intact, the observed parent and failure recorded for the inbox
     Given the call fails with a permanent conflict
     Then the row records conflicting with the code and details in resolution_error, and reselection rotates the resolution generation and key atomically — no cached conflict suppresses the candidates forever
+    And reselection over an observed foreign parent first runs the operator-authorized keyed removal to its removed state, only then attaching the selected epic — sutra's one-parent invariant never rejects the attachment indefinitely
 
   Scenario: a reopened ambiguity never replays a stale resolution
     Given an ambiguity resolved to target "A" whose parenting relation was later removed, and the same ticket is re-detected
@@ -304,7 +307,7 @@ Feature: Run to complete
   Scenario: an ambiguous post-completion creation suppresses without advancing
     Given two completed targets in a multi-mapping project
     When a new active issue is created attributing to neither
-    Then no epoch advances — the ambiguity row suppresses completion for every candidate target while open, resolving, or conflicting
+    Then no epoch advances — the ambiguity row suppresses completion for every candidate target while open, resolving, conflicting, or adopted
     When the operator resolves the attribution to one target
     Then only the selected target advances, through its parenting attachment's cascade
     And the candidates release only when the row stamps resolved — after parenting, epoch advance, and cascade reconciliation all complete
