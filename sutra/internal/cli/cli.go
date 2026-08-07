@@ -454,7 +454,6 @@ func (c *client) generic(args []string) error {
 // value.
 func (c *client) emitIssueList(body io.Reader) error {
 	dec := json.NewDecoder(body)
-	elements := []json.RawMessage{}
 	if _, err := dec.Token(); err != nil { // '{'
 		return err
 	}
@@ -478,7 +477,14 @@ func (c *client) emitIssueList(body io.Reader) error {
 					return err
 				}
 				if yamlMode {
-					elements = append(elements, elem)
+					// Each element emits as one YAML sequence item as
+					// it decodes — the listing never accumulates.
+					var generic any
+					if err := json.Unmarshal(elem, &generic); err != nil {
+						return err
+					}
+					_, _ = fmt.Fprintln(c.env.Stdout, "-")
+					writeYAML(c.env.Stdout, generic, 1)
 					continue
 				}
 				if !first {
@@ -492,9 +498,8 @@ func (c *client) emitIssueList(body io.Reader) error {
 			}
 			if !yamlMode {
 				_, _ = fmt.Fprintln(c.env.Stdout, "\n]")
-				return nil
 			}
-			return c.emit(elements)
+			return nil
 		}
 		var skip json.RawMessage
 		if err := dec.Decode(&skip); err != nil {

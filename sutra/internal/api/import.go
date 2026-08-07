@@ -889,6 +889,11 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanS
 	if !deliverableMatches(r, latest) {
 		return malformedImport("review %s top-level deliverable disagrees with its latest submission", r.ID)
 	}
+	if !ptrEq(r.Session, latest.Session) {
+		// The live system mirrors the latest submission's session on
+		// the review; a divergent import would misroute rework.
+		return malformedImport("review %s session disagrees with its latest submission", r.ID)
+	}
 	// Consumption stamps travel together and freeze an approved
 	// verdict at the current revision — half-consumed, verdict-torn,
 	// or revision-lagging stamps are unreachable state.

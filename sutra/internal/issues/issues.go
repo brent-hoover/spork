@@ -581,8 +581,11 @@ func Assign(tx *sql.Tx, id string, assignee *string) (Issue, error) {
 // is skipped (AC-pop-skips-blocked); archived projects' issues are
 // excluded by the caller's join. Returns nil when nothing is workable.
 func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
+	// Traversal runs on LIGHT references — bodies are unbounded and
+	// irrelevant to blocker resolution; the chosen issue loads in full
+	// only once the walk settles on it.
 	rows, err := tx.Query(`
-		SELECT `+prefixedIssueColumns("i")+` FROM issues i
+		SELECT i.id, i.status, i.assignee FROM issues i
 		JOIN projects p ON p.id = i.project
 		WHERE i.assignee = ? AND i.status = 'open' AND p.archived_at IS NULL
 		ORDER BY i.assigned_at, i.number`, identity)
@@ -590,13 +593,13 @@ func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
 		return nil, fmt.Errorf("pop candidates for %s: %w", identity, err)
 	}
 	defer func() { _ = rows.Close() }()
-	var candidates []Issue
+	var candidates []walkRef
 	for rows.Next() {
-		i, err := scanIssue(rows)
-		if err != nil {
+		var c walkRef
+		if err := rows.Scan(&c.id, &c.status, &c.assignee); err != nil {
 			return nil, fmt.Errorf("scan candidate: %w", err)
 		}
-		candidates = append(candidates, i)
+		candidates = append(candidates, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate candidates: %w", err)
@@ -607,11 +610,22 @@ func PopCandidate(tx *sql.Tx, identity string) (*Issue, error) {
 		if err != nil {
 			return nil, err
 		}
-		if res.claim != nil {
-			return res.claim, nil
+		if res.claimID != "" {
+			claimed, err := Get(tx, res.claimID)
+			if err != nil {
+				return nil, err
+			}
+			return &claimed, nil
 		}
 	}
 	return nil, nil
+}
+
+// walkRef is the traversal's light view of an issue — never the body.
+type walkRef struct {
+	id       string
+	status   string
+	assignee *string
 }
 
 // blockerWalk memoizes each node's deepest workable claim — correct on
@@ -627,52 +641,49 @@ type blockerWalk struct {
 }
 
 type walkResult struct {
-	claim *Issue
-	depth int
+	claimID string
+	depth   int
 }
 
 // resolve computes what to claim for a candidate: itself when
 // unblocked, the DEEPEST open self-assigned blocker across every
-// branch when the whole blocker set is self-owned, nil when any live
+// branch when the whole blocker set is self-owned, empty when any live
 // blocker is external or unworkable. Depth is the chain length to the
 // returned claim; ties break toward the lower display number via the
 // ordered blocker query.
-func (w *blockerWalk) resolve(candidate Issue) (walkResult, error) {
-	if cached, ok := w.memo[candidate.ID]; ok {
+func (w *blockerWalk) resolve(candidate walkRef) (walkResult, error) {
+	if cached, ok := w.memo[candidate.id]; ok {
 		return cached, nil
 	}
-	if w.onPath[candidate.ID] {
+	if w.onPath[candidate.id] {
 		// Only reachable through corrupted data — cycles reject at
 		// creation. Treat as unworkable rather than recurse forever.
 		return walkResult{}, nil
 	}
-	w.onPath[candidate.ID] = true
-	defer delete(w.onPath, candidate.ID)
+	w.onPath[candidate.id] = true
+	defer delete(w.onPath, candidate.id)
 	tx, identity := w.tx, w.identity
 	rows, err := tx.Query(`
-		SELECT `+prefixedIssueColumns("b")+`, (bp.archived_at IS NOT NULL) FROM issue_relations r
+		SELECT b.id, b.status, b.assignee, (bp.archived_at IS NOT NULL) FROM issue_relations r
 		JOIN issues b ON b.id = r.from_issue
 		JOIN projects bp ON bp.id = b.project
 		WHERE r.kind = 'blocks' AND r.to_issue = ? AND b.status != 'complete'
-		ORDER BY b.number`, candidate.ID)
+		ORDER BY b.number`, candidate.id)
 	if err != nil {
-		return walkResult{}, fmt.Errorf("blockers of %s: %w", candidate.ID, err)
+		return walkResult{}, fmt.Errorf("blockers of %s: %w", candidate.id, err)
 	}
 	defer func() { _ = rows.Close() }()
 	type blockerRow struct {
-		issue    Issue
+		ref      walkRef
 		archived bool
 	}
 	var blockers []blockerRow
 	for rows.Next() {
-		var b Issue
-		var archived bool
-		cols := scanTargets(&b)
-		cols = append(cols, &archived)
-		if err := rows.Scan(cols...); err != nil {
+		var b blockerRow
+		if err := rows.Scan(&b.ref.id, &b.ref.status, &b.ref.assignee, &b.archived); err != nil {
 			return walkResult{}, fmt.Errorf("scan blocker: %w", err)
 		}
-		blockers = append(blockers, blockerRow{issue: b, archived: archived})
+		blockers = append(blockers, b)
 	}
 	if err := rows.Err(); err != nil {
 		return walkResult{}, fmt.Errorf("iterate blockers: %w", err)
@@ -680,11 +691,11 @@ func (w *blockerWalk) resolve(candidate Issue) (walkResult, error) {
 	result := walkResult{}
 	switch {
 	case len(blockers) == 0:
-		result = walkResult{claim: &candidate, depth: 0}
+		result = walkResult{claimID: candidate.id, depth: 0}
 	default:
 		eligible := true
 		for _, b := range blockers {
-			if b.archived || b.issue.Assignee == nil || *b.issue.Assignee != identity || b.issue.Status != StatusOpen {
+			if b.archived || b.ref.assignee == nil || *b.ref.assignee != identity || b.ref.status != StatusOpen {
 				// Live work assigned elsewhere, unworkable, or frozen
 				// in an archived project blocks the whole chain — an
 				// archived project's issue must never be claimed.
@@ -701,41 +712,28 @@ func (w *blockerWalk) resolve(candidate Issue) (walkResult, error) {
 			// worked by this identity, so an older workable fallback
 			// must win instead.
 			bestDepth := -1
-			var best *Issue
+			bestID := ""
 			poisoned := false
 			for _, b := range blockers {
-				sub, err := w.resolve(b.issue)
+				sub, err := w.resolve(b.ref)
 				if err != nil {
 					return walkResult{}, err
 				}
-				if sub.claim == nil {
+				if sub.claimID == "" {
 					poisoned = true
 					break
 				}
 				if sub.depth > bestDepth {
-					best, bestDepth = sub.claim, sub.depth
+					bestID, bestDepth = sub.claimID, sub.depth
 				}
 			}
-			if !poisoned && best != nil {
-				result = walkResult{claim: best, depth: bestDepth + 1}
+			if !poisoned && bestID != "" {
+				result = walkResult{claimID: bestID, depth: bestDepth + 1}
 			}
 		}
 	}
-	w.memo[candidate.ID] = result
+	w.memo[candidate.id] = result
 	return result, nil
-}
-
-// scanTargets returns scan destinations matching issueColumns order.
-func scanTargets(i *Issue) []any {
-	return []any{&i.ID, &i.Number, &i.Title, &i.Body, &i.Status, &i.Project, &i.Assignee, &i.Created, &i.Updated, &i.SubtreeRevision}
-}
-
-func prefixedIssueColumns(alias string) string {
-	cols := strings.Split(issueColumns, ", ")
-	for i, c := range cols {
-		cols[i] = alias + "." + c
-	}
-	return strings.Join(cols, ", ")
 }
 
 // CompleteAncestors returns id's complete ancestors, nearest first —

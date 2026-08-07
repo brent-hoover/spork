@@ -235,11 +235,20 @@ func walkDocumentExport(dec *json.Decoder, cb importCallbacks) error {
 				return fmt.Errorf("versions must be an array")
 			}
 			for dec.More() {
-				var v docs.Version
+				// The pointer shadow distinguishes OMITTED content from
+				// a legitimately empty document version.
+				var v struct {
+					docs.Version
+					Content *string `json:"content"`
+				}
 				if err := dec.Decode(&v); err != nil {
 					return err
 				}
-				if err := cb.docVersion(v); err != nil {
+				if v.Content == nil {
+					return fmt.Errorf("doc version %s omits content", v.ID)
+				}
+				v.Version.Content = *v.Content
+				if err := cb.docVersion(v.Version); err != nil {
 					return err
 				}
 			}
