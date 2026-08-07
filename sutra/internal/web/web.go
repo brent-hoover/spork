@@ -425,7 +425,11 @@ func (s *Server) eachComment(path string, yield func(commentView) bool) bool {
 		return yield(discussionFailure)
 	}
 	dec := json.NewDecoder(resp.Body)
-	if _, err := dec.Token(); err != nil { // '['
+	open, err := dec.Token()
+	if err != nil {
+		return yield(discussionFailure)
+	}
+	if d, ok := open.(json.Delim); !ok || d != '[' {
 		return yield(discussionFailure)
 	}
 	for dec.More() {
@@ -436,6 +440,18 @@ func (s *Server) eachComment(path string, yield func(commentView) bool) bool {
 		if !yield(c) {
 			return false
 		}
+	}
+	// The listing must CLOSE — a response truncated after a complete
+	// element would otherwise pass for a complete discussion.
+	closing, err := dec.Token()
+	if err != nil {
+		return yield(discussionFailure)
+	}
+	if d, ok := closing.(json.Delim); !ok || d != ']' {
+		return yield(discussionFailure)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return yield(discussionFailure)
 	}
 	return true
 }
