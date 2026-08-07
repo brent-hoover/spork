@@ -24,13 +24,15 @@ type Document struct {
 }
 
 // Version mirrors DocVersion — immutable once written.
+// Version mirrors DocVersion. Content is declared LAST so metadata
+// scans stop before it (review 1895).
 type Version struct {
 	ID       string `json:"id"`
 	Document string `json:"document"`
 	Number   int64  `json:"number"`
-	Content  string `json:"content"`
 	Author   string `json:"author"`
 	Created  string `json:"created"`
+	Content  string `json:"content"`
 }
 
 // Template mirrors DocTemplate.

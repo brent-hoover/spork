@@ -158,11 +158,13 @@ func (s *Server) inProject(w http.ResponseWriter, key, resourceProject string) b
 	return true
 }
 
-// scanField decodes ONE named top-level field from a response and
-// abandons the rest — the ownership guards need an id, never the
-// content that follows it. Our responses order metadata before
-// content, so the body closes untouched (review 1893).
-func (s *Server) scanField(path, field string, dst any) error {
+// scanFields decodes the named top-level fields from a response and
+// STOPS at the first content-bearing key — never decoding a skipped
+// value that could be unbounded. Every record serializes its content
+// last (Issue.Body, DocVersion.Content, Thread.transcript), so the
+// wanted ids always precede the stop key and the body closes with the
+// content unread (review 1895).
+func (s *Server) scanFields(path string, want map[string]any, stopKeys ...string) error {
 	resp, err := s.client.Get(s.api + path)
 	if err != nil {
 		return err
@@ -170,6 +172,10 @@ func (s *Server) scanField(path, field string, dst any) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %d", path, resp.StatusCode)
+	}
+	stop := map[string]bool{}
+	for _, k := range stopKeys {
+		stop[k] = true
 	}
 	dec := json.NewDecoder(resp.Body)
 	open, err := dec.Token()
@@ -179,28 +185,59 @@ func (s *Server) scanField(path, field string, dst any) error {
 	if d, ok := open.(json.Delim); !ok || d != '{' {
 		return fmt.Errorf("GET %s: not an object", path)
 	}
+	remaining := len(want)
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
 			return err
 		}
-		if keyTok == field {
-			return dec.Decode(dst)
+		key, _ := keyTok.(string)
+		if stop[key] {
+			// Content begins here: everything wanted has passed.
+			return nil
 		}
-		// Sibling metadata is bounded; content fields never precede
-		// the ids these guards read.
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
+		dst, wanted := want[key]
+		if !wanted {
+			// Skipped values are bounded metadata by construction.
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := dec.Decode(dst); err != nil {
 			return err
 		}
+		if remaining--; remaining == 0 {
+			return nil
+		}
 	}
-	return fmt.Errorf("GET %s: no %s field", path, field)
+	return nil
+}
+
+// scanField decodes ONE named field, requiring it to be present.
+func (s *Server) scanField(path, field string, dst any, stopKeys ...string) error {
+	found := false
+	probe := map[string]any{field: dst}
+	if err := s.scanFields(path, probe, stopKeys...); err != nil {
+		return err
+	}
+	switch v := dst.(type) {
+	case *string:
+		found = *v != ""
+	default:
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("GET %s: no %s field", path, field)
+	}
+	return nil
 }
 
 // docProject resolves a document's governing project id.
 func (s *Server) docProject(documentID string) (string, error) {
 	var project string
-	if err := s.scanField("/documents/"+url.PathEscape(documentID), "project", &project); err != nil {
+	if err := s.scanField("/documents/"+url.PathEscape(documentID), "project", &project, "version"); err != nil {
 		return "", err
 	}
 	return project, nil
@@ -213,7 +250,7 @@ func (s *Server) reviewProject(reviewID string) (string, error) {
 		return "", err
 	}
 	var project string
-	if err := s.scanField("/issues/"+url.PathEscape(issueID), "project", &project); err != nil {
+	if err := s.scanField("/issues/"+url.PathEscape(issueID), "project", &project, "body"); err != nil {
 		return "", err
 	}
 	return project, nil
@@ -222,19 +259,21 @@ func (s *Server) reviewProject(reviewID string) (string, error) {
 // threadProject resolves a thread's governing project — its project
 // anchor, or its anchored issue's project.
 func (s *Server) threadProject(threadID string) (string, error) {
-	// Anchors precede the transcript in thread responses, so the
-	// scan stops before any transcript byte is read.
+	// BOTH anchors resolve in ONE pass that stops at the transcript —
+	// an issue-only thread must not be scanned past its anchors.
 	path := "/threads/" + url.PathEscape(threadID)
-	var project string
-	if err := s.scanField(path, "project", &project); err == nil && project != "" {
+	var project, issueID string
+	if err := s.scanFields(path, map[string]any{"project": &project, "issue": &issueID}, "transcript"); err != nil {
+		return "", err
+	}
+	if project != "" {
 		return project, nil
 	}
-	var issueID string
-	if err := s.scanField(path, "issue", &issueID); err != nil || issueID == "" {
+	if issueID == "" {
 		return "", fmt.Errorf("thread %s carries no anchor", threadID)
 	}
 	var issueProject string
-	if err := s.scanField("/issues/"+url.PathEscape(issueID), "project", &issueProject); err != nil {
+	if err := s.scanField("/issues/"+url.PathEscape(issueID), "project", &issueProject, "body"); err != nil {
 		return "", err
 	}
 	return issueProject, nil
@@ -1049,14 +1088,12 @@ func (s *Server) commentDoc(w http.ResponseWriter, r *http.Request) {
 	// The form value is independently controlled; the version must
 	// belong to the ROUTE's document, or a forged form could comment
 	// on another document under a misleading scoped URL.
-	var version struct {
-		Document string `json:"document"`
-	}
-	if err := s.get("/doc-versions/"+url.PathEscape(versionID), &version); err != nil {
+	var versionDocument string
+	if err := s.scanField("/doc-versions/"+url.PathEscape(versionID), "document", &versionDocument, "content"); err != nil {
 		htmlError(w, err)
 		return
 	}
-	if version.Document != id {
+	if versionDocument != id {
 		http.NotFound(w, r)
 		return
 	}

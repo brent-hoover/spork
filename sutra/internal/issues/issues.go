@@ -14,12 +14,14 @@ import (
 	"time"
 )
 
-// Issue mirrors the contract's Issue schema.
+// Issue mirrors the contract's Issue schema. Body is declared LAST so
+// it serializes last: metadata scans (the UI's ownership guards) stop
+// before an unbounded body instead of materializing it to skip it
+// (review 1895). JSON property order is insignificant to consumers.
 type Issue struct {
 	ID              string  `json:"id"`
 	Number          int64   `json:"number"`
 	Title           string  `json:"title"`
-	Body            *string `json:"body,omitempty"`
 	Status          string  `json:"status"`
 	Project         string  `json:"project"`
 	Assignee        *string `json:"assignee,omitempty"`
@@ -27,6 +29,7 @@ type Issue struct {
 	Updated         string  `json:"updated"`
 	SubtreeRevision int64   `json:"subtree_revision"`
 	Labels          []Label `json:"labels,omitempty"`
+	Body            *string `json:"body,omitempty"`
 }
 
 // Relation mirrors the contract's IssueRelation schema.
