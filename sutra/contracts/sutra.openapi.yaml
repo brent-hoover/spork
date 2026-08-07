@@ -903,26 +903,26 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /documents/{documentId}/current-version:
+  /documents/{documentId}/meta:
     get:
-      operationId: getCurrentVersionMeta
-      summary: Get the current version's metadata, without its content
+      operationId: getDocumentMeta
+      summary: Get a document and its current version's metadata, without content
       description: >-
-        The bounded projection of the current DocVersion. The document view's
-        live-refresh signal (AC-docweb-live) polls for the current version
-        number; serving that through getDocument would read and marshal the
-        whole unbounded content on every poll, so the poll needs a
-        representation that carries none.
+        The bounded projection of getDocument: the document itself (already
+        bounded) plus the current DocVersion minus its content. Clients that
+        need a document's project or its current version number — the web
+        view's scope guards, and the live-refresh signal of AC-docweb-live
+        polling every few seconds — must not pay an unbounded read for either.
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'
       responses:
         '200':
-          description: The current version's metadata.
+          description: The document and its current version's metadata.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DocVersionMeta'
+                $ref: '#/components/schemas/DocumentMeta'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2180,6 +2180,17 @@ components:
         content: { type: string }
         author: { type: string, format: uuid }
         created: { type: string, format: date-time }
+
+    DocumentMeta:
+      description: A document with its current version's metadata — no content.
+      type: object
+      additionalProperties: false
+      required: [document, version]
+      properties:
+        document:
+          $ref: '#/components/schemas/Document'
+        version:
+          $ref: '#/components/schemas/DocVersionMeta'
 
     DocVersionMeta:
       description: A DocVersion without its content — the bounded projection.

@@ -257,13 +257,34 @@ func (s *Server) scanField(path, field string, dst any, stopKeys ...string) erro
 	return nil
 }
 
+// docMeta is the bounded document projection: everything the UI needs
+// about a document that is not its content.
+type docMeta struct {
+	Document struct {
+		Project string `json:"project"`
+	} `json:"document"`
+	Version struct {
+		Number int64 `json:"number"`
+	} `json:"version"`
+}
+
+// documentMeta fetches that projection. Scope guards and the live poll
+// both go through it, so neither makes the API read a version's
+// unbounded content — which stopping the client-side decode could not
+// prevent, since the cost was upstream (review 1914).
+func (s *Server) documentMeta(documentID string) (docMeta, error) {
+	var meta docMeta
+	err := s.get("/documents/"+url.PathEscape(documentID)+"/meta", &meta)
+	return meta, err
+}
+
 // docProject resolves a document's governing project id.
 func (s *Server) docProject(documentID string) (string, error) {
-	var project string
-	if err := s.scanField("/documents/"+url.PathEscape(documentID), "project", &project, "version"); err != nil {
+	meta, err := s.documentMeta(documentID)
+	if err != nil {
 		return "", err
 	}
-	return project, nil
+	return meta.Document.Project, nil
 }
 
 // reviewProject resolves a review's governing project via its issue.
@@ -1180,22 +1201,18 @@ func (s *Server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
 // pollDocument reports whether the document has advanced past the
 // viewer's version — the page's refresh signal (AC-docweb-live).
 func (s *Server) pollDocument(w http.ResponseWriter, r *http.Request) {
-	if !s.guardDoc(w, r) {
+	// ONE bounded request serves both the scope guard and the version
+	// number, so the five-second loop costs a single metadata read
+	// (review 1914). Guarding through guardDoc would repeat the fetch.
+	meta, err := s.documentMeta(r.PathValue("documentId"))
+	if err != nil {
+		http.NotFound(w, r)
 		return
 	}
-	id := r.PathValue("documentId")
-	// The poll needs ONE number, so it asks the bounded operation for
-	// it. Stopping the client-side decode before "content" was not
-	// enough: getDocument still read and marshaled the whole version
-	// upstream, every five seconds (review 1912).
-	var meta struct {
-		Number int64 `json:"number"`
-	}
-	if err := s.get("/documents/"+id+"/current-version", &meta); err != nil {
-		htmlError(w, err)
+	if !s.inProject(w, r.PathValue("key"), meta.Document.Project) {
 		return
 	}
-	latest := meta.Number
+	latest := meta.Version.Number
 	since := r.URL.Query().Get("since")
 	w.Header().Set("Content-Type", "application/json")
 	fresh := fmt.Sprintf("%d", latest) != since

@@ -157,11 +157,19 @@ type docVersionMeta struct {
 	Created  string `json:"created"`
 }
 
-// getCurrentVersionMeta serves the current version's bounded
-// projection. The document view's live-refresh poll needs the version
-// number every five seconds, and getDocument would read and marshal
-// the whole unbounded content to answer that (review 1912).
-func (s *server) getCurrentVersionMeta(w http.ResponseWriter, r *http.Request) {
+// documentMeta is the contract's DocumentMeta.
+type documentMetaView struct {
+	Document docs.Document  `json:"document"`
+	Version  docVersionMeta `json:"version"`
+}
+
+// getDocumentMeta serves the bounded projection of getDocument: the
+// document (already bounded) plus the current version WITHOUT its
+// content. The web view's scope guards and its five-second
+// live-refresh poll both need only these fields, and getDocument would
+// read and marshal the whole unbounded content to answer either
+// (reviews 1912, 1914).
+func (s *server) getDocumentMeta(w http.ResponseWriter, r *http.Request) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		writeError(w, errorFrom(err))
@@ -178,8 +186,11 @@ func (s *server) getCurrentVersionMeta(w http.ResponseWriter, r *http.Request) {
 		writeError(w, docErrorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, docVersionMeta{
-		ID: v.ID, Document: v.Document, Number: v.Number, Author: v.Author, Created: v.Created,
+	writeJSON(w, http.StatusOK, documentMetaView{
+		Document: doc,
+		Version: docVersionMeta{
+			ID: v.ID, Document: v.Document, Number: v.Number, Author: v.Author, Created: v.Created,
+		},
 	})
 }
 

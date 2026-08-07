@@ -171,11 +171,17 @@ Bounding the CLIENT's decode was not enough — the API still read and
 marshaled the whole content per poll — so an implementable AC-docweb-live
 requires a representation that carries no content.
 
-Added getCurrentVersionMeta (GET /documents/{documentId}/current-version
-→ DocVersionMeta: id, document, number, author, created). This is the
-same shape the earlier "no metadata-only document version history" entry
-asks for, now provided for the current version only; the full history
-listing still ships content it does not need. avspec's contract should
+Added getDocumentMeta (GET /documents/{documentId}/meta → DocumentMeta:
+the bounded Document plus DocVersionMeta — id, document, number, author,
+created). The first attempt returned only the version metadata, which
+was not enough: the web view's SCOPE GUARD also resolves a document's
+project through getDocument, so every guarded request — including each
+poll — still forced the unbounded read. One projection carrying both the
+document and the version metadata serves the guard and the poll in a
+single request. This is also the shape the earlier "no metadata-only
+document version history" entry asks for, now provided for the current
+version only; the full history listing still ships content it does not
+need. avspec's contract should
 either declare bounded projections wherever a UI polls, or declare which
 operations a live view may use. Surfaced by roborev review 1912.
 
