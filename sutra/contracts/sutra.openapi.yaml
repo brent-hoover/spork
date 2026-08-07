@@ -797,6 +797,11 @@ paths:
     get:
       operationId: listComments
       summary: List comments anchored to an issue, doc version, or review
+      description: >-
+        EXACTLY ONE of issue, doc_version, or review must be given: a
+        comment listing is always scoped to one anchor target, and an
+        unscoped or multiply-scoped request rejects 400. (Cross-anchor
+        listings would have no meaningful order and no bound.)
       tags: [comments]
       parameters:
         - name: issue
@@ -816,6 +821,9 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Comment' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
 
   # -------------------------------------------------------------- documents
   /projects/{projectId}/documents:

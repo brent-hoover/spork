@@ -726,6 +726,32 @@ func (s *Server) eachEnvelopeArray(path, member string, decodeOne func(*json.Dec
 		}
 		if _, err := dec.Token(); err != nil { // ']'
 			onFailure()
+			return
+		}
+		// The envelope must CLOSE: a response truncated right after
+		// the member would otherwise pass for a complete listing.
+		for dec.More() {
+			if _, err := dec.Token(); err != nil {
+				onFailure()
+				return
+			}
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				onFailure()
+				return
+			}
+		}
+		closing, err := dec.Token()
+		if err != nil {
+			onFailure()
+			return
+		}
+		if d, ok := closing.(json.Delim); !ok || d != '}' {
+			onFailure()
+			return
+		}
+		if _, err := dec.Token(); err != io.EOF {
+			onFailure()
 		}
 		return
 	}
@@ -944,7 +970,9 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 	versionsFailed := false
 	s.eachArray("/documents/"+id+"/versions", func(dec *json.Decoder) bool {
 		var v versionRef
-		if err := dec.Decode(&v); err != nil {
+		if err := dec.Decode(&v); err != nil || v.ID == "" || v.Number < 1 {
+			// null, {}, or a malformed entry would render a bogus v0
+			// link and query comments with an empty version id.
 			versionsFailed = true
 			return false
 		}
@@ -1070,17 +1098,62 @@ func (s *Server) pollDocument(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-type threadView struct {
-	ID         string          `json:"id"`
-	Title      string          `json:"title"`
-	Transcript json.RawMessage `json:"transcript"`
+// The thread page renders in three pieces so turns stream.
+var (
+	threadHeadTmpl = template.Must(template.New("thread-head").Parse(`<!doctype html>
+<title>{{.}}</title><h1>{{.}}</h1>
+<ol class="conversation">
+`))
+	threadTurnTmpl = template.Must(template.New("thread-turn").Parse(
+		`<li class="turn"><span class="speaker">{{.Speaker}}</span><p>{{.Text}}</p></li>` + "\n"))
+	threadTailTmpl = template.Must(template.New("thread-tail").Parse(`</ol>`))
+)
+
+// threadTurn is one rendered conversation row.
+type threadTurn struct {
+	Speaker string
+	Text    string
 }
 
-var threadTmpl = template.Must(template.New("thread").Parse(`<!doctype html>
-<title>{{.Title}}</title><h1>{{.Title}}</h1>
-<ol class="conversation">
-{{range .Turns}}<li class="turn"><span class="speaker">{{.Speaker}}</span><p>{{.Text}}</p></li>{{end}}
-</ol>`))
+// tokenText reconstructs a non-array transcript's text from the token
+// stream: a scalar renders directly, a nested value re-serializes.
+func tokenText(first json.Token, dec *json.Decoder) string {
+	d, isDelim := first.(json.Delim)
+	if !isDelim {
+		if first == nil {
+			return "null"
+		}
+		raw, err := json.Marshal(first)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+	depth := 1
+	out := string(d)
+	for depth > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			return out
+		}
+		if dd, ok := tok.(json.Delim); ok {
+			switch dd {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+			out += string(dd)
+			continue
+		}
+		raw, err := json.Marshal(tok)
+		if err != nil {
+			return out
+		}
+		out += string(raw)
+	}
+	return out
+}
 
 // thread renders a transcript turn by turn with speakers
 // distinguished (AC-thread-view). Transcripts are arbitrary JSON; the
@@ -1090,37 +1163,83 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 	if !s.guardThread(w, r) {
 		return
 	}
-	var t threadView
-	if err := s.get("/threads/"+r.PathValue("threadId"), &t); err != nil {
+	// The transcript is unbounded: the page renders in pieces so each
+	// turn decodes, renders, and is released — never the whole
+	// transcript plus its entry slice plus rendered turns (1887).
+	resp, err := s.client.Get(s.api + "/threads/" + url.PathEscape(r.PathValue("threadId")))
+	if err != nil {
 		htmlError(w, err)
 		return
 	}
-	type turn struct {
-		Speaker string `json:"speaker"`
-		Text    string `json:"text"`
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		htmlError(w, fmt.Errorf("thread unavailable"))
+		return
 	}
-	// The conventional [{speaker, text}] shape renders as a
-	// conversation; entries in any OTHER shape fall back to their raw
-	// JSON per entry — never a blank row.
-	turns := []turn{}
-	var entries []json.RawMessage
-	if err := json.Unmarshal(t.Transcript, &entries); err != nil || entries == nil {
-		// Non-array transcripts — JSON null included — render raw.
-		turns = []turn{{Speaker: "transcript", Text: string(t.Transcript)}}
-	} else {
-		for _, entry := range entries {
-			var decoded turn
-			// A structured turn needs BOTH conventional fields; a
-			// half-shaped entry renders its raw JSON instead of a
-			// blank-sided row.
-			if err := json.Unmarshal(entry, &decoded); err == nil && decoded.Speaker != "" && decoded.Text != "" {
-				turns = append(turns, decoded)
-				continue
-			}
-			turns = append(turns, turn{Speaker: "entry", Text: string(entry)})
+	dec := json.NewDecoder(resp.Body)
+	envelope, err := dec.Token()
+	if err != nil {
+		htmlError(w, err)
+		return
+	}
+	if d, ok := envelope.(json.Delim); !ok || d != '{' {
+		htmlError(w, fmt.Errorf("malformed thread response"))
+		return
+	}
+	title := ""
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return
 		}
+		if keyTok == "title" {
+			if err := dec.Decode(&title); err != nil {
+				return
+			}
+			continue
+		}
+		if keyTok != "transcript" {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return
+			}
+			continue
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = threadHeadTmpl.Execute(w, title)
+		open, err := dec.Token()
+		if err != nil {
+			return
+		}
+		if d, ok := open.(json.Delim); ok && d == '[' {
+			for dec.More() {
+				var entry json.RawMessage
+				if err := dec.Decode(&entry); err != nil {
+					return
+				}
+				var decoded threadTurn
+				// A structured turn needs BOTH conventional fields; a
+				// half-shaped entry renders its raw JSON instead of a
+				// blank-sided row.
+				if err := json.Unmarshal(entry, &decoded); err == nil && decoded.Speaker != "" && decoded.Text != "" {
+					_ = threadTurnTmpl.Execute(w, decoded)
+					continue
+				}
+				_ = threadTurnTmpl.Execute(w, threadTurn{Speaker: "entry", Text: string(entry)})
+			}
+			if _, err := dec.Token(); err != nil { // ']'
+				return
+			}
+		} else {
+			// A non-array transcript is ONE value — the
+			// record-granularity floor — rendered raw.
+			_ = threadTurnTmpl.Execute(w, threadTurn{Speaker: "transcript", Text: tokenText(open, dec)})
+		}
+		_ = threadTailTmpl.Execute(w, nil)
+		return
 	}
-	_ = threadTmpl.Execute(w, map[string]any{"Title": t.Title, "Turns": turns})
+	// Reaching here means the envelope closed without a transcript.
+	htmlError(w, fmt.Errorf("thread carries no transcript"))
 }
 
 type reviewView struct {
