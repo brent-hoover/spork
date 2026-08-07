@@ -312,3 +312,48 @@ func TestEmptyCommentBodyAccepted(t *testing.T) {
 		t.Fatalf("comment without a body accepted: %d %s", status, body)
 	}
 }
+
+// TestImportResponseReportsStoredProject pins that the 201 describes
+// what was PERSISTED, not the validation projection whose unread
+// strings are sentinels. A wrong body here also replays wrong forever
+// under the idempotency key (review 1936).
+func TestImportResponseReportsStoredProject(t *testing.T) {
+	srv, _ := startAPI(t)
+	const (
+		project = "01900000-0000-7000-8000-000000000000"
+		actor   = "01900000-0000-7000-8000-00000000000f"
+	)
+	description := "a description long enough to be worth stripping"
+	repoPath := "/somewhere/on/disk/that/matters"
+	body := `{"project":{"id":"` + project + `","key":"IMP","name":"Imported",
+			"description":"` + description + `","repo_path":"` + repoPath + `"},
+		"identities":[{"id":"` + actor + `","handle":"importer","kind":"agent"}],
+		"issues":[],"comments":[],"labels":[],"issue_relations":[],
+		"documents":[],"threads":[],"reviews":[],"events":[]}`
+
+	status, raw := post(t, srv, "/projects/import?actor="+actor, "k-import", body)
+	if status != http.StatusCreated {
+		t.Fatalf("import: %d %s", status, raw)
+	}
+	var got struct {
+		Description *string `json:"description"`
+		RepoPath    *string `json:"repo_path"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	if got.Description == nil || *got.Description != description {
+		t.Fatalf("import response description = %v, want %q", got.Description, description)
+	}
+	if got.RepoPath == nil || *got.RepoPath != repoPath {
+		t.Fatalf("import response repo_path = %v, want %q", got.RepoPath, repoPath)
+	}
+	// The stored project agrees, and so does the replay.
+	_, fetched := req(t, srv, http.MethodGet, "/projects/"+project, "", "")
+	if !strings.Contains(fetched, description) {
+		t.Fatalf("stored project lost its description: %s", fetched)
+	}
+	if _, replayed := post(t, srv, "/projects/import?actor="+actor, "k-import", body); replayed != raw {
+		t.Fatalf("replay differs from the original response:\n%s\n%s", replayed, raw)
+	}
+}

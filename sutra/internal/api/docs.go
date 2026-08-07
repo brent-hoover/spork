@@ -30,11 +30,13 @@ func docErrorFrom(err error) *apiError {
 
 // docEventSubject picks the event subject per EventBase: the tied issue
 // for issue-scoped doc events, the project otherwise.
-func docEventSubject(d docs.Document) string {
-	if d.Issue != nil {
-		return *d.Issue
+// It takes the two fields rather than a record so the bounded
+// projection and the full document can both use it.
+func docEventSubject(project string, issue *string) string {
+	if issue != nil {
+		return *issue
 	}
-	return d.Project
+	return project
 }
 
 type documentView struct {
@@ -99,7 +101,7 @@ func (s *server) createDocument(w http.ResponseWriter, r *http.Request) {
 		}
 		operation := events.NewOperation()
 		payload := docPayload(doc.ID)
-		if _, err := events.Emit(tx, "doc.version-saved", docEventSubject(doc), operation, req.Author, &payload); err != nil {
+		if _, err := events.Emit(tx, "doc.version-saved", docEventSubject(doc.Project, doc.Issue), operation, req.Author, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		if doc.Issue != nil {
@@ -223,7 +225,10 @@ func (s *server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
 		if apiErr := requireActor(tx, req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		doc, err := docs.Get(tx, id)
+		// Ownership only — docs.Get would read the unbounded title
+		// under the write lock, and SaveVersion checks existence
+		// with a bounded query of its own (review 1936).
+		doc, err := docs.MetaByID(tx, id)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}
@@ -235,7 +240,7 @@ func (s *server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
 			return 0, nil, docErrorFrom(err)
 		}
 		payload := docPayload(id)
-		if _, err := events.Emit(tx, "doc.version-saved", docEventSubject(doc), events.NewOperation(), req.Author, &payload); err != nil {
+		if _, err := events.Emit(tx, "doc.version-saved", docEventSubject(doc.Project, doc.Issue), events.NewOperation(), req.Author, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
 		return http.StatusCreated, version, nil

@@ -315,7 +315,9 @@ func list(tx *sql.Tx, query string, args ...any) ([]Document, error) {
 // SaveVersion appends the next immutable version and moves
 // current_version (AC-doc-versioning).
 func SaveVersion(tx *sql.Tx, documentID, content, author string) (Version, error) {
-	if _, err := Get(tx, documentID); err != nil {
+	// Existence, not the document — Get reads the unbounded title,
+	// and this runs inside the caller's write transaction (1936).
+	if _, err := MetaByID(tx, documentID); err != nil {
 		return Version{}, err
 	}
 	var next int64

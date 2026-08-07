@@ -100,7 +100,16 @@ func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 		if _, err := events.Emit(tx, "project.imported", meta.Project.ID, events.NewOperation(), actor, &payload); err != nil {
 			return 0, nil, errorFrom(err)
 		}
-		return http.StatusCreated, meta.Project, nil
+		// Read the project BACK: meta carries the VALIDATION
+		// projection, whose unread strings are sentinels, so
+		// returning it would report a description and repo_path
+		// that disagree with what was just stored — and the
+		// idempotent replay would repeat the lie (review 1936).
+		stored, err := projects.GetTx(tx, meta.Project.ID)
+		if err != nil {
+			return 0, nil, errorFrom(err)
+		}
+		return http.StatusCreated, stored, nil
 	})
 }
 
@@ -175,6 +184,9 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 				t.Transcript = json.RawMessage(`0`)
 			}
 			t.Title = strip(t.Title)
+			// A THREAD's session is only written; validation compares
+			// only a REVIEW's, so this one strips too (review 1936).
+			t.Session = stripPtr(t.Session)
 			meta.Threads = append(meta.Threads, t)
 			return nil
 		},

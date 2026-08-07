@@ -73,10 +73,7 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 		if apiErr := guardWritable(tx, doc.Project); apiErr != nil {
 			return "", apiErr
 		}
-		if doc.Issue != nil {
-			return *doc.Issue, nil
-		}
-		return doc.Project, nil
+		return docEventSubject(doc.Project, doc.Issue), nil
 	default:
 		// The bounded projection: validation compares a revision and
 		// follows the issue. review.Get would load the unbounded
