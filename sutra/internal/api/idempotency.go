@@ -199,8 +199,19 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 	// included) is a settled 400: it records under the pair and
 	// replays like any other keyed rejection.
 	if r.ContentLength > largeBodyThreshold || r.ContentLength < 0 {
-		largeBodySlot <- struct{}{}
-		defer func() { <-largeBodySlot }()
+		// Waiting for the slot honours cancellation: a client that hangs
+		// up or times out releases its handler goroutine and connection
+		// immediately instead of queueing behind every earlier large
+		// request (review 1897). The abandoned attempt settles nothing,
+		// so the key stays fresh for a retry.
+		select {
+		case largeBodySlot <- struct{}{}:
+			defer func() { <-largeBodySlot }()
+		case <-r.Context().Done():
+			// The client is already gone, so there is nobody to send a
+			// status to; releasing the goroutine IS the handling.
+			return
+		}
 	}
 	body, err := captureBody(w, r, bodyLimit(operation))
 	if err != nil {

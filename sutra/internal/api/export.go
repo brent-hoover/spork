@@ -369,10 +369,10 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	}
 	arr.close()
 
-	// Events stream in feed order; out-of-scope subjects skip in the
-	// scan, so one ordered pass serves any number of subjects.
+	// Events stream in feed order; the project's subjects are selected
+	// in SQL, so one ordered pass serves any number of them.
 	arr.open("events")
-	if err := streamProjectEvents(tx, plan.meta.Project.ID, plan.issueIDs, arr); err != nil {
+	if err := streamProjectEvents(tx, plan.meta.Project.ID, arr); err != nil {
 		return
 	}
 	arr.close()
@@ -480,26 +480,29 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte{'}'})
 }
 
-// streamProjectEvents walks the whole feed in order, emitting events
-// whose subject is the project or one of its issues.
-func streamProjectEvents(tx *sql.Tx, projectID string, issueIDs []string, arr *jsonArrayWriter) error {
-	scope := map[string]bool{projectID: true}
-	for _, id := range issueIDs {
-		scope[id] = true
+// streamProjectEvents walks the project's slice of the feed in order,
+// emitting events whose subject is the project or one of its issues.
+// The scope is a SQL predicate, not a Go-side skip: the global event
+// table is never scanned for rows this export cannot emit (review 1897).
+func streamProjectEvents(tx *sql.Tx, projectID string, arr *jsonArrayWriter) error {
+	if arr.failed() {
+		return fmt.Errorf("client stopped reading")
 	}
-	rows, err := tx.Query(`SELECT id, kind, subject, operation, actor, payload, created FROM events ORDER BY seq`)
+	rows, err := tx.Query(`SELECT id, kind, subject, operation, actor, payload, created FROM events
+		WHERE subject = ?1 OR subject IN (SELECT id FROM issues WHERE project = ?1)
+		ORDER BY seq`, projectID)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
+		if arr.failed() {
+			return fmt.Errorf("client stopped reading")
+		}
 		var e events.Event
 		var payload sql.NullString
 		if err := rows.Scan(&e.ID, &e.Kind, &e.Subject, &e.Operation, &e.Actor, &payload, &e.Created); err != nil {
 			return err
-		}
-		if !scope[e.Subject] {
-			continue
 		}
 		// Payload bytes splice VERBATIM around the marshaled metadata —
 		// json.Marshal would compact them, and imports promise the
