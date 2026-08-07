@@ -305,6 +305,17 @@ func scanReview(row rowScanner) (Review, error) {
 // List returns reviews filtered by issue, state, and session — a
 // session matches when ANY submission carries it (AC-search-session).
 func List(tx *sql.Tx, issue, state, session string) ([]Review, error) {
+	out := []Review{}
+	err := ListEach(tx, issue, state, session, func(r Review) error {
+		out = append(out, r)
+		return nil
+	})
+	return out, err
+}
+
+// ListEach streams matching reviews one at a time — summaries are
+// unbounded, so wire-serving listings never accumulate them.
+func ListEach(tx *sql.Tx, issue, state, session string, fn func(Review) error) error {
 	query := `SELECT DISTINCT r.id FROM reviews r`
 	args := []any{}
 	var where []string
@@ -327,29 +338,32 @@ func List(tx *sql.Tx, issue, state, session string) ([]Review, error) {
 	query += ` ORDER BY r.id`
 	rows, err := tx.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list reviews: %w", err)
+		return fmt.Errorf("list reviews: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan review id: %w", err)
+			_ = rows.Close()
+			return fmt.Errorf("scan review id: %w", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate reviews: %w", err)
+		_ = rows.Close()
+		return fmt.Errorf("iterate reviews: %w", err)
 	}
-	out := []Review{}
+	_ = rows.Close()
 	for _, id := range ids {
 		r, err := Get(tx, id)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, r)
+		if err := fn(r); err != nil {
+			return err
+		}
 	}
-	return out, nil
+	return nil
 }
 
 // SetVerdict applies approved or changes-requested to the revision the

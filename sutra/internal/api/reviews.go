@@ -594,12 +594,28 @@ func (s *server) listReviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	list, err := review.List(tx, q.Get("issue"), q.Get("state"), q.Get("session"))
-	if err != nil {
-		writeError(w, reviewErrorFrom(err))
-		return
+	// Review summaries are unbounded; rows stream to the wire one at
+	// a time instead of accumulating an aggregate slice and buffer.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{'['})
+	first := true
+	streamErr := review.ListEach(tx, q.Get("issue"), q.Get("state"), q.Get("session"), func(rv review.Review) error {
+		raw, err := json.Marshal(rv)
+		if err != nil {
+			return err
+		}
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	})
+	if streamErr != nil {
+		return // status committed; truncation is the only signal
 	}
-	writeJSON(w, http.StatusOK, list)
+	_, _ = w.Write([]byte{']'})
 }
 
 func (s *server) setReviewVerdict(w http.ResponseWriter, r *http.Request) {

@@ -46,7 +46,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	issueSet := map[string]issueKey{}
 	noteRef := func(r issues.Ref) { issueSet[r.ID] = issueKey{r.Project, r.Number} }
 	noteIssue := func(i issues.Issue) { issueSet[i.ID] = issueKey{i.Project, i.Number} }
-	reviewList := []review.Review{}
+	reviewIDs := []string{}
 
 	// Text matches over issues, project-scoped when given. With q
 	// omitted, the contract requires ALL content in the remaining
@@ -84,12 +84,14 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// content in scope when q is omitted.
 	if (project != nil || bare) && session == nil && q == nil {
 		for id := range issueSet {
-			matched, err := review.List(tx, id, "", "")
+			err := review.ListEach(tx, id, "", "", func(rv review.Review) error {
+				reviewIDs = append(reviewIDs, rv.ID)
+				return nil
+			})
 			if err != nil {
 				writeError(w, reviewErrorFrom(err))
 				return
 			}
-			reviewList = append(reviewList, matched...)
 		}
 	}
 
@@ -124,7 +126,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			reviewList = append(reviewList, rev)
+			reviewIDs = append(reviewIDs, rev.ID)
 			noteIssue(iss)
 		}
 	}
@@ -213,8 +215,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	envelope := struct {
 		FeedWatermark string          `json:"feed_watermark"`
 		Documents     []docs.Document `json:"documents"`
-		Reviews       []review.Review `json:"reviews"`
-	}{watermark, docList, reviewList}
+	}{watermark, docList}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
 		writeError(w, errorFrom(err))
@@ -223,7 +224,24 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw[:len(raw)-1])
-	_, _ = w.Write([]byte(`,"issues":[`))
+	// Reviews stream one row at a time — summaries are unbounded.
+	_, _ = w.Write([]byte(`,"reviews":[`))
+	slices.Sort(reviewIDs)
+	for i, id := range reviewIDs {
+		rv, err := review.Get(tx, id)
+		if err != nil {
+			return // truncation is the only signal after the first byte
+		}
+		one, err := json.Marshal(rv)
+		if err != nil {
+			return
+		}
+		if i > 0 {
+			_, _ = w.Write([]byte{','})
+		}
+		_, _ = w.Write(one)
+	}
+	_, _ = w.Write([]byte(`],"issues":[`))
 	for i, id := range issueIDs {
 		issue, err := issues.Get(tx, id)
 		if err != nil {
