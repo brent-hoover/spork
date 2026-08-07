@@ -537,7 +537,16 @@ func (c *client) emitIssueList(body io.Reader) error {
 			// The envelope must CLOSE and the stream must END. Without
 			// this, a response truncated right after the issues array
 			// printed as a complete listing.
+			//
+			// Inside an object a value cannot be decoded until its KEY
+			// is consumed — Decode reports "not at beginning of value"
+			// otherwise — so any property following issues needs both
+			// steps. Field order is insignificant in JSON, so a server
+			// that emits the watermark last must still work.
 			for dec.More() {
+				if _, err := dec.Token(); err != nil { // the key
+					return err
+				}
 				var skip json.RawMessage
 				if err := dec.Decode(&skip); err != nil {
 					return err

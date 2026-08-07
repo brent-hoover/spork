@@ -26,6 +26,12 @@ func TestEmitIssueListRejectsMalformed(t *testing.T) {
 		{name: "trailing data", body: issues + `{"more":1}`, wantErr: true},
 		{name: "no issues field", body: `{"feed_watermark":"1"}`, wantErr: true},
 		{name: "empty listing", body: `{"issues":[]}`},
+		// Field order is insignificant in JSON: a server may emit the
+		// watermark AFTER the issues array, and draining it requires
+		// consuming the key before the value (review 1944).
+		{name: "property after issues", body: `{"issues":[{"id":"a"}],"feed_watermark":"1"}`},
+		{name: "several properties after issues", body: `{"issues":[],"a":1,"b":{"c":[2]},"d":"x"}`},
+		{name: "truncated in a trailing property", body: `{"issues":[],"feed_watermark":`, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
