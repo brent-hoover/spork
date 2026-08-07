@@ -70,21 +70,27 @@ func guardWritable(tx *sql.Tx, project string) *apiError {
 	return nil
 }
 
+type newIssueRequest struct {
+	Title    string  `json:"title"`
+	Body     *string `json:"body"`
+	Assignee *string `json:"assignee"`
+	Actor    string  `json:"actor"`
+}
+
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("projectId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Title    string  `json:"title"`
-			Body     *string `json:"body"`
-			Assignee *string `json:"assignee"`
-			Actor    string  `json:"actor"`
-		}
+	// Unbounded bodies decode pre-lock (review 1873).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req newIssueRequest
 		if apiErr := rejectExplicitNulls(r, &req, "title", "body", "assignee", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Title == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "title is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "title is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(newIssueRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -171,19 +177,25 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`]}`))
 }
 
+type updateIssueRequest struct {
+	Title *string `json:"title"`
+	Body  *string `json:"body"`
+	Actor string  `json:"actor"`
+}
+
 func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("issueId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Title *string `json:"title"`
-			Body  *string `json:"body"`
-			Actor string  `json:"actor"`
-		}
+	// Unbounded bodies decode pre-lock (review 1873).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req updateIssueRequest
 		// title and body are non-null strings in UpdateIssue: explicit
 		// null is malformed, never treated as omission.
 		if apiErr := rejectExplicitNulls(r, &req, "title", "body", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(updateIssueRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

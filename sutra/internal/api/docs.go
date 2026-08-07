@@ -410,18 +410,24 @@ func (s *server) listIssueDocuments(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------- templates
 
+type templateRequest struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
 func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Name    string `json:"name"`
-			Content string `json:"content"`
-		}
+	// Unbounded content decodes pre-lock (review 1873).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req templateRequest
 		if apiErr := rejectExplicitNulls(r, &req, "name", "content"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Name == "" || req.Content == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "name and content are required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "name and content are required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(templateRequest)
 		created, err := docs.CreateTemplate(tx, req.Name, req.Content)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
@@ -460,16 +466,22 @@ func (s *server) getTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tpl)
 }
 
+type updateTemplateRequest struct {
+	Name    *string `json:"name"`
+	Content *string `json:"content"`
+}
+
 func (s *server) updateTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("templateId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Name    *string `json:"name"`
-			Content *string `json:"content"`
-		}
+	// Unbounded content decodes pre-lock (review 1873).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req updateTemplateRequest
 		if apiErr := rejectExplicitNulls(r, &req, "name", "content"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(updateTemplateRequest)
 		updated, err := docs.UpdateTemplate(tx, id, req.Name, req.Content)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
