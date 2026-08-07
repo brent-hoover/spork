@@ -24,13 +24,25 @@ type Server struct {
 	api    string
 	client *http.Client
 	actor  string // identity id stamped on UI-driven mutations
+	// canonicalHosts is the independently configured host allowlist
+	// the mutation guard trusts. Trusting r.Host alone would let a
+	// DNS-rebound attacker origin satisfy a same-origin comparison
+	// against itself (review 1875); an empty list means the guard
+	// falls back to r.Host, which is safe only on loopback binds.
+	canonicalHosts map[string]bool
 }
 
 // New builds the web handler. actor is the identity UI mutations act
 // as — the single-operator system has exactly one human at the
 // keyboard.
-func New(apiBase, actor string) *Server {
-	return &Server{api: strings.TrimRight(apiBase, "/"), client: &http.Client{}, actor: actor}
+func New(apiBase, actor string, canonicalHosts ...string) *Server {
+	hosts := map[string]bool{}
+	for _, h := range canonicalHosts {
+		if h != "" {
+			hosts[h] = true
+		}
+	}
+	return &Server{api: strings.TrimRight(apiBase, "/"), client: &http.Client{}, actor: actor, canonicalHosts: hosts}
 }
 
 // Handler routes the UI. Mutating routes pass the same-origin guard:
@@ -62,6 +74,14 @@ func (s *Server) Handler() http.Handler {
 // launder, and the API itself is equally reachable to them directly.
 func (s *Server) sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The Host header itself is attacker-influenced under DNS
+		// rebinding: when canonical hosts are configured, the request
+		// must name one of them before any origin comparison means
+		// anything.
+		if len(s.canonicalHosts) > 0 && !s.canonicalHosts[r.Host] {
+			http.Error(w, "unrecognized host", http.StatusForbidden)
+			return
+		}
 		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 			http.Error(w, "cross-origin request refused", http.StatusForbidden)
 			return
@@ -71,7 +91,8 @@ func (s *Server) sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 			if r.TLS != nil {
 				scheme = "https"
 			}
-			if origin == "null" || origin != scheme+"://"+r.Host {
+			expected := scheme + "://" + r.Host
+			if origin == "null" || origin != expected {
 				http.Error(w, "cross-origin request refused", http.StatusForbidden)
 				return
 			}

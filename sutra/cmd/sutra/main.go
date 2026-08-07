@@ -58,6 +58,7 @@ func run() error {
 	dbPath := flag.String("db", envOr("SUTRA_DB", "sutra.db"), "SQLite database path")
 	uiAddr := flag.String("ui-addr", envOr("SUTRA_UI_ADDR", ""), "web UI listen address (off when empty)")
 	uiActor := flag.String("ui-actor", envOr("SUTRA_UI_ACTOR", ""), "identity id web UI mutations act as")
+	uiHosts := flag.String("ui-hosts", envOr("SUTRA_UI_HOSTS", ""), "comma-separated canonical UI hosts; mutations from any other Host are refused (DNS-rebinding guard)")
 	flag.Parse()
 
 	db, err := sql.Open("sqlite", "file:"+escapeSQLitePath(*dbPath)+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
@@ -94,7 +95,7 @@ func run() error {
 	if *uiAddr != "" {
 		uiServer = &http.Server{
 			Addr:              *uiAddr,
-			Handler:           web.New("http://"+*addr, *uiActor).Handler(),
+			Handler:           web.New("http://"+*addr, *uiActor, splitHosts(*uiHosts)...).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -128,6 +129,21 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+// splitHosts parses the comma-separated canonical UI host list.
+func splitHosts(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if h := strings.TrimSpace(p); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // escapeSQLitePath percent-encodes the characters SQLite's URI parser
