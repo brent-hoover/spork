@@ -576,54 +576,78 @@ type eventRef struct {
 	Created string `json:"created"`
 }
 
-// eachThreadRef streams a thread listing's id/title pairs.
-func (s *Server) eachThreadRef(path string, yield func(threadRef) bool) {
+// Failure markers: a broken listing must be VISIBLE on the page,
+// never a complete-looking section silently missing entries — the
+// same treatment the comment iterator applies.
+var (
+	threadFailure = threadRef{Title: "⚠ threads unavailable: failed to load"}
+	eventFailure  = eventRef{Kind: "⚠ history unavailable: failed to load", Actor: "system"}
+)
+
+// eachArray walks one JSON array response with strict delimiters and
+// EOF; onFailure fires for connection errors, non-200s, wrong shapes,
+// and truncation. decodeOne decodes and yields one element, returning
+// false when the consumer stopped.
+func (s *Server) eachArray(path string, decodeOne func(*json.Decoder) bool, onFailure func() bool) {
 	resp, err := s.client.Get(s.api + path)
 	if err != nil {
+		onFailure()
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		onFailure()
 		return
 	}
 	dec := json.NewDecoder(resp.Body)
-	if _, err := dec.Token(); err != nil {
+	open, err := dec.Token()
+	if err != nil {
+		onFailure()
+		return
+	}
+	if d, ok := open.(json.Delim); !ok || d != '[' {
+		onFailure()
 		return
 	}
 	for dec.More() {
-		var t threadRef
-		if err := dec.Decode(&t); err != nil {
-			return
-		}
-		if !yield(t) {
+		if !decodeOne(dec) {
 			return
 		}
 	}
+	closing, err := dec.Token()
+	if err != nil {
+		onFailure()
+		return
+	}
+	if d, ok := closing.(json.Delim); !ok || d != ']' {
+		onFailure()
+		return
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		onFailure()
+	}
+}
+
+// eachThreadRef streams a thread listing's id/title pairs.
+func (s *Server) eachThreadRef(path string, yield func(threadRef) bool) {
+	s.eachArray(path, func(dec *json.Decoder) bool {
+		var t threadRef
+		if err := dec.Decode(&t); err != nil {
+			return yield(threadFailure) && false
+		}
+		return yield(t)
+	}, func() bool { return yield(threadFailure) })
 }
 
 // eachEventRef streams the audit listing's display fields.
 func (s *Server) eachEventRef(path string, yield func(eventRef) bool) {
-	resp, err := s.client.Get(s.api + path)
-	if err != nil {
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-	dec := json.NewDecoder(resp.Body)
-	if _, err := dec.Token(); err != nil {
-		return
-	}
-	for dec.More() {
+	s.eachArray(path, func(dec *json.Decoder) bool {
 		var e eventRef
 		if err := dec.Decode(&e); err != nil {
-			return
+			return yield(eventFailure) && false
 		}
-		if !yield(e) {
-			return
-		}
-	}
+		return yield(e)
+	}, func() bool { return yield(eventFailure) })
 }
 
 // commentIssue anchors a comment to the issue (ACT-comment on the
