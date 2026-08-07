@@ -320,10 +320,11 @@ func List(tx *sql.Tx, issue, state, session string) ([]Review, error) {
 	return out, err
 }
 
-// ListEach streams matching reviews one at a time — summaries are
-// unbounded, so wire-serving listings never accumulate them.
-func ListEach(tx *sql.Tx, issue, state, session string, fn func(Review) error) error {
-	query := `SELECT DISTINCT r.id FROM reviews r`
+// listQuery builds the shared review-selection predicate, so the full
+// listing and the light projection can never drift apart in what they
+// match — only in what they carry.
+func listQuery(selectClause, issue, state, session string) (string, []any) {
+	query := selectClause
 	args := []any{}
 	var where []string
 	if session != "" {
@@ -342,7 +343,44 @@ func ListEach(tx *sql.Tx, issue, state, session string, fn func(Review) error) e
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	query += ` ORDER BY r.id`
+	return query + ` ORDER BY r.id`, args
+}
+
+// Ref is the discovery-light view of a review: identity and the two
+// ids callers need to plan with. Summaries are unbounded and Get also
+// hydrates the whole submission history, so anything that merely
+// collects reviews must use EachRef instead (review 1906).
+type Ref struct {
+	ID     string
+	Issue  string
+	Author string
+}
+
+// EachRef streams matching review refs, selected by the same
+// predicates as ListEach but projecting only bounded columns.
+func EachRef(tx *sql.Tx, issue, state, session string, fn func(Ref) error) error {
+	query, args := listQuery(`SELECT DISTINCT r.id, r.issue, r.author FROM reviews r`, issue, state, session)
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("list review refs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var r Ref
+		if err := rows.Scan(&r.ID, &r.Issue, &r.Author); err != nil {
+			return fmt.Errorf("scan review ref: %w", err)
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// ListEach streams matching reviews one at a time — summaries are
+// unbounded, so wire-serving listings never accumulate them.
+func ListEach(tx *sql.Tx, issue, state, session string, fn func(Review) error) error {
+	query, args := listQuery(`SELECT DISTINCT r.id FROM reviews r`, issue, state, session)
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("list reviews: %w", err)

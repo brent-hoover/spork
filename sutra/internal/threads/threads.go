@@ -127,6 +127,35 @@ func SetAnchor(tx *sql.Tx, id string, anchor Anchor) (Thread, Anchor, error) {
 // approach SQLite's value bound, so listings never accumulate them:
 // memory stays at one thread regardless of catalog size.
 func SearchEach(tx *sql.Tx, q, session, project *string, fn func(Thread) error) error {
+	where, args := searchWhere(q, session, project)
+	return queryThreadsEach(tx, `
+		SELECT id, title, transcript, session, project, issue, imported_at
+		FROM threads WHERE `+where+` ORDER BY imported_at, id`, fn, args...)
+}
+
+// Ref is the discovery-light view of a thread: identity and anchors,
+// never the transcript. Callers that only collect ids — export
+// planning, search's first pass — must use it, because scanning the
+// transcript column materializes an unbounded value per row purely to
+// throw it away (review 1906).
+type Ref struct {
+	ID      string
+	Session *string
+	Project *string
+	Issue   *string
+}
+
+// SearchRefsEach is SearchEach's projection: the same rows, matched by
+// the same predicates (q still matches transcript text — in SQL, where
+// the bytes never cross into memory), carrying no content.
+func SearchRefsEach(tx *sql.Tx, q, session, project *string, fn func(Ref) error) error {
+	where, args := searchWhere(q, session, project)
+	return queryRefsEach(tx, `
+		SELECT id, session, project, issue
+		FROM threads WHERE `+where+` ORDER BY imported_at, id`, fn, args...)
+}
+
+func searchWhere(q, session, project *string) (string, []any) {
 	where := []string{"1=1"}
 	var args []any
 	if q != nil {
@@ -144,9 +173,7 @@ func SearchEach(tx *sql.Tx, q, session, project *string, fn func(Thread) error) 
 		where = append(where, "(project = ? OR issue IN (SELECT id FROM issues WHERE project = ?))")
 		args = append(args, *project, *project)
 	}
-	return queryThreadsEach(tx, `
-		SELECT id, title, transcript, session, project, issue, imported_at
-		FROM threads WHERE `+strings.Join(where, " AND ")+` ORDER BY imported_at, id`, fn, args...)
+	return strings.Join(where, " AND "), args
 }
 
 // ListByIssueEach streams the threads anchored to an issue — the
@@ -155,6 +182,31 @@ func ListByIssueEach(tx *sql.Tx, issueID string, fn func(Thread) error) error {
 	return queryThreadsEach(tx, `
 		SELECT id, title, transcript, session, project, issue, imported_at
 		FROM threads WHERE issue = ? ORDER BY imported_at, id`, fn, issueID)
+}
+
+// RefsByIssueEach is ListByIssueEach's projection.
+func RefsByIssueEach(tx *sql.Tx, issueID string, fn func(Ref) error) error {
+	return queryRefsEach(tx, `
+		SELECT id, session, project, issue
+		FROM threads WHERE issue = ? ORDER BY imported_at, id`, fn, issueID)
+}
+
+func queryRefsEach(tx *sql.Tx, query string, fn func(Ref) error, args ...any) error {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("query thread refs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var r Ref
+		if err := rows.Scan(&r.ID, &r.Session, &r.Project, &r.Issue); err != nil {
+			return fmt.Errorf("scan thread ref: %w", err)
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 func escapeLike(s string) string {

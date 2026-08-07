@@ -84,7 +84,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// content in scope when q is omitted.
 	if (project != nil || bare) && session == nil && q == nil {
 		for id := range issueSet {
-			err := review.ListEach(tx, id, "", "", func(rv review.Review) error {
+			err := review.EachRef(tx, id, "", "", func(rv review.Ref) error {
 				reviewIDs = append(reviewIDs, rv.ID)
 				return nil
 			})
@@ -100,7 +100,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// Session joins: reviews by any submission, plus their issues —
 	// both confined to the project scope when one is given.
 	if session != nil {
-		err := review.ListEach(tx, "", "", *session, func(rev review.Review) error {
+		err := review.EachRef(tx, "", "", *session, func(rev review.Ref) error {
 			iss, err := issues.Get(tx, rev.Issue)
 			if err != nil {
 				return err
@@ -134,7 +134,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// the wire later, never accumulating in memory.
 	threadIDs := []string{}
 	if q != nil || session != nil || project != nil || bare {
-		err := threads.SearchEach(tx, q, session, project, func(t threads.Thread) error {
+		err := threads.SearchRefsEach(tx, q, session, project, func(t threads.Ref) error {
 			threadIDs = append(threadIDs, t.ID)
 			if session != nil && t.Issue != nil {
 				iss, err := issues.Get(tx, *t.Issue)

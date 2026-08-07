@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -42,7 +44,7 @@ func TestScanDuplicateKeys(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			apiErr := scanDuplicateKeys(strings.NewReader(tc.body))
+			apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(tc.body))
 			switch {
 			case tc.dup != "":
 				if apiErr == nil {
@@ -88,7 +90,7 @@ func TestScanDuplicateKeysBoundsKeyMemory(t *testing.T) {
 		fmt.Fprintf(&siblings, `{%q:1}`, name(i))
 	}
 	siblings.WriteByte(']')
-	if apiErr := scanDuplicateKeys(strings.NewReader(siblings.String())); apiErr != nil {
+	if apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(siblings.String())); apiErr != nil {
 		t.Fatalf("sequential objects rejected: %q", apiErr.message)
 	}
 
@@ -102,7 +104,7 @@ func TestScanDuplicateKeysBoundsKeyMemory(t *testing.T) {
 		fmt.Fprintf(&fat, `%q:1`, name(i))
 	}
 	fat.WriteByte('}')
-	apiErr := scanDuplicateKeys(strings.NewReader(fat.String()))
+	apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(fat.String()))
 	if apiErr == nil {
 		t.Fatal("an object exceeding the key budget was accepted")
 	}
@@ -111,20 +113,68 @@ func TestScanDuplicateKeysBoundsKeyMemory(t *testing.T) {
 	}
 }
 
-// TestScanDuplicateKeysStreamsValues pins the memory property the scan
-// exists to preserve: a large value is walked, never retained. The
-// reader counts what it hands out so the test fails if the scan starts
-// buffering the whole body.
+// TestScanDuplicateKeysStreamsValues MEASURES the memory property the
+// scan exists to preserve, rather than asserting it: scanning a body
+// whose single string value is 64 MiB must allocate a bounded amount,
+// because values stream past unretained. A tokenizer that materialized
+// string values — the failure mode this guards — would allocate on the
+// order of the value itself and blow the ceiling by ~100x.
 func TestScanDuplicateKeysStreamsValues(t *testing.T) {
-	const huge = 8 << 20
+	const huge = 64 << 20
 	body := `{"a":"` + strings.Repeat("x", huge) + `","b":1}`
-	if apiErr := scanDuplicateKeys(strings.NewReader(body)); apiErr != nil {
+	reader := strings.NewReader(body)
+
+	// TotalAlloc is cumulative, so GC activity cannot mask a large
+	// transient allocation.
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	apiErr := scanDuplicateKeys(context.Background(), reader)
+	runtime.ReadMemStats(&after)
+	if apiErr != nil {
 		t.Fatalf("large value rejected: %q", apiErr.message)
 	}
+
+	const ceiling = 1 << 20 // the 64 KiB read buffer plus slack
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("scanning a %d-byte value allocated %d bytes; values are not streaming",
+			huge, allocated)
+	}
+
 	// The same body with a repeat still rejects, and names the key.
 	dup := `{"a":"` + strings.Repeat("x", huge) + `","a":1}`
-	apiErr := scanDuplicateKeys(strings.NewReader(dup))
+	apiErr = scanDuplicateKeys(context.Background(), strings.NewReader(dup))
 	if apiErr == nil || !strings.Contains(apiErr.message, `repeats property "a"`) {
 		t.Fatalf("duplicate past a large value not caught: %v", apiErr)
 	}
+}
+
+// TestScanDuplicateKeysHonoursCancellation pins that an abandoned scan
+// stops early. It runs while holding the single large-body admission
+// slot, so walking the rest of a gigabyte spool for a client that has
+// gone would block the next large mutation for no reason.
+func TestScanDuplicateKeysHonoursCancellation(t *testing.T) {
+	body := `{"a":"` + strings.Repeat("x", 8<<20) + `"}`
+	counter := &countingReader{r: strings.NewReader(body)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	apiErr := scanDuplicateKeys(ctx, counter)
+	if apiErr == nil {
+		t.Fatal("cancelled scan reported success")
+	}
+	if counter.n >= len(body) {
+		t.Fatalf("cancelled scan consumed the whole body (%d of %d bytes)", counter.n, len(body))
+	}
+}
+
+type countingReader struct {
+	r *strings.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
 }

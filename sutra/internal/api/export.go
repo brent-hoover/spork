@@ -150,7 +150,7 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 	// review records — each loads at write time, one at a time, exactly
 	// like every other content-bearing group (review 1902).
 	for _, id := range plan.issueIDs {
-		if err := review.ListEach(tx, id, "", "", func(r review.Review) error {
+		if err := review.EachRef(tx, id, "", "", func(r review.Ref) error {
 			identityIDs[r.Author] = true
 			plan.reviewIDs = append(plan.reviewIDs, r.ID)
 			return nil
@@ -190,18 +190,18 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 	// and one of its issues, and a twice-exported id would collide
 	// with itself at import.
 	seenThreads := map[string]bool{}
-	collect := func(t threads.Thread) error {
+	collect := func(t threads.Ref) error {
 		if !seenThreads[t.ID] {
 			seenThreads[t.ID] = true
 			plan.threadIDs = append(plan.threadIDs, t.ID)
 		}
 		return nil
 	}
-	if err := threads.SearchEach(tx, nil, nil, &projectID, collect); err != nil {
+	if err := threads.SearchRefsEach(tx, nil, nil, &projectID, collect); err != nil {
 		return plan, err
 	}
 	for _, id := range plan.issueIDs {
-		if err := threads.ListByIssueEach(tx, id, collect); err != nil {
+		if err := threads.RefsByIssueEach(tx, id, collect); err != nil {
 			return plan, err
 		}
 	}

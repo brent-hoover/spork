@@ -259,7 +259,13 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 	// (review 1902). Streaming scan: it costs one pass over the already
 	// captured body, not memory. Rejection settles the key like any
 	// other malformed body.
-	if apiErr := scanDuplicateKeys(r.Body); apiErr != nil {
+	if apiErr := scanDuplicateKeys(r.Context(), r.Body); apiErr != nil {
+		if r.Context().Err() != nil {
+			// The scan stopped because the client left, not because the
+			// body was bad: settle nothing, and release the admission
+			// slot on the way out so the next large mutation proceeds.
+			return
+		}
 		s.settleRejection(w, operation, key, apiErr)
 		return
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,12 +37,22 @@ const (
 	maxKeyMemory = 1 << 20
 )
 
+// cancelCheckBytes is how often the scan tests for a disconnect. A
+// gigabyte spool divides into ~16k checks — frequent enough that an
+// abandoned scan stops promptly, rare enough to cost nothing.
+const cancelCheckBytes = 64 << 10
+
 // scanDuplicateKeys walks one JSON value, rejecting an object that
 // repeats a property name at ANY depth. It reads the body once and
 // holds no values. An EMPTY body passes: whether a body is required is
 // the handler's business, not this scan's.
-func scanDuplicateKeys(body io.Reader) *apiError {
-	l := &jsonLexer{br: bufio.NewReaderSize(body, 64<<10)}
+//
+// The scan runs while holding the single large-body admission slot, so
+// it honours cancellation: a client that hangs up mid-scan must not
+// keep a gigabyte spool's worth of scanning — and the slot — from the
+// next large mutation (review 1906).
+func scanDuplicateKeys(ctx context.Context, body io.Reader) *apiError {
+	l := &jsonLexer{br: bufio.NewReaderSize(body, 64<<10), ctx: ctx}
 	if _, err := l.peek(); errors.Is(err, io.EOF) {
 		return nil
 	}
@@ -82,14 +93,29 @@ func (e *duplicateKeyError) Error() string { return "duplicate property " + e.ke
 // jsonLexer walks JSON structure byte by byte, keeping no values.
 type jsonLexer struct {
 	br       *bufio.Reader
+	ctx      context.Context
 	depth    int
 	keyBytes int // property-name bytes live across all open objects
+	read     int // bytes since the last cancellation check
+}
+
+// byteAt reads one byte, testing for a disconnect every
+// cancelCheckBytes so an abandoned scan stops instead of walking the
+// rest of the spool.
+func (l *jsonLexer) byteAt() (byte, error) {
+	if l.read++; l.read >= cancelCheckBytes {
+		l.read = 0
+		if l.ctx != nil && l.ctx.Err() != nil {
+			return 0, l.ctx.Err()
+		}
+	}
+	return l.br.ReadByte()
 }
 
 // next returns the next significant byte.
 func (l *jsonLexer) next() (byte, error) {
 	for {
-		c, err := l.br.ReadByte()
+		c, err := l.byteAt()
 		if err != nil {
 			return 0, err
 		}
@@ -235,7 +261,7 @@ func (l *jsonLexer) str(keep bool) (string, error) {
 	raw := []byte{'"'}
 	escaped := false
 	for {
-		c, err := l.br.ReadByte()
+		c, err := l.byteAt()
 		if err != nil {
 			return "", err
 		}
@@ -270,7 +296,7 @@ func (l *jsonLexer) str(keep bool) (string, error) {
 // next structural byte.
 func (l *jsonLexer) literal() error {
 	for {
-		c, err := l.br.ReadByte()
+		c, err := l.byteAt()
 		if err != nil {
 			if err == io.EOF {
 				return nil // a bare literal may end the payload
