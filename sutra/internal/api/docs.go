@@ -497,12 +497,29 @@ func (s *server) listTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	list, err := docs.ListTemplates(tx)
-	if err != nil {
-		writeError(w, docErrorFrom(err))
-		return
+	// Template contents are unbounded, so the catalog streams one row
+	// at a time instead of accumulating a slice and then marshaling a
+	// second copy of the whole thing (review 1916).
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{'['})
+	first := true
+	streamErr := docs.TemplatesEach(tx, func(t docs.Template) error {
+		raw, err := json.Marshal(t)
+		if err != nil {
+			return err
+		}
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	})
+	if streamErr != nil {
+		return // status committed; truncation is the only signal
 	}
-	writeJSON(w, http.StatusOK, list)
+	_, _ = w.Write([]byte{']'})
 }
 
 func (s *server) getTemplate(w http.ResponseWriter, r *http.Request) {

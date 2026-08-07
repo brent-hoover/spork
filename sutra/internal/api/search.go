@@ -129,29 +129,49 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Threads: native q/session/project composition. This first pass
-	// collects only ids and anchored issues — transcripts stream to
-	// the wire later, never accumulating in memory.
+	// Threads: native q/session/project composition. This pass collects
+	// only ids — transcripts stream to the wire later, never
+	// accumulating in memory.
 	threadIDs := []string{}
 	if q != nil || session != nil || project != nil || bare {
 		err := threads.SearchRefsEach(tx, q, session, project, func(t threads.Ref) error {
 			threadIDs = append(threadIDs, t.ID)
-			if session != nil && t.Issue != nil {
-				iss, err := issues.Get(tx, *t.Issue)
+			return nil
+		})
+		if err != nil {
+			writeError(w, issueErrorFrom(err))
+			return
+		}
+	}
+
+	// Issues reached through session threads are a SEPARATE question,
+	// so they get a separate enumeration. q narrows the ISSUE here, not
+	// the thread that led to it: a session thread whose linked issue
+	// matches the term must contribute that issue even when the thread's
+	// own title and transcript do not match, and filtering the threads
+	// by q first would drop it before the issue was ever examined
+	// (review 1916).
+	if session != nil {
+		err := threads.SearchRefsEach(tx, nil, session, project, func(t threads.Ref) error {
+			if t.Issue == nil {
+				return nil
+			}
+			iss, err := issues.Get(tx, *t.Issue)
+			if err != nil {
+				return err
+			}
+			if q != nil {
+				match, err := issueMatchesQ(tx, iss.ID, *q)
 				if err != nil {
 					return err
 				}
-				if q != nil {
-					match, err := issueMatchesQ(tx, iss.ID, *q)
-					if err != nil {
-						return err
-					}
-					if !match {
-						return nil
-					}
+				if !match {
+					// Filters intersect: a session issue failing the
+					// text term drops.
+					return nil
 				}
-				noteIssue(iss)
 			}
+			noteIssue(iss)
 			return nil
 		})
 		if err != nil {

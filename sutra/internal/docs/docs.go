@@ -558,22 +558,25 @@ func GetTemplate(tx *sql.Tx, id string) (Template, error) {
 	return t, nil
 }
 
-// ListTemplates returns every template ordered by name.
-func ListTemplates(tx *sql.Tx) ([]Template, error) {
+// TemplatesEach streams every template ordered by name, one row at a
+// time. Template content is unbounded like every other content field,
+// so the catalog is never accumulated (review 1916).
+func TemplatesEach(tx *sql.Tx, fn func(Template) error) error {
 	rows, err := tx.Query(`SELECT id, name, content FROM doc_templates ORDER BY name`)
 	if err != nil {
-		return nil, fmt.Errorf("list templates: %w", err)
+		return fmt.Errorf("list templates: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := []Template{}
 	for rows.Next() {
 		var t Template
 		if err := rows.Scan(&t.ID, &t.Name, &t.Content); err != nil {
-			return nil, fmt.Errorf("scan template: %w", err)
+			return fmt.Errorf("scan template: %w", err)
 		}
-		out = append(out, t)
+		if err := fn(t); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // UpdateTemplate renames and/or replaces content; a rename into an
