@@ -292,7 +292,10 @@ func (c *client) projectFromContext() (string, error) {
 }
 
 func (c *client) projectIDByKey(key string) (string, error) {
-	status, body, err := c.do(http.MethodGet, "/projects", nil)
+	// An EXPLICIT key resolves across archived projects too: archiving
+	// hides a project from listings and freezes writes, but its
+	// content stays readable (review 1885).
+	status, body, err := c.do(http.MethodGet, "/projects?includeArchived=true", nil)
 	if err != nil {
 		return "", err
 	}

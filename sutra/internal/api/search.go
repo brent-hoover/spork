@@ -260,14 +260,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		one, apiErr := threadJSON(t)
-		if apiErr != nil {
-			return
-		}
 		if i > 0 {
 			_, _ = w.Write([]byte{','})
 		}
-		_, _ = w.Write(one)
+		if apiErr := writeThreadJSON(w, t); apiErr != nil {
+			return
+		}
 	}
 	_, _ = w.Write([]byte(`]}`))
 }

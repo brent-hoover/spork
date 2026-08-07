@@ -432,11 +432,15 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		one, apiErr := threadJSON(t)
-		if apiErr != nil {
+		if !arr.first {
+			_, _ = w.Write([]byte{','})
+		}
+		arr.first = false
+		// Transcript bytes go straight to the wire — no aggregate
+		// buffer sized to them (review 1885).
+		if apiErr := writeThreadJSON(w, t); apiErr != nil {
 			return
 		}
-		arr.elem(one)
 	}
 	arr.close()
 	_, _ = w.Write([]byte{'}'})

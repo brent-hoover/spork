@@ -620,6 +620,24 @@ func validateImport(p *importPayload, actor string) *apiError {
 		if e.Subject != p.Project.ID && !issueSet[e.Subject] {
 			return malformedImport("event %s subject is outside the export", e.ID)
 		}
+		if e.Kind == "review.resubmitted" {
+			// The stale-verdict ordering check reads these payloads; a
+			// missing or altered review reference would silently
+			// exempt its review from that guard.
+			var payload struct {
+				Review string `json:"review"`
+			}
+			if json.Unmarshal(e.Payload, &payload) != nil || !isUUID(payload.Review) {
+				return malformedImport("resubmission event %s names no review", e.ID)
+			}
+			issue, ok := reviewIssueByID[payload.Review]
+			if !ok {
+				return malformedImport("resubmission event %s names a review outside the export", e.ID)
+			}
+			if e.Subject != issue {
+				return malformedImport("resubmission event %s subject is not its review's issue", e.ID)
+			}
+		}
 		if e.Kind == "review.approved" || e.Kind == "review.changes-requested" {
 			// EVERY verdict event is human-authored against a carried
 			// review's issue — not only the latest one; imported audit

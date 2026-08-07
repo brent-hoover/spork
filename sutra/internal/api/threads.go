@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"sutra/internal/events"
@@ -117,12 +118,11 @@ func (s *server) getThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, threadErrorFrom(err))
 		return
 	}
-	body, apiErr := threadJSON(thread)
-	if apiErr != nil {
-		writeError(w, apiErr)
-		return
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if apiErr := writeThreadJSON(w, thread); apiErr != nil {
+		return // status committed; truncation is the only signal
 	}
-	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *server) searchThreads(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +234,7 @@ func (s *server) guardCurrentAnchor(tx *sql.Tx, t threads.Thread) *apiError {
 // spliced in UNTOUCHED — passing them through json.Marshal (even as a
 // RawMessage or via MarshalJSON) would compact insignificant
 // whitespace and break AC-thread-import's verbatim guarantee.
-func threadJSON(t threads.Thread) (json.RawMessage, *apiError) {
+func threadMetaJSON(t threads.Thread) ([]byte, *apiError) {
 	shadow := struct {
 		ID         string  `json:"id"`
 		Title      string  `json:"title"`
@@ -247,12 +247,48 @@ func threadJSON(t threads.Thread) (json.RawMessage, *apiError) {
 	if err != nil {
 		return nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("encode thread: %v", err)}
 	}
+	return raw, nil
+}
+
+// threadJSON builds one thread response as bytes. Only the MUTATION
+// responses need this: the idempotency store records the response
+// verbatim by contract (CON-idempotent-mutations), so those bytes must
+// exist. Every read path streams via writeThreadJSON instead.
+func threadJSON(t threads.Thread) (json.RawMessage, *apiError) {
+	raw, apiErr := threadMetaJSON(t)
+	if apiErr != nil {
+		return nil, apiErr
+	}
 	buf := make([]byte, 0, len(raw)+len(t.Transcript)+16)
 	buf = append(buf, raw[:len(raw)-1]...)
 	buf = append(buf, `,"transcript":`...)
 	buf = append(buf, t.Transcript...)
 	buf = append(buf, '}')
 	return buf, nil
+}
+
+// writeThreadJSON streams one thread response: bounded metadata, then
+// the stored transcript bytes written DIRECTLY to the wire. No
+// aggregate buffer sized to the transcript is ever allocated — the
+// scan's own copy is the single materialization (review 1885).
+func writeThreadJSON(w io.Writer, t threads.Thread) *apiError {
+	raw, apiErr := threadMetaJSON(t)
+	if apiErr != nil {
+		return apiErr
+	}
+	if _, err := w.Write(raw[:len(raw)-1]); err != nil {
+		return errorFrom(err)
+	}
+	if _, err := w.Write([]byte(`,"transcript":`)); err != nil {
+		return errorFrom(err)
+	}
+	if _, err := w.Write(t.Transcript); err != nil {
+		return errorFrom(err)
+	}
+	if _, err := w.Write([]byte{'}'}); err != nil {
+		return errorFrom(err)
+	}
+	return nil
 }
 
 // streamThreadArray writes a JSON array of verbatim thread responses
@@ -266,16 +302,14 @@ func streamThreadArray(w http.ResponseWriter, each func(fn func(threads.Thread) 
 	_, _ = w.Write([]byte{'['})
 	first := true
 	err := each(func(t threads.Thread) error {
-		one, apiErr := threadJSON(t)
-		if apiErr != nil {
-			return fmt.Errorf("%s", apiErr.message)
-		}
 		if !first {
 			_, _ = w.Write([]byte{','})
 		}
 		first = false
-		_, writeErr := w.Write(one)
-		return writeErr
+		if apiErr := writeThreadJSON(w, t); apiErr != nil {
+			return fmt.Errorf("%s", apiErr.message)
+		}
+		return nil
 	})
 	if err != nil {
 		// Mid-stream failure: the array is already partially written;
