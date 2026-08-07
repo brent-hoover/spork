@@ -1058,6 +1058,40 @@ func (s *server) checkImportCollisions(tx *sql.Tx, p *importPayload) *apiError {
 		return &apiError{status: http.StatusConflict, code: "uuid-collision",
 			message: fmt.Sprintf("%d record ids already exist on this server", len(conflictSet)), conflicts: sortedKeys(conflictSet)}
 	}
+	// Non-UUID uniqueness preflights too: a same-key project, same-
+	// handle identity, or same-name label already on this server would
+	// otherwise fail mid-insert as a constraint 500 instead of the
+	// contract's unique-violation naming the holder.
+	unique := map[string]bool{}
+	probeUnique := func(query string, value string) *apiError {
+		var existing string
+		err := tx.QueryRow(query, value).Scan(&existing)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return errorFrom(err)
+		}
+		unique[existing] = true
+		return nil
+	}
+	if apiErr := probeUnique(`SELECT id FROM projects WHERE key = ?`, p.Project.Key); apiErr != nil {
+		return apiErr
+	}
+	for _, i := range p.Identities {
+		if apiErr := probeUnique(`SELECT id FROM identities WHERE handle = ?`, i.Handle); apiErr != nil {
+			return apiErr
+		}
+	}
+	for _, l := range p.Labels {
+		if apiErr := probeUnique(`SELECT id FROM labels WHERE name = ?`, l.Name); apiErr != nil {
+			return apiErr
+		}
+	}
+	if len(unique) > 0 {
+		return &apiError{status: http.StatusConflict, code: "unique-violation",
+			message: fmt.Sprintf("%d unique keys already held by existing records", len(unique)), conflicts: sortedKeys(unique)}
+	}
 	return nil
 }
 
