@@ -91,7 +91,8 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 				// fence.
 				var v struct {
 					issues.Issue
-					SubtreeRevision *int64 `json:"subtree_revision"`
+					SubtreeRevision *int64          `json:"subtree_revision"`
+					Labels          json.RawMessage `json:"labels"`
 				}
 				if err := dec.Decode(&v); err != nil {
 					return err
@@ -100,6 +101,17 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 					return fmt.Errorf("issue %s omits subtree_revision", v.ID)
 				}
 				v.Issue.SubtreeRevision = *v.SubtreeRevision
+				if string(v.Labels) == "null" {
+					// The closed Issue schema permits only an array
+					// when labels is present; a null would vanish on
+					// re-export.
+					return fmt.Errorf("issue %s labels must not be null", v.ID)
+				}
+				if len(v.Labels) > 0 {
+					if err := json.Unmarshal(v.Labels, &v.Issue.Labels); err != nil {
+						return err
+					}
+				}
 				return cb.issue(v.Issue)
 			})
 		case "comments":

@@ -660,6 +660,9 @@ func validateImportShapes(p *importPayload) *apiError {
 	if p.Project.Key == "" || p.Project.Name == "" {
 		return malformedImport("project key and name are required")
 	}
+	if p.Project.Key == "." || p.Project.Key == ".." {
+		return malformedImport("project key must not be a dot segment")
+	}
 	if p.Project.ArchivedAt != nil {
 		if apiErr := timeOf("project archived_at", *p.Project.ArchivedAt); apiErr != nil {
 			return apiErr

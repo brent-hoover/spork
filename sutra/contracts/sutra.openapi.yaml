@@ -2052,7 +2052,12 @@ components:
       type: object
       required: [key, name, actor]
       properties:
-        key: { type: string }
+        key:
+          type: string
+          description: >-
+            Any string except the dot segments "." and ".." — those make
+            the declared /p/:key web routes unreachable under URL
+            canonicalization, so creation rejects them.
         name: { type: string }
         description: { type: string }
         repo_path: { type: string }

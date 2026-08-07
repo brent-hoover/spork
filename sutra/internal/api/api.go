@@ -225,6 +225,11 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		if apiErr := rejectExplicitNulls(r, &req, "key", "name", "description", "repo_path", "default_branch", "actor"); apiErr != nil {
 			return 0, nil, apiErr
 		}
+		if req.Key == "." || req.Key == ".." {
+			// Dot-segment keys make the declared /p/:key web routes
+			// unreachable — URL canonicalization swallows them.
+			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key must not be a dot segment"}
+		}
 		if req.Key == "" || req.Name == "" {
 			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key and name are required"}
 		}

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"iter"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -405,13 +406,41 @@ type docView struct {
 	} `json:"version"`
 }
 
+// eachComment walks one comments listing element by element, yielding
+// each as decoded; returns false if the consumer stopped early.
+func (s *Server) eachComment(path string, yield func(commentView) bool) bool {
+	resp, err := s.client.Get(s.api + path)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return true
+	}
+	dec := json.NewDecoder(resp.Body)
+	if _, err := dec.Token(); err != nil { // '['
+		return true
+	}
+	for dec.More() {
+		var c commentView
+		if err := dec.Decode(&c); err != nil {
+			return true
+		}
+		if !yield(c) {
+			return false
+		}
+	}
+	return true
+}
+
 type commentView struct {
-	ID         string  `json:"id"`
-	DocVersion *string `json:"doc_version"`
-	Parent     *string `json:"parent"`
-	Anchor     *string `json:"anchor"`
-	Author     string  `json:"author"`
-	Body       string  `json:"body"`
+	ID             string  `json:"id"`
+	DocVersion     *string `json:"doc_version"`
+	Parent         *string `json:"parent"`
+	Anchor         *string `json:"anchor"`
+	Author         string  `json:"author"`
+	Body           string  `json:"body"`
+	ReviewRevision int64   `json:"review_revision"`
 }
 
 var docTmpl = template.Must(template.New("doc").Parse(`<!doctype html>
@@ -482,20 +511,21 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 		htmlError(w, err)
 		return
 	}
-	all := []docComment{}
-	for _, v := range versions {
-		var list []commentView
-		if err := s.get("/comments?doc_version="+url.QueryEscape(v.ID), &list); err != nil {
-			htmlError(w, err)
-			return
-		}
-		for _, c := range list {
-			all = append(all, docComment{commentView: c, VersionNumber: v.Number, DocVersionID: v.ID})
+	// The discussion STREAMS into the template — the sequence decodes
+	// each comment lazily during execution, so an unbounded discussion
+	// never accumulates before rendering.
+	comments := func(yield func(docComment) bool) {
+		for _, v := range versions {
+			if !s.eachComment("/comments?doc_version="+url.QueryEscape(v.ID), func(c commentView) bool {
+				return yield(docComment{commentView: c, VersionNumber: v.Number, DocVersionID: v.ID})
+			}) {
+				return
+			}
 		}
 	}
 	_ = docTmpl.Execute(w, map[string]any{
 		"Doc": doc, "Rendered": renderMarkdown(doc.Version.Content),
-		"Comments": all, "Versions": versions,
+		"Comments": iter.Seq[docComment](comments), "Versions": versions,
 		// A reader who CHOSE a historical version stays on it; only
 		// the latest view auto-refreshes to newer versions.
 		"Live": r.URL.Query().Get("version") == "",
@@ -656,19 +686,14 @@ func (s *Server) renderReview(w http.ResponseWriter, id, errMsg string) {
 		htmlError(w, err)
 		return
 	}
-	var comments []struct {
-		ID             string  `json:"id"`
-		Parent         *string `json:"parent"`
-		Author         string  `json:"author"`
-		Body           string  `json:"body"`
-		ReviewRevision int64   `json:"review_revision"`
-	}
-	if err := s.get("/comments?review="+url.QueryEscape(id), &comments); err != nil {
-		htmlError(w, err)
-		return
+	// The discussion streams into the template — unbounded bodies
+	// never accumulate before rendering.
+	comments := func(yield func(commentView) bool) {
+		s.eachComment("/comments?review="+url.QueryEscape(id), yield)
 	}
 	_ = reviewTmpl.Execute(w, map[string]any{
-		"Review": rev, "Deliverable": deliverable.Content, "Comments": comments, "Error": errMsg,
+		"Review": rev, "Deliverable": deliverable.Content,
+		"Comments": iter.Seq[commentView](comments), "Error": errMsg,
 	})
 }
 
