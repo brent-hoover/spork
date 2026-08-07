@@ -370,11 +370,23 @@ func (s *Server) renderBoard(w http.ResponseWriter, key, errMsg string) {
 		htmlError(w, err)
 		return
 	}
-	var page struct {
-		Issues []issueView `json:"issues"`
-	}
-	if err := s.get("/projects/"+p.ID+"/issues", &page); err != nil {
-		htmlError(w, err)
+	// Cards never show bodies, and bodies are unbounded: the listing
+	// streams element by element so only card metadata survives —
+	// decoding the whole envelope would buffer every body (1883).
+	cards := []issueView{}
+	listFailed := false
+	s.eachEnvelopeArray("/projects/"+p.ID+"/issues", "issues", func(dec *json.Decoder) bool {
+		var card issueView
+		if err := dec.Decode(&card); err != nil {
+			listFailed = true
+			return false
+		}
+		card.Body = nil // never rendered on a card; released immediately
+		cards = append(cards, card)
+		return true
+	}, func() bool { listFailed = true; return false })
+	if listFailed {
+		htmlError(w, fmt.Errorf("issue listing unavailable"))
 		return
 	}
 	var docsList []struct {
@@ -393,7 +405,7 @@ func (s *Server) renderBoard(w http.ResponseWriter, key, errMsg string) {
 	data := boardData{Key: key, Statuses: statusColumns, Error: errMsg, Documents: docsList, Threads: threadRefs}
 	for _, status := range statusColumns {
 		col := boardColumn{Status: status}
-		for _, i := range page.Issues {
+		for _, i := range cards {
 			if i.Status == status {
 				col.Cards = append(col.Cards, i)
 			}
@@ -658,6 +670,68 @@ func (s *Server) eachArray(path string, decodeOne func(*json.Decoder) bool, onFa
 	}
 }
 
+// eachEnvelopeArray streams the named array member of an object
+// response — the listing envelopes ({feed_watermark, issues}) — with
+// the same strict delimiters and failure semantics as eachArray.
+func (s *Server) eachEnvelopeArray(path, member string, decodeOne func(*json.Decoder) bool, onFailure func() bool) {
+	resp, err := s.client.Get(s.api + path)
+	if err != nil {
+		onFailure()
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		onFailure()
+		return
+	}
+	dec := json.NewDecoder(resp.Body)
+	envelope, err := dec.Token()
+	if err != nil {
+		onFailure()
+		return
+	}
+	if d, ok := envelope.(json.Delim); !ok || d != '{' {
+		onFailure()
+		return
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			onFailure()
+			return
+		}
+		if keyTok != member {
+			// Sibling members are bounded scalars (watermarks,
+			// cursors); skipping them costs nothing.
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				onFailure()
+				return
+			}
+			continue
+		}
+		arrayOpen, err := dec.Token()
+		if err != nil {
+			onFailure()
+			return
+		}
+		if d, ok := arrayOpen.(json.Delim); !ok || d != '[' {
+			onFailure()
+			return
+		}
+		for dec.More() {
+			if !decodeOne(dec) {
+				return
+			}
+		}
+		if _, err := dec.Token(); err != nil { // ']'
+			onFailure()
+		}
+		return
+	}
+	onFailure() // the member never appeared
+}
+
 // eachThreadRef streams a thread listing's id/title pairs.
 func (s *Server) eachThreadRef(path string, yield func(threadRef) bool) {
 	s.eachArray(path, func(dec *json.Decoder) bool {
@@ -867,14 +941,22 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 		Number int64  `json:"number"`
 	}
 	versions := []versionRef{}
+	versionsFailed := false
 	s.eachArray("/documents/"+id+"/versions", func(dec *json.Decoder) bool {
 		var v versionRef
 		if err := dec.Decode(&v); err != nil {
+			versionsFailed = true
 			return false
 		}
 		versions = append(versions, v)
 		return true
-	}, func() bool { return false })
+	}, func() bool { versionsFailed = true; return false })
+	if versionsFailed {
+		// A partial selector hides versions AND their discussion; the
+		// failure must be visible, never a seemingly whole page.
+		htmlError(w, fmt.Errorf("version history unavailable"))
+		return
+	}
 	// The discussion STREAMS into the template — the sequence decodes
 	// each comment lazily during execution, so an unbounded discussion
 	// never accumulates before rendering.
