@@ -438,7 +438,9 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		if arr.failed() {
 			return // the client stopped reading; abandon the scan
 		}
-		rv, err := review.Get(tx, reviewID)
+		// Metadata only: the submissions stream row by row just below,
+		// so Get's accumulated history would be held twice (1908).
+		rv, err := review.GetMeta(tx, reviewID)
 		if err != nil {
 			return // status committed; truncation is the only signal
 		}

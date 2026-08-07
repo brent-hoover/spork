@@ -295,6 +295,24 @@ func Get(tx *sql.Tx, id string) (Review, error) {
 	return r, nil
 }
 
+// GetMeta is Get without the submission history. Callers that stream
+// submissions separately (export) must use it: Get accumulates one
+// Submission per revision, so loading a review and then streaming the
+// same submissions holds that history twice (review 1908).
+func GetMeta(tx *sql.Tx, id string) (Review, error) {
+	r, err := scanReview(tx.QueryRow(`
+		SELECT id, issue, author, state, revision, session, summary, branch, commit_sha, doc_version,
+		       latest_verdict_event, consumed, consumed_revision, close_used, created
+		FROM reviews WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return Review{}, &NotFoundError{ID: id}
+	}
+	if err != nil {
+		return Review{}, fmt.Errorf("get review meta %s: %w", id, err)
+	}
+	return r, nil
+}
+
 type rowScanner interface{ Scan(...any) error }
 
 func scanReview(row rowScanner) (Review, error) {

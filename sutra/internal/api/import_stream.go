@@ -108,8 +108,18 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 					return fmt.Errorf("issue %s labels must not be null", v.ID)
 				}
 				if len(v.Labels) > 0 {
-					if err := json.Unmarshal(v.Labels, &v.Issue.Labels); err != nil {
-						return err
+					// Strict, like every other decode in this walker:
+					// json.Unmarshal ignores unknown fields, so an extra
+					// property inside a label would be accepted against
+					// the closed Label schema and then vanish on
+					// re-export (review 1908).
+					strict := json.NewDecoder(bytes.NewReader(v.Labels))
+					strict.DisallowUnknownFields()
+					if err := strict.Decode(&v.Issue.Labels); err != nil {
+						return fmt.Errorf("issue %s labels: %w", v.ID, err)
+					}
+					if strict.More() {
+						return fmt.Errorf("issue %s labels carry trailing data", v.ID)
 					}
 				}
 				return cb.issue(v.Issue)
