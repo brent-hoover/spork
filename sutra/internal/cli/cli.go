@@ -324,14 +324,18 @@ func (c *client) issue(args []string) error {
 		if err != nil {
 			return err
 		}
-		status, body, err := c.do(http.MethodGet, "/projects/"+projectID+"/issues", nil)
+		// The listing is unbounded; its body flows straight into the
+		// element walk — never buffered whole.
+		resp, err := http.DefaultClient.Get(c.base + "/projects/" + projectID + "/issues")
 		if err != nil {
 			return err
 		}
-		if status != http.StatusOK {
-			return fmt.Errorf("list issues: %d %s", status, body)
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			return fmt.Errorf("list issues: %d %s", resp.StatusCode, msg)
 		}
-		return c.emitIssueList(body)
+		return c.emitIssueList(resp.Body)
 	case "show":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: sutra issue show <KEY-N>")
@@ -448,8 +452,8 @@ func (c *client) generic(args []string) error {
 // emitIssueList walks the listing's issues array element by element —
 // issue bodies are unbounded, so the list never re-materializes as one
 // value.
-func (c *client) emitIssueList(body []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(body))
+func (c *client) emitIssueList(body io.Reader) error {
+	dec := json.NewDecoder(body)
 	elements := []json.RawMessage{}
 	if _, err := dec.Token(); err != nil { // '{'
 		return err

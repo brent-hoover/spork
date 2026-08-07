@@ -341,7 +341,24 @@ func validateImport(p *importPayload, actor string) *apiError {
 		return &apiError{status: http.StatusBadRequest, code: "bad-request",
 			message: "actor must reference an identity contained in the export's identities"}
 	}
+	// Storage uniqueness invariants reject as malformed BEFORE any
+	// insert — a constraint violation mid-write would surface as a 500.
+	handles := map[string]bool{}
+	for _, i := range p.Identities {
+		if handles[i.Handle] {
+			return malformedImport("identities repeat handle %q", i.Handle)
+		}
+		handles[i.Handle] = true
+	}
+	labelNames := map[string]bool{}
+	for _, l := range p.Labels {
+		if labelNames[l.Name] {
+			return malformedImport("labels repeat name %q", l.Name)
+		}
+		labelNames[l.Name] = true
+	}
 	issueSet := map[string]bool{}
+	numbers := map[int64]bool{}
 	for _, i := range p.Issues {
 		if i.Project != p.Project.ID {
 			return malformedImport("issue %s belongs to another project", i.ID)
@@ -349,6 +366,10 @@ func validateImport(p *importPayload, actor string) *apiError {
 		if i.Assignee != nil && !identitySet[*i.Assignee] {
 			return malformedImport("issue %s assignee is not in identities", i.ID)
 		}
+		if numbers[i.Number] {
+			return malformedImport("issues repeat display number %d", i.Number)
+		}
+		numbers[i.Number] = true
 		issueSet[i.ID] = true
 	}
 	labelSet := map[string]bool{}
@@ -356,10 +377,15 @@ func validateImport(p *importPayload, actor string) *apiError {
 		labelSet[l.ID] = true
 	}
 	for _, i := range p.Issues {
+		attached := map[string]bool{}
 		for _, l := range i.Labels {
 			if !labelSet[l.ID] {
 				return malformedImport("issue %s carries label %s absent from labels", i.ID, l.ID)
 			}
+			if attached[l.ID] {
+				return malformedImport("issue %s repeats label %s", i.ID, l.ID)
+			}
+			attached[l.ID] = true
 		}
 	}
 	children := map[string][]string{}
