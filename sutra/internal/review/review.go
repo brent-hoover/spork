@@ -20,6 +20,13 @@ import (
 	"unicode/utf8"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Review mirrors the contract's Review schema; optional fields are
 // omitted when absent, never null.
 type Review struct {
@@ -210,7 +217,7 @@ func gitOutTimeout(dir string, timeout time.Duration, args ...string) (string, e
 // submission. baseCommit comes from ResolveCode for code deliverables
 // and is empty for doc deliverables.
 func Create(tx *sql.Tx, issue, author string, d Deliverable, summary *string, baseCommit string, content *string) (Review, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(tsLayout)
 	r := Review{
 		ID: newUUIDv7(), Issue: issue, Author: author, State: StateOpen,
 		Revision: 1, Branch: d.Branch, Commit: d.Commit, DocVersion: d.DocVersion,
@@ -417,7 +424,7 @@ func Consume(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent
 		return Review{}, &ConflictError{Code: "expected-verdict-event-mismatch",
 			Message: fmt.Sprintf("review %s verdict event moved", id)}
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(tsLayout)
 	res, err := tx.Exec(`
 		UPDATE reviews SET consumed = ?, consumed_revision = revision
 		WHERE id = ? AND consumed IS NULL AND state = 'approved' AND revision = ?`,
@@ -452,7 +459,7 @@ func Resubmit(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEven
 		return Review{}, &ConflictError{Code: "expected-verdict-event-mismatch",
 			Message: fmt.Sprintf("review %s verdict event moved; rework must answer the latest feedback", id)}
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(tsLayout)
 	next := r.Revision + 1
 	if _, err := tx.Exec(`
 		UPDATE reviews SET state = 'open', revision = ?, branch = ?, commit_sha = ?, doc_version = ?, session = ?,
@@ -507,7 +514,7 @@ func SpendForClose(tx *sql.Tx, id, issue string, revision int64, verdictEvent st
 		return Review{}, &ConflictError{Code: "review-consumed",
 			Message: fmt.Sprintf("review %s was consumed at revision %d, not current", id, *r.ConsumedRevision)}
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(tsLayout)
 	res, err := tx.Exec(`
 		UPDATE reviews SET close_used = ?,
 			consumed = COALESCE(consumed, ?),

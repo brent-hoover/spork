@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,28 @@ var testBodyLimit int64
 const largeBodyThreshold = 4 << 20
 
 var largeBodySlot = make(chan struct{}, 1)
+
+// admitLargeBody takes the single large-body slot, honouring
+// cancellation both while queued and at the instant of acquisition.
+// When the wait and the release become ready together Go picks a case
+// at random, so winning the slot does not prove the client is still
+// here — the recheck decides that, and hands the slot straight to the
+// next waiter rather than reading a body nobody will receive (1898).
+// A false return means the caller must abandon the request: there is
+// nobody left to send a status to, so releasing the goroutine IS the
+// handling, and nothing settles under the key.
+func admitLargeBody(ctx context.Context) (release func(), admitted bool) {
+	select {
+	case largeBodySlot <- struct{}{}:
+		if ctx.Err() != nil {
+			<-largeBodySlot
+			return nil, false
+		}
+		return func() { <-largeBodySlot }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
 
 // capturedBody is a rewindable request body: RAM below
 // largeBodyThreshold, an unlinked spool file above it (or when length
@@ -204,14 +227,11 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 		// immediately instead of queueing behind every earlier large
 		// request (review 1897). The abandoned attempt settles nothing,
 		// so the key stays fresh for a retry.
-		select {
-		case largeBodySlot <- struct{}{}:
-			defer func() { <-largeBodySlot }()
-		case <-r.Context().Done():
-			// The client is already gone, so there is nobody to send a
-			// status to; releasing the goroutine IS the handling.
+		release, admitted := admitLargeBody(r.Context())
+		if !admitted {
 			return
 		}
+		defer release()
 	}
 	body, err := captureBody(w, r, bodyLimit(operation))
 	if err != nil {

@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Thread mirrors the contract's Thread schema. Transcript is raw JSON
 // carried untouched from import to serving, so the stored content
 // matches the imported file byte-for-byte.
@@ -68,7 +75,7 @@ func Create(tx *sql.Tx, title string, transcript json.RawMessage, session *strin
 		Session:    session,
 		Project:    anchor.Project,
 		Issue:      anchor.Issue,
-		ImportedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		ImportedAt: time.Now().UTC().Format(tsLayout),
 	}
 	_, err := tx.Exec(`
 		INSERT INTO threads (id, title, transcript, session, project, issue, imported_at)

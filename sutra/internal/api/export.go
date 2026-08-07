@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -208,26 +209,21 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 	}
 
 	// Event actors, collected without materializing event rows; the
-	// rows themselves stream in feed order at write time.
-	arows, err := tx.Query(`SELECT DISTINCT actor FROM events`)
+	// rows themselves stream in feed order at write time. The project
+	// predicate lives in the query, so only in-scope events are read —
+	// no global actor scan, no per-actor probe (review 1898).
+	arows, err := tx.Query(`SELECT DISTINCT actor FROM events
+		WHERE subject = ?1 OR subject IN (SELECT id FROM issues WHERE project = ?1)`, projectID)
 	if err != nil {
 		return plan, err
 	}
 	for arows.Next() {
-		var actor, probe string
+		var actor string
 		if err := arows.Scan(&actor); err != nil {
 			_ = arows.Close()
 			return plan, err
 		}
-		// Only actors of in-scope events join the export's identities.
-		err := tx.QueryRow(`SELECT id FROM events WHERE actor = ? AND (subject = ? OR subject IN (SELECT id FROM issues WHERE project = ?)) LIMIT 1`,
-			actor, projectID, projectID).Scan(&probe)
-		if err == nil {
-			identityIDs[actor] = true
-		} else if err != sql.ErrNoRows {
-			_ = arows.Close()
-			return plan, err
-		}
+		identityIDs[actor] = true
 	}
 	if err := arows.Err(); err != nil {
 		_ = arows.Close()
@@ -372,7 +368,7 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	// Events stream in feed order; the project's subjects are selected
 	// in SQL, so one ordered pass serves any number of them.
 	arr.open("events")
-	if err := streamProjectEvents(tx, plan.meta.Project.ID, arr); err != nil {
+	if err := streamProjectEvents(r.Context(), tx, plan.meta.Project.ID, arr); err != nil {
 		return
 	}
 	arr.close()
@@ -484,11 +480,14 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 // emitting events whose subject is the project or one of its issues.
 // The scope is a SQL predicate, not a Go-side skip: the global event
 // table is never scanned for rows this export cannot emit (review 1897).
-func streamProjectEvents(tx *sql.Tx, projectID string, arr *jsonArrayWriter) error {
+// The request context carries into the query itself: the between-rows
+// failure checks only observe write errors, so a disconnect during
+// SQLite's own scan or sort needs the driver to abandon it (review 1898).
+func streamProjectEvents(ctx context.Context, tx *sql.Tx, projectID string, arr *jsonArrayWriter) error {
 	if arr.failed() {
 		return fmt.Errorf("client stopped reading")
 	}
-	rows, err := tx.Query(`SELECT id, kind, subject, operation, actor, payload, created FROM events
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, subject, operation, actor, payload, created FROM events
 		WHERE subject = ?1 OR subject IN (SELECT id FROM issues WHERE project = ?1)
 		ORDER BY seq`, projectID)
 	if err != nil {

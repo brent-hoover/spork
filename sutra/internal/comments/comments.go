@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Comment mirrors the contract's Comment schema.
 type Comment struct {
 	ID             string  `json:"id"`
@@ -97,7 +104,7 @@ func Create(tx *sql.Tx, n New) (Comment, error) {
 		ID: newUUIDv7(), Issue: n.Issue, DocVersion: n.DocVersion, Review: n.Review,
 		ReviewRevision: n.ReviewRevision, Parent: n.Parent, Anchor: n.Anchor,
 		Author: n.Author, Body: n.Body,
-		Created: time.Now().UTC().Format(time.RFC3339Nano),
+		Created: time.Now().UTC().Format(tsLayout),
 	}
 	_, err := tx.Exec(`
 		INSERT INTO comments (id, issue, doc_version, review, review_revision, parent, anchor, author, body, created)

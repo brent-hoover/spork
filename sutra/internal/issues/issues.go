@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Issue mirrors the contract's Issue schema. Body is declared LAST so
 // it serializes last: metadata scans (the UI's ownership guards) stop
 // before an unbounded body instead of materializing it to skip it
@@ -137,7 +144,7 @@ func Create(tx *sql.Tx, project, title string, body, assignee *string) (Issue, e
 	if err != nil {
 		return Issue{}, fmt.Errorf("mint number for %s: %w", project, err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(tsLayout)
 	issue := Issue{
 		ID: newUUIDv7(), Number: number, Title: title, Body: body,
 		Status: StatusOpen, Project: project, Assignee: assignee,
@@ -345,7 +352,7 @@ func Update(tx *sql.Tx, id string, title, body *string) (Issue, error) {
 	if _, err := Get(tx, id); err != nil {
 		return Issue{}, err
 	}
-	sets, args := []string{"updated = ?"}, []any{time.Now().UTC().Format(time.RFC3339Nano)}
+	sets, args := []string{"updated = ?"}, []any{time.Now().UTC().Format(tsLayout)}
 	if title != nil {
 		sets = append(sets, "title = ?")
 		args = append(args, *title)
@@ -548,7 +555,7 @@ func BumpSubtree(tx *sql.Tx, ids []string) error {
 // the API transition, which owns ordering and events.
 func SetStatus(tx *sql.Tx, id, status string) error {
 	res, err := tx.Exec(`UPDATE issues SET status = ?, updated = ? WHERE id = ?`,
-		status, time.Now().UTC().Format(time.RFC3339Nano), id)
+		status, time.Now().UTC().Format(tsLayout), id)
 	if err != nil {
 		return fmt.Errorf("set status of %s: %w", id, err)
 	}
@@ -565,7 +572,7 @@ func Assign(tx *sql.Tx, id string, assignee *string) (Issue, error) {
 	if _, err := Get(tx, id); err != nil {
 		return Issue{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(tsLayout)
 	var assignedAt *string
 	if assignee != nil {
 		assignedAt = &now

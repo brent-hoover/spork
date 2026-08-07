@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Document mirrors the contract's Document schema.
 type Document struct {
 	ID             string  `json:"id"`
@@ -218,7 +225,7 @@ func SaveVersion(tx *sql.Tx, documentID, content, author string) (Version, error
 	v := Version{
 		ID: newUUIDv7(), Document: documentID, Number: next,
 		Content: content, Author: author,
-		Created: time.Now().UTC().Format(time.RFC3339Nano),
+		Created: time.Now().UTC().Format(tsLayout),
 	}
 	if _, err := tx.Exec(`INSERT INTO doc_versions (id, document, number, content, author, created) VALUES (?, ?, ?, ?, ?, ?)`,
 		v.ID, v.Document, v.Number, v.Content, v.Author, v.Created); err != nil {

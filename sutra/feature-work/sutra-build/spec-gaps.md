@@ -134,9 +134,11 @@ spec decision on measurement architecture and attainable bars.
 
 listDocVersions returns full DocVersion records (content required by the
 schema), but the web UI's version selector needs only ids and numbers.
-The client skips the content safely (encoding/json discards unknown
-fields without allocating them), so client memory is bounded — but the
-server still loads and ships every version's content over the wire for
-data the page discards. A metadata-only listing variant would need a
+The client cannot skip the content by decoding into a lighter struct —
+json.Decoder.Decode buffers the whole top-level value first — so the UI
+token-scans the response and stops at the content key, and the wire
+order puts content last to make that possible. Client memory is bounded
+by that scan, but the server still loads and ships every version's
+content for data the page discards. A metadata-only listing variant would need a
 contract addition (a new operation or a response-shape parameter).
 Surfaced by roborev review 1873.

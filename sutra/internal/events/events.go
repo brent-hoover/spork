@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Event is one feed entry, shaped as the contract's EventBase.
 type Event struct {
 	ID        string          `json:"id"`
@@ -48,6 +55,10 @@ func Migrate(db *sql.DB) error {
 			payload   TEXT,
 			created   TEXT NOT NULL
 		);
+		-- Subject-scoped reads (audit, project export) walk one subject's
+		-- slice of the feed in feed order; without this they scan the
+		-- whole table (review 1898).
+		CREATE INDEX IF NOT EXISTS events_subject_seq ON events(subject, seq);
 		CREATE TRIGGER IF NOT EXISTS events_append_only_update
 			BEFORE UPDATE ON events
 			BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
@@ -75,7 +86,7 @@ func Emit(tx *sql.Tx, kind, subject, operation, actor string, payload *string) (
 		INSERT INTO events (id, kind, subject, operation, actor, payload, created)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id, kind, subject, operation, actor, payload,
-		time.Now().UTC().Format(time.RFC3339Nano))
+		time.Now().UTC().Format(tsLayout))
 	if err != nil {
 		return "", fmt.Errorf("emit %s for %s: %w", kind, subject, err)
 	}

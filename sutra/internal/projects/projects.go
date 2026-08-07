@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// tsLayout is RFC 3339 with FIXED-WIDTH nanoseconds. time.RFC3339Nano
+// trims trailing zeros, so its output does not sort lexically: with
+// "…992647Z" against "…9926475Z", 'Z' > '5' and the earlier instant
+// compares greater. Timestamps are stored and ordered as TEXT, so the
+// format IS the ordering (review 1898).
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // Project mirrors the contract's Project schema. Optional fields are
 // pointers so absent stays absent on the wire.
 type Project struct {
@@ -156,7 +163,7 @@ func List(db *sql.DB, includeArchived bool) ([]Project, error) {
 // rows and resolves to AlreadyArchivedError or NotFoundError.
 func Archive(tx *sql.Tx, id string) (Project, error) {
 	res, err := tx.Exec(`UPDATE projects SET archived_at = ? WHERE id = ? AND archived_at IS NULL`,
-		time.Now().UTC().Format(time.RFC3339Nano), id)
+		time.Now().UTC().Format(tsLayout), id)
 	if err != nil {
 		return Project{}, fmt.Errorf("archive project %s: %w", id, err)
 	}
