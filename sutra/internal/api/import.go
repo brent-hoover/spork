@@ -881,8 +881,16 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanS
 			if sub.DocVersion != nil {
 				return malformedImport("review %s submission %d mixes deliverable shapes", r.ID, sub.Revision)
 			}
-		} else if sub.DocVersion == nil || !docVersionSet[*sub.DocVersion] {
-			return malformedImport("review %s submission %d names no resolvable deliverable", r.ID, sub.Revision)
+		} else {
+			if sub.DocVersion == nil || !docVersionSet[*sub.DocVersion] {
+				return malformedImport("review %s submission %d names no resolvable deliverable", r.ID, sub.Revision)
+			}
+			if sub.Content != nil {
+				// The immutable referenced version IS the deliverable;
+				// stored content could silently diverge from what the
+				// verdict covered. The live system never stores it.
+				return malformedImport("review %s doc submission %d must not carry stored content", r.ID, sub.Revision)
+			}
 		}
 	}
 	latest := r.Submissions[len(r.Submissions)-1]
@@ -1017,7 +1025,7 @@ func (s *server) checkImportCollisions(tx *sql.Tx, p *importPayload) *apiError {
 	}
 	conflictSet := map[string]bool{}
 	tables := []string{"projects", "identities", "issues", "labels", "issue_relations",
-		"documents", "doc_versions", "threads", "reviews", "review_submissions", "comments", "events"}
+		"documents", "doc_versions", "doc_templates", "threads", "reviews", "review_submissions", "comments", "events"}
 	for _, table := range tables {
 		for _, chunk := range chunkIDs(all, 500) {
 			query := `SELECT id FROM ` + table + ` WHERE id IN (?` + strings.Repeat(",?", len(chunk)-1) + `)`

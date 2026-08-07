@@ -49,9 +49,10 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	reviewList := []review.Review{}
 
 	// Text matches over issues, project-scoped when given. With q
-	// omitted but a project set, the contract requires ALL content in
-	// scope — the empty filter enumerates it.
-	if q != nil || (project != nil && session == nil) {
+	// omitted, the contract requires ALL content in the remaining
+	// scope — a project when set, otherwise EVERYTHING.
+	bare := q == nil && project == nil && session == nil
+	if q != nil || (project != nil && session == nil) || bare {
 		scope := []string{}
 		if project != nil {
 			scope = append(scope, *project)
@@ -79,9 +80,9 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A project-only query enumerates the project's reviews too — all
+	// Reviews enumerate under a project-only or bare query — all
 	// content in scope when q is omitted.
-	if project != nil && session == nil && q == nil {
+	if (project != nil || bare) && session == nil && q == nil {
 		for id := range issueSet {
 			matched, err := review.List(tx, id, "", "")
 			if err != nil {
@@ -118,7 +119,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// collects only ids and anchored issues — transcripts stream to
 	// the wire later, never accumulating in memory.
 	threadIDs := []string{}
-	if q != nil || session != nil || project != nil {
+	if q != nil || session != nil || project != nil || bare {
 		err := threads.SearchEach(tx, q, session, project, func(t threads.Thread) error {
 			threadIDs = append(threadIDs, t.ID)
 			if session != nil && t.Issue != nil {
@@ -154,6 +155,15 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		docList = matched
+	case bare:
+		for _, p := range mustProjects(tx) {
+			matched, err := docs.ListByProject(tx, p)
+			if err != nil {
+				writeError(w, docErrorFrom(err))
+				return
+			}
+			docList = append(docList, matched...)
+		}
 	}
 
 	watermark, err := events.Watermark(tx)
@@ -221,6 +231,16 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(one)
 	}
 	_, _ = w.Write([]byte(`]}`))
+}
+
+// mustProjects is listProjectIDs for paths that already committed to
+// a response; an error surfaces as an empty scope.
+func mustProjects(tx *sql.Tx) []string {
+	ids, err := listProjectIDs(tx)
+	if err != nil {
+		return nil
+	}
+	return ids
 }
 
 func listProjectIDs(tx *sql.Tx) ([]string, error) {
