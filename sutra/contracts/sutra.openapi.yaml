@@ -1909,6 +1909,7 @@ components:
 
     Label:
       type: object
+      additionalProperties: false
       required: [id, name]
       properties:
         id: { type: string, format: uuid }
@@ -1924,6 +1925,7 @@ components:
 
     IssueRelation:
       type: object
+      additionalProperties: false
       required: [id, from, to, kind]
       properties:
         id: { type: string, format: uuid }
@@ -1941,6 +1943,7 @@ components:
 
     Comment:
       type: object
+      additionalProperties: false
       description: >-
         Polymorphic and threaded — anchors to exactly one of issue, doc_version,
         or review, with review_revision required exactly when review is set.
@@ -2040,6 +2043,7 @@ components:
 
     Project:
       type: object
+      additionalProperties: false
       required: [id, key, name]
       properties:
         id: { type: string, format: uuid }
@@ -2077,6 +2081,10 @@ components:
           description: Identity recorded as the actor on the creation event.
 
     Document:
+      # Intentionally OPEN: DocumentView composes it through allOf, and
+      # additionalProperties cannot see sibling allOf members — closing
+      # it would reject the composed view's own `version` property.
+      # importProject still decodes documents strictly.
       type: object
       required: [id, project, title]
       properties:
@@ -2125,6 +2133,7 @@ components:
 
     DocVersion:
       type: object
+      additionalProperties: false
       required: [id, document, number, content, author, created]
       properties:
         id: { type: string, format: uuid }
@@ -2174,6 +2183,7 @@ components:
 
     Thread:
       type: object
+      additionalProperties: false
       description: >-
         An imported agent transcript, tied to a project or an issue. At
         least one of project or issue is always set — the invariant is
@@ -2234,6 +2244,7 @@ components:
 
     Identity:
       type: object
+      additionalProperties: false
       required: [id, handle, kind]
       properties:
         id: { type: string, format: uuid }
@@ -2687,6 +2698,7 @@ components:
 
     ProjectExport:
       type: object
+      additionalProperties: false
       required:
         [project, identities, issues, comments, labels, issue_relations, documents, threads, reviews, events]
       properties:

@@ -1000,6 +1000,12 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanS
 		if actual.Subject != r.Issue {
 			return malformedImport("review %s verdict event's subject is not its issue", r.ID)
 		}
+		if verdictPrecedesResubmission(r.ID, actual.ID, p.Events) {
+			// A resubmission after the verdict returns the review to
+			// open in the live system; a verdict-bearing state past
+			// one is a stale approval.
+			return malformedImport("review %s carries a verdict superseded by a later resubmission", r.ID)
+		}
 		// Verdicts are human-only (AC-review-verdict); a fabricated
 		// agent-authored approval cannot arrive through import either.
 		if humanSet != nil && !humanSet[actual.Actor] {
@@ -1037,6 +1043,31 @@ func latestVerdictEventFor(reviewID string, list []events.Event) (events.Event, 
 		}
 	}
 	return last, found
+}
+
+// verdictPrecedesResubmission reports whether a review's latest
+// verdict event was superseded by a later resubmission. The live
+// system can never leave that state — a resubmission returns the
+// review to open — so an import claiming a verdict older than its
+// last resubmission is carrying a STALE human approval that could
+// close an issue on content nobody reviewed.
+func verdictPrecedesResubmission(reviewID, verdictEventID string, list []events.Event) bool {
+	verdictIndex, resubmitIndex := -1, -1
+	for i, e := range list {
+		var payload struct {
+			Review string `json:"review"`
+		}
+		if json.Unmarshal(e.Payload, &payload) != nil || payload.Review != reviewID {
+			continue
+		}
+		if e.ID == verdictEventID {
+			verdictIndex = i
+		}
+		if e.Kind == "review.resubmitted" {
+			resubmitIndex = i
+		}
+	}
+	return verdictIndex >= 0 && resubmitIndex > verdictIndex
 }
 
 // checkImportCollisions rejects the payload whole if ANY of its UUIDs
