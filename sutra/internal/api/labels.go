@@ -132,25 +132,26 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, issueErrorFrom(err))
 		return
 	}
-	history, err := events.BySubject(tx, issueID)
-	if err != nil {
-		writeError(w, errorFrom(err))
-		return
-	}
-	// Audit history serves stored payload bytes verbatim, like the
-	// feed and the export.
+	// Audit history streams row by row, payload bytes verbatim, like
+	// the feed and the export — the history is unbounded.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte{'['})
-	for i, e := range history {
-		if i > 0 {
-			_, _ = w.Write([]byte{','})
-		}
+	first := true
+	streamErr := events.BySubjectEach(tx, issueID, func(e events.Event) error {
 		raw, err := eventJSON(e)
 		if err != nil {
-			return // status committed; truncation is the only signal
+			return err
 		}
-		_, _ = w.Write(raw)
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	})
+	if streamErr != nil {
+		return // status committed; truncation is the only signal
 	}
 	_, _ = w.Write([]byte{']'})
 }

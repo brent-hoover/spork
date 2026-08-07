@@ -612,11 +612,11 @@ var reviewTmpl = template.Must(template.New("review").Parse(`<!doctype html>
 {{range .Comments}}<div class="comment{{if .Parent}} reply{{end}}" data-comment="{{.ID}}">
 <span class="author">{{.Author}}</span> <span class="on-revision">on r{{.ReviewRevision}}</span>
 <p>{{.Body}}</p>
-<form class="reply-form" method="post" action="/r/{{$.Review.ID}}/comment">
+{{if eq .ReviewRevision $.Review.Revision}}<form class="reply-form" method="post" action="/r/{{$.Review.ID}}/comment">
 <input type="hidden" name="parent" value="{{.ID}}">
 <input type="hidden" name="review_revision" value="{{$.Review.Revision}}">
 <input name="body" placeholder="reply"><button>Reply</button>
-</form>
+</form>{{end}}
 </div>{{end}}
 <form class="comment-form" method="post" action="/r/{{$.Review.ID}}/comment">
 <input type="hidden" name="review_revision" value="{{.Review.Revision}}">

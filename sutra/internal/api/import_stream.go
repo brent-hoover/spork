@@ -85,11 +85,22 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 			})
 		case "issues":
 			apiErr = walkArray(dec, key, func() error {
-				var v issues.Issue
+				// The pointer shadow distinguishes an OMITTED
+				// subtree_revision from a valid zero — omitting the
+				// required field would silently reset the concurrency
+				// fence.
+				var v struct {
+					issues.Issue
+					SubtreeRevision *int64 `json:"subtree_revision"`
+				}
 				if err := dec.Decode(&v); err != nil {
 					return err
 				}
-				return cb.issue(v)
+				if v.SubtreeRevision == nil {
+					return fmt.Errorf("issue %s omits subtree_revision", v.ID)
+				}
+				v.Issue.SubtreeRevision = *v.SubtreeRevision
+				return cb.issue(v.Issue)
 			})
 		case "comments":
 			apiErr = walkArray(dec, key, func() error {

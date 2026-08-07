@@ -331,13 +331,7 @@ func (c *client) issue(args []string) error {
 		if status != http.StatusOK {
 			return fmt.Errorf("list issues: %d %s", status, body)
 		}
-		var page struct {
-			Issues []json.RawMessage `json:"issues"`
-		}
-		if err := json.Unmarshal(body, &page); err != nil {
-			return err
-		}
-		return c.emit(page.Issues)
+		return c.emitIssueList(body)
 	case "show":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: sutra issue show <KEY-N>")
@@ -417,15 +411,93 @@ func (c *client) generic(args []string) error {
 		}
 		body = []byte(raw)
 	}
-	status, respBody, err := c.doRaw(o.method, path, body)
+	// Successful responses stream to stdout — exports and listings are
+	// unbounded and the server streams them deliberately; only error
+	// bodies buffer (bounded) for the message.
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(o.method, c.base+path, payload)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(c.env.Stdout, string(respBody))
-	if status >= 400 {
-		return fmt.Errorf("%s returned %d", args[0], status)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
+	if o.method != http.MethodGet {
+		req.Header.Set("Idempotency-Key", newKey())
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		_, _ = fmt.Fprintln(c.env.Stdout, string(msg))
+		return fmt.Errorf("%s returned %d", args[0], resp.StatusCode)
+	}
+	if _, err := io.Copy(c.env.Stdout, resp.Body); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.env.Stdout)
 	return nil
+}
+
+// emitIssueList walks the listing's issues array element by element —
+// issue bodies are unbounded, so the list never re-materializes as one
+// value.
+func (c *client) emitIssueList(body []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	elements := []json.RawMessage{}
+	if _, err := dec.Token(); err != nil { // '{'
+		return err
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if keyTok == "issues" {
+			if _, err := dec.Token(); err != nil { // '['
+				return err
+			}
+			yamlMode := c.flags["yaml"] == "true"
+			if !yamlMode {
+				_, _ = fmt.Fprintln(c.env.Stdout, "[")
+			}
+			first := true
+			for dec.More() {
+				var elem json.RawMessage
+				if err := dec.Decode(&elem); err != nil {
+					return err
+				}
+				if yamlMode {
+					elements = append(elements, elem)
+					continue
+				}
+				if !first {
+					_, _ = fmt.Fprintln(c.env.Stdout, ",")
+				}
+				first = false
+				_, _ = c.env.Stdout.Write(elem)
+			}
+			if _, err := dec.Token(); err != nil { // ']'
+				return err
+			}
+			if !yamlMode {
+				_, _ = fmt.Fprintln(c.env.Stdout, "\n]")
+				return nil
+			}
+			return c.emit(elements)
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("listing carries no issues field")
 }
 
 // emit writes v as JSON (default and --json) or YAML (--yaml) —

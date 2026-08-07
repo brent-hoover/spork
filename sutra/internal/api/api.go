@@ -299,25 +299,31 @@ func (s *server) listEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	page, err := events.List(s.db, q.Get("cursor"), q.Get("kind"), q.Get("subject"), limit, q.Get("until"))
-	if err != nil {
+	// Bad-cursor rejections must precede the committed 200, so bounds
+	// validate on a zero-limit probe first; then rows stream — event
+	// payloads serve their STORED bytes verbatim, never accumulated.
+	if _, err := events.List(s.db, q.Get("cursor"), q.Get("kind"), q.Get("subject"), 0, q.Get("until")); err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	// Event payloads serve their STORED bytes — imported payloads are
-	// promised back verbatim, and json.Marshal would compact them.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"events":[`))
-	for i, e := range page.Events {
-		if i > 0 {
-			_, _ = w.Write([]byte{','})
-		}
+	first := true
+	page, err := events.ListStream(s.db, q.Get("cursor"), q.Get("kind"), q.Get("subject"), limit, q.Get("until"), func(e events.Event) error {
 		raw, err := eventJSON(e)
 		if err != nil {
-			return // status committed; truncation is the only signal
+			return err
 		}
-		_, _ = w.Write(raw)
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	})
+	if err != nil {
+		return // status committed; truncation is the only signal
 	}
 	_, _ = fmt.Fprintf(w, `],"next_cursor":%q,"drained":%t}`, page.NextCursor, page.Drained)
 }

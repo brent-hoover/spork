@@ -100,6 +100,16 @@ func Watermark(tx *sql.Tx) (string, error) {
 // concurrent appends never move the bound (AC-feed-drain). Without
 // until, Drained is always false, never omitted.
 func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Page, error) {
+	return list(db, cursor, kind, subject, limit, until, nil)
+}
+
+// ListStream is List with per-row delivery: fn receives each event as
+// it scans and the returned Page carries only cursor/drained metadata.
+func ListStream(db *sql.DB, cursor, kind, subject string, limit int, until string, fn func(Event) error) (Page, error) {
+	return list(db, cursor, kind, subject, limit, until, fn)
+}
+
+func list(db *sql.DB, cursor, kind, subject string, limit int, until string, fn func(Event) error) (Page, error) {
 	after, err := parseCursor(cursor)
 	if err != nil {
 		return Page{}, err
@@ -162,8 +172,17 @@ func List(db *sql.DB, cursor, kind, subject string, limit int, until string) (Pa
 		if payload.Valid {
 			e.Payload = json.RawMessage(payload.String)
 		}
-		page.Events = append(page.Events, e)
 		last = e.seq
+		if fn != nil {
+			// Streaming consumers take each row and drop it — payloads
+			// are unbounded once imports carry them, so a page never
+			// accumulates in memory.
+			if err := fn(e); err != nil {
+				return Page{}, err
+			}
+			continue
+		}
+		page.Events = append(page.Events, e)
 	}
 	if err := rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("iterate events: %w", err)
@@ -208,26 +227,38 @@ func SortByFeedOrder(list []Event) {
 // BySubject returns every event for one subject in chronological
 // order — the per-issue audit history (AC-audit-query).
 func BySubject(tx *sql.Tx, subject string) ([]Event, error) {
+	out := []Event{}
+	err := BySubjectEach(tx, subject, func(e Event) error {
+		out = append(out, e)
+		return nil
+	})
+	return out, err
+}
+
+// BySubjectEach streams a subject's audit history row by row — the
+// history is unbounded and payloads can be large once imported.
+func BySubjectEach(tx *sql.Tx, subject string, fn func(Event) error) error {
 	rows, err := tx.Query(`
 		SELECT seq, id, kind, subject, operation, actor, payload, created
 		FROM events WHERE subject = ? ORDER BY seq`, subject)
 	if err != nil {
-		return nil, fmt.Errorf("events of %s: %w", subject, err)
+		return fmt.Errorf("events of %s: %w", subject, err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := []Event{}
 	for rows.Next() {
 		var e Event
 		var payload sql.NullString
 		if err := rows.Scan(&e.seq, &e.ID, &e.Kind, &e.Subject, &e.Operation, &e.Actor, &payload, &e.Created); err != nil {
-			return nil, fmt.Errorf("scan event: %w", err)
+			return fmt.Errorf("scan event: %w", err)
 		}
 		if payload.Valid {
 			e.Payload = json.RawMessage(payload.String)
 		}
-		out = append(out, e)
+		if err := fn(e); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // BadCursorError reports a cursor that never came from this feed.
