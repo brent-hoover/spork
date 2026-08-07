@@ -410,9 +410,14 @@ func (s *server) listIssueDocuments(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------- templates
 
+// Pointers distinguish an OMITTED property from a present empty
+// string. NewDocTemplate requires both properties but constrains
+// neither's length, and UpdateDocTemplate already accepts empty values —
+// creation must not be stricter than the contract or than its own
+// update (review 1904).
 type templateRequest struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
+	Name    *string `json:"name"`
+	Content *string `json:"content"`
 }
 
 func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
@@ -422,13 +427,13 @@ func (s *server) createTemplate(w http.ResponseWriter, r *http.Request) {
 		if apiErr := rejectExplicitNulls(r, &req, "name", "content"); apiErr != nil {
 			return nil, apiErr
 		}
-		if req.Name == "" || req.Content == "" {
+		if req.Name == nil || req.Content == nil {
 			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "name and content are required"}
 		}
 		return req, nil
 	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
 		req := prepped.(templateRequest)
-		created, err := docs.CreateTemplate(tx, req.Name, req.Content)
+		created, err := docs.CreateTemplate(tx, *req.Name, *req.Content)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}

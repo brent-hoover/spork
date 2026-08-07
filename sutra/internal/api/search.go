@@ -179,7 +179,15 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 		docList = matched
 	case bare:
-		for _, p := range mustProjects(tx) {
+		// Nothing is written yet, so a scope failure is reportable: an
+		// empty scope here would serve 200 with a silently incomplete
+		// documents group (review 1904).
+		projectIDs, err := listProjectIDs(tx)
+		if err != nil {
+			writeError(w, errorFrom(err))
+			return
+		}
+		for _, p := range projectIDs {
 			matched, err := docs.ListByProject(tx, p)
 			if err != nil {
 				writeError(w, docErrorFrom(err))
@@ -268,16 +276,6 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_, _ = w.Write([]byte(`]}`))
-}
-
-// mustProjects is listProjectIDs for paths that already committed to
-// a response; an error surfaces as an empty scope.
-func mustProjects(tx *sql.Tx) []string {
-	ids, err := listProjectIDs(tx)
-	if err != nil {
-		return nil
-	}
-	return ids
 }
 
 // issueMatchesQ reports whether one issue text-matches the term —
