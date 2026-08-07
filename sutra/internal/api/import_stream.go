@@ -104,11 +104,62 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 			})
 		case "comments":
 			apiErr = walkArray(dec, key, func() error {
-				var v comments.Comment
+				// Optional anchor fields are non-nullable under the
+				// omit-when-absent convention; raw shadows distinguish
+				// explicit null (reject) from absence (nil).
+				var v struct {
+					comments.Comment
+					Issue          json.RawMessage `json:"issue"`
+					DocVersion     json.RawMessage `json:"doc_version"`
+					Review         json.RawMessage `json:"review"`
+					ReviewRevision json.RawMessage `json:"review_revision"`
+					Parent         json.RawMessage `json:"parent"`
+					Anchor         json.RawMessage `json:"anchor"`
+				}
 				if err := dec.Decode(&v); err != nil {
 					return err
 				}
-				return cb.comment(v)
+				fields := map[string]json.RawMessage{"issue": v.Issue, "doc_version": v.DocVersion,
+					"review": v.Review, "review_revision": v.ReviewRevision, "parent": v.Parent, "anchor": v.Anchor}
+				for name, raw := range fields {
+					if string(raw) == "null" {
+						return fmt.Errorf("comment field %q must not be null", name)
+					}
+				}
+				assign := func(dst **string, raw json.RawMessage) error {
+					if len(raw) == 0 {
+						return nil
+					}
+					var s string
+					if err := json.Unmarshal(raw, &s); err != nil {
+						return err
+					}
+					*dst = &s
+					return nil
+				}
+				if err := assign(&v.Comment.Issue, v.Issue); err != nil {
+					return err
+				}
+				if err := assign(&v.Comment.DocVersion, v.DocVersion); err != nil {
+					return err
+				}
+				if err := assign(&v.Comment.Review, v.Review); err != nil {
+					return err
+				}
+				if err := assign(&v.Comment.Parent, v.Parent); err != nil {
+					return err
+				}
+				if err := assign(&v.Comment.Anchor, v.Anchor); err != nil {
+					return err
+				}
+				if len(v.ReviewRevision) > 0 {
+					var n int64
+					if err := json.Unmarshal(v.ReviewRevision, &n); err != nil {
+						return err
+					}
+					v.Comment.ReviewRevision = &n
+				}
+				return cb.comment(v.Comment)
 			})
 		case "labels":
 			apiErr = walkArray(dec, key, func() error {
@@ -132,11 +183,37 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 			})
 		case "threads":
 			apiErr = walkArray(dec, key, func() error {
-				var v threads.Thread
+				var v struct {
+					threads.Thread
+					Project json.RawMessage `json:"project"`
+					Issue   json.RawMessage `json:"issue"`
+				}
 				if err := dec.Decode(&v); err != nil {
 					return err
 				}
-				return cb.thread(v)
+				for name, raw := range map[string]json.RawMessage{"project": v.Project, "issue": v.Issue} {
+					if string(raw) == "null" {
+						return fmt.Errorf("thread field %q must not be null", name)
+					}
+				}
+				assign := func(dst **string, raw json.RawMessage) error {
+					if len(raw) == 0 {
+						return nil
+					}
+					var s string
+					if err := json.Unmarshal(raw, &s); err != nil {
+						return err
+					}
+					*dst = &s
+					return nil
+				}
+				if err := assign(&v.Thread.Project, v.Project); err != nil {
+					return err
+				}
+				if err := assign(&v.Thread.Issue, v.Issue); err != nil {
+					return err
+				}
+				return cb.thread(v.Thread)
 			})
 		case "reviews":
 			apiErr = walkArray(dec, key, func() error {
@@ -301,11 +378,47 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 				return fmt.Errorf("submissions must be an array")
 			}
 			for dec.More() {
-				var sub review.Submission
+				var sub struct {
+					review.Submission
+					Branch     json.RawMessage `json:"branch"`
+					Commit     json.RawMessage `json:"commit"`
+					BaseCommit json.RawMessage `json:"base_commit"`
+					DocVersion json.RawMessage `json:"doc_version"`
+					Session    json.RawMessage `json:"session"`
+					Content    json.RawMessage `json:"content"`
+				}
 				if err := dec.Decode(&sub); err != nil {
 					return err
 				}
-				if err := cb.submission(sub); err != nil {
+				fields := map[string]json.RawMessage{"branch": sub.Branch, "commit": sub.Commit,
+					"base_commit": sub.BaseCommit, "doc_version": sub.DocVersion, "session": sub.Session, "content": sub.Content}
+				for name, raw := range fields {
+					if string(raw) == "null" {
+						return fmt.Errorf("submission field %q must not be null", name)
+					}
+				}
+				assign := func(dst **string, raw json.RawMessage) error {
+					if len(raw) == 0 {
+						return nil
+					}
+					var s string
+					if err := json.Unmarshal(raw, &s); err != nil {
+						return err
+					}
+					*dst = &s
+					return nil
+				}
+				for _, pair := range []struct {
+					dst **string
+					raw json.RawMessage
+				}{{&sub.Submission.Branch, sub.Branch}, {&sub.Submission.Commit, sub.Commit},
+					{&sub.Submission.BaseCommit, sub.BaseCommit}, {&sub.Submission.DocVersion, sub.DocVersion},
+					{&sub.Submission.Session, sub.Session}, {&sub.Submission.Content, sub.Content}} {
+					if err := assign(pair.dst, pair.raw); err != nil {
+						return err
+					}
+				}
+				if err := cb.submission(sub.Submission); err != nil {
 					return err
 				}
 			}
@@ -320,6 +433,12 @@ func walkReviewExport(dec *json.Decoder, cb importCallbacks) error {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
 			return err
+		}
+		if string(raw) == "null" {
+			// The omit-when-absent convention: no Review property is
+			// nullable — a null would vanish on re-export and break
+			// the verbatim round trip.
+			return fmt.Errorf("review field %q must not be null", key)
 		}
 		scalars[key] = raw
 	}

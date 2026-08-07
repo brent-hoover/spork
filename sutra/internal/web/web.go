@@ -136,9 +136,15 @@ func (s *Server) projectByKey(key string) (project, error) {
 	return project{}, fmt.Errorf("no project with key %q", key)
 }
 
-var projectsTmpl = template.Must(template.New("projects").Parse(`<!doctype html>
+// uiFuncs: pesc path-escapes values embedded in URL path segments —
+// the API permits arbitrary project keys, and a / ? or # in one must
+// not restructure the route (review 1853). Go's mux decodes segments,
+// so escaped keys round-trip.
+var uiFuncs = template.FuncMap{"pesc": url.PathEscape}
+
+var projectsTmpl = template.Must(template.New("projects").Funcs(uiFuncs).Parse(`<!doctype html>
 <title>sutra</title><h1>Projects</h1><ul>
-{{range .}}<li><a href="/p/{{.Key}}">{{.Key}} — {{.Name}}</a></li>{{end}}
+{{range .}}<li><a href="/p/{{pesc .Key}}">{{.Key}} — {{.Name}}</a></li>{{end}}
 </ul>`))
 
 func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
@@ -178,16 +184,16 @@ type boardColumn struct {
 	Cards  []issueView
 }
 
-var boardTmpl = template.Must(template.New("board").Parse(`<!doctype html>
+var boardTmpl = template.Must(template.New("board").Funcs(uiFuncs).Parse(`<!doctype html>
 <title>{{.Key}} board</title><h1>{{.Key}}</h1>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 <div class="board">
 {{range $col := .Columns}}<section class="column" data-status="{{$col.Status}}"><h2>{{$col.Status}}</h2>
 {{range $col.Cards}}<article class="card" draggable="true" data-issue="{{.ID}}">
-<a href="/p/{{$.Key}}/i/{{.Number}}">{{$.Key}}-{{.Number}} {{.Title}}</a>
+<a href="/p/{{pesc $.Key}}/i/{{.Number}}">{{$.Key}}-{{.Number}} {{.Title}}</a>
 {{if .Assignee}}<span class="assignee">{{.Assignee}}</span>{{end}}
 {{range .Labels}}<span class="label">{{.Name}}</span>{{end}}
-<form class="move" method="post" action="/p/{{$.Key}}/i/{{.Number}}/move">
+<form class="move" method="post" action="/p/{{pesc $.Key}}/i/{{.Number}}/move">
 {{range $.Statuses}}{{if ne . $col.Status}}<button name="status" value="{{.}}">→ {{.}}</button>{{end}}{{end}}
 </form>
 </article>{{end}}
