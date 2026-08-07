@@ -507,8 +507,12 @@ func validateImport(p *importPayload, actor string) *apiError {
 			docVersionSet[v.ID] = true
 		}
 	}
+	closeUsedByIssue := map[string]bool{}
 	reviewSet := map[string]bool{}
 	for i := range p.Reviews {
+		if p.Reviews[i].CloseUsed != nil {
+			closeUsedByIssue[p.Reviews[i].Issue] = true
+		}
 		if !identitySet[p.Reviews[i].Author] {
 			return malformedImport("review %s author is not in identities", p.Reviews[i].ID)
 		}
@@ -516,6 +520,14 @@ func validateImport(p *importPayload, actor string) *apiError {
 			return apiErr
 		}
 		reviewSet[p.Reviews[i].ID] = true
+	}
+	// A complete issue is reachable ONLY through the review-gated
+	// close, which stamps its review close_used; imported completeness
+	// without that stamp would bypass the human-approval invariant.
+	for _, i := range p.Issues {
+		if i.Status == issues.StatusComplete && !closeUsedByIssue[i.ID] {
+			return malformedImport("complete issue %s has no close-used review", i.ID)
+		}
 	}
 	for _, c := range p.Comments {
 		if !identitySet[c.Author] {

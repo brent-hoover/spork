@@ -151,6 +151,21 @@ func VersionsEach(tx *sql.Tx, documentID string, fn func(Version) error) error {
 	return rows.Err()
 }
 
+// VersionMetaByID returns one version WITHOUT its content — deliverable
+// validation needs existence and lineage, never the bytes.
+func VersionMetaByID(tx *sql.Tx, id string) (Version, error) {
+	var v Version
+	err := tx.QueryRow(`SELECT id, document, number, author, created FROM doc_versions WHERE id = ?`, id).
+		Scan(&v.ID, &v.Document, &v.Number, &v.Author, &v.Created)
+	if err == sql.ErrNoRows {
+		return Version{}, &VersionNotFoundError{Ref: id}
+	}
+	if err != nil {
+		return Version{}, fmt.Errorf("version meta %s: %w", id, err)
+	}
+	return v, nil
+}
+
 // Search returns documents whose title or ANY version content matches
 // the term, optionally project-scoped (AC-search-cross).
 func Search(tx *sql.Tx, project *string, q string) ([]Document, error) {

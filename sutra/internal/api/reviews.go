@@ -417,7 +417,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 			// deliverables resolve through the issue's own project.
 			// The immutable version IS the deliverable — served by
 			// resolution, never copied (AC-review-deliverable-kinds).
-			version, err := docs.VersionByID(read, *req.DocVersion)
+			version, err := docs.VersionMetaByID(read, *req.DocVersion)
 			if err != nil {
 				_ = read.Rollback()
 				return nil, docErrorFrom(err)
@@ -431,7 +431,10 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 				return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "doc deliverable must belong to the issue's project"}
 			}
 			d := review.Deliverable{DocVersion: req.DocVersion, Session: req.Session}
-			return preparedReview{req: req, d: d, content: version.Content}, nil
+			// No content travels: the immutable version IS the
+			// deliverable, resolved at serving time — loading its
+			// bytes here would be a copy made only to be discarded.
+			return preparedReview{req: req, d: d}, nil
 		}
 		project, err := projects.GetTx(read, issue.Project)
 		_ = read.Rollback()
@@ -776,7 +779,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 			return nil, apiErr
 		}
 		if req.DocVersion != nil {
-			version, err := docs.VersionByID(read, *req.DocVersion)
+			version, err := docs.VersionMetaByID(read, *req.DocVersion)
 			if err != nil {
 				_ = read.Rollback()
 				return nil, docErrorFrom(err)
@@ -790,7 +793,8 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 				return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "doc deliverable must belong to the issue's project"}
 			}
 			d := review.Deliverable{DocVersion: req.DocVersion, Session: req.Session}
-			return preparedResubmit{req: req, d: d, content: version.Content}, nil
+			// No content travels — see the creation path.
+			return preparedResubmit{req: req, d: d}, nil
 		}
 		project, err := projects.GetTx(read, issue.Project)
 		_ = read.Rollback()

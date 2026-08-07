@@ -116,6 +116,103 @@ func (s *Server) post(path string, body any) (int, []byte, error) {
 	return resp.StatusCode, respBody, err
 }
 
+// inProject verifies a resource's governing project matches the
+// route's :key — a project-A URL must never render or mutate a
+// project-B resource. Returns the project id, or writes 404.
+func (s *Server) inProject(w http.ResponseWriter, key, resourceProject string) bool {
+	p, err := s.projectByKey(key)
+	if err != nil {
+		http.NotFound(w, nil)
+		return false
+	}
+	if p.ID != resourceProject {
+		http.NotFound(w, nil)
+		return false
+	}
+	return true
+}
+
+// docProject resolves a document's governing project id.
+func (s *Server) docProject(documentID string) (string, error) {
+	var doc struct {
+		Project string `json:"project"`
+	}
+	if err := s.get("/documents/"+documentID, &doc); err != nil {
+		return "", err
+	}
+	return doc.Project, nil
+}
+
+// reviewProject resolves a review's governing project via its issue.
+func (s *Server) reviewProject(reviewID string) (string, error) {
+	var rev struct {
+		Issue string `json:"issue"`
+	}
+	if err := s.get("/reviews/"+reviewID, &rev); err != nil {
+		return "", err
+	}
+	var issue struct {
+		Project string `json:"project"`
+	}
+	if err := s.get("/issues/"+rev.Issue, &issue); err != nil {
+		return "", err
+	}
+	return issue.Project, nil
+}
+
+// threadProject resolves a thread's governing project — its project
+// anchor, or its anchored issue's project.
+func (s *Server) threadProject(threadID string) (string, error) {
+	var t struct {
+		Project *string `json:"project"`
+		Issue   *string `json:"issue"`
+	}
+	if err := s.get("/threads/"+threadID, &t); err != nil {
+		return "", err
+	}
+	if t.Project != nil {
+		return *t.Project, nil
+	}
+	if t.Issue != nil {
+		var issue struct {
+			Project string `json:"project"`
+		}
+		if err := s.get("/issues/"+*t.Issue, &issue); err != nil {
+			return "", err
+		}
+		return issue.Project, nil
+	}
+	return "", fmt.Errorf("thread %s carries no anchor", threadID)
+}
+
+// guardDoc/guardReview/guardThread run the scope check for a route.
+func (s *Server) guardDoc(w http.ResponseWriter, r *http.Request) bool {
+	project, err := s.docProject(r.PathValue("documentId"))
+	if err != nil {
+		http.NotFound(w, r)
+		return false
+	}
+	return s.inProject(w, r.PathValue("key"), project)
+}
+
+func (s *Server) guardReview(w http.ResponseWriter, r *http.Request) bool {
+	project, err := s.reviewProject(r.PathValue("reviewId"))
+	if err != nil {
+		http.NotFound(w, r)
+		return false
+	}
+	return s.inProject(w, r.PathValue("key"), project)
+}
+
+func (s *Server) guardThread(w http.ResponseWriter, r *http.Request) bool {
+	project, err := s.threadProject(r.PathValue("threadId"))
+	if err != nil {
+		http.NotFound(w, r)
+		return false
+	}
+	return s.inProject(w, r.PathValue("key"), project)
+}
+
 func htmlError(w http.ResponseWriter, err error) {
 	http.Error(w, template.HTMLEscapeString(err.Error()), http.StatusBadGateway)
 }
@@ -689,6 +786,9 @@ type docComment struct {
 // Comments from OTHER versions stay visible, labeled with their
 // version — never silently orphaned (AC-docweb-comments).
 func (s *Server) document(w http.ResponseWriter, r *http.Request) {
+	if !s.guardDoc(w, r) {
+		return
+	}
 	id := r.PathValue("documentId")
 	path := "/documents/" + id
 	if v := r.URL.Query().Get("version"); v != "" {
@@ -732,6 +832,9 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 
 // commentDoc posts a block-anchored comment on the SHOWN version.
 func (s *Server) commentDoc(w http.ResponseWriter, r *http.Request) {
+	if !s.guardDoc(w, r) {
+		return
+	}
 	id := r.PathValue("documentId")
 	if err := r.ParseForm(); err != nil {
 		htmlError(w, err)
@@ -764,6 +867,9 @@ func (s *Server) commentDoc(w http.ResponseWriter, r *http.Request) {
 // saveDocVersion appends a new version through the API (ACT-save-doc)
 // and returns the reader to the latest view.
 func (s *Server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
+	if !s.guardDoc(w, r) {
+		return
+	}
 	id := r.PathValue("documentId")
 	if err := r.ParseForm(); err != nil {
 		htmlError(w, err)
@@ -785,6 +891,9 @@ func (s *Server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
 // pollDocument reports whether the document has advanced past the
 // viewer's version — the page's refresh signal (AC-docweb-live).
 func (s *Server) pollDocument(w http.ResponseWriter, r *http.Request) {
+	if !s.guardDoc(w, r) {
+		return
+	}
 	id := r.PathValue("documentId")
 	var doc docView
 	if err := s.get("/documents/"+id, &doc); err != nil {
@@ -816,6 +925,9 @@ var threadTmpl = template.Must(template.New("thread").Parse(`<!doctype html>
 // conventional [{speaker, text}] shape renders as a conversation and
 // anything else falls back to per-entry rendering.
 func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
+	if !s.guardThread(w, r) {
+		return
+	}
 	var t threadView
 	if err := s.get("/threads/"+r.PathValue("threadId"), &t); err != nil {
 		htmlError(w, err)
@@ -889,6 +1001,9 @@ var reviewTmpl = template.Must(template.New("review").Funcs(uiFuncs).Parse(`<!do
 // verdict controls that post the revision the reviewer SAW
 // (AC-review-verdict, AC-review-stale-guard).
 func (s *Server) review(w http.ResponseWriter, r *http.Request) {
+	if !s.guardReview(w, r) {
+		return
+	}
 	s.renderReview(w, r.PathValue("key"), r.PathValue("reviewId"), "")
 }
 
@@ -919,6 +1034,9 @@ func (s *Server) renderReview(w http.ResponseWriter, key, id, errMsg string) {
 // reviewVerdict posts the human's verdict at the revision the page
 // showed; a stale-revision rejection re-renders with the API's error.
 func (s *Server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
+	if !s.guardReview(w, r) {
+		return
+	}
 	id := r.PathValue("reviewId")
 	if err := r.ParseForm(); err != nil {
 		htmlError(w, err)
@@ -950,6 +1068,9 @@ func (s *Server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
 // reviewComment anchors a comment (or reply) to the review at its
 // current revision.
 func (s *Server) reviewComment(w http.ResponseWriter, r *http.Request) {
+	if !s.guardReview(w, r) {
+		return
+	}
 	id := r.PathValue("reviewId")
 	if err := r.ParseForm(); err != nil {
 		htmlError(w, err)
