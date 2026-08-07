@@ -64,7 +64,10 @@ func (s *server) importThread(w http.ResponseWriter, r *http.Request) {
 			Issue      *string         `json:"issue"`
 			Actor      string          `json:"actor"`
 		}
-		if apiErr := rejectExplicitNulls(r, &req, "title", "transcript", "session", "project", "issue", "actor"); apiErr != nil {
+		// transcript is REQUIRED with an arbitrary-JSON value space —
+		// an explicit null is a legitimate VALUE for it, unlike the
+		// optional fields where null would fake absence.
+		if apiErr := rejectExplicitNulls(r, &req, "title", "session", "project", "issue", "actor"); apiErr != nil {
 			return 0, nil, apiErr
 		}
 		if req.Title == "" {

@@ -130,7 +130,16 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			meta.Threads = append(meta.Threads, t)
 			return nil
 		},
-		review: func(rv review.Review) error { meta.Reviews = append(meta.Reviews, rv); return nil },
+		review: func(rv review.Review) error {
+			// Summaries are unbounded and validation never reads them;
+			// the insert pass re-reads originals from the spool.
+			if rv.Summary != nil && *rv.Summary != "" {
+				s := sentinel
+				rv.Summary = &s
+			}
+			meta.Reviews = append(meta.Reviews, rv)
+			return nil
+		},
 		submission: func(sub review.Submission) error {
 			if sub.Content != nil && *sub.Content != "" {
 				s := sentinel
@@ -392,15 +401,22 @@ func validateImport(p *importPayload, actor string) *apiError {
 		numbers[i.Number] = true
 		issueSet[i.ID] = true
 	}
-	labelSet := map[string]bool{}
+	labelByID := map[string]issues.Label{}
 	for _, l := range p.Labels {
-		labelSet[l.ID] = true
+		labelByID[l.ID] = l
 	}
 	for _, i := range p.Issues {
 		attached := map[string]bool{}
 		for _, l := range i.Labels {
-			if !labelSet[l.ID] {
+			canonical, ok := labelByID[l.ID]
+			if !ok {
 				return malformedImport("issue %s carries label %s absent from labels", i.ID, l.ID)
+			}
+			// The embedded snapshot must MATCH its canonical label —
+			// import attaches by id, so a divergent snapshot would be
+			// silently rewritten and break verbatim re-export.
+			if l.Name != canonical.Name || !ptrEq(l.Color, canonical.Color) {
+				return malformedImport("issue %s embeds label %s with a divergent snapshot", i.ID, l.ID)
 			}
 			if attached[l.ID] {
 				return malformedImport("issue %s repeats label %s", i.ID, l.ID)
