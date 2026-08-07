@@ -275,9 +275,9 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	})
 	sc.Step(`^it is opened in the web UI$`, func() error {
 		if ww.docID != "" {
-			return ww.open("/d/" + ww.docID)
+			return ww.open("/p/SUT/d/" + ww.docID)
 		}
-		return ww.open("/t/" + ww.threadID)
+		return ww.open("/p/SUT/t/" + ww.threadID)
 	})
 	sc.Step(`^the content renders formatted$`, func() error {
 		return ww.expectInHTML("<h1>Design</h1>", "<p>A paragraph of prose.</p>", "<li>first point</li>")
@@ -291,13 +291,13 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			map[string]string{"content": "# Design v2", "author": author}); err != nil {
 			return err
 		}
-		if err := ww.open("/d/" + ww.docID); err != nil {
+		if err := ww.open("/p/SUT/d/" + ww.docID); err != nil {
 			return err
 		}
 		if err := ww.expectInHTML(`data-version="2"`); err != nil {
 			return err
 		}
-		if err := ww.open("/d/" + ww.docID + "?version=1"); err != nil {
+		if err := ww.open("/p/SUT/d/" + ww.docID + "?version=1"); err != nil {
 			return err
 		}
 		return ww.expectInHTML(`data-version="1"`)
@@ -337,7 +337,7 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 	sc.Step(`^a reader comments on its third block$`, func() error {
-		return ww.postForm("/d/"+ww.docID+"/comment", url.Values{
+		return ww.postForm("/p/SUT/d/"+ww.docID+"/comment", url.Values{
 			"doc_version": {ww.docVersionID}, "anchor": {"block-3"}, "body": {"tighten this"}})
 	})
 	sc.Step(`^the comment anchors to version 2 at that block$`, func() error {
@@ -361,7 +361,7 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			map[string]string{"content": "v3 text", "author": author}); err != nil {
 			return err
 		}
-		if err := ww.open("/d/" + ww.docID); err != nil {
+		if err := ww.open("/p/SUT/d/" + ww.docID); err != nil {
 			return err
 		}
 		// The v2-pinned comment stays visible, labeled with its version.
@@ -413,7 +413,7 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return iw.s.expectStatus(http.StatusCreated)
 	})
 	sc.Step(`^the doc is open in the web UI$`, func() error {
-		return ww.open("/d/" + ww.docID)
+		return ww.open("/p/SUT/d/" + ww.docID)
 	})
 	sc.Step(`^the threaded discussion is visible alongside the content$`, func() error {
 		return ww.expectInHTML(`class="discussion"`, "first thought", `class="comment reply"`, "a reply", "discussed text")
@@ -443,7 +443,7 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		ww.docID = doc.ID
 		ww.seenVersion = doc.Version.Number
-		return ww.open("/d/" + ww.docID)
+		return ww.open("/p/SUT/d/" + ww.docID)
 	})
 	sc.Step(`^a new version is saved$`, func() error {
 		author := iw.identities["human-brent"]
@@ -454,7 +454,7 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return iw.s.expectStatus(http.StatusCreated)
 	})
 	sc.Step(`^the viewer is notified or refreshed to the new version$`, func() error {
-		if err := ww.open(fmt.Sprintf("/d/%s/poll?since=%d", ww.docID, ww.seenVersion)); err != nil {
+		if err := ww.open(fmt.Sprintf("/p/SUT/d/%s/poll?since=%d", ww.docID, ww.seenVersion)); err != nil {
 			return err
 		}
 		var poll struct {
@@ -468,7 +468,7 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return fmt.Errorf("viewer not signaled: %+v", poll)
 		}
 		// And re-opening shows the new version.
-		if err := ww.open("/d/" + ww.docID); err != nil {
+		if err := ww.open("/p/SUT/d/" + ww.docID); err != nil {
 			return err
 		}
 		return ww.expectInHTML("updated text")

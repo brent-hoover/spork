@@ -62,7 +62,7 @@ func (rw *crWorld) openReviewPage() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := ui.Client().Get(ui.URL + "/r/" + rw.cw.reviews["SUT-1"].id)
+	resp, err := ui.Client().Get(ui.URL + "/p/SUT/r/" + rw.cw.reviews["SUT-1"].id)
 	if err != nil {
 		return "", err
 	}
@@ -426,7 +426,7 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 			return err
 		}
 		revision := fmt.Sprintf("%d", ref.revision)
-		if _, err := first.Client().PostForm(first.URL+"/r/"+ref.id+"/comment",
+		if _, err := first.Client().PostForm(first.URL+"/p/SUT/r/"+ref.id+"/comment",
 			url.Values{"body": {"looks odd here"}, "review_revision": {revision}}); err != nil {
 			return err
 		}
@@ -447,7 +447,7 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 		if err != nil {
 			return err
 		}
-		if _, err := second.Client().PostForm(second.URL+"/r/"+ref.id+"/comment",
+		if _, err := second.Client().PostForm(second.URL+"/p/SUT/r/"+ref.id+"/comment",
 			url.Values{"body": {"agreed"}, "parent": {created[0].ID}, "review_revision": {revision}}); err != nil {
 			return err
 		}

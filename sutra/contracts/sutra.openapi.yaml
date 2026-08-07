@@ -2027,12 +2027,23 @@ components:
               - required: [issue]
               - required: [doc_version]
 
+    ProjectKey:
+      type: string
+      minLength: 1
+      description: >-
+        Any non-empty string except the dot segments "." and ".." —
+        those make the declared /p/:key web routes unreachable under
+        URL canonicalization, so creation and import reject them.
+        (Expressed prose-normatively: the exclusion needs a negative
+        lookahead, which the validation stack's RE2 patterns cannot
+        encode.)
+
     Project:
       type: object
       required: [id, key, name]
       properties:
         id: { type: string, format: uuid }
-        key: { type: string }
+        key: { $ref: '#/components/schemas/ProjectKey' }
         name: { type: string }
         description: { type: string, nullable: true }
         repo_path: { type: string, nullable: true }
@@ -2052,12 +2063,7 @@ components:
       type: object
       required: [key, name, actor]
       properties:
-        key:
-          type: string
-          description: >-
-            Any string except the dot segments "." and ".." — those make
-            the declared /p/:key web routes unreachable under URL
-            canonicalization, so creation rejects them.
+        key: { $ref: '#/components/schemas/ProjectKey' }
         name: { type: string }
         description: { type: string }
         repo_path: { type: string }

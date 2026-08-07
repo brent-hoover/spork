@@ -42,13 +42,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /p/{key}", s.board)
 	mux.HandleFunc("POST /p/{key}/i/{num}/move", s.sameOrigin(s.moveCard))
 	mux.HandleFunc("GET /p/{key}/i/{num}", s.issue)
-	mux.HandleFunc("GET /d/{documentId}", s.document)
-	mux.HandleFunc("POST /d/{documentId}/comment", s.sameOrigin(s.commentDoc))
-	mux.HandleFunc("GET /d/{documentId}/poll", s.pollDocument)
-	mux.HandleFunc("GET /t/{threadId}", s.thread)
-	mux.HandleFunc("GET /r/{reviewId}", s.review)
-	mux.HandleFunc("POST /r/{reviewId}/verdict", s.sameOrigin(s.reviewVerdict))
-	mux.HandleFunc("POST /r/{reviewId}/comment", s.sameOrigin(s.reviewComment))
+	mux.HandleFunc("POST /p/{key}/i/{num}/comment", s.sameOrigin(s.commentIssue))
+	mux.HandleFunc("GET /p/{key}/d/{documentId}", s.document)
+	mux.HandleFunc("POST /p/{key}/d/{documentId}/comment", s.sameOrigin(s.commentDoc))
+	mux.HandleFunc("POST /p/{key}/d/{documentId}/save", s.sameOrigin(s.saveDocVersion))
+	mux.HandleFunc("GET /p/{key}/d/{documentId}/poll", s.pollDocument)
+	mux.HandleFunc("GET /p/{key}/t/{threadId}", s.thread)
+	mux.HandleFunc("GET /p/{key}/r/{reviewId}", s.review)
+	mux.HandleFunc("POST /p/{key}/r/{reviewId}/verdict", s.sameOrigin(s.reviewVerdict))
+	mux.HandleFunc("POST /p/{key}/r/{reviewId}/comment", s.sameOrigin(s.reviewComment))
 	return mux
 }
 
@@ -174,10 +176,15 @@ type issueView struct {
 var statusColumns = []string{"open", "in-progress", "blocked", "deferred", "complete"}
 
 type boardData struct {
-	Key      string
-	Columns  []boardColumn
-	Statuses []string
-	Error    string
+	Key       string
+	Columns   []boardColumn
+	Statuses  []string
+	Error     string
+	Documents []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	Threads []threadRef
 }
 
 type boardColumn struct {
@@ -188,6 +195,10 @@ type boardColumn struct {
 var boardTmpl = template.Must(template.New("board").Funcs(uiFuncs).Parse(`<!doctype html>
 <title>{{.Key}} board</title><h1>{{.Key}}</h1>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<nav class="project-nav">
+<span>Documents:</span> {{range .Documents}}<a href="/p/{{pesc $.Key}}/d/{{.ID}}">{{.Title}}</a> {{end}}
+<span>Threads:</span> {{range .Threads}}<a href="/p/{{pesc $.Key}}/t/{{.ID}}">{{.Title}}</a> {{end}}
+</nav>
 <div class="board">
 {{range $col := .Columns}}<section class="column" data-status="{{$col.Status}}"><h2>{{$col.Status}}</h2>
 {{range $col.Cards}}<article class="card" draggable="true" data-issue="{{.ID}}">
@@ -239,7 +250,20 @@ func (s *Server) renderBoard(w http.ResponseWriter, key, errMsg string) {
 		htmlError(w, err)
 		return
 	}
-	data := boardData{Key: key, Statuses: statusColumns, Error: errMsg}
+	var docsList []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := s.get("/projects/"+p.ID+"/documents", &docsList); err != nil {
+		htmlError(w, err)
+		return
+	}
+	threadRefs := []threadRef{}
+	s.eachThreadRef("/threads/search?project="+url.QueryEscape(p.ID), func(t threadRef) bool {
+		threadRefs = append(threadRefs, t)
+		return true
+	})
+	data := boardData{Key: key, Statuses: statusColumns, Error: errMsg, Documents: docsList, Threads: threadRefs}
 	for _, status := range statusColumns {
 		col := boardColumn{Status: status}
 		for _, i := range page.Issues {
@@ -335,12 +359,33 @@ func (s *Server) moveCard(w http.ResponseWriter, r *http.Request) {
 	s.renderBoard(w, key, "")
 }
 
-var issueTmpl = template.Must(template.New("issue").Parse(`<!doctype html>
+var issueTmpl = template.Must(template.New("issue").Funcs(uiFuncs).Parse(`<!doctype html>
 <title>{{.Key}}-{{.Issue.Number}}</title>
 <h1>{{.Key}}-{{.Issue.Number}} {{.Issue.Title}}</h1>
 <p class="status">{{.Issue.Status}}</p>
+{{if .Issue.Assignee}}<p class="assignee">{{.Issue.Assignee}}</p>{{end}}
 {{if .Issue.Body}}<div class="body">{{.Issue.Body}}</div>{{end}}
-{{if .Progress}}<p class="progress">{{.Progress}}</p>{{end}}`))
+{{if .Progress}}<p class="progress">{{.Progress}}</p>{{end}}
+<section class="documents"><h2>Documents</h2>
+{{range .Documents}}<a href="/p/{{pesc $.Key}}/d/{{.ID}}">{{.Title}}</a> {{end}}
+</section>
+<section class="threads"><h2>Threads</h2>
+{{range .Threads}}<a href="/p/{{pesc $.Key}}/t/{{.ID}}">{{.Title}}</a> {{end}}
+</section>
+<section class="reviews"><h2>Reviews</h2>
+{{range .Reviews}}<a href="/p/{{pesc $.Key}}/r/{{.ID}}">review {{.ID}} ({{.State}})</a> {{end}}
+</section>
+<aside class="discussion"><h2>Comments</h2>
+{{range .Comments}}<div class="comment{{if .Parent}} reply{{end}}" data-comment="{{.ID}}">
+<span class="author">{{.Author}}</span><p>{{.Body}}</p>
+</div>{{end}}
+<form class="comment-form" method="post" action="/p/{{pesc .Key}}/i/{{.Issue.Number}}/comment">
+<input name="body" placeholder="comment on this issue"><button>Comment</button>
+</form>
+</aside>
+<section class="audit"><h2>History</h2>
+{{range .Events}}<div class="event" data-kind="{{.Kind}}"><span class="kind">{{.Kind}}</span> <span class="actor">{{.Actor}}</span> <span class="at">{{.Created}}</span></div>{{end}}
+</section>`))
 
 // issue renders one issue with child progress (AC-parent-rollup).
 func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
@@ -392,7 +437,133 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		progress = fmt.Sprintf("%d of %d complete", complete, total)
 	}
-	_ = issueTmpl.Execute(w, map[string]any{"Key": key, "Issue": issue, "Progress": progress})
+	// The declared issue view shows everything about the issue —
+	// documents, threads, reviews, discussion, audit trail — each
+	// streamed or metadata-light.
+	var docsList []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := s.get("/issues/"+issue.ID+"/documents", &docsList); err != nil {
+		htmlError(w, err)
+		return
+	}
+	threadsSeq := func(yield func(threadRef) bool) { s.eachThreadRef("/issues/"+issue.ID+"/threads", yield) }
+	var reviews []struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	if err := s.get("/reviews?issue="+url.QueryEscape(issue.ID), &reviews); err != nil {
+		htmlError(w, err)
+		return
+	}
+	commentsSeq := func(yield func(commentView) bool) { s.eachComment("/comments?issue="+url.QueryEscape(issue.ID), yield) }
+	eventsSeq := func(yield func(eventRef) bool) { s.eachEventRef("/issues/"+issue.ID+"/events", yield) }
+	_ = issueTmpl.Execute(w, map[string]any{
+		"Key": key, "Issue": issue, "Progress": progress,
+		"Documents": docsList, "Threads": iter.Seq[threadRef](threadsSeq),
+		"Reviews": reviews, "Comments": iter.Seq[commentView](commentsSeq),
+		"Events": iter.Seq[eventRef](eventsSeq),
+	})
+}
+
+// threadRef and eventRef are light listing views for the issue page.
+type threadRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type eventRef struct {
+	Kind    string `json:"kind"`
+	Actor   string `json:"actor"`
+	Created string `json:"created"`
+}
+
+// eachThreadRef streams a thread listing's id/title pairs.
+func (s *Server) eachThreadRef(path string, yield func(threadRef) bool) {
+	resp, err := s.client.Get(s.api + path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	dec := json.NewDecoder(resp.Body)
+	if _, err := dec.Token(); err != nil {
+		return
+	}
+	for dec.More() {
+		var t threadRef
+		if err := dec.Decode(&t); err != nil {
+			return
+		}
+		if !yield(t) {
+			return
+		}
+	}
+}
+
+// eachEventRef streams the audit listing's display fields.
+func (s *Server) eachEventRef(path string, yield func(eventRef) bool) {
+	resp, err := s.client.Get(s.api + path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	dec := json.NewDecoder(resp.Body)
+	if _, err := dec.Token(); err != nil {
+		return
+	}
+	for dec.More() {
+		var e eventRef
+		if err := dec.Decode(&e); err != nil {
+			return
+		}
+		if !yield(e) {
+			return
+		}
+	}
+}
+
+// commentIssue anchors a comment to the issue (ACT-comment on the
+// issue view).
+func (s *Server) commentIssue(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	p, err := s.projectByKey(key)
+	if err != nil {
+		htmlError(w, err)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		htmlError(w, err)
+		return
+	}
+	var page struct {
+		Issues []issueView `json:"issues"`
+	}
+	if err := s.get("/projects/"+p.ID+"/issues?number="+url.QueryEscape(r.PathValue("num")), &page); err != nil {
+		htmlError(w, err)
+		return
+	}
+	if len(page.Issues) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	status, body, err := s.post("/comments", map[string]any{
+		"issue": page.Issues[0].ID, "body": r.Form.Get("body"), "author": s.actor})
+	if err != nil {
+		htmlError(w, err)
+		return
+	}
+	if status != http.StatusCreated {
+		htmlError(w, fmt.Errorf("comment rejected: %s", body))
+		return
+	}
+	http.Redirect(w, r, "/p/"+url.PathEscape(key)+"/i/"+r.PathValue("num"), http.StatusSeeOther)
 }
 
 type docView struct {
@@ -466,38 +637,42 @@ type commentView struct {
 	ReviewRevision int64   `json:"review_revision"`
 }
 
-var docTmpl = template.Must(template.New("doc").Parse(`<!doctype html>
+var docTmpl = template.Must(template.New("doc").Funcs(uiFuncs).Parse(`<!doctype html>
 <title>{{.Doc.Title}}</title>
 <h1>{{.Doc.Title}}</h1>
 <p class="version" data-version="{{.Doc.Version.Number}}">version {{.Doc.Version.Number}}</p>
 <nav class="versions">
-{{range .Versions}}<a href="/d/{{$.Doc.ID}}?version={{.Number}}">v{{.Number}}</a> {{end}}
+{{range .Versions}}<a href="/p/{{pesc $.Key}}/d/{{$.Doc.ID}}?version={{.Number}}">v{{.Number}}</a> {{end}}
 </nav>
 <main class="doc">{{.Rendered}}</main>
 <aside class="discussion">
 {{range .Comments}}<div class="comment{{if .Parent}} reply{{end}}" data-comment="{{.ID}}"{{if .Anchor}} data-anchor="{{.Anchor}}"{{end}} data-version="{{.VersionNumber}}">
 <span class="author">{{.Author}}</span> <span class="on-version">on v{{.VersionNumber}}</span>
 <p>{{.Body}}</p>
-<form class="reply-form" method="post" action="/d/{{$.Doc.ID}}/comment">
+<form class="reply-form" method="post" action="/p/{{pesc $.Key}}/d/{{$.Doc.ID}}/comment">
 <input type="hidden" name="doc_version" value="{{.DocVersionID}}">
 <input type="hidden" name="parent" value="{{.ID}}">
 <input name="body" placeholder="reply"><button>Reply</button>
 </form>
 </div>{{end}}
-<form class="comment-form" method="post" action="/d/{{$.Doc.ID}}/comment">
+<form class="comment-form" method="post" action="/p/{{pesc $.Key}}/d/{{$.Doc.ID}}/comment">
 <input type="hidden" name="doc_version" value="{{.Doc.Version.ID}}">
 <input name="anchor" placeholder="block-1">
 <input name="body" placeholder="comment on this version"><button>Comment</button>
 </form>
 </aside>
+<form class="save-version" method="post" action="/p/{{pesc .Key}}/d/{{.Doc.ID}}/save">
+<textarea name="content" placeholder="new version content"></textarea>
+<button>Save version</button>
+</form>
 {{if .Live}}<script>
 // Poll for newer versions; refresh to the latest when one lands.
 (function () {
   var shown = {{.Doc.Version.Number}};
   setInterval(function () {
-    fetch('/d/{{.Doc.ID}}/poll?since=' + shown)
+    fetch('/p/{{pesc .Key}}/d/{{.Doc.ID}}/poll?since=' + shown)
       .then(function (r) { return r.json(); })
-      .then(function (p) { if (p.refresh) { window.location = '/d/{{.Doc.ID}}'; } })
+      .then(function (p) { if (p.refresh) { window.location = '/p/{{pesc .Key}}/d/{{.Doc.ID}}'; } })
       .catch(function () {});
   }, 5000);
 })();
@@ -548,7 +723,7 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = docTmpl.Execute(w, map[string]any{
 		"Doc": doc, "Rendered": renderMarkdown(doc.Version.Content),
-		"Comments": iter.Seq[docComment](comments), "Versions": versions,
+		"Comments": iter.Seq[docComment](comments), "Versions": versions, "Key": r.PathValue("key"),
 		// A reader who CHOSE a historical version stays on it; only
 		// the latest view auto-refreshes to newer versions.
 		"Live": r.URL.Query().Get("version") == "",
@@ -583,7 +758,28 @@ func (s *Server) commentDoc(w http.ResponseWriter, r *http.Request) {
 		htmlError(w, fmt.Errorf("comment rejected: %s", body))
 		return
 	}
-	http.Redirect(w, r, "/d/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/p/"+url.PathEscape(r.PathValue("key"))+"/d/"+id, http.StatusSeeOther)
+}
+
+// saveDocVersion appends a new version through the API (ACT-save-doc)
+// and returns the reader to the latest view.
+func (s *Server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("documentId")
+	if err := r.ParseForm(); err != nil {
+		htmlError(w, err)
+		return
+	}
+	status, body, err := s.post("/documents/"+id+"/versions",
+		map[string]any{"content": r.Form.Get("content"), "author": s.actor})
+	if err != nil {
+		htmlError(w, err)
+		return
+	}
+	if status != http.StatusCreated {
+		htmlError(w, fmt.Errorf("save version rejected: %s", body))
+		return
+	}
+	http.Redirect(w, r, "/p/"+url.PathEscape(r.PathValue("key"))+"/d/"+id, http.StatusSeeOther)
 }
 
 // pollDocument reports whether the document has advanced past the
@@ -661,7 +857,7 @@ type reviewView struct {
 	Summary  *string `json:"summary"`
 }
 
-var reviewTmpl = template.Must(template.New("review").Parse(`<!doctype html>
+var reviewTmpl = template.Must(template.New("review").Funcs(uiFuncs).Parse(`<!doctype html>
 <title>review {{.Review.ID}}</title>
 <h1>Review</h1>
 <p class="state" data-state="{{.Review.State}}">{{.Review.State}} · revision {{.Review.Revision}}</p>
@@ -671,18 +867,18 @@ var reviewTmpl = template.Must(template.New("review").Parse(`<!doctype html>
 {{range .Comments}}<div class="comment{{if .Parent}} reply{{end}}" data-comment="{{.ID}}">
 <span class="author">{{.Author}}</span> <span class="on-revision">on r{{.ReviewRevision}}</span>
 <p>{{.Body}}</p>
-{{if eq .ReviewRevision $.Review.Revision}}<form class="reply-form" method="post" action="/r/{{$.Review.ID}}/comment">
+{{if eq .ReviewRevision $.Review.Revision}}<form class="reply-form" method="post" action="/p/{{pesc $.Key}}/r/{{$.Review.ID}}/comment">
 <input type="hidden" name="parent" value="{{.ID}}">
 <input type="hidden" name="review_revision" value="{{$.Review.Revision}}">
 <input name="body" placeholder="reply"><button>Reply</button>
 </form>{{end}}
 </div>{{end}}
-<form class="comment-form" method="post" action="/r/{{$.Review.ID}}/comment">
+<form class="comment-form" method="post" action="/p/{{pesc $.Key}}/r/{{$.Review.ID}}/comment">
 <input type="hidden" name="review_revision" value="{{.Review.Revision}}">
 <input name="body" placeholder="comment on this revision"><button>Comment</button>
 </form>
 </aside>
-<form class="verdict" method="post" action="/r/{{.Review.ID}}/verdict">
+<form class="verdict" method="post" action="/p/{{pesc .Key}}/r/{{.Review.ID}}/verdict">
 <input type="hidden" name="revision" value="{{.Review.Revision}}">
 <button name="verdict" value="approved">Approve</button>
 <button name="verdict" value="changes-requested">Request changes</button>
@@ -693,10 +889,10 @@ var reviewTmpl = template.Must(template.New("review").Parse(`<!doctype html>
 // verdict controls that post the revision the reviewer SAW
 // (AC-review-verdict, AC-review-stale-guard).
 func (s *Server) review(w http.ResponseWriter, r *http.Request) {
-	s.renderReview(w, r.PathValue("reviewId"), "")
+	s.renderReview(w, r.PathValue("key"), r.PathValue("reviewId"), "")
 }
 
-func (s *Server) renderReview(w http.ResponseWriter, id, errMsg string) {
+func (s *Server) renderReview(w http.ResponseWriter, key, id, errMsg string) {
 	var rev reviewView
 	if err := s.get("/reviews/"+id, &rev); err != nil {
 		htmlError(w, err)
@@ -715,7 +911,7 @@ func (s *Server) renderReview(w http.ResponseWriter, id, errMsg string) {
 		s.eachComment("/comments?review="+url.QueryEscape(id), yield)
 	}
 	_ = reviewTmpl.Execute(w, map[string]any{
-		"Review": rev, "Deliverable": deliverable.Content,
+		"Review": rev, "Deliverable": deliverable.Content, "Key": key,
 		"Comments": iter.Seq[commentView](comments), "Error": errMsg,
 	})
 }
@@ -745,10 +941,10 @@ func (s *Server) reviewVerdict(w http.ResponseWriter, r *http.Request) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &apiErr)
-		s.renderReview(w, id, apiErr.Code+": "+apiErr.Message)
+		s.renderReview(w, r.PathValue("key"), id, apiErr.Code+": "+apiErr.Message)
 		return
 	}
-	http.Redirect(w, r, "/r/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/p/"+url.PathEscape(r.PathValue("key"))+"/r/"+id, http.StatusSeeOther)
 }
 
 // reviewComment anchors a comment (or reply) to the review at its
@@ -785,10 +981,10 @@ func (s *Server) reviewComment(w http.ResponseWriter, r *http.Request) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(body, &apiErr)
-		s.renderReview(w, id, apiErr.Code+": "+apiErr.Message)
+		s.renderReview(w, r.PathValue("key"), id, apiErr.Code+": "+apiErr.Message)
 		return
 	}
-	http.Redirect(w, r, "/r/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/p/"+url.PathEscape(r.PathValue("key"))+"/r/"+id, http.StatusSeeOther)
 }
 
 // renderMarkdown is a deliberately small formatter: headings,
