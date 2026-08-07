@@ -1115,44 +1115,70 @@ type threadTurn struct {
 	Text    string
 }
 
-// tokenText reconstructs a non-array transcript's text from the token
-// stream: a scalar renders directly, a nested value re-serializes.
+// tokenText re-serializes the value whose first token was already
+// consumed, emitting the structural separators the token stream drops
+// and preserving numeric tokens verbatim (the decoder runs with
+// UseNumber). Without this a non-array transcript rendered as
+// malformed pseudo-JSON and integers past 2^53 shifted (review 1889).
 func tokenText(first json.Token, dec *json.Decoder) string {
-	d, isDelim := first.(json.Delim)
-	if !isDelim {
-		if first == nil {
-			return "null"
-		}
-		raw, err := json.Marshal(first)
-		if err != nil {
-			return ""
-		}
-		return string(raw)
+	var out strings.Builder
+	type frame struct {
+		object bool
+		n      int // tokens emitted in this frame (object keys count)
 	}
-	depth := 1
-	out := string(d)
-	for depth > 0 {
+	var stack []frame
+
+	separate := func() {
+		if len(stack) == 0 {
+			return
+		}
+		f := &stack[len(stack)-1]
+		switch {
+		case f.object && f.n > 0 && f.n%2 == 0:
+			out.WriteString(",")
+		case f.object && f.n%2 == 1:
+			out.WriteString(":")
+		case !f.object && f.n > 0:
+			out.WriteString(",")
+		}
+		f.n++
+	}
+
+	write := func(tok json.Token) {
+		switch v := tok.(type) {
+		case json.Delim:
+			if v == '{' || v == '[' {
+				separate()
+				out.WriteString(string(v))
+				stack = append(stack, frame{object: v == '{'})
+				return
+			}
+			out.WriteString(string(v))
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		case json.Number:
+			separate()
+			out.WriteString(v.String())
+		default:
+			separate()
+			raw, err := json.Marshal(v)
+			if err != nil {
+				return
+			}
+			out.Write(raw)
+		}
+	}
+
+	write(first)
+	for len(stack) > 0 {
 		tok, err := dec.Token()
 		if err != nil {
-			return out
+			break
 		}
-		if dd, ok := tok.(json.Delim); ok {
-			switch dd {
-			case '{', '[':
-				depth++
-			case '}', ']':
-				depth--
-			}
-			out += string(dd)
-			continue
-		}
-		raw, err := json.Marshal(tok)
-		if err != nil {
-			return out
-		}
-		out += string(raw)
+		write(tok)
 	}
-	return out
+	return out.String()
 }
 
 // thread renders a transcript turn by turn with speakers
@@ -1177,6 +1203,7 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber() // transcript numbers keep their original tokens
 	envelope, err := dec.Token()
 	if err != nil {
 		htmlError(w, err)

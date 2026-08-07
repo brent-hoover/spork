@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -260,31 +261,49 @@ func sortedKeys(m map[string]bool) []string {
 type jsonArrayWriter struct {
 	w     http.ResponseWriter
 	first bool
+	err   error // the client stopped reading
+}
+
+func (a *jsonArrayWriter) write(b []byte) {
+	if a.err != nil {
+		return
+	}
+	if _, err := a.w.Write(b); err != nil {
+		a.err = err
+	}
 }
 
 func (a *jsonArrayWriter) open(name string) {
-	_, _ = a.w.Write([]byte(`,"` + name + `":[`))
+	a.write([]byte(`,"` + name + `":[`))
 	a.first = true
 }
 
 func (a *jsonArrayWriter) elem(raw []byte) {
 	if !a.first {
-		_, _ = a.w.Write([]byte{','})
+		a.write([]byte{','})
 	}
 	a.first = false
-	_, _ = a.w.Write(raw)
+	a.write(raw)
 }
 
 func (a *jsonArrayWriter) marshalElem(v any) error {
+	if a.err != nil {
+		return a.err
+	}
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 	a.elem(raw)
-	return nil
+	return a.err
 }
 
-func (a *jsonArrayWriter) close() { _, _ = a.w.Write([]byte{']'}) }
+func (a *jsonArrayWriter) close() { a.write([]byte{']'}) }
+
+// failed reports whether the client stopped reading — a disconnect
+// must abort the scan rather than let it run to completion holding a
+// read transaction and pinning the WAL (review 1889).
+func (a *jsonArrayWriter) failed() bool { return a.err != nil }
 
 // reviewMetaShadow is review.Review minus submissions, so the writer
 // can splice streamed full-content submissions into its place.
@@ -337,6 +356,9 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	// Issues stream one row at a time — bodies are unbounded strings.
 	arr.open("issues")
 	for _, id := range plan.issueIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
 		issue, err := issues.Get(tx, id)
 		if err != nil {
 			return // status committed; truncation is the only signal
@@ -365,6 +387,9 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		ids    []string
 	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", reviewIDs}} {
 		for _, id := range group.ids {
+			if arr.failed() {
+				return // the client stopped reading; abandon the scan
+			}
 			if err := comments.EachByAnchor(tx, group.column, id, func(c comments.Comment) error {
 				return arr.marshalElem(c)
 			}); err != nil {
@@ -376,6 +401,9 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 
 	arr.open("documents")
 	for _, d := range plan.docs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
 		docRaw, err := json.Marshal(d)
 		if err != nil {
 			return
@@ -399,6 +427,9 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 
 	arr.open("reviews")
 	for _, rv := range plan.reviews {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
 		shadow := reviewMetaShadow{
 			ID: rv.ID, Issue: rv.Issue, Branch: rv.Branch, Commit: rv.Commit,
 			DocVersion: rv.DocVersion, Session: rv.Session, Summary: rv.Summary,
@@ -428,6 +459,9 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 
 	arr.open("threads")
 	for _, id := range plan.threadIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
 		t, err := threads.Get(tx, id)
 		if err != nil {
 			return
@@ -482,6 +516,9 @@ func streamProjectEvents(tx *sql.Tx, projectID string, issueIDs []string, arr *j
 			raw = append(raw, '}')
 		}
 		arr.elem(raw)
+		if arr.failed() {
+			return fmt.Errorf("client stopped reading")
+		}
 	}
 	return rows.Err()
 }
