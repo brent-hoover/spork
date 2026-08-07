@@ -711,6 +711,10 @@ func canonicalUUIDv7(id string) bool {
 }
 
 func validateImportShapes(p *importPayload) *apiError {
+	exportIssues := make(map[string]bool, len(p.Issues))
+	for _, i := range p.Issues {
+		exportIssues[i.ID] = true
+	}
 	uuidOf := func(what, id string) *apiError {
 		// CON-uuid-keys pins entity primary keys to UUIDv7: version
 		// nibble 7, RFC 9562 variant. Shape validates FIRST — indexing
@@ -904,6 +908,20 @@ func validateImportShapes(p *importPayload) *apiError {
 			if payload.From != e.Subject {
 				return malformedImport("event %s files a relation-removed under %s but its payload's from is %s",
 					e.ID, e.Subject, payload.From)
+			}
+			// The source is always one of this export's issues — it IS
+			// the subject, and export scopes events by subject. The
+			// destination is too for parent_of, which cannot cross
+			// projects; a removed BLOCKS relation may name a foreign
+			// issue, and rejecting that would make a legitimate export
+			// unimportable (the cross-project gap in spec-gaps.md).
+			if !exportIssues[payload.From] {
+				return malformedImport("event %s snapshots a relation from %s, which this export does not carry",
+					e.ID, payload.From)
+			}
+			if payload.Kind == "parent_of" && !exportIssues[payload.To] {
+				return malformedImport("event %s snapshots a parent_of to %s, which this export does not carry",
+					e.ID, payload.To)
 			}
 		}
 	}

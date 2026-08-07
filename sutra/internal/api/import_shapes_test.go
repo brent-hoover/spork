@@ -71,7 +71,11 @@ func TestImportRejectsNonCanonicalPayloadIDs(t *testing.T) {
 	payload := func(rel string) string {
 		return `{"project":{"id":"` + project + `","key":"K","name":"N"},
 			"identities":[{"id":"` + actor + `","handle":"a","kind":"agent"}],
-			"issues":[],"comments":[],"labels":[],"issue_relations":[],
+			"issues":[
+				{"id":"` + issueA + `","project":"` + project + `","number":1,"status":"open","title":"a",
+				 "created":"2026-08-07T00:00:00.000000000Z","updated":"2026-08-07T00:00:00.000000000Z","subtree_revision":0},
+				{"id":"` + issueB + `","project":"` + project + `","number":2,"status":"open","title":"b",
+				 "created":"2026-08-07T00:00:00.000000000Z","updated":"2026-08-07T00:00:00.000000000Z","subtree_revision":0}],"comments":[],"labels":[],"issue_relations":[],
 			"documents":[],"threads":[],"reviews":[],
 			"events":[{"id":"` + eventID + `","kind":"issue.relation-removed",
 				"subject":"` + issueA + `","operation":"` + relation + `","actor":"` + actor + `",
@@ -123,7 +127,11 @@ func TestImportRejectsMisfiledRelationRemoved(t *testing.T) {
 	payload := func(subject string) string {
 		return `{"project":{"id":"` + project + `","key":"K","name":"N"},
 			"identities":[{"id":"` + actor + `","handle":"a","kind":"agent"}],
-			"issues":[],"comments":[],"labels":[],"issue_relations":[],
+			"issues":[
+				{"id":"` + issueA + `","project":"` + project + `","number":1,"status":"open","title":"a",
+				 "created":"2026-08-07T00:00:00.000000000Z","updated":"2026-08-07T00:00:00.000000000Z","subtree_revision":0},
+				{"id":"` + issueB + `","project":"` + project + `","number":2,"status":"open","title":"b",
+				 "created":"2026-08-07T00:00:00.000000000Z","updated":"2026-08-07T00:00:00.000000000Z","subtree_revision":0}],"comments":[],"labels":[],"issue_relations":[],
 			"documents":[],"threads":[],"reviews":[],
 			"events":[{"id":"` + eventID + `","kind":"issue.relation-removed",
 				"subject":"` + subject + `","operation":"` + relation + `","actor":"` + actor + `",
@@ -151,4 +159,61 @@ func TestImportRejectsMisfiledRelationRemoved(t *testing.T) {
 	if apiErr := validateImportShapes(meta); apiErr != nil {
 		t.Fatalf("correctly filed relation-removed rejected: %s", apiErr.message)
 	}
+}
+
+// TestImportRejectsDanglingRelationSnapshot pins that a relation-removed
+// snapshot names issues this export actually carries — except a removed
+// cross-project BLOCKS relation, whose destination is legitimately
+// foreign and whose rejection would make a valid export unimportable
+// (review 1932).
+func TestImportRejectsDanglingRelationSnapshot(t *testing.T) {
+	const (
+		project = "01900000-0000-7000-8000-000000000000"
+		actor   = "01900000-0000-7000-8000-00000000000f"
+		issueA  = "01900000-0000-7000-8000-000000000001"
+		foreign = "01900000-0000-7000-8000-0000000000ff"
+		relID   = "01900000-0000-7000-8000-000000000003"
+		eventID = "01900000-0000-7000-8000-000000000004"
+	)
+	payload := func(kind, subject, from, to string) string {
+		return `{"project":{"id":"` + project + `","key":"K","name":"N"},
+			"identities":[{"id":"` + actor + `","handle":"a","kind":"agent"}],
+			"issues":[{"id":"` + issueA + `","project":"` + project + `","number":1,"status":"open","title":"a",
+				"created":"2026-08-07T00:00:00.000000000Z","updated":"2026-08-07T00:00:00.000000000Z","subtree_revision":0}],
+			"comments":[],"labels":[],"issue_relations":[],
+			"documents":[],"threads":[],"reviews":[],
+			"events":[{"id":"` + eventID + `","kind":"issue.relation-removed",
+				"subject":"` + subject + `","operation":"` + relID + `","actor":"` + actor + `",
+				"created":"2026-08-07T00:00:00.000000000Z",
+				"payload":{"relation":"` + relID + `","kind":"` + kind + `","from":"` + from + `","to":"` + to + `"}}]}`
+	}
+	check := func(t *testing.T, body string, wantReject bool) {
+		t.Helper()
+		meta, apiErr := collectImportMeta(strings.NewReader(body))
+		if apiErr != nil {
+			t.Fatalf("payload did not parse: %s", apiErr.message)
+		}
+		apiErr = validateImportShapes(meta)
+		if wantReject && apiErr == nil {
+			t.Fatal("dangling relation snapshot accepted")
+		}
+		if !wantReject && apiErr != nil {
+			t.Fatalf("valid snapshot rejected: %s", apiErr.message)
+		}
+	}
+	// A source this export does not carry is dangling — and since the
+	// source is also the subject, the event is filed under nothing.
+	t.Run("foreign source", func(t *testing.T) {
+		check(t, payload("blocks", foreign, foreign, issueA), true)
+	})
+	// parent_of cannot cross projects, so a foreign child is dangling.
+	t.Run("foreign parent_of child", func(t *testing.T) {
+		check(t, payload("parent_of", issueA, issueA, foreign), true)
+	})
+	// A removed CROSS-PROJECT block legitimately names a foreign
+	// destination; the export carries the event because its subject is
+	// in scope.
+	t.Run("foreign blocks destination", func(t *testing.T) {
+		check(t, payload("blocks", issueA, issueA, foreign), false)
+	})
 }

@@ -148,6 +148,12 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 				if len(v.Body) == 0 {
 					return fmt.Errorf("comment %s omits body", v.ID)
 				}
+				if string(v.Body) == "null" {
+					// null is not an empty body: it is schema-invalid,
+					// and unmarshaling it would silently yield ""
+					// (review 1932).
+					return fmt.Errorf("comment %s body must not be null", v.ID)
+				}
 				// The shadow intercepted the value, so hand it back —
 				// the embedded struct is what the callback receives.
 				if err := json.Unmarshal(v.Body, &v.Comment.Body); err != nil {

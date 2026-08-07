@@ -81,7 +81,14 @@ proposed home (avspec field / kriya context / convention).
 IssueRelation carries bare from/to uuids, and import validates both ends
 resolve within the payload. A cross-project block therefore has no
 representable foreign endpoint — export omits it (now normative on the
-exportProject description) and a round-trip loses it. avspec's data model
+exportProject description) and a round-trip loses it. The asymmetry runs
+deeper than the relation table: a relation-REMOVED event for a
+cross-project block IS exported, because export scopes events by subject
+and the subject is the in-project source issue. Import therefore accepts
+a foreign `to` in that payload (rejecting it would make a valid export
+unimportable) while requiring both endpoints for parent_of, which cannot
+cross projects. So history crosses the boundary the live relation cannot
+— another face of the same missing decision. avspec's data model
 would need either an external-endpoint representation in ProjectExport or
 a constraint confining `blocks` to one project. Surfaced by roborev
 review 1805.
