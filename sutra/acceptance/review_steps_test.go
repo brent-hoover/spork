@@ -50,7 +50,8 @@ func (rw *crWorld) reviewUI(actorHandle string) (*httptest.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	ui := httptest.NewServer(web.New(rw.iw.s.server.URL, actor).Handler())
+	ui := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	ui.Config.Handler = web.New(rw.iw.s.server.URL, actor, strings.TrimPrefix(ui.URL, "http://")).Handler()
 	rw.uiServers = append(rw.uiServers, ui)
 	return ui, nil
 }

@@ -25,16 +25,21 @@ type Server struct {
 	client *http.Client
 	actor  string // identity id stamped on UI-driven mutations
 	// canonicalHosts is the independently configured host allowlist
-	// the mutation guard trusts. Trusting r.Host alone would let a
-	// DNS-rebound attacker origin satisfy a same-origin comparison
-	// against itself (review 1875); an empty list means the guard
-	// falls back to r.Host, which is safe only on loopback binds.
+	// the mutation guard trusts — ALWAYS non-empty (New derives it
+	// from the UI's own bind address when none is given). Trusting
+	// r.Host would let a DNS-rebound attacker origin satisfy a
+	// same-origin comparison against itself (reviews 1875, 1877).
 	canonicalHosts map[string]bool
 }
 
 // New builds the web handler. actor is the identity UI mutations act
 // as — the single-operator system has exactly one human at the
 // keyboard.
+// New builds the web handler. canonicalHosts is the Host allowlist
+// mutations require; callers pass the UI's own listen address (and any
+// alias it is reached through). It is NEVER empty in practice — the
+// caller's bind address is the minimum — because an empty list would
+// reopen the DNS-rebinding path the guard exists to close.
 func New(apiBase, actor string, canonicalHosts ...string) *Server {
 	hosts := map[string]bool{}
 	for _, h := range canonicalHosts {
@@ -74,11 +79,11 @@ func (s *Server) Handler() http.Handler {
 // launder, and the API itself is equally reachable to them directly.
 func (s *Server) sameOrigin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// The Host header itself is attacker-influenced under DNS
-		// rebinding: when canonical hosts are configured, the request
-		// must name one of them before any origin comparison means
-		// anything.
-		if len(s.canonicalHosts) > 0 && !s.canonicalHosts[r.Host] {
+		// The Host header is attacker-influenced under DNS rebinding,
+		// so it must name a CONFIGURED canonical host before any
+		// origin comparison means anything. No allowlist means no
+		// mutations — never an implicit trust of r.Host.
+		if !s.canonicalHosts[r.Host] {
 			http.Error(w, "unrecognized host", http.StatusForbidden)
 			return
 		}
@@ -854,14 +859,22 @@ func (s *Server) document(w http.ResponseWriter, r *http.Request) {
 	}
 	// Discussion spans every version: fetch the version list, then
 	// comments per version id.
-	var versions []struct {
+	// The version listing carries every version's content; decoding
+	// the whole array would buffer it, so elements stream one at a
+	// time and only the selector's id/number survive.
+	type versionRef struct {
 		ID     string `json:"id"`
 		Number int64  `json:"number"`
 	}
-	if err := s.get("/documents/"+id+"/versions", &versions); err != nil {
-		htmlError(w, err)
-		return
-	}
+	versions := []versionRef{}
+	s.eachArray("/documents/"+id+"/versions", func(dec *json.Decoder) bool {
+		var v versionRef
+		if err := dec.Decode(&v); err != nil {
+			return false
+		}
+		versions = append(versions, v)
+		return true
+	}, func() bool { return false })
 	// The discussion STREAMS into the template — the sequence decodes
 	// each comment lazily during execution, so an unbounded discussion
 	// never accumulates before rendering.

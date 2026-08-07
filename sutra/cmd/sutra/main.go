@@ -94,8 +94,11 @@ func run() error {
 	var uiServer *http.Server
 	if *uiAddr != "" {
 		uiServer = &http.Server{
-			Addr:              *uiAddr,
-			Handler:           web.New("http://"+*addr, *uiActor, splitHosts(*uiHosts)...).Handler(),
+			Addr: *uiAddr,
+			// The UI's own bind address is ALWAYS canonical; extra
+			// hosts (a reverse proxy's name) add to it. The allowlist
+			// is never empty, so the rebinding guard always applies.
+			Handler:           web.New("http://"+*addr, *uiActor, append([]string{*uiAddr}, splitHosts(*uiHosts)...)...).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {

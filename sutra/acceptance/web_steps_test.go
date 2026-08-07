@@ -47,7 +47,10 @@ func (ww *webWorld) open(path string) error {
 		if err != nil {
 			return err
 		}
-		ww.ui = httptest.NewServer(web.New(ww.iw.s.server.URL, actor).Handler())
+		// The UI declares its own listen host so the rebinding guard
+		// admits the scenario's own form posts.
+		ww.ui = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		ww.ui.Config.Handler = web.New(ww.iw.s.server.URL, actor, strings.TrimPrefix(ww.ui.URL, "http://")).Handler()
 	}
 	resp, err := ww.ui.Client().Get(ww.ui.URL + path)
 	if err != nil {
