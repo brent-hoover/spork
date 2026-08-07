@@ -85,24 +85,32 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 	}
 }
 
+type newCommentRequest struct {
+	Issue          *string `json:"issue"`
+	DocVersion     *string `json:"doc_version"`
+	Review         *string `json:"review"`
+	ReviewRevision *int64  `json:"review_revision"`
+	Parent         *string `json:"parent"`
+	Anchor         *string `json:"anchor"`
+	Author         string  `json:"author"`
+	Body           string  `json:"body"`
+}
+
 func (s *server) createComment(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Issue          *string `json:"issue"`
-			DocVersion     *string `json:"doc_version"`
-			Review         *string `json:"review"`
-			ReviewRevision *int64  `json:"review_revision"`
-			Parent         *string `json:"parent"`
-			Anchor         *string `json:"anchor"`
-			Author         string  `json:"author"`
-			Body           string  `json:"body"`
-		}
+	// The unbounded body decodes in the PREPARE stage — before the
+	// idempotency reservation takes SQLite's write lock — so a large
+	// comment never stalls unrelated mutations while parsing.
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req newCommentRequest
 		if apiErr := rejectExplicitNulls(r, &req, "issue", "doc_version", "review", "review_revision", "parent", "anchor", "author", "body"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Body == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "body is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "body is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(newCommentRequest)
 		if apiErr := requireActor(tx, req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}

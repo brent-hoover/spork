@@ -54,28 +54,34 @@ func resolveAnchor(tx *sql.Tx, project, issue *string) (threads.Anchor, string, 
 	return threads.Anchor{Project: project, Issue: issue}, subject, nil
 }
 
+type importThreadRequest struct {
+	Title      string          `json:"title"`
+	Transcript json.RawMessage `json:"transcript"`
+	Session    *string         `json:"session"`
+	Project    *string         `json:"project"`
+	Issue      *string         `json:"issue"`
+	Actor      string          `json:"actor"`
+}
+
 func (s *server) importThread(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Title      string          `json:"title"`
-			Transcript json.RawMessage `json:"transcript"`
-			Session    *string         `json:"session"`
-			Project    *string         `json:"project"`
-			Issue      *string         `json:"issue"`
-			Actor      string          `json:"actor"`
-		}
+	// The unbounded transcript decodes pre-lock (review 1871).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req importThreadRequest
 		// transcript is REQUIRED with an arbitrary-JSON value space —
 		// an explicit null is a legitimate VALUE for it, unlike the
 		// optional fields where null would fake absence.
 		if apiErr := rejectExplicitNulls(r, &req, "title", "session", "project", "issue", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Title == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "title is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "title is required"}
 		}
 		if len(req.Transcript) == 0 {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "transcript is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "transcript is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(importThreadRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

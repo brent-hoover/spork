@@ -42,25 +42,32 @@ type documentView struct {
 	Version docs.Version `json:"version"`
 }
 
+type newDocumentRequest struct {
+	Title      string  `json:"title"`
+	Issue      *string `json:"issue"`
+	TemplateID *string `json:"template_id"`
+	Content    *string `json:"content"`
+	Author     string  `json:"author"`
+}
+
 func (s *server) createDocument(w http.ResponseWriter, r *http.Request) {
 	project := r.PathValue("projectId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Title      string  `json:"title"`
-			Issue      *string `json:"issue"`
-			TemplateID *string `json:"template_id"`
-			Content    *string `json:"content"`
-			Author     string  `json:"author"`
-		}
+	// Unbounded content decodes in the PREPARE stage, before the
+	// write lock (review 1871).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req newDocumentRequest
 		if apiErr := rejectExplicitNulls(r, &req, "title", "issue", "template_id", "content", "author"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Title == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "title is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "title is required"}
 		}
 		if (req.TemplateID == nil) == (req.Content == nil) {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "exactly one of template_id or content is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "exactly one of template_id or content is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(newDocumentRequest)
 		if apiErr := requireActor(tx, req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -138,19 +145,25 @@ func (s *server) getDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, documentView{Document: doc, Version: version})
 }
 
+type saveVersionRequest struct {
+	Content *string `json:"content"`
+	Author  string  `json:"author"`
+}
+
 func (s *server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("documentId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Content *string `json:"content"`
-			Author  string  `json:"author"`
-		}
+	// Unbounded content decodes pre-lock (review 1871).
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req saveVersionRequest
 		if apiErr := rejectExplicitNulls(r, &req, "content", "author"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Content == nil {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "content is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "content is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(saveVersionRequest)
 		if apiErr := requireActor(tx, req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}

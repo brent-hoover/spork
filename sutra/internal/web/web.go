@@ -636,7 +636,9 @@ func (s *Server) eachArray(path string, decodeOne func(*json.Decoder) bool, onFa
 func (s *Server) eachThreadRef(path string, yield func(threadRef) bool) {
 	s.eachArray(path, func(dec *json.Decoder) bool {
 		var t threadRef
-		if err := dec.Decode(&t); err != nil {
+		if err := dec.Decode(&t); err != nil || t.ID == "" {
+			// A null or field-less element would render blank; the
+			// failure marker keeps the breakage visible.
 			return yield(threadFailure) && false
 		}
 		return yield(t)
@@ -647,7 +649,7 @@ func (s *Server) eachThreadRef(path string, yield func(threadRef) bool) {
 func (s *Server) eachEventRef(path string, yield func(eventRef) bool) {
 	s.eachArray(path, func(dec *json.Decoder) bool {
 		var e eventRef
-		if err := dec.Decode(&e); err != nil {
+		if err := dec.Decode(&e); err != nil || e.Kind == "" {
 			return yield(eventFailure) && false
 		}
 		return yield(e)
@@ -730,7 +732,9 @@ func (s *Server) eachComment(path string, yield func(commentView) bool) bool {
 	}
 	for dec.More() {
 		var c commentView
-		if err := dec.Decode(&c); err != nil {
+		if err := dec.Decode(&c); err != nil || c.ID == "" {
+			// Null elements and field-less objects render as blank
+			// rows otherwise — surface them as failures.
 			return yield(discussionFailure)
 		}
 		if !yield(c) {
