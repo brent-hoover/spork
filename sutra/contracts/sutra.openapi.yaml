@@ -1,7 +1,18 @@
 openapi: 3.0.3
 info:
   title: sutra
-  description: The single API surface — CLI, web UI, and external agents all speak this contract.
+  description: >-
+    The single API surface — CLI, web UI, and external agents all speak this
+    contract.
+
+
+    IDENTIFIERS: every `format: uuid` value is the CANONICAL LOWERCASE form
+    (RFC 9562 §4). Identifiers are compared as text at every layer — storage,
+    collision detection, reference resolution — so two casings of one uuid
+    would name one entity while behaving as two. Sutra only ever mints the
+    lowercase form; import rejects any other casing rather than rewriting it,
+    because event payloads are stored verbatim and carry identifiers inside
+    their bytes, where a rewrite of the surrounding columns could not reach.
   version: 0.2.0
 
 paths:
@@ -136,7 +147,9 @@ paths:
       summary: Import a project export
       description: >-
         Reconstructs a project from a previous export with UUIDs preserved
-        (AC-import-round-trip). Identities referenced by the export's records are
+        (AC-import-round-trip). Identifiers must be in the canonical lowercase
+        form declared in the API description; any other casing is rejected as
+        malformed rather than normalized. Identities referenced by the export's records are
         recreated from the export itself — never invented — so every actor and
         assignee resolves after import. Exported records are canonical
         serializations — read-time decorations like feed_watermark are never

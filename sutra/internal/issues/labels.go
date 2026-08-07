@@ -87,22 +87,33 @@ func CreateLabel(tx *sql.Tx, name string, color *string) (Label, error) {
 }
 
 // ListLabels returns every label, name-ordered.
-func ListLabels(tx *sql.Tx) ([]Label, error) {
+// LabelCursor streams labels from an opened query — names and colors
+// are unconstrained, so the catalog is never accumulated (review 1922).
+type LabelCursor struct{ rows *sql.Rows }
+
+// OpenLabels runs the catalog query ordered by name.
+func OpenLabels(tx *sql.Tx) (*LabelCursor, error) {
 	rows, err := tx.Query(`SELECT id, name, color FROM labels ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list labels: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	out := []Label{}
-	for rows.Next() {
-		var l Label
-		if err := rows.Scan(&l.ID, &l.Name, &l.Color); err != nil {
-			return nil, fmt.Errorf("scan label: %w", err)
-		}
-		out = append(out, l)
-	}
-	return out, rows.Err()
+	return &LabelCursor{rows: rows}, nil
 }
+
+func (c *LabelCursor) Each(fn func(Label) error) error {
+	for c.rows.Next() {
+		var l Label
+		if err := c.rows.Scan(&l.ID, &l.Name, &l.Color); err != nil {
+			return fmt.Errorf("scan label: %w", err)
+		}
+		if err := fn(l); err != nil {
+			return err
+		}
+	}
+	return c.rows.Err()
+}
+
+func (c *LabelCursor) Close() error { return c.rows.Close() }
 
 // GetLabel returns one label.
 // LabelIDsForProject returns the ids of every label attached to any

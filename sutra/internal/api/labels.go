@@ -56,12 +56,12 @@ func (s *server) listLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	labels, err := issues.ListLabels(tx)
+	cursor, err := issues.OpenLabels(tx)
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, labels)
+	streamArray(w, cursor)
 }
 
 // mutateLabel runs attach/detach under the shared guards (issue

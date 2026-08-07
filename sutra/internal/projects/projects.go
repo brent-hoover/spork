@@ -133,6 +133,44 @@ func GetTx(tx *sql.Tx, id string) (Project, error) {
 
 // List returns projects; archived ones only when includeArchived
 // (AC-project-archive: hidden from default listings).
+// Cursor streams projects from an opened query. Opening is separate
+// from iterating so a caller can commit an HTTP status only once the
+// read has started, and names and descriptions — unconstrained by the
+// contract — are never accumulated (review 1922).
+type Cursor struct{ rows *sql.Rows }
+
+// OpenList runs the listing query ordered by key.
+func OpenList(db *sql.DB, includeArchived bool) (*Cursor, error) {
+	query := `SELECT id, key, name, description, repo_path, default_branch, archived_at FROM projects`
+	if !includeArchived {
+		query += ` WHERE archived_at IS NULL`
+	}
+	query += ` ORDER BY key`
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	return &Cursor{rows: rows}, nil
+}
+
+func (c *Cursor) Each(fn func(Project) error) error {
+	for c.rows.Next() {
+		p, err := scanOne(c.rows)
+		if err != nil {
+			return err
+		}
+		if err := fn(p); err != nil {
+			return err
+		}
+	}
+	if err := c.rows.Err(); err != nil {
+		return fmt.Errorf("iterate projects: %w", err)
+	}
+	return nil
+}
+
+func (c *Cursor) Close() error { return c.rows.Close() }
+
 func List(db *sql.DB, includeArchived bool) ([]Project, error) {
 	query := `SELECT id, key, name, description, repo_path, default_branch, archived_at FROM projects`
 	if !includeArchived {

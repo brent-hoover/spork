@@ -135,11 +135,6 @@ func Get(tx *sql.Tx, id string) (Document, error) {
 	return d, nil
 }
 
-// ListByProject returns a project's documents.
-func ListByProject(tx *sql.Tx, project string) ([]Document, error) {
-	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE project = ? ORDER BY title`, project)
-}
-
 // VersionsEach streams a document's versions oldest-first — export
 // assembles gigabyte-capable content without accumulating it.
 func VersionsEach(tx *sql.Tx, documentID string, fn func(Version) error) error {
@@ -188,11 +183,6 @@ func Search(tx *sql.Tx, project *string, q string) ([]Document, error) {
 		args = append(args, *project)
 	}
 	return list(tx, query+` ORDER BY title`, args...)
-}
-
-// ListByIssue returns the documents tied to an issue.
-func ListByIssue(tx *sql.Tx, issue string) ([]Document, error) {
-	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE issue = ? ORDER BY title`, issue)
 }
 
 // Meta is the fixed-size facts about a document: identity, ownership,
@@ -258,6 +248,43 @@ func ids(tx *sql.Tx, query string, args ...any) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// DocumentCursor streams documents from an opened query — titles are
+// unconstrained, so a listing never accumulates them (review 1922).
+type DocumentCursor struct{ rows *sql.Rows }
+
+// OpenByProject and OpenByIssue run the two document listings, each
+// ordered by title.
+func OpenByProject(tx *sql.Tx, project string) (*DocumentCursor, error) {
+	return openDocuments(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE project = ? ORDER BY title`, project)
+}
+
+func OpenByIssue(tx *sql.Tx, issue string) (*DocumentCursor, error) {
+	return openDocuments(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE issue = ? ORDER BY title`, issue)
+}
+
+func openDocuments(tx *sql.Tx, query string, args ...any) (*DocumentCursor, error) {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list documents: %w", err)
+	}
+	return &DocumentCursor{rows: rows}, nil
+}
+
+func (c *DocumentCursor) Each(fn func(Document) error) error {
+	for c.rows.Next() {
+		var d Document
+		if err := c.rows.Scan(&d.ID, &d.Project, &d.Issue, &d.Title, &d.CurrentVersion); err != nil {
+			return fmt.Errorf("scan document: %w", err)
+		}
+		if err := fn(d); err != nil {
+			return err
+		}
+	}
+	return c.rows.Err()
+}
+
+func (c *DocumentCursor) Close() error { return c.rows.Close() }
 
 func list(tx *sql.Tx, query string, args ...any) ([]Document, error) {
 	rows, err := tx.Query(query, args...)

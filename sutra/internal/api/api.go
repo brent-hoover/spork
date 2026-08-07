@@ -169,6 +169,43 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_, _ = w.Write(raw)
 }
 
+// rowCursor is a query that has ALREADY opened and is ready to deliver
+// rows one at a time.
+type rowCursor[T any] interface {
+	Each(fn func(T) error) error
+	Close() error
+}
+
+// streamArray serves a JSON array from an opened cursor. Every listing
+// uses it for two reasons: records marshal and write one at a time, so
+// an unconstrained field (a title, a display name, a label color) is
+// resident once rather than for the whole catalog (review 1922); and
+// the caller opens the query BEFORE calling, so a query that fails to
+// start is still an error status rather than a truncated 200
+// (review 1918).
+func streamArray[T any](w http.ResponseWriter, c rowCursor[T]) {
+	defer func() { _ = c.Close() }()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte{'['})
+	first := true
+	if err := c.Each(func(v T) error {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		if !first {
+			_, _ = w.Write([]byte{','})
+		}
+		first = false
+		_, writeErr := w.Write(raw)
+		return writeErr
+	}); err != nil {
+		return // status committed; truncation is the only signal
+	}
+	_, _ = w.Write([]byte{']'})
+}
+
 func writeError(w http.ResponseWriter, e *apiError) {
 	writeJSON(w, e.status, errorEnvelope(e))
 }
@@ -265,12 +302,12 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	include := r.URL.Query().Get("includeArchived") == "true"
-	list, err := projects.List(s.db, include)
+	cursor, err := projects.OpenList(s.db, include)
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	streamArray(w, cursor)
 }
 
 func (s *server) getProject(w http.ResponseWriter, r *http.Request) {
@@ -369,13 +406,10 @@ func eventJSON(e events.Event) ([]byte, error) {
 
 func (s *server) listIdentities(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
-	list, err := identity.List(s.db, kind)
+	cursor, err := identity.OpenList(s.db, kind)
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
 	}
-	if list == nil {
-		list = []identity.Identity{}
-	}
-	writeJSON(w, http.StatusOK, list)
+	streamArray(w, cursor)
 }

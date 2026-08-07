@@ -91,7 +91,12 @@ func NewUUIDv7() string {
 }
 
 // List returns identities, optionally filtered by kind.
-func List(db *sql.DB, kind string) ([]Identity, error) {
+// Cursor streams identities from an opened query — display names are
+// unconstrained, so a listing never accumulates them (review 1922).
+type Cursor struct{ rows *sql.Rows }
+
+// OpenList runs the listing query ordered by handle.
+func OpenList(db *sql.DB, kind string) (*Cursor, error) {
 	query, args := `SELECT id, handle, kind, display_name FROM identities ORDER BY handle`, []any{}
 	if kind != "" {
 		query, args = `SELECT id, handle, kind, display_name FROM identities WHERE kind = ? ORDER BY handle`, []any{kind}
@@ -100,20 +105,26 @@ func List(db *sql.DB, kind string) ([]Identity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list identities: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []Identity
-	for rows.Next() {
-		var i Identity
-		if err := rows.Scan(&i.ID, &i.Handle, &i.Kind, &i.DisplayName); err != nil {
-			return nil, fmt.Errorf("scan identity: %w", err)
-		}
-		out = append(out, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate identities: %w", err)
-	}
-	return out, nil
+	return &Cursor{rows: rows}, nil
 }
+
+func (c *Cursor) Each(fn func(Identity) error) error {
+	for c.rows.Next() {
+		var i Identity
+		if err := c.rows.Scan(&i.ID, &i.Handle, &i.Kind, &i.DisplayName); err != nil {
+			return fmt.Errorf("scan identity: %w", err)
+		}
+		if err := fn(i); err != nil {
+			return err
+		}
+	}
+	if err := c.rows.Err(); err != nil {
+		return fmt.Errorf("iterate identities: %w", err)
+	}
+	return nil
+}
+
+func (c *Cursor) Close() error { return c.rows.Close() }
 
 // Lookup returns the identity an id names, or NotFoundError.
 func Lookup(tx *sql.Tx, id string) (Identity, error) {

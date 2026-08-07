@@ -189,3 +189,29 @@ Note the verification suite caught the omission mechanically: adding an
 operation failed REQ-cli-parity ("every api operation has a command")
 until the CLI's operations table carried it too. The parity scenario is
 doing exactly what it was written to do.
+
+## No declared scale bound: export planning holds one id per record
+
+Export streams every record, but its PLAN holds an id list per group —
+issues, documents, versions, reviews, threads, identities, labels — plus
+the sets needed to filter relations and deduplicate threads. That is
+O(records) of fixed-size ids, not O(content), and it is the shape review
+1902 and review 1920 explicitly asked for ("retain only bounded IDs in
+the plan and stream the records").
+
+Review 1922 then asked for the next step down: iterate directly from
+ordered SQL or stage the dependency metadata in temporary disk-backed
+tables, so a project with enough records cannot exhaust memory before
+the response starts. Both remedies are real, and both are architecture
+decisions rather than local fixes — concurrent cursors held open across
+one read transaction, or a temp-table staging layer — and the
+cross-referencing sets (which relations are in scope, which threads have
+already been emitted) do not disappear under either.
+
+The underlying gap is that the contract declares no scale bound and no
+pagination for any listing or export: with no stated ceiling on records
+per project, no implementation can be shown to be bounded, only smaller.
+Deciding this needs a spec answer — pagination in the contract, a
+declared maximum project size, or an accepted memory profile stated in
+terms of record count. Surfaced by roborev review 1922 (declined pending
+that decision).

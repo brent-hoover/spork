@@ -441,12 +441,12 @@ func (s *server) listProjectDocuments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
-	list, err := docs.ListByProject(tx, r.PathValue("projectId"))
+	cursor, err := docs.OpenByProject(tx, r.PathValue("projectId"))
 	if err != nil {
 		writeError(w, docErrorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	streamArray(w, cursor)
 }
 
 func (s *server) listIssueDocuments(w http.ResponseWriter, r *http.Request) {
@@ -460,12 +460,12 @@ func (s *server) listIssueDocuments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, issueErrorFrom(err))
 		return
 	}
-	list, err := docs.ListByIssue(tx, r.PathValue("issueId"))
+	cursor, err := docs.OpenByIssue(tx, r.PathValue("issueId"))
 	if err != nil {
 		writeError(w, docErrorFrom(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	streamArray(w, cursor)
 }
 
 // ---------------------------------------------------------------- templates
