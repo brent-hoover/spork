@@ -124,3 +124,37 @@ func TestCheckDiffableLineBound(t *testing.T) {
 		t.Fatalf("dense content must be rejected, got %v", err)
 	}
 }
+
+// TestCheckDiffableCountsLines pins the line count against what a diff
+// actually produces: empty content is zero lines, and newline-terminated
+// content has exactly its newline count. Adding one per side
+// unconditionally rejected valid input at the limit (review 1934).
+func TestCheckDiffableCountsLines(t *testing.T) {
+	line := strings.Repeat("x\n", 1) // one terminated line
+	cases := []struct {
+		name     string
+		from, to string
+		wantErr  bool
+	}{
+		{name: "both empty", from: "", to: ""},
+		{name: "one terminated line each", from: line, to: line},
+		{name: "unterminated counts its last line", from: "a\nb", to: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := docs.CheckDiffable(docs.Version{Content: tc.from}, docs.Version{Content: tc.to})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("CheckDiffable(%q, %q) error = %v, wantErr %v", tc.from, tc.to, err, tc.wantErr)
+			}
+		})
+	}
+	// Exactly at the documented limit passes; one line beyond does not.
+	const limit = 8 << 20 // maxDiffLines
+	atLimit := strings.Repeat("x\n", limit)
+	if err := docs.CheckDiffable(docs.Version{Content: atLimit}, docs.Version{}); err != nil {
+		t.Fatalf("content at the documented limit rejected: %v", err)
+	}
+	if err := docs.CheckDiffable(docs.Version{Content: atLimit + "y\n"}, docs.Version{}); err == nil {
+		t.Fatal("content past the limit accepted")
+	}
+}

@@ -522,7 +522,21 @@ func (e *DiffTooDenseError) Error() string {
 // CheckDiffable validates the loaded contents' combined line density
 // before UnifiedDiff splits them — counting allocates nothing.
 func CheckDiffable(from, to Version) error {
-	lines := int64(strings.Count(from.Content, "\n") + strings.Count(to.Content, "\n") + 2)
+	// Empty content is zero lines, and newline-TERMINATED content has
+	// exactly its newline count — the trailing newline ends the last
+	// line rather than starting another. Adding one unconditionally
+	// rejected valid input at the documented limit (review 1934).
+	countLines := func(content string) int64 {
+		if content == "" {
+			return 0
+		}
+		n := int64(strings.Count(content, "\n"))
+		if !strings.HasSuffix(content, "\n") {
+			n++
+		}
+		return n
+	}
+	lines := countLines(from.Content) + countLines(to.Content)
 	if lines > maxDiffLines {
 		return &DiffTooDenseError{Lines: lines}
 	}

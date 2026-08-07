@@ -109,32 +109,59 @@ func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 // bounded metadata for validation.
 func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 	meta := &importPayload{}
+	// Every unbounded string validation does not READ collapses to a
+	// presence-preserving sentinel, not just the content fields: pass B
+	// re-reads the originals from the spool, so the metadata pass never
+	// needs the value itself. Titles are checked for presence only, and
+	// display names, anchors, descriptions and repo paths are not read
+	// at all. What stays is what validation compares: handles, keys,
+	// label names and colors, sessions, and deliverable refs
+	// (review 1934).
 	const sentinel = "x"
+	strip := func(v string) string {
+		if v == "" {
+			return ""
+		}
+		return sentinel
+	}
+	stripPtr := func(v *string) *string {
+		if v == nil || *v == "" {
+			return v
+		}
+		s := sentinel
+		return &s
+	}
 	versionsByDoc := map[string][]docs.Version{}
 	subsByReview := map[string][]review.Submission{}
 	apiErr := walkImport(body, importCallbacks{
-		project:  func(p projects.Project) error { meta.Project = p; return nil },
-		identity: func(v identity.Identity) error { meta.Identities = append(meta.Identities, v); return nil },
+		project: func(p projects.Project) error {
+			p.Description, p.RepoPath = stripPtr(p.Description), stripPtr(p.RepoPath)
+			meta.Project = p
+			return nil
+		},
+		identity: func(v identity.Identity) error {
+			v.DisplayName = stripPtr(v.DisplayName)
+			meta.Identities = append(meta.Identities, v)
+			return nil
+		},
 		issue: func(v issues.Issue) error {
 			// Bodies are unbounded and irrelevant to validation; the
 			// insert pass re-reads them from the spool.
-			if v.Body != nil && *v.Body != "" {
-				s := sentinel
-				v.Body = &s
-			}
+			v.Body = stripPtr(v.Body)
+			v.Title = strip(v.Title)
 			meta.Issues = append(meta.Issues, v)
 			return nil
 		},
 		comment: func(c comments.Comment) error {
-			if c.Body != "" {
-				c.Body = sentinel
-			}
+			c.Body = strip(c.Body)
+			c.Anchor = stripPtr(c.Anchor)
 			meta.Comments = append(meta.Comments, c)
 			return nil
 		},
 		label:    func(v issues.Label) error { meta.Labels = append(meta.Labels, v); return nil },
 		relation: func(v issues.Relation) error { meta.IssueRelations = append(meta.IssueRelations, v); return nil },
 		document: func(d docs.Document) error {
+			d.Title = strip(d.Title)
 			meta.Documents = append(meta.Documents, documentExport{Document: d})
 			return nil
 		},
@@ -147,16 +174,14 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			if len(t.Transcript) > 0 {
 				t.Transcript = json.RawMessage(`0`)
 			}
+			t.Title = strip(t.Title)
 			meta.Threads = append(meta.Threads, t)
 			return nil
 		},
 		review: func(rv review.Review) error {
 			// Summaries are unbounded and validation never reads them;
 			// the insert pass re-reads originals from the spool.
-			if rv.Summary != nil && *rv.Summary != "" {
-				s := sentinel
-				rv.Summary = &s
-			}
+			rv.Summary = stripPtr(rv.Summary)
 			meta.Reviews = append(meta.Reviews, rv)
 			return nil
 		},

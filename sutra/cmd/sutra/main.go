@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -193,10 +194,11 @@ func dialableAddr(a net.Addr) string {
 	}
 	host := ip.String()
 	if tcp.Zone != "" {
-		// A link-local address is unusable without its zone, and the
-		// zone delimiter must be percent-ENCODED inside a URL host —
-		// a bare "%" would make the URL unparseable (review 1930).
-		host += "%25" + tcp.Zone
+		// A link-local address is unusable without its zone, and a zone
+		// is an opaque interface name that may itself contain
+		// URL-reserved bytes — so the whole identifier is escaped, not
+		// just the delimiter (reviews 1930, 1934).
+		host += "%25" + url.PathEscape(tcp.Zone)
 	}
 	return net.JoinHostPort(host, strconv.Itoa(tcp.Port))
 }

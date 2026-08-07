@@ -217,3 +217,56 @@ func TestImportRejectsDanglingRelationSnapshot(t *testing.T) {
 		check(t, payload("blocks", issueA, issueA, foreign), false)
 	})
 }
+
+// TestImportMetaStripsUnreadStrings pins WHICH strings the validation
+// pass keeps. Anything it does not read collapses to a presence
+// sentinel, so pass A's memory is bounded by the fields validation
+// actually compares — pass B re-reads the originals from the spool, so
+// nothing is lost (review 1934).
+func TestImportMetaStripsUnreadStrings(t *testing.T) {
+	const (
+		project = "01900000-0000-7000-8000-000000000000"
+		actor   = "01900000-0000-7000-8000-00000000000f"
+		issueA  = "01900000-0000-7000-8000-000000000001"
+	)
+	big := strings.Repeat("t", 4096)
+	body := `{"project":{"id":"` + project + `","key":"K","name":"N","description":"` + big + `","repo_path":"` + big + `"},
+		"identities":[{"id":"` + actor + `","handle":"a","kind":"agent","display_name":"` + big + `"}],
+		"issues":[{"id":"` + issueA + `","project":"` + project + `","number":1,"status":"open","title":"` + big + `",
+			"created":"2026-08-07T00:00:00.000000000Z","updated":"2026-08-07T00:00:00.000000000Z","subtree_revision":0}],
+		"comments":[],"labels":[],"issue_relations":[],"documents":[],"threads":[],"reviews":[],"events":[]}`
+
+	meta, apiErr := collectImportMeta(strings.NewReader(body))
+	if apiErr != nil {
+		t.Fatalf("payload did not parse: %s", apiErr.message)
+	}
+	retained := map[string]string{
+		"issue title":         meta.Issues[0].Title,
+		"identity display":    derefOr(meta.Identities[0].DisplayName),
+		"project description": derefOr(meta.Project.Description),
+		"project repo_path":   derefOr(meta.Project.RepoPath),
+	}
+	for what, got := range retained {
+		if len(got) > 1 {
+			t.Errorf("%s retained %d bytes; validation never reads it", what, len(got))
+		}
+		if got == "" {
+			t.Errorf("%s lost its presence; validation checks non-emptiness", what)
+		}
+	}
+	// The handle IS compared for uniqueness, so it must survive intact.
+	if meta.Identities[0].Handle != "a" {
+		t.Errorf("handle was stripped, but uniqueness checks compare it: %q", meta.Identities[0].Handle)
+	}
+	// And the payload still validates — stripping preserves presence.
+	if apiErr := validateImportShapes(meta); apiErr != nil {
+		t.Fatalf("stripped metadata no longer validates: %s", apiErr.message)
+	}
+}
+
+func derefOr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
