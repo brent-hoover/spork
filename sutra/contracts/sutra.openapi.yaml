@@ -2081,11 +2081,8 @@ components:
           description: Identity recorded as the actor on the creation event.
 
     Document:
-      # Intentionally OPEN: DocumentView composes it through allOf, and
-      # additionalProperties cannot see sibling allOf members — closing
-      # it would reject the composed view's own `version` property.
-      # importProject still decodes documents strictly.
       type: object
+      additionalProperties: false
       required: [id, project, title]
       properties:
         id: { type: string, format: uuid }
@@ -2095,13 +2092,23 @@ components:
         current_version: { type: string, format: uuid, nullable: true }
 
     DocumentView:
-      description: A document together with its resolved version's content (latest by default).
-      allOf:
-        - $ref: '#/components/schemas/Document'
-        - type: object
-          required: [version]
-          properties:
-            version: { $ref: '#/components/schemas/DocVersion' }
+      description: >-
+        A document together with its resolved version's content (latest
+        by default). Its properties are spelled out rather than composed
+        from Document via allOf: composition would force Document to stay
+        open (additionalProperties cannot see sibling allOf members), and
+        Document must be CLOSED so import-carried documents reject unknown
+        fields exactly as the importer does.
+      type: object
+      additionalProperties: false
+      required: [id, project, title, version]
+      properties:
+        id: { type: string, format: uuid }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid, nullable: true }
+        title: { type: string }
+        current_version: { type: string, format: uuid, nullable: true }
+        version: { $ref: '#/components/schemas/DocVersion' }
 
     NewDocument:
       type: object

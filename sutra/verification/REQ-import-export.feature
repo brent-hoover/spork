@@ -25,6 +25,11 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
+  Scenario: a resubmission-superseded verdict is rejected at import
+    Given an export payload whose review carries a verdict superseded by a later resubmission
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
   Scenario: a verdict-bearing review without its latest verdict event is rejected at import
     Given an export payload whose approved review carries no latest verdict event
     When it is imported

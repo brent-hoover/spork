@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -93,12 +94,24 @@ func run() error {
 	// sibling modules); it serves on its own listener when enabled.
 	var uiServer *http.Server
 	if *uiAddr != "" {
+		// The rebinding guard compares the browser's Host against
+		// canonical authorities. A wildcard or ephemeral bind is not
+		// one — the browser sends a real name — so those binds REQUIRE
+		// an explicit -ui-hosts rather than silently 403ing every
+		// mutation (review 1881).
+		canonical := splitHosts(*uiHosts)
+		if authority := browserAuthority(*uiAddr); authority != "" {
+			canonical = append([]string{authority}, canonical...)
+		}
+		if len(canonical) == 0 {
+			return fmt.Errorf("-ui-addr %q is a wildcard or ephemeral bind: pass -ui-hosts with the canonical host(s) browsers use", *uiAddr)
+		}
 		uiServer = &http.Server{
 			Addr: *uiAddr,
 			// The UI's own bind address is ALWAYS canonical; extra
 			// hosts (a reverse proxy's name) add to it. The allowlist
 			// is never empty, so the rebinding guard always applies.
-			Handler:           web.New("http://"+*addr, *uiActor, append([]string{*uiAddr}, splitHosts(*uiHosts)...)...).Handler(),
+			Handler:           web.New("http://"+*addr, *uiActor, canonical...).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -132,6 +145,25 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+// browserAuthority returns the Host value a browser would send for a
+// bind address, or "" when the bind cannot imply one: wildcard hosts
+// (empty, 0.0.0.0, ::) serve many names, and port 0 is not known
+// until listen time.
+func browserAuthority(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		return ""
+	}
+	if port == "0" {
+		return ""
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // splitHosts parses the comma-separated canonical UI host list.

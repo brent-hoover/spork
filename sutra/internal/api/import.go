@@ -154,7 +154,10 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			// compact — raw payloads are unbounded and the insert pass
 			// re-reads the original bytes from the spool anyway.
 			switch e.Kind {
-			case "review.approved", "review.changes-requested":
+			case "review.approved", "review.changes-requested", "review.resubmitted":
+				// Resubmissions are read by the stale-verdict ordering
+				// check; without their review reference that guard
+				// could never match (review 1881).
 				var p struct {
 					Review string `json:"review"`
 				}

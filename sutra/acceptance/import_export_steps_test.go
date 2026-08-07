@@ -489,6 +489,33 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return nil
 		})
 	})
+	sc.Step(`^an export payload whose review carries a verdict superseded by a later resubmission$`, func() error {
+		if err := ie.ensureExport(); err != nil {
+			return err
+		}
+		return ie.tamper(func(p map[string]any) error {
+			r, err := firstReview(p)
+			if err != nil {
+				return err
+			}
+			// Append a resubmission event AFTER the review's verdict:
+			// live, that would return the review to open.
+			evs, ok := p["events"].([]any)
+			if !ok {
+				return fmt.Errorf("export carries no events")
+			}
+			p["events"] = append(evs, map[string]any{
+				"id":        "01900000-0000-7000-8000-0000000000ff",
+				"kind":      "review.resubmitted",
+				"subject":   r["issue"],
+				"operation": "01900000-0000-7000-8000-0000000000fe",
+				"actor":     ie.actorForImp,
+				"payload":   map[string]any{"review": r["id"]},
+				"created":   "2026-08-06T23:59:59Z",
+			})
+			return nil
+		})
+	})
 	sc.Step(`^an export payload whose approved review carries no latest verdict event$`, func() error {
 		if err := ie.ensureExport(); err != nil {
 			return err
