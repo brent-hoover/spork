@@ -35,6 +35,24 @@ type importPayload struct {
 	Events         []events.Event      `json:"events"`
 }
 
+// queueTimestampLayout is the internal sort key's format: RFC 3339 in
+// UTC with FIXED-WIDTH nanoseconds. assigned_at is compared as TEXT, so
+// two contract-valid encodings of the same instant must not compare
+// differently — and a later instant written with a trimmed fraction
+// must not compare smaller than an earlier one.
+const queueTimestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// canonicalTimestamp reformats a contract-valid RFC 3339 timestamp into
+// the lexically sortable form. Callers have already validated the value
+// (timeOf), so a parse failure here is a programming error, not input.
+func canonicalTimestamp(value string) (string, error) {
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize timestamp %q: %w", value, err)
+	}
+	return t.UTC().Format(queueTimestampLayout), nil
+}
+
 func malformedImport(format string, args ...any) *apiError {
 	return &apiError{status: http.StatusBadRequest, code: "malformed-import", message: fmt.Sprintf(format, args...)}
 }
@@ -53,6 +71,17 @@ func malformedImport(format string, args ...any) *apiError {
 func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 	actor := r.URL.Query().Get("actor")
 	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		// Duplicate properties reject BEFORE anything decodes: a repeat
+		// at any depth makes the payload ambiguous, and verbatim
+		// transcripts and event payloads would carry that ambiguity
+		// into storage (review 1900). The scan streams and retains no
+		// value, so it costs one pass over the spool, not memory.
+		if apiErr := scanDuplicateKeys(r.Body); apiErr != nil {
+			return nil, apiErr
+		}
+		if apiErr := rewindBody(r); apiErr != nil {
+			return nil, apiErr
+		}
 		meta, apiErr := collectImportMeta(r.Body)
 		if apiErr != nil {
 			return nil, apiErr
@@ -241,10 +270,17 @@ func insertImportStream(tx *sql.Tx, body io.Reader, meta *importPayload) *apiErr
 		issue: func(i issues.Issue) error {
 			// assigned_at is internal FIFO state absent from the
 			// contract (spec gap); imported assignees inherit the
-			// issue's updated stamp as their queue position.
+			// issue's updated stamp as their queue position. The stamp
+			// is CANONICALIZED first: the queue orders that column
+			// lexicographically, and contract-valid RFC 3339 admits
+			// trimmed fractions and non-UTC offsets, neither of which
+			// sorts chronologically as text (review 1900).
 			var assignedAt *string
 			if i.Assignee != nil {
-				at := i.Updated
+				at, err := canonicalTimestamp(i.Updated)
+				if err != nil {
+					return fail("issue", err)
+				}
 				assignedAt = &at
 			}
 			if _, err := tx.Exec(`INSERT INTO issues (id, project, number, title, body, status, assignee, assigned_at, subtree_revision, created, updated)

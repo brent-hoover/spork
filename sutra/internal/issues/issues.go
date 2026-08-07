@@ -21,20 +21,22 @@ import (
 // format IS the ordering (review 1898).
 const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
-// Issue mirrors the contract's Issue schema. Body is declared LAST so
-// it serializes last: metadata scans (the UI's ownership guards) stop
-// before an unbounded body instead of materializing it to skip it
-// (review 1895). JSON property order is insignificant to consumers.
+// Issue mirrors the contract's Issue schema. Declaration order IS wire
+// order, and the UI's ownership guards depend on it: Project comes
+// FIRST so a scope check stops before title and labels — which the
+// contract leaves unbounded (review 1900) — and Body comes LAST so a
+// metadata scan never materializes it at all (review 1895). JSON
+// property order is insignificant to consumers.
 type Issue struct {
 	ID              string  `json:"id"`
-	Number          int64   `json:"number"`
-	Title           string  `json:"title"`
-	Status          string  `json:"status"`
 	Project         string  `json:"project"`
+	Number          int64   `json:"number"`
+	Status          string  `json:"status"`
 	Assignee        *string `json:"assignee,omitempty"`
 	Created         string  `json:"created"`
 	Updated         string  `json:"updated"`
 	SubtreeRevision int64   `json:"subtree_revision"`
+	Title           string  `json:"title"`
 	Labels          []Label `json:"labels,omitempty"`
 	Body            *string `json:"body,omitempty"`
 }

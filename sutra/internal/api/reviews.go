@@ -125,6 +125,16 @@ func rejectExplicitNulls(r *http.Request, into any, fields ...string) *apiError 
 			return &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("%s must not be null", field)}
 		}
 	}
+	if apiErr := rewindBody(r); apiErr != nil {
+		return apiErr
+	}
+	return decodeBody(r, into)
+}
+
+// rewindBody returns a captured body to its start so a second pass can
+// read it. Every idempotent route captures its body up front, so a
+// non-seekable body here is a wiring error, not client input.
+func rewindBody(r *http.Request) *apiError {
 	seeker, ok := r.Body.(io.Seeker)
 	if !ok {
 		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: "request body is not rewindable"}
@@ -132,7 +142,7 @@ func rejectExplicitNulls(r *http.Request, into any, fields ...string) *apiError 
 	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
 		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("rewind body: %v", err)}
 	}
-	return decodeBody(r, into)
+	return nil
 }
 
 // scanExplicitNulls lexes the body's top-level object byte by byte

@@ -55,7 +55,7 @@ type exportPlan struct {
 // Cross-project blocks relations cannot round-trip through a
 // single-project export and are excluded — normative on the
 // exportProject contract description and logged in spec-gaps.md.
-func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
+func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (exportPlan, error) {
 	var plan exportPlan
 	var err error
 	if plan.meta.Project, err = projects.GetTx(tx, projectID); err != nil {
@@ -64,7 +64,7 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 	issueIDSet := map[string]bool{}
 	labelSet := map[string]issues.Label{}
 	identityIDs := map[string]bool{}
-	irows, err := tx.Query(`SELECT id, assignee FROM issues WHERE project = ? ORDER BY number`, projectID)
+	irows, err := tx.QueryContext(ctx, `SELECT id, assignee FROM issues WHERE project = ? ORDER BY number`, projectID)
 	if err != nil {
 		return plan, err
 	}
@@ -102,7 +102,7 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 	slices.SortFunc(plan.meta.Labels, func(a, b issues.Label) int { return strings.Compare(a.Name, b.Name) })
 
 	plan.meta.IssueRelations = []issues.Relation{}
-	rows, err := tx.Query(`SELECT id, kind, from_issue, to_issue FROM issue_relations`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, from_issue, to_issue FROM issue_relations`)
 	if err != nil {
 		return plan, err
 	}
@@ -126,7 +126,7 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 		return plan, err
 	}
 	for _, d := range plan.docs {
-		vrows, err := tx.Query(`SELECT id, author FROM doc_versions WHERE document = ? ORDER BY number`, d.ID)
+		vrows, err := tx.QueryContext(ctx, `SELECT id, author FROM doc_versions WHERE document = ? ORDER BY number`, d.ID)
 		if err != nil {
 			return plan, err
 		}
@@ -168,7 +168,7 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 		ids    []string
 	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", reviewIDs}} {
 		for _, id := range group.ids {
-			arows, err := tx.Query(`SELECT DISTINCT author FROM comments WHERE `+group.column+` = ?`, id)
+			arows, err := tx.QueryContext(ctx, `SELECT DISTINCT author FROM comments WHERE `+group.column+` = ?`, id)
 			if err != nil {
 				return plan, err
 			}
@@ -212,7 +212,7 @@ func assembleExportPlan(tx *sql.Tx, projectID string) (exportPlan, error) {
 	// rows themselves stream in feed order at write time. The project
 	// predicate lives in the query, so only in-scope events are read —
 	// no global actor scan, no per-actor probe (review 1898).
-	arows, err := tx.Query(`SELECT DISTINCT actor FROM events
+	arows, err := tx.QueryContext(ctx, `SELECT DISTINCT actor FROM events
 		WHERE subject = ?1 OR subject IN (SELECT id FROM issues WHERE project = ?1)`, projectID)
 	if err != nil {
 		return plan, err
@@ -253,20 +253,44 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
+// writeState is the response's SINGLE failure flag. Nested array
+// writers share it with their parent, and every framing byte goes
+// through the writer, so a disconnect noticed while streaming one
+// document's versions stops the outer document loop too instead of
+// loading another version first (review 1900).
+type writeState struct{ err error }
+
 // jsonArrayWriter streams a JSON array element by element.
 type jsonArrayWriter struct {
 	w     http.ResponseWriter
 	first bool
-	err   error // the client stopped reading
+	st    *writeState
+}
+
+func newArrayWriter(w http.ResponseWriter) *jsonArrayWriter {
+	return &jsonArrayWriter{w: w, st: &writeState{}}
+}
+
+// nested opens an inner array sharing this writer's failure state.
+func (a *jsonArrayWriter) nested() *jsonArrayWriter {
+	return &jsonArrayWriter{w: a.w, first: true, st: a.st}
 }
 
 func (a *jsonArrayWriter) write(b []byte) {
-	if a.err != nil {
+	if a.st.err != nil {
 		return
 	}
 	if _, err := a.w.Write(b); err != nil {
-		a.err = err
+		a.st.err = err
 	}
+}
+
+// comma emits the separator before an element unless it is the first.
+func (a *jsonArrayWriter) comma() {
+	if !a.first {
+		a.write([]byte{','})
+	}
+	a.first = false
 }
 
 func (a *jsonArrayWriter) open(name string) {
@@ -275,23 +299,20 @@ func (a *jsonArrayWriter) open(name string) {
 }
 
 func (a *jsonArrayWriter) elem(raw []byte) {
-	if !a.first {
-		a.write([]byte{','})
-	}
-	a.first = false
+	a.comma()
 	a.write(raw)
 }
 
 func (a *jsonArrayWriter) marshalElem(v any) error {
-	if a.err != nil {
-		return a.err
+	if a.st.err != nil {
+		return a.st.err
 	}
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 	a.elem(raw)
-	return a.err
+	return a.st.err
 }
 
 func (a *jsonArrayWriter) close() { a.write([]byte{']'}) }
@@ -299,7 +320,7 @@ func (a *jsonArrayWriter) close() { a.write([]byte{']'}) }
 // failed reports whether the client stopped reading — a disconnect
 // must abort the scan rather than let it run to completion holding a
 // read transaction and pinning the WAL (review 1889).
-func (a *jsonArrayWriter) failed() bool { return a.err != nil }
+func (a *jsonArrayWriter) failed() bool { return a.st.err != nil }
 
 // reviewMetaShadow is review.Review minus submissions, so the writer
 // can splice streamed full-content submissions into its place.
@@ -334,7 +355,7 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	plan, err := assembleExportPlan(tx, r.PathValue("projectId"))
+	plan, err := assembleExportPlan(r.Context(), tx, r.PathValue("projectId"))
 	if err != nil {
 		writeError(w, errorFrom(err))
 		return
@@ -346,8 +367,8 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw[:len(raw)-1])
-	arr := &jsonArrayWriter{w: w}
+	arr := newArrayWriter(w)
+	arr.write(raw[:len(raw)-1])
 
 	// Issues stream one row at a time — bodies are unbounded strings.
 	arr.open("issues")
@@ -404,20 +425,17 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		if !arr.first {
-			_, _ = w.Write([]byte{','})
-		}
-		arr.first = false
-		_, _ = w.Write([]byte(`{"document":`))
-		_, _ = w.Write(docRaw)
-		_, _ = w.Write([]byte(`,"versions":[`))
-		inner := &jsonArrayWriter{w: w, first: true}
+		arr.comma()
+		arr.write([]byte(`{"document":`))
+		arr.write(docRaw)
+		arr.write([]byte(`,"versions":[`))
+		inner := arr.nested()
 		if err := docs.VersionsEach(tx, d.ID, func(v docs.Version) error {
 			return inner.marshalElem(v)
 		}); err != nil {
 			return
 		}
-		_, _ = w.Write([]byte(`]}`))
+		arr.write([]byte(`]}`))
 	}
 	arr.close()
 
@@ -437,19 +455,16 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		if !arr.first {
-			_, _ = w.Write([]byte{','})
-		}
-		arr.first = false
-		_, _ = w.Write(metaRaw[:len(metaRaw)-1])
-		_, _ = w.Write([]byte(`,"submissions":[`))
-		inner := &jsonArrayWriter{w: w, first: true}
+		arr.comma()
+		arr.write(metaRaw[:len(metaRaw)-1])
+		arr.write([]byte(`,"submissions":[`))
+		inner := arr.nested()
 		if err := eachSubmission(tx, rv.ID, func(sub review.Submission) error {
 			return inner.marshalElem(sub)
 		}); err != nil {
 			return
 		}
-		_, _ = w.Write([]byte(`]}`))
+		arr.write([]byte(`]}`))
 	}
 	arr.close()
 
@@ -462,10 +477,7 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		if !arr.first {
-			_, _ = w.Write([]byte{','})
-		}
-		arr.first = false
+		arr.comma()
 		// Transcript bytes go straight to the wire — no aggregate
 		// buffer sized to them (review 1885).
 		if apiErr := writeThreadJSON(w, t); apiErr != nil {
@@ -473,7 +485,7 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	arr.close()
-	_, _ = w.Write([]byte{'}'})
+	arr.write([]byte{'}'})
 }
 
 // streamProjectEvents walks the project's slice of the feed in order,

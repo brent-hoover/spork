@@ -235,14 +235,17 @@ func (s *server) guardCurrentAnchor(tx *sql.Tx, t threads.Thread) *apiError {
 // RawMessage or via MarshalJSON) would compact insignificant
 // whitespace and break AC-thread-import's verbatim guarantee.
 func threadMetaJSON(t threads.Thread) ([]byte, *apiError) {
+	// Anchors FIRST: the UI's scope check reads project and issue and
+	// stops there, so neither the session nor the unbounded title is
+	// ever decoded on the way (review 1900).
 	shadow := struct {
 		ID         string  `json:"id"`
-		Title      string  `json:"title"`
-		Session    *string `json:"session"`
 		Project    *string `json:"project,omitempty"`
 		Issue      *string `json:"issue,omitempty"`
 		ImportedAt string  `json:"imported_at"`
-	}{t.ID, t.Title, t.Session, t.Project, t.Issue, t.ImportedAt}
+		Session    *string `json:"session"`
+		Title      string  `json:"title"`
+	}{t.ID, t.Project, t.Issue, t.ImportedAt, t.Session, t.Title}
 	raw, err := json.Marshal(shadow)
 	if err != nil {
 		return nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("encode thread: %v", err)}

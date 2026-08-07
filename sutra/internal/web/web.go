@@ -198,7 +198,12 @@ func (s *Server) scanFields(path string, want map[string]any, stopKeys ...string
 		}
 		dst, wanted := want[key]
 		if !wanted {
-			// Skipped values are bounded metadata by construction.
+			// Skipping DOES materialize the value, so the invariant is
+			// positional, not incidental: every record puts its
+			// ownership ids ahead of any unbounded field (titles,
+			// labels, sessions, content), and callers pass a stop key
+			// for the first unbounded one. Nothing here may be reached
+			// by a scan that has not already found what it wants.
 			var skip json.RawMessage
 			if err := dec.Decode(&skip); err != nil {
 				return err
@@ -263,7 +268,12 @@ func (s *Server) threadProject(threadID string) (string, error) {
 	// an issue-only thread must not be scanned past its anchors.
 	path := "/threads/" + url.PathEscape(threadID)
 	var project, issueID string
-	if err := s.scanFields(path, map[string]any{"project": &project, "issue": &issueID}, "transcript"); err != nil {
+	// An issue-only thread omits "project" entirely, so the wanted-count
+	// never completes and only a stop key ends the scan: session and
+	// title both follow the anchors and both precede the transcript,
+	// so stopping at the first of them keeps the unbounded title
+	// unread as well (review 1900).
+	if err := s.scanFields(path, map[string]any{"project": &project, "issue": &issueID}, "session", "title", "transcript"); err != nil {
 		return "", err
 	}
 	if project != "" {

@@ -43,8 +43,12 @@ func TestAdmitLargeBodyWaitsForTheSlot(t *testing.T) {
 			admittedAt <- time.Time{}
 			return
 		}
-		defer release()
-		admittedAt <- time.Now()
+		at := time.Now()
+		// Release BEFORE signalling: signalling first would let the
+		// assertion inspect the slot while this goroutine still
+		// legitimately holds it (review 1900).
+		release()
+		admittedAt <- at
 	}()
 
 	released := time.Now()
