@@ -144,7 +144,13 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 	subsByReview := map[string][]review.Submission{}
 	apiErr := walkImport(body, importCallbacks{
 		project: func(p projects.Project) error {
+			// Name is checked for presence, DefaultBranch only written;
+			// the key stays whole because collisions report it. The 201
+			// reads the project back from the store, so stripping here
+			// cannot reach the response (review 1938).
+			p.Name = strip(p.Name)
 			p.Description, p.RepoPath = stripPtr(p.Description), stripPtr(p.RepoPath)
+			p.DefaultBranch = stripPtr(p.DefaultBranch)
 			meta.Project = p
 			return nil
 		},

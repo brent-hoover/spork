@@ -254,8 +254,9 @@ func (s *server) listDocVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Existence resolves before the stream commits a 200.
-	if _, err := docs.Get(tx, r.PathValue("documentId")); err != nil {
+	// Existence resolves before the stream commits a 200 — and needs
+	// no more than existence (review 1938).
+	if _, err := docs.MetaByID(tx, r.PathValue("documentId")); err != nil {
 		writeError(w, docErrorFrom(err))
 		return
 	}
@@ -369,7 +370,8 @@ func (s *server) linkDocumentToIssue(w http.ResponseWriter, r *http.Request) {
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		doc, err := docs.Get(tx, id)
+		// Project and issue anchor only, under the write lock.
+		doc, err := docs.MetaByID(tx, id)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}
@@ -412,7 +414,8 @@ func (s *server) unlinkDocumentFromIssue(w http.ResponseWriter, r *http.Request)
 		if apiErr := requireActor(tx, actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		doc, err := docs.Get(tx, id)
+		// Project and issue anchor only, under the write lock.
+		doc, err := docs.MetaByID(tx, id)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}

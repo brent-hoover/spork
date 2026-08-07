@@ -469,12 +469,28 @@ func (c *client) generic(args []string) error {
 	return nil
 }
 
+// expectDelim consumes one structural token and requires it to be the
+// expected delimiter.
+func expectDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != want {
+		return fmt.Errorf("malformed listing: expected %q, found %v", want, tok)
+	}
+	return nil
+}
+
 // emitIssueList walks the listing's issues array element by element —
 // issue bodies are unbounded, so the list never re-materializes as one
 // value.
 func (c *client) emitIssueList(body io.Reader) error {
 	dec := json.NewDecoder(body)
-	if _, err := dec.Token(); err != nil { // '{'
+	// Delimiters are CHECKED, not merely consumed: a truncated or
+	// wrong-shaped response must fail rather than print a plausible
+	// listing (review 1938).
+	if err := expectDelim(dec, '{'); err != nil {
 		return err
 	}
 	for dec.More() {
@@ -483,7 +499,7 @@ func (c *client) emitIssueList(body io.Reader) error {
 			return err
 		}
 		if keyTok == "issues" {
-			if _, err := dec.Token(); err != nil { // '['
+			if err := expectDelim(dec, '['); err != nil {
 				return err
 			}
 			yamlMode := c.flags["yaml"] == "true"
@@ -515,8 +531,23 @@ func (c *client) emitIssueList(body io.Reader) error {
 				first = false
 				_, _ = c.env.Stdout.Write(elem)
 			}
-			if _, err := dec.Token(); err != nil { // ']'
+			if err := expectDelim(dec, ']'); err != nil {
 				return err
+			}
+			// The envelope must CLOSE and the stream must END. Without
+			// this, a response truncated right after the issues array
+			// printed as a complete listing.
+			for dec.More() {
+				var skip json.RawMessage
+				if err := dec.Decode(&skip); err != nil {
+					return err
+				}
+			}
+			if err := expectDelim(dec, '}'); err != nil {
+				return err
+			}
+			if _, err := dec.Token(); err != io.EOF {
+				return fmt.Errorf("listing carries trailing data")
 			}
 			if !yamlMode {
 				_, _ = fmt.Fprintln(c.env.Stdout, "\n]")

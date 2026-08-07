@@ -432,7 +432,8 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 				_ = read.Rollback()
 				return nil, docErrorFrom(err)
 			}
-			doc, err := docs.Get(read, version.Document)
+			// The deliverable check compares projects, nothing more.
+			doc, err := docs.MetaByID(read, version.Document)
 			_ = read.Rollback()
 			if err != nil {
 				return nil, docErrorFrom(err)
@@ -802,7 +803,8 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 				_ = read.Rollback()
 				return nil, docErrorFrom(err)
 			}
-			doc, err := docs.Get(read, version.Document)
+			// The deliverable check compares projects, nothing more.
+			doc, err := docs.MetaByID(read, version.Document)
 			_ = read.Rollback()
 			if err != nil {
 				return nil, docErrorFrom(err)
