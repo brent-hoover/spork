@@ -44,7 +44,7 @@ type exportPlan struct {
 	issueIDs   []string
 	docs       []docs.Document
 	versionIDs []string
-	reviews    []review.Review // metadata only; submissions stream
+	reviewIDs  []string // ids only; each review loads at write time
 	threadIDs  []string
 }
 
@@ -146,23 +146,21 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 		_ = vrows.Close()
 	}
 
-	// Reviews: metadata only; submissions stream with content later.
+	// Reviews: IDS ONLY. Summaries are unbounded, so the plan keeps no
+	// review records — each loads at write time, one at a time, exactly
+	// like every other content-bearing group (review 1902).
 	for _, id := range plan.issueIDs {
-		list, err := review.List(tx, id, "", "")
-		if err != nil {
-			return plan, err
-		}
-		for _, r := range list {
+		if err := review.ListEach(tx, id, "", "", func(r review.Review) error {
 			identityIDs[r.Author] = true
-			plan.reviews = append(plan.reviews, r)
+			plan.reviewIDs = append(plan.reviewIDs, r.ID)
+			return nil
+		}); err != nil {
+			return plan, err
 		}
 	}
 
 	// Comment authors, via metadata-only scans per anchor.
-	reviewIDs := make([]string, 0, len(plan.reviews))
-	for _, r := range plan.reviews {
-		reviewIDs = append(reviewIDs, r.ID)
-	}
+	reviewIDs := plan.reviewIDs
 	for _, group := range []struct {
 		column string
 		ids    []string
@@ -395,14 +393,10 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	arr.close()
 
 	arr.open("comments")
-	reviewIDs := make([]string, 0, len(plan.reviews))
-	for _, rv := range plan.reviews {
-		reviewIDs = append(reviewIDs, rv.ID)
-	}
 	for _, group := range []struct {
 		column string
 		ids    []string
-	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", reviewIDs}} {
+	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", plan.reviewIDs}} {
 		for _, id := range group.ids {
 			if arr.failed() {
 				return // the client stopped reading; abandon the scan
@@ -440,9 +434,13 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	arr.close()
 
 	arr.open("reviews")
-	for _, rv := range plan.reviews {
+	for _, reviewID := range plan.reviewIDs {
 		if arr.failed() {
 			return // the client stopped reading; abandon the scan
+		}
+		rv, err := review.Get(tx, reviewID)
+		if err != nil {
+			return // status committed; truncation is the only signal
 		}
 		shadow := reviewMetaShadow{
 			ID: rv.ID, Issue: rv.Issue, Branch: rv.Branch, Commit: rv.Commit,

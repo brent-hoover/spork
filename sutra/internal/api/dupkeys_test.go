@@ -69,6 +69,48 @@ func TestScanDuplicateKeys(t *testing.T) {
 	}
 }
 
+// TestScanDuplicateKeysBoundsKeyMemory pins that the budget covers all
+// OPEN objects together and is released as each closes. Sibling objects
+// may therefore carry unlimited names in total — only one nesting path
+// is ever live — while a single object cannot exceed the budget.
+func TestScanDuplicateKeysBoundsKeyMemory(t *testing.T) {
+	const keyLen = 600
+	name := func(i int) string { return fmt.Sprintf("%0*d", keyLen, i) }
+
+	// Sequential siblings, far past the budget in total: each closes
+	// before the next opens, so the live set is one key.
+	var siblings strings.Builder
+	siblings.WriteByte('[')
+	for i := range 4000 { // 4000 * 600B = 2.4 MiB of names, budget 1 MiB
+		if i > 0 {
+			siblings.WriteByte(',')
+		}
+		fmt.Fprintf(&siblings, `{%q:1}`, name(i))
+	}
+	siblings.WriteByte(']')
+	if apiErr := scanDuplicateKeys(strings.NewReader(siblings.String())); apiErr != nil {
+		t.Fatalf("sequential objects rejected: %q", apiErr.message)
+	}
+
+	// One object holding more than the budget at once.
+	var fat strings.Builder
+	fat.WriteByte('{')
+	for i := range 4000 {
+		if i > 0 {
+			fat.WriteByte(',')
+		}
+		fmt.Fprintf(&fat, `%q:1`, name(i))
+	}
+	fat.WriteByte('}')
+	apiErr := scanDuplicateKeys(strings.NewReader(fat.String()))
+	if apiErr == nil {
+		t.Fatal("an object exceeding the key budget was accepted")
+	}
+	if !strings.Contains(apiErr.message, "scan budget") {
+		t.Fatalf("expected a budget rejection, got %q", apiErr.message)
+	}
+}
+
 // TestScanDuplicateKeysStreamsValues pins the memory property the scan
 // exists to preserve: a large value is walked, never retained. The
 // reader counts what it hands out so the test fails if the scan starts

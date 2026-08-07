@@ -221,6 +221,39 @@ func TestTrailingJSON400Replays(t *testing.T) {
 	}
 }
 
+// TestDuplicatePropertiesRejectOnEveryMutation pins that the ambiguity
+// rule guards the whole API, not just imports: a transcript the server
+// would store VERBATIM must not carry a repeated property, or exporting
+// and re-importing it could not reproduce what was stored. Sibling
+// objects repeating a name stay legal (review 1902).
+func TestDuplicatePropertiesRejectOnEveryMutation(t *testing.T) {
+	srv, db := startAPI(t)
+	dup := `{"handle":"a","handle":"b","kind":"agent"}`
+	status, body := post(t, srv, "/identities", "kdup", dup)
+	if status != http.StatusBadRequest {
+		t.Fatalf("duplicate property accepted: %d %s", status, body)
+	}
+	if !strings.Contains(body, "repeats property") {
+		t.Fatalf("rejection does not name the cause: %s", body)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM identities`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("ambiguous body mutated: %d identities", count)
+	}
+	// The rejection settles: the corrected retry replays the 400.
+	status2, body2 := post(t, srv, "/identities", "kdup", `{"handle":"a","kind":"agent"}`)
+	if status2 != status || body2 != body {
+		t.Fatalf("corrected retry must replay the duplicate 400: %d %s", status2, body2)
+	}
+	// Repeats across SIBLING objects are ordinary valid JSON.
+	if status, body := post(t, srv, "/identities", "ksib", `{"handle":"sib","kind":"agent"}`); status != http.StatusCreated {
+		t.Fatalf("valid body rejected: %d %s", status, body)
+	}
+}
+
 // TestOversizedBody400Replays pins that a body-read failure settles its
 // key: the valid same-key retry replays the 400 without mutating.
 func TestOversizedBody400Replays(t *testing.T) {

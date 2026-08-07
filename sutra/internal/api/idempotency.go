@@ -251,6 +251,23 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 		return
 	}
 
+	// No ambiguous JSON enters the system. A repeated property at any
+	// depth is rejected here, before any handler decodes and before the
+	// reservation takes the write lock, so a verbatim-stored transcript
+	// or payload can never carry an ambiguity that a later export would
+	// have to reproduce — and what this API accepts always re-imports
+	// (review 1902). Streaming scan: it costs one pass over the already
+	// captured body, not memory. Rejection settles the key like any
+	// other malformed body.
+	if apiErr := scanDuplicateKeys(r.Body); apiErr != nil {
+		s.settleRejection(w, operation, key, apiErr)
+		return
+	}
+	if apiErr := rewindBody(r); apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+
 	var prepped any
 	if prepare != nil {
 		var apiErr *apiError

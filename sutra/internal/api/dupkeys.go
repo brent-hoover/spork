@@ -10,63 +10,69 @@ import (
 )
 
 // Duplicate JSON properties are ambiguous: encoding/json keeps the last
-// value, so an import could store one value while a different consumer
-// of the same bytes reads another. walkImport rejects repeats among the
-// envelope's own keys, but records decode straight into structs, where
-// a repeat silently wins. Event payloads and thread transcripts make
-// that worse — they are stored VERBATIM and re-served, so an ambiguous
-// object outlives the import (review 1900).
+// value, so the server could store one value while a different consumer
+// of the same bytes reads another. Thread transcripts and event payloads
+// make that worse — they are stored VERBATIM and re-served, so the
+// ambiguity outlives the request (review 1900).
 //
-// The scan is a lexer over the spooled body, not a decode: it retains
-// only the key names of the objects currently OPEN, never a value. A
-// transcript with a million turns costs one turn's key set, because
-// each closes before the next opens.
+// EVERY mutating body is scanned, not just imports: a transcript the
+// API accepts must survive export and re-import unchanged, so both
+// doors have to apply the same rule (review 1902).
+//
+// The scan is a lexer, not a decode: it retains only the property names
+// of the objects currently OPEN, never a value. A transcript with a
+// million turns costs one turn's key set, because each closes before
+// the next opens.
 const (
 	// maxScanDepth matches encoding/json's own nesting limit, so the
 	// scan never rejects a payload the decoder would have accepted.
 	maxScanDepth = 10000
-	// maxObjectKeys bounds one object's key set. Every schema in the
-	// contract is closed (additionalProperties: false) and the importer
-	// runs DisallowUnknownFields, so a real record has a handful of
-	// properties; transcripts nest arbitrary JSON, but an object with
-	// more keys than this is a memory attack, not a payload.
-	maxObjectKeys = 1 << 16
-	// maxKeyBytes bounds one property name. Longer names appear only
-	// inside verbatim transcripts and payloads, where they are still
-	// JSON objects whose keys this scan must compare in full — a
-	// truncated comparison would collide two distinct long names.
-	maxKeyBytes = 1 << 20
+	// maxKeyMemory bounds the TOTAL property-name bytes retained across
+	// every open object — the only figure that actually bounds the
+	// scan. Per-object caps do not: 65,536 keys of 1 MiB each is 64 GiB
+	// (review 1902). Real records carry a handful of short names, and
+	// arbitrary transcript JSON would need a megabyte of names live on
+	// ONE nesting path to reach this.
+	maxKeyMemory = 1 << 20
 )
 
-// scanDuplicateKeys walks the whole JSON value, rejecting an object
-// that repeats a property name at ANY depth. It reads the body once
-// and holds no values.
+// scanDuplicateKeys walks one JSON value, rejecting an object that
+// repeats a property name at ANY depth. It reads the body once and
+// holds no values. An EMPTY body passes: whether a body is required is
+// the handler's business, not this scan's.
 func scanDuplicateKeys(body io.Reader) *apiError {
 	l := &jsonLexer{br: bufio.NewReaderSize(body, 64<<10)}
+	if _, err := l.peek(); errors.Is(err, io.EOF) {
+		return nil
+	}
 	if err := l.value(); err != nil {
 		return dupScanError(err)
 	}
-	// A trailing value after the payload is malformed; walkImport
-	// rejects it too, and agreeing here keeps the two in step.
+	// Trailing data after the value is malformed; the decoders reject
+	// it too, and agreeing here keeps the two in step.
 	if _, err := l.next(); !errors.Is(err, io.EOF) {
 		if err != nil {
 			return dupScanError(err)
 		}
-		return malformedImport("export payload carries trailing data")
+		return badBody("carries trailing data")
 	}
 	return nil
 }
 
+func badBody(format string, args ...any) *apiError {
+	return &apiError{status: http.StatusBadRequest, code: "bad-request",
+		message: "malformed request body: " + fmt.Sprintf(format, args...)}
+}
+
 func dupScanError(err error) *apiError {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return malformedImport("export payload ended mid-value")
+		return badBody("ended mid-value")
 	}
 	var dup *duplicateKeyError
 	if errors.As(err, &dup) {
-		return &apiError{status: http.StatusBadRequest, code: "bad-request",
-			message: fmt.Sprintf("malformed request body: object repeats property %q", dup.key)}
+		return badBody("object repeats property %q", dup.key)
 	}
-	return malformedImport("scan export payload: %v", err)
+	return badBody("%v", err)
 }
 
 type duplicateKeyError struct{ key string }
@@ -75,8 +81,9 @@ func (e *duplicateKeyError) Error() string { return "duplicate property " + e.ke
 
 // jsonLexer walks JSON structure byte by byte, keeping no values.
 type jsonLexer struct {
-	br    *bufio.Reader
-	depth int
+	br       *bufio.Reader
+	depth    int
+	keyBytes int // property-name bytes live across all open objects
 }
 
 // next returns the next significant byte.
@@ -132,6 +139,8 @@ func (l *jsonLexer) object() error {
 	defer func() { l.depth-- }()
 
 	seen := map[string]bool{}
+	held := 0
+	defer func() { l.keyBytes -= held }() // this object's names go out of scope
 	c, err := l.peek()
 	if err != nil {
 		return err
@@ -155,9 +164,10 @@ func (l *jsonLexer) object() error {
 		if seen[key] {
 			return &duplicateKeyError{key: key}
 		}
-		if len(seen) >= maxObjectKeys {
-			return fmt.Errorf("object carries more than %d properties", maxObjectKeys)
+		if l.keyBytes += len(key); l.keyBytes > maxKeyMemory {
+			return fmt.Errorf("property names exceed the %d-byte scan budget", maxKeyMemory)
 		}
+		held += len(key)
 		seen[key] = true
 		if c, err = l.next(); err != nil {
 			return err
@@ -231,8 +241,9 @@ func (l *jsonLexer) str(keep bool) (string, error) {
 		}
 		if keep {
 			raw = append(raw, c)
-			if len(raw) > maxKeyBytes {
-				return "", fmt.Errorf("property name longer than %d bytes", maxKeyBytes)
+			// One name cannot outgrow the whole budget.
+			if l.keyBytes+len(raw) > maxKeyMemory {
+				return "", fmt.Errorf("property names exceed the %d-byte scan budget", maxKeyMemory)
 			}
 		}
 		if escaped {

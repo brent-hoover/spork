@@ -142,3 +142,22 @@ by that scan, but the server still loads and ships every version's
 content for data the page discards. A metadata-only listing variant would need a
 contract addition (a new operation or a response-shape parameter).
 Surfaced by roborev review 1873.
+
+## No contract bound on JSON property names in verbatim values
+
+Thread transcripts and event payloads are arbitrary JSON stored and
+re-served verbatim, and the contract bounds neither their nesting nor
+their property names. Duplicate properties make such a value ambiguous
+(encoding/json keeps the last), so every mutating body is scanned and a
+repeat at any depth rejects — applied at EVERY door, so anything the API
+accepts survives export and re-import.
+
+That scan needs one implementation-level bound the contract does not
+provide: 1 MiB of property-name bytes live across all currently-open
+objects (nesting depth reuses encoding/json's own 10000 limit, so the
+scan never rejects what the decoder would accept). Real records carry a
+handful of short names; only hand-built adversarial JSON reaches it.
+It is nonetheless a cap below an unconstrained contract — the same class
+as the SQLite value-length bound already logged. If transcripts should
+be bounded, the contract should say so; if not, the bound needs a
+declared home. Surfaced by roborev review 1902.

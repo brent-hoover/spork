@@ -71,17 +71,8 @@ func malformedImport(format string, args ...any) *apiError {
 func (s *server) importProject(w http.ResponseWriter, r *http.Request) {
 	actor := r.URL.Query().Get("actor")
 	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
-		// Duplicate properties reject BEFORE anything decodes: a repeat
-		// at any depth makes the payload ambiguous, and verbatim
-		// transcripts and event payloads would carry that ambiguity
-		// into storage (review 1900). The scan streams and retains no
-		// value, so it costs one pass over the spool, not memory.
-		if apiErr := scanDuplicateKeys(r.Body); apiErr != nil {
-			return nil, apiErr
-		}
-		if apiErr := rewindBody(r); apiErr != nil {
-			return nil, apiErr
-		}
+		// Duplicate properties have already rejected: idempotentPrepared
+		// scans EVERY mutating body before any handler decodes it.
 		meta, apiErr := collectImportMeta(r.Body)
 		if apiErr != nil {
 			return nil, apiErr

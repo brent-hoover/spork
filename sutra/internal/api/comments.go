@@ -53,7 +53,11 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 		}
 		return target.ID, nil
 	case docVersion != nil:
-		version, err := docs.VersionByID(tx, *docVersion)
+		// Metadata only: this needs the version's document id, and the
+		// content is unbounded — loading it here would run under the
+		// write lock the idempotency reservation already holds
+		// (review 1902).
+		version, err := docs.VersionMetaByID(tx, *docVersion)
 		if err != nil {
 			return "", docErrorFrom(err)
 		}
