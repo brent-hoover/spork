@@ -918,6 +918,11 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanS
 				// verdict covered. The live system never stores it.
 				return malformedImport("review %s doc submission %d must not carry stored content", r.ID, sub.Revision)
 			}
+			if sub.BaseCommit != nil {
+				// base_commit belongs to the code deliverable shape
+				// exclusively — the shapes never mix.
+				return malformedImport("review %s doc submission %d must not carry base_commit", r.ID, sub.Revision)
+			}
 		}
 	}
 	latest := r.Submissions[len(r.Submissions)-1]

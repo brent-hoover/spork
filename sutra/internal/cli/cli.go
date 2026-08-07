@@ -480,8 +480,8 @@ func (c *client) emitIssueList(body io.Reader) error {
 				if yamlMode {
 					// Each element emits as one YAML sequence item as
 					// it decodes — the listing never accumulates.
-					var generic any
-					if err := json.Unmarshal(elem, &generic); err != nil {
+					generic, err := decodeNumeric(elem)
+					if err != nil {
 						return err
 					}
 					emitted = true
@@ -518,12 +518,12 @@ func (c *client) emitIssueList(body io.Reader) error {
 // identical content either way (AC-cli-yaml).
 func (c *client) emit(v any) error {
 	if c.flags["yaml"] == "true" {
-		var generic any
 		raw, err := json.Marshal(v)
 		if err != nil {
 			return err
 		}
-		if err := json.Unmarshal(raw, &generic); err != nil {
+		generic, err := decodeNumeric(raw)
+		if err != nil {
 			return err
 		}
 		writeYAML(c.env.Stdout, generic, 0)
@@ -606,8 +606,21 @@ func emptyLiteral(v any) string {
 	return "[]"
 }
 
+// decodeNumeric decodes JSON with UseNumber so integers past 2^53
+// survive the trip into YAML verbatim (AC-cli-yaml content parity).
+func decodeNumeric(raw []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var generic any
+	if err := dec.Decode(&generic); err != nil {
+		return nil, err
+	}
+	return generic, nil
+}
+
 // yamlScalar quotes strings so any JSON string round-trips: JSON
-// string escaping is a valid YAML double-quoted scalar.
+// string escaping is a valid YAML double-quoted scalar; numbers render
+// their original tokens.
 func yamlScalar(v any) string {
 	switch val := v.(type) {
 	case nil:
@@ -617,9 +630,8 @@ func yamlScalar(v any) string {
 		return string(raw)
 	case bool:
 		return fmt.Sprintf("%t", val)
-	case float64:
-		raw, _ := json.Marshal(val)
-		return string(raw)
+	case json.Number:
+		return val.String()
 	default:
 		raw, _ := json.Marshal(val)
 		return string(raw)
