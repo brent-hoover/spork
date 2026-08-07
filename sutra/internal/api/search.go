@@ -100,34 +100,32 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// Session joins: reviews by any submission, plus their issues —
 	// both confined to the project scope when one is given.
 	if session != nil {
-		matched, err := review.List(tx, "", "", *session)
-		if err != nil {
-			writeError(w, reviewErrorFrom(err))
-			return
-		}
-		for _, rev := range matched {
+		err := review.ListEach(tx, "", "", *session, func(rev review.Review) error {
 			iss, err := issues.Get(tx, rev.Issue)
 			if err != nil {
-				writeError(w, issueErrorFrom(err))
-				return
+				return err
 			}
 			if project != nil && iss.Project != *project {
-				continue
+				return nil
 			}
 			if q != nil {
 				match, err := issueMatchesQ(tx, iss.ID, *q)
 				if err != nil {
-					writeError(w, errorFrom(err))
-					return
+					return err
 				}
 				if !match {
 					// Filters intersect: a session review whose issue
 					// fails the text term drops entirely.
-					continue
+					return nil
 				}
 			}
 			reviewIDs = append(reviewIDs, rev.ID)
 			noteIssue(iss)
+			return nil
+		})
+		if err != nil {
+			writeError(w, reviewErrorFrom(err))
+			return
 		}
 	}
 

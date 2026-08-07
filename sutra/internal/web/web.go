@@ -406,25 +406,32 @@ type docView struct {
 	} `json:"version"`
 }
 
+// discussionFailure is the marker rendered when a comment stream
+// breaks mid-page — a failure must be VISIBLE, never a complete-
+// looking discussion silently missing feedback.
+var discussionFailure = commentView{Author: "system", Body: "⚠ discussion unavailable: failed to load comments"}
+
 // eachComment walks one comments listing element by element, yielding
-// each as decoded; returns false if the consumer stopped early.
+// each as decoded. Failures — connection, non-200, malformed JSON —
+// yield the visible failure marker; returns false if the consumer
+// stopped early.
 func (s *Server) eachComment(path string, yield func(commentView) bool) bool {
 	resp, err := s.client.Get(s.api + path)
 	if err != nil {
-		return true
+		return yield(discussionFailure)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return true
+		return yield(discussionFailure)
 	}
 	dec := json.NewDecoder(resp.Body)
 	if _, err := dec.Token(); err != nil { // '['
-		return true
+		return yield(discussionFailure)
 	}
 	for dec.More() {
 		var c commentView
 		if err := dec.Decode(&c); err != nil {
-			return true
+			return yield(discussionFailure)
 		}
 		if !yield(c) {
 			return false
