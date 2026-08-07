@@ -119,7 +119,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if !match {
-					reviewList = append(reviewList, rev)
+					// Filters intersect: a session review whose issue
+					// fails the text term drops entirely.
 					continue
 				}
 			}

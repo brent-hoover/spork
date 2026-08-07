@@ -140,13 +140,33 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 			return nil
 		},
 		event: func(e events.Event) error {
-			// Payloads are needed only where validation reads them:
-			// the verdict-event agreement checks. Everything else
-			// strips — the insert pass re-reads the original bytes.
+			// Validation reads only a handful of payload fields; the
+			// metadata pass retains EXACTLY those, re-synthesized
+			// compact — raw payloads are unbounded and the insert pass
+			// re-reads the original bytes from the spool anyway.
 			switch e.Kind {
-			case "review.approved", "review.changes-requested", "issue.relation-removed":
-				// Verdict agreement and the RelationRemovedPayload
-				// requirement read these payloads; both are small.
+			case "review.approved", "review.changes-requested":
+				var p struct {
+					Review string `json:"review"`
+				}
+				if json.Unmarshal(e.Payload, &p) == nil && p.Review != "" {
+					e.Payload = json.RawMessage(fmt.Sprintf(`{"review":%q}`, p.Review))
+				} else {
+					e.Payload = json.RawMessage(`{}`) // validation rejects with its own message
+				}
+			case "issue.relation-removed":
+				var p struct {
+					Relation string `json:"relation"`
+					Kind     string `json:"kind"`
+					From     string `json:"from"`
+					To       string `json:"to"`
+				}
+				if len(e.Payload) > 0 && json.Unmarshal(e.Payload, &p) == nil {
+					e.Payload = json.RawMessage(fmt.Sprintf(`{"relation":%q,"kind":%q,"from":%q,"to":%q}`,
+						p.Relation, p.Kind, p.From, p.To))
+				} else if len(e.Payload) > 0 {
+					e.Payload = json.RawMessage(`{}`)
+				}
 			default:
 				e.Payload = nil
 			}
@@ -602,7 +622,8 @@ func validateImportShapes(p *importPayload) *apiError {
 	uuidOf := func(what, id string) *apiError {
 		// CON-uuid-keys pins entity primary keys to UUIDv7: version
 		// nibble 7, RFC 9562 variant.
-		if !isUUID(id) || id[14] != '7' || (id[19] != '8' && id[19] != '9' && id[19] != 'a' && id[19] != 'b') {
+		variant := id[19] | 0x20 // lowercase the hex nibble
+		if !isUUID(id) || id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
 			return malformedImport("%s id %q is not a uuidv7", what, id)
 		}
 		return nil
