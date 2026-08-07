@@ -2182,13 +2182,19 @@ components:
         created: { type: string, format: date-time }
 
     DocumentMeta:
-      description: A document with its current version's metadata — no content.
+      description: >-
+        The FIXED-SIZE facts about a document: identity, ownership, and its
+        current version's metadata. Every field is a uuid, an integer, or a
+        timestamp — the title is omitted deliberately, being as unbounded as
+        the content, and a polling client must not pay for either.
       type: object
       additionalProperties: false
-      required: [document, version]
+      required: [id, project, version]
       properties:
-        document:
-          $ref: '#/components/schemas/Document'
+        id: { type: string, format: uuid }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid, nullable: true }
+        current_version: { type: string, format: uuid, nullable: true }
         version:
           $ref: '#/components/schemas/DocVersionMeta'
 

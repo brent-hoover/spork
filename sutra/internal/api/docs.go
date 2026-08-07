@@ -157,10 +157,15 @@ type docVersionMeta struct {
 	Created  string `json:"created"`
 }
 
-// documentMeta is the contract's DocumentMeta.
+// documentMetaView is the contract's DocumentMeta: only fixed-size
+// facts. The title is deliberately absent — it is as unbounded as the
+// content, and this is what a five-second poll fetches (review 1918).
 type documentMetaView struct {
-	Document docs.Document  `json:"document"`
-	Version  docVersionMeta `json:"version"`
+	ID             string         `json:"id"`
+	Project        string         `json:"project"`
+	Issue          *string        `json:"issue"`
+	CurrentVersion *string        `json:"current_version"`
+	Version        docVersionMeta `json:"version"`
 }
 
 // getDocumentMeta serves the bounded projection of getDocument: the
@@ -187,7 +192,7 @@ func (s *server) getDocumentMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, documentMetaView{
-		Document: doc,
+		ID: doc.ID, Project: doc.Project, Issue: doc.Issue, CurrentVersion: doc.CurrentVersion,
 		Version: docVersionMeta{
 			ID: v.ID, Document: v.Document, Number: v.Number, Author: v.Author, Created: v.Created,
 		},
@@ -499,12 +504,20 @@ func (s *server) listTemplates(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback() }()
 	// Template contents are unbounded, so the catalog streams one row
 	// at a time instead of accumulating a slice and then marshaling a
-	// second copy of the whole thing (review 1916).
+	// second copy of the whole thing (review 1916). The query opens
+	// BEFORE the status is committed, so a failure to start still
+	// reports as an error rather than a truncated 200 (review 1918).
+	cursor, err := docs.OpenTemplates(tx)
+	if err != nil {
+		writeError(w, docErrorFrom(err))
+		return
+	}
+	defer func() { _ = cursor.Close() }()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte{'['})
 	first := true
-	streamErr := docs.TemplatesEach(tx, func(t docs.Template) error {
+	streamErr := cursor.Each(func(t docs.Template) error {
 		raw, err := json.Marshal(t)
 		if err != nil {
 			return err

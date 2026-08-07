@@ -181,23 +181,25 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Docs carry no session; they join on text, or enumerate wholly
-	// under a project-only query.
-	docList := []docs.Document{}
+	// under a project-only query. IDS only: titles are unbounded, so the
+	// records load one at a time at write time like every other group
+	// (review 1918).
+	docIDs := []string{}
 	switch {
 	case q != nil && session == nil:
-		matched, err := docs.Search(tx, project, *q)
+		matched, err := docs.SearchIDs(tx, project, *q)
 		if err != nil {
 			writeError(w, docErrorFrom(err))
 			return
 		}
-		docList = matched
+		docIDs = matched
 	case project != nil && session == nil:
-		matched, err := docs.ListByProject(tx, *project)
+		matched, err := docs.IDsByProject(tx, *project)
 		if err != nil {
 			writeError(w, docErrorFrom(err))
 			return
 		}
-		docList = matched
+		docIDs = matched
 	case bare:
 		// Nothing is written yet, so a scope failure is reportable: an
 		// empty scope here would serve 200 with a silently incomplete
@@ -208,12 +210,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, p := range projectIDs {
-			matched, err := docs.ListByProject(tx, p)
+			matched, err := docs.IDsByProject(tx, p)
 			if err != nil {
 				writeError(w, docErrorFrom(err))
 				return
 			}
-			docList = append(docList, matched...)
+			docIDs = append(docIDs, matched...)
 		}
 	}
 
@@ -235,13 +237,13 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		return int(ka.number - kb.number)
 	})
 
-	// The envelope's bounded groups marshal normally; issues and
-	// threads stream row by row inside it — bodies and transcripts are
-	// never accumulated, one record re-reads at a time.
+	// Only the watermark marshals up front; EVERY group streams row by
+	// row inside the envelope — document titles, issue bodies, review
+	// summaries and transcripts are all unbounded, so one record is
+	// resident at a time.
 	envelope := struct {
-		FeedWatermark string          `json:"feed_watermark"`
-		Documents     []docs.Document `json:"documents"`
-	}{watermark, docList}
+		FeedWatermark string `json:"feed_watermark"`
+	}{watermark}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
 		writeError(w, errorFrom(err))
@@ -250,8 +252,23 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw[:len(raw)-1])
+	_, _ = w.Write([]byte(`,"documents":[`))
+	for i, id := range docIDs {
+		doc, err := docs.Get(tx, id)
+		if err != nil {
+			return // truncation is the only signal after the first byte
+		}
+		one, err := json.Marshal(doc)
+		if err != nil {
+			return
+		}
+		if i > 0 {
+			_, _ = w.Write([]byte{','})
+		}
+		_, _ = w.Write(one)
+	}
 	// Reviews stream one row at a time — summaries are unbounded.
-	_, _ = w.Write([]byte(`,"reviews":[`))
+	_, _ = w.Write([]byte(`],"reviews":[`))
 	slices.Sort(reviewIDs)
 	for i, id := range reviewIDs {
 		rv, err := review.Get(tx, id)

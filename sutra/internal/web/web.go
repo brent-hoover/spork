@@ -260,9 +260,7 @@ func (s *Server) scanField(path, field string, dst any, stopKeys ...string) erro
 // docMeta is the bounded document projection: everything the UI needs
 // about a document that is not its content.
 type docMeta struct {
-	Document struct {
-		Project string `json:"project"`
-	} `json:"document"`
+	Project string `json:"project"`
 	Version struct {
 		Number int64 `json:"number"`
 	} `json:"version"`
@@ -284,7 +282,7 @@ func (s *Server) docProject(documentID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return meta.Document.Project, nil
+	return meta.Project, nil
 }
 
 // reviewProject resolves a review's governing project via its issue.
@@ -1209,7 +1207,7 @@ func (s *Server) pollDocument(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !s.inProject(w, r.PathValue("key"), meta.Document.Project) {
+	if !s.inProject(w, r.PathValue("key"), meta.Project) {
 		return
 	}
 	latest := meta.Version.Number

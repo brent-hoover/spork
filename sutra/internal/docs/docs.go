@@ -195,6 +195,45 @@ func ListByIssue(tx *sql.Tx, issue string) ([]Document, error) {
 	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE issue = ? ORDER BY title`, issue)
 }
 
+// SearchIDs is Search's discovery projection: matching ids in the same
+// order, without the titles. Callers that stream documents to the wire
+// must use it — titles are unbounded, so an accumulated result set is
+// not memory-bounded no matter how the rows are written (review 1918).
+func SearchIDs(tx *sql.Tx, project *string, q string) ([]string, error) {
+	term := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q) + "%"
+	query := `SELECT id FROM documents
+		WHERE (title LIKE ? ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM doc_versions v WHERE v.document = documents.id AND v.content LIKE ? ESCAPE '\'))`
+	args := []any{term, term}
+	if project != nil {
+		query += ` AND project = ?`
+		args = append(args, *project)
+	}
+	return ids(tx, query+` ORDER BY title`, args...)
+}
+
+// IDsByProject is ListByProject's discovery projection.
+func IDsByProject(tx *sql.Tx, project string) ([]string, error) {
+	return ids(tx, `SELECT id FROM documents WHERE project = ? ORDER BY title`, project)
+}
+
+func ids(tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list document ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan document id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func list(tx *sql.Tx, query string, args ...any) ([]Document, error) {
 	rows, err := tx.Query(query, args...)
 	if err != nil {
@@ -558,26 +597,38 @@ func GetTemplate(tx *sql.Tx, id string) (Template, error) {
 	return t, nil
 }
 
-// TemplatesEach streams every template ordered by name, one row at a
-// time. Template content is unbounded like every other content field,
-// so the catalog is never accumulated (review 1916).
-func TemplatesEach(tx *sql.Tx, fn func(Template) error) error {
+// TemplateCursor streams the catalog AFTER its query has succeeded.
+// Opening is separate from iterating so a caller can commit an HTTP
+// status only once the read is known to have started: writing 200 first
+// would turn a query failure into a truncated success (review 1918).
+type TemplateCursor struct{ rows *sql.Rows }
+
+// OpenTemplates runs the catalog query ordered by name. Template
+// content is unbounded like every other content field, so rows are
+// streamed, never accumulated (review 1916).
+func OpenTemplates(tx *sql.Tx) (*TemplateCursor, error) {
 	rows, err := tx.Query(`SELECT id, name, content FROM doc_templates ORDER BY name`)
 	if err != nil {
-		return fmt.Errorf("list templates: %w", err)
+		return nil, fmt.Errorf("list templates: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
+	return &TemplateCursor{rows: rows}, nil
+}
+
+// Each delivers every row, one at a time.
+func (c *TemplateCursor) Each(fn func(Template) error) error {
+	for c.rows.Next() {
 		var t Template
-		if err := rows.Scan(&t.ID, &t.Name, &t.Content); err != nil {
+		if err := c.rows.Scan(&t.ID, &t.Name, &t.Content); err != nil {
 			return fmt.Errorf("scan template: %w", err)
 		}
 		if err := fn(t); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return c.rows.Err()
 }
+
+func (c *TemplateCursor) Close() error { return c.rows.Close() }
 
 // UpdateTemplate renames and/or replaces content; a rename into an
 // existing name is the same unique-violation as creation.
