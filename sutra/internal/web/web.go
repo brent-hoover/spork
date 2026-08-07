@@ -173,18 +173,74 @@ func (s *Server) scanFields(path string, want map[string]any, stopKeys ...string
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %d", path, resp.StatusCode)
 	}
-	stop := map[string]bool{}
-	for _, k := range stopKeys {
-		stop[k] = true
+	dec := json.NewDecoder(resp.Body)
+	if err := expectObject(dec, path); err != nil {
+		return err
+	}
+	return scanObject(dec, want, stopSet(stopKeys))
+}
+
+// scanNestedFields applies the same collect-and-stop rule INSIDE one
+// named member: it walks the top-level object to `outer` — every key
+// before it being bounded metadata — and then scans that object. The
+// doc-review poll needs version.number and must never read
+// version.content, which sits in the same object (review 1910).
+func (s *Server) scanNestedFields(path, outer string, want map[string]any, stopKeys ...string) error {
+	resp, err := s.client.Get(s.api + path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %d", path, resp.StatusCode)
 	}
 	dec := json.NewDecoder(resp.Body)
+	if err := expectObject(dec, path); err != nil {
+		return err
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := keyTok.(string)
+		if key == outer {
+			if err := expectObject(dec, path+"."+outer); err != nil {
+				return err
+			}
+			return scanObject(dec, want, stopSet(stopKeys))
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("GET %s: no %s member", path, outer)
+}
+
+func stopSet(keys []string) map[string]bool {
+	stop := map[string]bool{}
+	for _, k := range keys {
+		stop[k] = true
+	}
+	return stop
+}
+
+func expectObject(dec *json.Decoder, what string) error {
 	open, err := dec.Token()
 	if err != nil {
 		return err
 	}
 	if d, ok := open.(json.Delim); !ok || d != '{' {
-		return fmt.Errorf("GET %s: not an object", path)
+		return fmt.Errorf("GET %s: not an object", what)
 	}
+	return nil
+}
+
+// scanObject collects the wanted fields of the object the decoder has
+// just opened and returns at the first stop key or once everything
+// wanted has been found — whichever comes first.
+func scanObject(dec *json.Decoder, want map[string]any, stop map[string]bool) error {
 	remaining := len(want)
 	for dec.More() {
 		keyTok, err := dec.Token()
@@ -999,15 +1055,20 @@ var docTmpl = template.Must(template.New("doc").Funcs(uiFuncs).Parse(`<!doctype 
 <button>Save version</button>
 </form>
 {{if .Live}}<script>
-// Poll for newer versions; refresh to the latest when one lands.
+// Poll for newer versions; refresh to the latest when one lands. Each
+// poll is scheduled only after the previous one settles, so a slow
+// response cannot pile requests up every five seconds (review 1910).
 (function () {
   var shown = {{.Doc.Version.Number}};
-  setInterval(function () {
-    fetch('/p/{{pesc .Key}}/d/{{.Doc.ID}}/poll?since=' + shown)
+  var url = '/p/{{pesc .Key}}/d/{{.Doc.ID}}';
+  function poll() {
+    fetch(url + '/poll?since=' + shown)
       .then(function (r) { return r.json(); })
-      .then(function (p) { if (p.refresh) { window.location = '/p/{{pesc .Key}}/d/{{.Doc.ID}}'; } })
-      .catch(function () {});
-  }, 5000);
+      .then(function (p) { if (p.refresh) { window.location = url; return; } schedule(); })
+      .catch(function () { schedule(); });
+  }
+  function schedule() { setTimeout(poll, 5000); }
+  schedule();
 })();
 </script>{{end}}`))
 
@@ -1161,16 +1222,21 @@ func (s *Server) pollDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("documentId")
-	var doc docView
-	if err := s.get("/documents/"+id, &doc); err != nil {
+	// The poll needs ONE number. Decoding the document would pull the
+	// current version's whole content every five seconds, so the scan
+	// descends into "version", takes "number", and stops before
+	// "content" (review 1910).
+	var latest int64
+	if err := s.scanNestedFields("/documents/"+id, "version",
+		map[string]any{"number": &latest}, "content"); err != nil {
 		htmlError(w, err)
 		return
 	}
 	since := r.URL.Query().Get("since")
 	w.Header().Set("Content-Type", "application/json")
-	fresh := fmt.Sprintf("%d", doc.Version.Number) != since
+	fresh := fmt.Sprintf("%d", latest) != since
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"latest": doc.Version.Number, "refresh": fresh,
+		"latest": latest, "refresh": fresh,
 	})
 }
 
