@@ -158,57 +158,86 @@ func (s *Server) inProject(w http.ResponseWriter, key, resourceProject string) b
 	return true
 }
 
+// scanField decodes ONE named top-level field from a response and
+// abandons the rest — the ownership guards need an id, never the
+// content that follows it. Our responses order metadata before
+// content, so the body closes untouched (review 1893).
+func (s *Server) scanField(path, field string, dst any) error {
+	resp, err := s.client.Get(s.api + path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %d", path, resp.StatusCode)
+	}
+	dec := json.NewDecoder(resp.Body)
+	open, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := open.(json.Delim); !ok || d != '{' {
+		return fmt.Errorf("GET %s: not an object", path)
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if keyTok == field {
+			return dec.Decode(dst)
+		}
+		// Sibling metadata is bounded; content fields never precede
+		// the ids these guards read.
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("GET %s: no %s field", path, field)
+}
+
 // docProject resolves a document's governing project id.
 func (s *Server) docProject(documentID string) (string, error) {
-	var doc struct {
-		Project string `json:"project"`
-	}
-	if err := s.get("/documents/"+documentID, &doc); err != nil {
+	var project string
+	if err := s.scanField("/documents/"+url.PathEscape(documentID), "project", &project); err != nil {
 		return "", err
 	}
-	return doc.Project, nil
+	return project, nil
 }
 
 // reviewProject resolves a review's governing project via its issue.
 func (s *Server) reviewProject(reviewID string) (string, error) {
-	var rev struct {
-		Issue string `json:"issue"`
-	}
-	if err := s.get("/reviews/"+reviewID, &rev); err != nil {
+	var issueID string
+	if err := s.scanField("/reviews/"+url.PathEscape(reviewID), "issue", &issueID); err != nil {
 		return "", err
 	}
-	var issue struct {
-		Project string `json:"project"`
-	}
-	if err := s.get("/issues/"+rev.Issue, &issue); err != nil {
+	var project string
+	if err := s.scanField("/issues/"+url.PathEscape(issueID), "project", &project); err != nil {
 		return "", err
 	}
-	return issue.Project, nil
+	return project, nil
 }
 
 // threadProject resolves a thread's governing project — its project
 // anchor, or its anchored issue's project.
 func (s *Server) threadProject(threadID string) (string, error) {
-	var t struct {
-		Project *string `json:"project"`
-		Issue   *string `json:"issue"`
+	// Anchors precede the transcript in thread responses, so the
+	// scan stops before any transcript byte is read.
+	path := "/threads/" + url.PathEscape(threadID)
+	var project string
+	if err := s.scanField(path, "project", &project); err == nil && project != "" {
+		return project, nil
 	}
-	if err := s.get("/threads/"+threadID, &t); err != nil {
+	var issueID string
+	if err := s.scanField(path, "issue", &issueID); err != nil || issueID == "" {
+		return "", fmt.Errorf("thread %s carries no anchor", threadID)
+	}
+	var issueProject string
+	if err := s.scanField("/issues/"+url.PathEscape(issueID), "project", &issueProject); err != nil {
 		return "", err
 	}
-	if t.Project != nil {
-		return *t.Project, nil
-	}
-	if t.Issue != nil {
-		var issue struct {
-			Project string `json:"project"`
-		}
-		if err := s.get("/issues/"+*t.Issue, &issue); err != nil {
-			return "", err
-		}
-		return issue.Project, nil
-	}
-	return "", fmt.Errorf("thread %s carries no anchor", threadID)
+	return issueProject, nil
 }
 
 // guardDoc/guardReview/guardThread run the scope check for a route.
@@ -1243,6 +1272,7 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
+			htmlError(w, fmt.Errorf("malformed thread response"))
 			return
 		}
 		if keyTok == "title" {
@@ -1264,6 +1294,9 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 		_ = threadHeadTmpl.Execute(w, title)
 		open, err := dec.Token()
 		if err != nil {
+			// Rendering has begun: the failure shows inside the page.
+			_ = threadTurnTmpl.Execute(w, threadFailureTurn)
+			_ = threadTailTmpl.Execute(w, nil)
 			return
 		}
 		if d, ok := open.(json.Delim); ok && d == '[' {

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -156,14 +157,22 @@ func browserAuthority(addr string) string {
 	if err != nil {
 		return ""
 	}
-	switch host {
-	case "", "0.0.0.0", "::", "[::]":
+	if host == "" {
 		return ""
 	}
-	if port == "0" {
+	// Unspecified addresses serve MANY names — detect them
+	// semantically, since 0.0.0.0, ::, and 0:0:0:0:0:0:0:0 all mean
+	// the same thing (review 1893). A hostname (non-IP) is concrete.
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
 		return ""
 	}
-	return net.JoinHostPort(host, port)
+	// Port 0 is resolved at listen time, so it cannot be canonical —
+	// and "00" is the same port as "0".
+	n, err := strconv.Atoi(port)
+	if err != nil || n == 0 {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n))
 }
 
 // splitHosts parses the comma-separated canonical UI host list.
