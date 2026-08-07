@@ -94,11 +94,36 @@ type New struct {
 	Body           string
 }
 
+// anchorRef is a comment's anchor without its body: the four fields a
+// reply must match.
+type anchorRef struct {
+	Issue          *string
+	DocVersion     *string
+	Review         *string
+	ReviewRevision *int64
+}
+
+func anchorOf(tx *sql.Tx, id string) (anchorRef, error) {
+	var a anchorRef
+	err := tx.QueryRow(`SELECT issue, doc_version, review, review_revision FROM comments WHERE id = ?`, id).
+		Scan(&a.Issue, &a.DocVersion, &a.Review, &a.ReviewRevision)
+	if err == sql.ErrNoRows {
+		return anchorRef{}, &NotFoundError{ID: id}
+	}
+	if err != nil {
+		return anchorRef{}, fmt.Errorf("comment anchor %s: %w", id, err)
+	}
+	return a, nil
+}
+
 // Create inserts a comment. A reply's parent must exist and share the
 // anchor target — depth itself is unbounded (AC-comment-threading).
 func Create(tx *sql.Tx, n New) (Comment, error) {
 	if n.Parent != nil {
-		parent, err := Get(tx, *n.Parent)
+		// The parent's ANCHOR decides this, never its body — and the
+		// check runs under the write lock, where reading an unbounded
+		// body would block every other mutation (review 1928).
+		parent, err := anchorOf(tx, *n.Parent)
 		if err != nil {
 			return Comment{}, err
 		}

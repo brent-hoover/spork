@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -228,6 +229,84 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		// steps read.
 		last := clw.remotePairs[len(clw.remotePairs)-1]
 		clw.lastOut, clw.remoteOut = last.local, last.remote
+
+		// init is a MUTATION, so parity is not "same output" — it is
+		// that --server decides WHERE the project lands. A regression
+		// making init ignore the flag would otherwise go unseen
+		// (review 1928).
+		initIn := func(dir, key, extra string) (string, error) {
+			saved := clw.workdir
+			clw.workdir = dir
+			defer func() { clw.workdir = saved }()
+			if err := clw.run("sutra init --key "+key+" --name "+key+extra, nil); err != nil {
+				return "", err
+			}
+			if err := clw.expectSuccess(); err != nil {
+				return "", fmt.Errorf("init in %s: %w", dir, err)
+			}
+			// The marker links the directory to the project it created.
+			raw, err := os.ReadFile(filepath.Join(dir, ".sutra"))
+			if err != nil {
+				return "", err
+			}
+			var marker struct {
+				Project string `json:"project"`
+			}
+			if err := json.Unmarshal(raw, &marker); err != nil {
+				return "", err
+			}
+			return marker.Project, nil
+		}
+		newDir := func() (string, error) {
+			dir, err := os.MkdirTemp("", "sutra-parity-*")
+			if err != nil {
+				return "", err
+			}
+			clw.tempDirs = append(clw.tempDirs, dir)
+			return dir, nil
+		}
+		localDir, err := newDir()
+		if err != nil {
+			return err
+		}
+		remoteDir, err := newDir()
+		if err != nil {
+			return err
+		}
+		localProject, err := initIn(localDir, "PARLOC", "")
+		if err != nil {
+			return err
+		}
+		remoteProject, err := initIn(remoteDir, "PARREM", " --server "+clw.remote.server.URL)
+		if err != nil {
+			return err
+		}
+		known := func(base, project string) (bool, error) {
+			resp, err := http.Get(base + "/projects/" + project)
+			if err != nil {
+				return false, err
+			}
+			defer func() { _ = resp.Body.Close() }()
+			return resp.StatusCode == http.StatusOK, nil
+		}
+		for _, want := range []struct {
+			base, label, project string
+			present              bool
+		}{
+			{clw.iw.s.server.URL, "local", localProject, true},
+			{clw.remote.server.URL, "remote", localProject, false},
+			{clw.remote.server.URL, "remote", remoteProject, true},
+			{clw.iw.s.server.URL, "local", remoteProject, false},
+		} {
+			got, err := known(want.base, want.project)
+			if err != nil {
+				return err
+			}
+			if got != want.present {
+				return fmt.Errorf("project %s on the %s server: present=%v, want %v — init did not honor --server",
+					want.project, want.label, got, want.present)
+			}
+		}
 		return nil
 	})
 	sc.Step(`^results are identical to running against the local daemon$`, func() error {

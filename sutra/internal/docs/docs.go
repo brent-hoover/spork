@@ -90,6 +90,10 @@ func Migrate(db *sql.DB) error {
 		-- hold every title (review 1924).
 		CREATE INDEX IF NOT EXISTS documents_project_title ON documents(project, title);
 		CREATE INDEX IF NOT EXISTS documents_issue_title ON documents(issue, title);
+		-- An UNSCOPED search orders globally by title, which neither
+		-- scoped index can serve — its leading column is the scope
+		-- (review 1928).
+		CREATE INDEX IF NOT EXISTS documents_title ON documents(title);
 		CREATE TABLE IF NOT EXISTS doc_versions (
 			id       TEXT PRIMARY KEY,
 			document TEXT NOT NULL REFERENCES documents(id),

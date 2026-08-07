@@ -44,7 +44,9 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 	}
 	switch {
 	case issue != nil:
-		target, err := issues.Get(tx, *issue)
+		// The issue's project and id, not its body and labels — this
+		// runs under the write lock (review 1928).
+		target, err := issues.RefByID(tx, *issue)
 		if err != nil {
 			return "", issueErrorFrom(err)
 		}
@@ -87,7 +89,7 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 			return "", &apiError{status: http.StatusConflict, code: "expected-revision-mismatch",
 				message: "review_revision names a revision superseded by a resubmission"}
 		}
-		target, err := issues.Get(tx, rev.Issue)
+		target, err := issues.RefByID(tx, rev.Issue)
 		if err != nil {
 			return "", issueErrorFrom(err)
 		}

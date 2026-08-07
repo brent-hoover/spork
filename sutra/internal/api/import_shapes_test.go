@@ -105,3 +105,50 @@ func TestImportRejectsNonCanonicalPayloadIDs(t *testing.T) {
 		t.Fatalf("canonical payload identifier rejected: %s", apiErr.message)
 	}
 }
+
+// TestImportRejectsMisfiledRelationRemoved pins the contract's routing
+// rule for this event: EventBase.subject IS the relation's former `from`
+// issue, so a payload disagreeing with the subject would file the audit
+// entry under an issue the payload says was not involved — and the
+// per-issue audit is built on subject (review 1928).
+func TestImportRejectsMisfiledRelationRemoved(t *testing.T) {
+	const (
+		project  = "01900000-0000-7000-8000-000000000000"
+		actor    = "01900000-0000-7000-8000-00000000000f"
+		issueA   = "01900000-0000-7000-8000-000000000001"
+		issueB   = "01900000-0000-7000-8000-000000000002"
+		relation = "01900000-0000-7000-8000-000000000003"
+		eventID  = "01900000-0000-7000-8000-000000000004"
+	)
+	payload := func(subject string) string {
+		return `{"project":{"id":"` + project + `","key":"K","name":"N"},
+			"identities":[{"id":"` + actor + `","handle":"a","kind":"agent"}],
+			"issues":[],"comments":[],"labels":[],"issue_relations":[],
+			"documents":[],"threads":[],"reviews":[],
+			"events":[{"id":"` + eventID + `","kind":"issue.relation-removed",
+				"subject":"` + subject + `","operation":"` + relation + `","actor":"` + actor + `",
+				"created":"2026-08-07T00:00:00.000000000Z",
+				"payload":{"relation":"` + relation + `","kind":"blocks","from":"` + issueA + `","to":"` + issueB + `"}}]}`
+	}
+	// Subject is the payload's `to` — the detached destination, not the
+	// source the contract names.
+	meta, apiErr := collectImportMeta(strings.NewReader(payload(issueB)))
+	if apiErr != nil {
+		t.Fatalf("payload did not parse: %s", apiErr.message)
+	}
+	apiErr = validateImportShapes(meta)
+	if apiErr == nil {
+		t.Fatal("relation-removed event filed under the wrong issue was accepted")
+	}
+	if !strings.Contains(apiErr.message, "relation-removed") {
+		t.Fatalf("rejection does not name the cause: %s", apiErr.message)
+	}
+	// Filed under the payload's `from`, it validates.
+	meta, apiErr = collectImportMeta(strings.NewReader(payload(issueA)))
+	if apiErr != nil {
+		t.Fatalf("payload did not parse: %s", apiErr.message)
+	}
+	if apiErr := validateImportShapes(meta); apiErr != nil {
+		t.Fatalf("correctly filed relation-removed rejected: %s", apiErr.message)
+	}
+}

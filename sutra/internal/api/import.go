@@ -896,6 +896,15 @@ func validateImportShapes(p *importPayload) *apiError {
 				(payload.Kind != "parent_of" && payload.Kind != "blocks") {
 				return malformedImport("event %s carries a malformed RelationRemovedPayload", e.ID)
 			}
+			// The contract fixes this event's subject as the relation's
+			// former `from` issue (EventBase.subject). An import
+			// disagreeing with itself would file the audit entry under
+			// an issue the payload says was not involved, and the
+			// per-issue audit is built on subject (review 1928).
+			if payload.From != e.Subject {
+				return malformedImport("event %s files a relation-removed under %s but its payload's from is %s",
+					e.ID, e.Subject, payload.From)
+			}
 		}
 	}
 	return nil
