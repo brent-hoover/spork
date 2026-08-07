@@ -90,6 +90,22 @@ var operations = map[string]op{
 	"search":                  {http.MethodGet, "/search"},
 }
 
+// Mapping is the method and path template the CLI invokes for one
+// operationId.
+type Mapping struct{ Method, Path string }
+
+// OperationMapping exposes the whole table so the parity scenario can
+// check that each command reaches the operation the contract declares —
+// a correct id pointing at the wrong method or path is still a parity
+// break (review 1924).
+func OperationMapping() map[string]Mapping {
+	out := make(map[string]Mapping, len(operations))
+	for id, o := range operations {
+		out[id] = Mapping{Method: o.method, Path: o.path}
+	}
+	return out
+}
+
 // CoveredOperations returns every operationId the CLI can invoke — the
 // parity scenario compares it against the contract.
 func CoveredOperations() []string {

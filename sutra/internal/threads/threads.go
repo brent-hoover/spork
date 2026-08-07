@@ -58,7 +58,14 @@ func Migrate(db *sql.DB) error {
 			issue       TEXT REFERENCES issues(id),
 			imported_at TEXT NOT NULL,
 			CHECK (project IS NOT NULL OR issue IS NOT NULL)
-		)`)
+		);
+		-- Catalog and per-issue listings read in (imported_at, id)
+		-- order. Without these, SQLite sorts a temp b-tree holding the
+		-- unbounded transcripts before the first row is delivered,
+		-- which defeats streaming them (review 1924).
+		CREATE INDEX IF NOT EXISTS threads_order ON threads(imported_at, id);
+		CREATE INDEX IF NOT EXISTS threads_issue_order ON threads(issue, imported_at, id);
+	`)
 	if err != nil {
 		return fmt.Errorf("migrate threads: %w", err)
 	}

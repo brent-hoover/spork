@@ -694,18 +694,27 @@ func validateImport(p *importPayload, actor string) *apiError {
 // UUID formats on every record id, RFC 3339 timestamps, closed enums,
 // required strings, and the exactly-one deliverable shape — a payload
 // the OpenAPI schema would reject must never persist.
+// canonicalUUIDv7 is THE id rule, in one place: UUIDv7 shape (version
+// nibble 7, RFC 9562 variant) in the canonical lowercase form the API
+// description declares. Record ids and the identifiers inside event
+// payloads must both satisfy it — a payload id is preserved verbatim,
+// so a non-canonical one would outlive the import (review 1924).
+func canonicalUUIDv7(id string) bool {
+	if !isUUID(id) {
+		return false
+	}
+	variant := id[19] | 0x20 // lowercase the hex nibble
+	if id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
+		return false
+	}
+	return strings.ToLower(id) == id
+}
+
 func validateImportShapes(p *importPayload) *apiError {
 	uuidOf := func(what, id string) *apiError {
 		// CON-uuid-keys pins entity primary keys to UUIDv7: version
 		// nibble 7, RFC 9562 variant. Shape validates FIRST — indexing
 		// a short id would panic the handler.
-		if !isUUID(id) {
-			return malformedImport("%s id %q is not a uuidv7", what, id)
-		}
-		variant := id[19] | 0x20 // lowercase the hex nibble
-		if id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
-			return malformedImport("%s id %q is not a uuidv7", what, id)
-		}
 		// Ids are compared as TEXT everywhere — collision preflights,
 		// reference resolution, duplicate detection — and SQLite's text
 		// comparison is case-sensitive. Two casings of one uuid would
@@ -715,8 +724,8 @@ func validateImportShapes(p *importPayload) *apiError {
 		// stored VERBATIM and reference ids inside their bytes, so
 		// rewriting the columns would desynchronize them from payloads
 		// this import promises to reproduce unchanged (review 1920).
-		if strings.ToLower(id) != id {
-			return malformedImport("%s id %q must be lowercase; uuids are compared as text", what, id)
+		if !canonicalUUIDv7(id) {
+			return malformedImport("%s id %q is not a canonical lowercase uuidv7", what, id)
 		}
 		return nil
 	}
@@ -881,8 +890,12 @@ func validateImportShapes(p *importPayload) *apiError {
 				From     string `json:"from"`
 				To       string `json:"to"`
 			}
-			if json.Unmarshal(e.Payload, &payload) != nil || !isUUID(payload.Relation) ||
-				!isUUID(payload.From) || !isUUID(payload.To) ||
+			// These identifiers name UUIDv7 entities and survive the
+			// import verbatim, so they carry the SAME rule as record
+			// ids — isUUID alone would admit uppercase and non-v7
+			// (review 1924).
+			if json.Unmarshal(e.Payload, &payload) != nil || !canonicalUUIDv7(payload.Relation) ||
+				!canonicalUUIDv7(payload.From) || !canonicalUUIDv7(payload.To) ||
 				(payload.Kind != "parent_of" && payload.Kind != "blocks") {
 				return malformedImport("event %s carries a malformed RelationRemovedPayload", e.ID)
 			}

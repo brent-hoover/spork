@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/cucumber/godog"
@@ -34,7 +35,13 @@ type cliWorld struct {
 	yamlOut    string
 	remoteOut  string
 	remote     *importTarget
+	// remotePairs holds one (command, local, remote) triple per command
+	// FAMILY exercised against --server, so parity covers more than a
+	// single read path (review 1924).
+	remotePairs []remotePair
 }
+
+type remotePair struct{ command, local, remote string }
 
 func (clw *cliWorld) reset() {
 	for _, dir := range clw.tempDirs {
@@ -109,20 +116,53 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err != nil {
 			return err
 		}
-		covered := map[string]bool{}
-		for _, id := range cli.CoveredOperations() {
-			covered[id] = true
-		}
-		missing := []string{}
-		for _, path := range doc.Paths.Map() {
-			for _, operation := range path.Operations() {
-				if operation.OperationID != "" && !covered[operation.OperationID] {
+		// Coverage is the id AND what it resolves to: a command wired to
+		// the right operationId but the wrong method or path is still a
+		// parity break, and would otherwise pass silently (review 1924).
+		mapping := cli.OperationMapping()
+		missing, wrong := []string{}, []string{}
+		for pathTemplate, path := range doc.Paths.Map() {
+			for method, operation := range path.Operations() {
+				if operation.OperationID == "" {
+					continue
+				}
+				m, ok := mapping[operation.OperationID]
+				if !ok {
 					missing = append(missing, operation.OperationID)
+					continue
+				}
+				if !strings.EqualFold(m.Method, method) || m.Path != pathTemplate {
+					wrong = append(wrong, fmt.Sprintf("%s: CLI calls %s %s, contract declares %s %s",
+						operation.OperationID, m.Method, m.Path, method, pathTemplate))
 				}
 			}
 		}
+		sort.Strings(missing)
+		sort.Strings(wrong)
 		if len(missing) > 0 {
 			return fmt.Errorf("operations without a CLI command: %v", missing)
+		}
+		if len(wrong) > 0 {
+			return fmt.Errorf("CLI commands mapped to the wrong request: %v", wrong)
+		}
+		// Every CLI mapping must also name a real operation — a stale
+		// entry would keep the coverage count right while pointing at
+		// nothing.
+		declared := map[string]bool{}
+		for _, path := range doc.Paths.Map() {
+			for _, operation := range path.Operations() {
+				declared[operation.OperationID] = true
+			}
+		}
+		stale := []string{}
+		for id := range mapping {
+			if !declared[id] {
+				stale = append(stale, id)
+			}
+		}
+		sort.Strings(stale)
+		if len(stale) > 0 {
+			return fmt.Errorf("CLI commands for operations the contract does not declare: %v", stale)
 		}
 		return nil
 	})
@@ -177,44 +217,66 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 	sc.Step(`^each CLI command runs with --server pointing at it$`, func() error {
-		if err := clw.run("sutra issue show SUT-1 --json", nil); err != nil {
-			return err
+		// One representative per command family — the issue commands
+		// and the generic api command — so a family that silently
+		// ignored --server could not pass (review 1924).
+		commands := []string{
+			"sutra issue show SUT-1 --json",
+			"sutra issue list --project SUT --json",
+			"sutra api listIdentities --json",
+			"sutra api listProjects --json",
 		}
-		if err := clw.expectSuccess(); err != nil {
-			return err
+		clw.remotePairs = nil
+		for _, command := range commands {
+			if err := clw.run(command, nil); err != nil {
+				return err
+			}
+			if err := clw.expectSuccess(); err != nil {
+				return fmt.Errorf("local %q: %w", command, err)
+			}
+			local := clw.lastOut
+			if err := clw.run(command+" --server "+clw.remote.server.URL, nil); err != nil {
+				return err
+			}
+			if err := clw.expectSuccess(); err != nil {
+				return fmt.Errorf("remote %q: %w", command, err)
+			}
+			clw.remotePairs = append(clw.remotePairs, remotePair{command: command, local: local, remote: clw.lastOut})
 		}
-		local := clw.lastOut
-		if err := clw.run("sutra issue show SUT-1 --json --server "+clw.remote.server.URL, nil); err != nil {
-			return err
-		}
-		if err := clw.expectSuccess(); err != nil {
-			return err
-		}
-		clw.remoteOut = clw.lastOut
-		clw.lastOut = local
+		// The last pair stays in the single-result fields the other
+		// steps read.
+		last := clw.remotePairs[len(clw.remotePairs)-1]
+		clw.lastOut, clw.remoteOut = last.local, last.remote
 		return nil
 	})
 	sc.Step(`^results are identical to running against the local daemon$`, func() error {
 		// Byte-identical modulo the feed watermark, which reflects each
 		// server's event count (the import audit event shifts it).
-		normalize := func(s string) (map[string]any, error) {
-			var m map[string]any
-			if err := json.Unmarshal([]byte(s), &m); err != nil {
+		// Outputs are objects or arrays depending on the command, so
+		// decode generically and strip the watermark when there is one.
+		normalize := func(s string) (any, error) {
+			var v any
+			if err := json.Unmarshal([]byte(s), &v); err != nil {
 				return nil, err
 			}
-			delete(m, "feed_watermark")
-			return m, nil
+			if m, ok := v.(map[string]any); ok {
+				delete(m, "feed_watermark")
+			}
+			return v, nil
 		}
-		local, err := normalize(clw.lastOut)
-		if err != nil {
-			return err
-		}
-		remote, err := normalize(clw.remoteOut)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(local, remote) {
-			return fmt.Errorf("remote diverged:\nlocal:  %s\nremote: %s", clw.lastOut, clw.remoteOut)
+		for _, pair := range clw.remotePairs {
+			local, err := normalize(pair.local)
+			if err != nil {
+				return fmt.Errorf("%s: local output: %w", pair.command, err)
+			}
+			remote, err := normalize(pair.remote)
+			if err != nil {
+				return fmt.Errorf("%s: remote output: %w", pair.command, err)
+			}
+			if !reflect.DeepEqual(local, remote) {
+				return fmt.Errorf("remote diverged for %q:\nlocal:  %s\nremote: %s",
+					pair.command, pair.local, pair.remote)
+			}
 		}
 		return nil
 	})

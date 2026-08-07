@@ -6,6 +6,19 @@ info:
     contract.
 
 
+    REQUEST BODIES: a JSON object must not repeat a property name at any
+    depth. Duplicate properties are ambiguous — a decoder keeping the last
+    value and one keeping the first read the same bytes differently — and
+    thread transcripts and event payloads are stored VERBATIM and re-served,
+    so the ambiguity would outlive the request. Repeats are rejected with
+    400 bad-request on every mutating operation, which is what makes an
+    accepted transcript re-importable. Detecting them costs memory
+    proportional to the property names of the objects simultaneously open;
+    that is bounded at 1 MiB, and a body exceeding it is rejected with the
+    same status. Only hand-built adversarial JSON approaches the bound —
+    real records carry a handful of short names.
+
+
     IDENTIFIERS: every `format: uuid` value is the CANONICAL LOWERCASE form
     (RFC 9562 §4). Identifiers are compared as text at every layer — storage,
     collision detection, reference resolution — so two casings of one uuid

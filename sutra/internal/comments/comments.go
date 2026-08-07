@@ -66,7 +66,15 @@ func Migrate(db *sql.DB) error {
 			created         TEXT NOT NULL,
 			CHECK ((issue IS NOT NULL) + (doc_version IS NOT NULL) + (review IS NOT NULL) = 1),
 			CHECK ((review_revision IS NOT NULL) = (review IS NOT NULL))
-		)`)
+		);
+		-- Anchor listings read one anchor's comments in (created, id)
+		-- order. Without these, SQLite sorts a temp b-tree holding the
+		-- unbounded bodies before delivering the first row, which
+		-- defeats streaming them (review 1924).
+		CREATE INDEX IF NOT EXISTS comments_issue_order ON comments(issue, created, id);
+		CREATE INDEX IF NOT EXISTS comments_doc_version_order ON comments(doc_version, created, id);
+		CREATE INDEX IF NOT EXISTS comments_review_order ON comments(review, created, id);
+	`)
 	if err != nil {
 		return fmt.Errorf("migrate comments: %w", err)
 	}

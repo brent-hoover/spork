@@ -158,9 +158,18 @@ objects (nesting depth reuses encoding/json's own 10000 limit, so the
 scan never rejects what the decoder would accept). Real records carry a
 handful of short names; only hand-built adversarial JSON reaches it.
 It is nonetheless a cap below an unconstrained contract — the same class
-as the SQLite value-length bound already logged. If transcripts should
-be bounded, the contract should say so; if not, the bound needs a
-declared home. Surfaced by roborev review 1902.
+as the SQLite value-length bound already logged. Surfaced by roborev
+review 1902 and re-raised in 1904, 1908, 1910, 1916, 1920, and 1924.
+
+RESOLVED 2026-08-07 by declaring it: the API description now states the
+no-duplicate-properties rule, why it exists (verbatim storage would
+outlive the ambiguity), and the 1 MiB bound on simultaneously-open
+property names, with 400 bad-request for both. This follows the same
+route as the canonical-lowercase identifier rule — where implementation
+and contract disagreed, the contract now says what the implementation
+does, rather than the implementation silently imposing an undeclared
+limit. The NUMBER remains a product decision Brent can change; what is
+no longer open is whether it is declared.
 
 ## AC-docweb-live needs a bounded projection the contract did not have
 

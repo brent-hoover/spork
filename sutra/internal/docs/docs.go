@@ -85,6 +85,11 @@ func Migrate(db *sql.DB) error {
 			title           TEXT NOT NULL,
 			current_version TEXT
 		);
+		-- Document listings read one scope in title order; the index
+		-- keeps that ordering off the temp-sort path, where it would
+		-- hold every title (review 1924).
+		CREATE INDEX IF NOT EXISTS documents_project_title ON documents(project, title);
+		CREATE INDEX IF NOT EXISTS documents_issue_title ON documents(issue, title);
 		CREATE TABLE IF NOT EXISTS doc_versions (
 			id       TEXT PRIMARY KEY,
 			document TEXT NOT NULL REFERENCES documents(id),
