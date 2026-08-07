@@ -903,6 +903,29 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /documents/{documentId}/current-version:
+    get:
+      operationId: getCurrentVersionMeta
+      summary: Get the current version's metadata, without its content
+      description: >-
+        The bounded projection of the current DocVersion. The document view's
+        live-refresh signal (AC-docweb-live) polls for the current version
+        number; serving that through getDocument would read and marshal the
+        whole unbounded content on every poll, so the poll needs a
+        representation that carries none.
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+      responses:
+        '200':
+          description: The current version's metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocVersionMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /documents/{documentId}/versions:
     post:
       operationId: saveDocVersion
@@ -2155,6 +2178,18 @@ components:
         document: { type: string, format: uuid }
         number: { type: integer }
         content: { type: string }
+        author: { type: string, format: uuid }
+        created: { type: string, format: date-time }
+
+    DocVersionMeta:
+      description: A DocVersion without its content — the bounded projection.
+      type: object
+      additionalProperties: false
+      required: [id, document, number, author, created]
+      properties:
+        id: { type: string, format: uuid }
+        document: { type: string, format: uuid }
+        number: { type: integer }
         author: { type: string, format: uuid }
         created: { type: string, format: date-time }
 

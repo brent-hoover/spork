@@ -180,44 +180,6 @@ func (s *Server) scanFields(path string, want map[string]any, stopKeys ...string
 	return scanObject(dec, want, stopSet(stopKeys))
 }
 
-// scanNestedFields applies the same collect-and-stop rule INSIDE one
-// named member: it walks the top-level object to `outer` — every key
-// before it being bounded metadata — and then scans that object. The
-// doc-review poll needs version.number and must never read
-// version.content, which sits in the same object (review 1910).
-func (s *Server) scanNestedFields(path, outer string, want map[string]any, stopKeys ...string) error {
-	resp, err := s.client.Get(s.api + path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %d", path, resp.StatusCode)
-	}
-	dec := json.NewDecoder(resp.Body)
-	if err := expectObject(dec, path); err != nil {
-		return err
-	}
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return err
-		}
-		key, _ := keyTok.(string)
-		if key == outer {
-			if err := expectObject(dec, path+"."+outer); err != nil {
-				return err
-			}
-			return scanObject(dec, want, stopSet(stopKeys))
-		}
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return err
-		}
-	}
-	return fmt.Errorf("GET %s: no %s member", path, outer)
-}
-
 func stopSet(keys []string) map[string]bool {
 	stop := map[string]bool{}
 	for _, k := range keys {
@@ -1222,16 +1184,18 @@ func (s *Server) pollDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("documentId")
-	// The poll needs ONE number. Decoding the document would pull the
-	// current version's whole content every five seconds, so the scan
-	// descends into "version", takes "number", and stops before
-	// "content" (review 1910).
-	var latest int64
-	if err := s.scanNestedFields("/documents/"+id, "version",
-		map[string]any{"number": &latest}, "content"); err != nil {
+	// The poll needs ONE number, so it asks the bounded operation for
+	// it. Stopping the client-side decode before "content" was not
+	// enough: getDocument still read and marshaled the whole version
+	// upstream, every five seconds (review 1912).
+	var meta struct {
+		Number int64 `json:"number"`
+	}
+	if err := s.get("/documents/"+id+"/current-version", &meta); err != nil {
 		htmlError(w, err)
 		return
 	}
+	latest := meta.Number
 	since := r.URL.Query().Get("since")
 	w.Header().Set("Content-Type", "application/json")
 	fresh := fmt.Sprintf("%d", latest) != since

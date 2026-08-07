@@ -62,6 +62,7 @@ var operations = map[string]op{
 	"listProjectDocuments":    {http.MethodGet, "/projects/{projectId}/documents"},
 	"getDocument":             {http.MethodGet, "/documents/{documentId}"},
 	"saveDocVersion":          {http.MethodPost, "/documents/{documentId}/versions"},
+	"getCurrentVersionMeta":   {http.MethodGet, "/documents/{documentId}/current-version"},
 	"listDocVersions":         {http.MethodGet, "/documents/{documentId}/versions"},
 	"getDocVersion":           {http.MethodGet, "/doc-versions/{docVersionId}"},
 	"diffDocVersions":         {http.MethodGet, "/documents/{documentId}/diff"},

@@ -256,6 +256,24 @@ func VersionAt(tx *sql.Tx, documentID string, number int64) (Version, error) {
 	return v, nil
 }
 
+// CurrentVersionMeta is VersionAt(current) without the content column,
+// so a caller that needs only the version number never reads an
+// unbounded value. The live-refresh poll runs every five seconds
+// (review 1912).
+func CurrentVersionMeta(tx *sql.Tx, documentID string) (Version, error) {
+	var v Version
+	err := tx.QueryRow(`SELECT id, document, number, author, created FROM doc_versions
+		WHERE document = ? ORDER BY number DESC LIMIT 1`, documentID).
+		Scan(&v.ID, &v.Document, &v.Number, &v.Author, &v.Created)
+	if err == sql.ErrNoRows {
+		return Version{}, &VersionNotFoundError{Ref: documentID}
+	}
+	if err != nil {
+		return Version{}, fmt.Errorf("current version meta of %s: %w", documentID, err)
+	}
+	return v, nil
+}
+
 // VersionByID returns one version addressed independently
 // (AC-review-web renders doc deliverables through this).
 func VersionByID(tx *sql.Tx, id string) (Version, error) {

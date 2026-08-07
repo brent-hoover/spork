@@ -161,3 +161,25 @@ It is nonetheless a cap below an unconstrained contract — the same class
 as the SQLite value-length bound already logged. If transcripts should
 be bounded, the contract should say so; if not, the bound needs a
 declared home. Surfaced by roborev review 1902.
+
+## AC-docweb-live needs a bounded projection the contract did not have
+
+The document view's live-refresh signal polls for the current version
+number every five seconds, but the only operation carrying it was
+getDocument, whose DocumentView embeds the version's unbounded content.
+Bounding the CLIENT's decode was not enough — the API still read and
+marshaled the whole content per poll — so an implementable AC-docweb-live
+requires a representation that carries no content.
+
+Added getCurrentVersionMeta (GET /documents/{documentId}/current-version
+→ DocVersionMeta: id, document, number, author, created). This is the
+same shape the earlier "no metadata-only document version history" entry
+asks for, now provided for the current version only; the full history
+listing still ships content it does not need. avspec's contract should
+either declare bounded projections wherever a UI polls, or declare which
+operations a live view may use. Surfaced by roborev review 1912.
+
+Note the verification suite caught the omission mechanically: adding an
+operation failed REQ-cli-parity ("every api operation has a command")
+until the CLI's operations table carried it too. The parity scenario is
+doing exactly what it was written to do.

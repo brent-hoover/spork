@@ -145,6 +145,44 @@ func (s *server) getDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, documentView{Document: doc, Version: version})
 }
 
+// docVersionMeta is the contract's DocVersionMeta: a DocVersion
+// without its content. It exists as its own type because Version
+// always marshals a content field, which the closed meta schema
+// forbids.
+type docVersionMeta struct {
+	ID       string `json:"id"`
+	Document string `json:"document"`
+	Number   int64  `json:"number"`
+	Author   string `json:"author"`
+	Created  string `json:"created"`
+}
+
+// getCurrentVersionMeta serves the current version's bounded
+// projection. The document view's live-refresh poll needs the version
+// number every five seconds, and getDocument would read and marshal
+// the whole unbounded content to answer that (review 1912).
+func (s *server) getCurrentVersionMeta(w http.ResponseWriter, r *http.Request) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	doc, err := docs.Get(tx, r.PathValue("documentId"))
+	if err != nil {
+		writeError(w, docErrorFrom(err))
+		return
+	}
+	v, err := docs.CurrentVersionMeta(tx, doc.ID)
+	if err != nil {
+		writeError(w, docErrorFrom(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, docVersionMeta{
+		ID: v.ID, Document: v.Document, Number: v.Number, Author: v.Author, Created: v.Created,
+	})
+}
+
 type saveVersionRequest struct {
 	Content *string `json:"content"`
 	Author  string  `json:"author"`

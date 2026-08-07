@@ -78,6 +78,7 @@ func New(db *sql.DB) (http.Handler, error) {
 	mux.HandleFunc("GET /issues/{issueId}/threads", s.listIssueThreads)
 	mux.HandleFunc("GET /documents/{documentId}", s.getDocument)
 	mux.HandleFunc("POST /documents/{documentId}/versions", s.saveDocVersion)
+	mux.HandleFunc("GET /documents/{documentId}/current-version", s.getCurrentVersionMeta)
 	mux.HandleFunc("GET /documents/{documentId}/versions", s.listDocVersions)
 	mux.HandleFunc("GET /doc-versions/{docVersionId}", s.getDocVersion)
 	mux.HandleFunc("GET /documents/{documentId}/diff", s.diffDocVersions)
