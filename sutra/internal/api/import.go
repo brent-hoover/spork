@@ -621,9 +621,13 @@ func validateImport(p *importPayload, actor string) *apiError {
 func validateImportShapes(p *importPayload) *apiError {
 	uuidOf := func(what, id string) *apiError {
 		// CON-uuid-keys pins entity primary keys to UUIDv7: version
-		// nibble 7, RFC 9562 variant.
+		// nibble 7, RFC 9562 variant. Shape validates FIRST — indexing
+		// a short id would panic the handler.
+		if !isUUID(id) {
+			return malformedImport("%s id %q is not a uuidv7", what, id)
+		}
 		variant := id[19] | 0x20 // lowercase the hex nibble
-		if !isUUID(id) || id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
+		if id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
 			return malformedImport("%s id %q is not a uuidv7", what, id)
 		}
 		return nil
