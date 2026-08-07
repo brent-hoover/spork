@@ -82,6 +82,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", *addr, err)
 	}
+	// Serve closes the listener itself; this covers the paths that
+	// return before serving starts (a UI bind failure).
+	defer func() { _ = apiListener.Close() }()
 	apiURL := "http://" + dialableAddr(apiListener.Addr())
 
 	server := &http.Server{
@@ -104,6 +107,7 @@ func run() error {
 	// The web UI is a pure HTTP client of the API (MOD-web imports no
 	// sibling modules); it serves on its own listener when enabled.
 	var uiServer *http.Server
+	var uiListener net.Listener
 	if *uiAddr != "" {
 		// The rebinding guard compares the browser's Host against
 		// canonical authorities. A wildcard or ephemeral bind is not
@@ -125,15 +129,26 @@ func run() error {
 			Handler:           web.New(apiURL, *uiActor, canonical...).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
-		go func() {
-			log.Printf("sutra web UI on %s", *uiAddr)
-			if err := uiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("web UI: %v", err)
-			}
-		}()
+		// Bind SYNCHRONOUSLY: a UI that was asked for and cannot bind
+		// is a failed start, not a log line under a process that looks
+		// healthy (review 1930).
+		uiListener, err = net.Listen("tcp", *uiAddr)
+		if err != nil {
+			return fmt.Errorf("listen on %s for the web UI: %w", *uiAddr, err)
+		}
 	}
 
 	errCh := make(chan error, 1)
+	if uiListener != nil {
+		go func() {
+			log.Printf("sutra web UI on %s", uiListener.Addr())
+			// A UI that dies takes the process with it, for the same
+			// reason: it was requested, so its absence is a failure.
+			if err := uiServer.Serve(uiListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("web UI: %w", err)
+			}
+		}()
+	}
 	go func() {
 		log.Printf("sutra serving on %s (db %s)", apiListener.Addr(), *dbPath)
 		errCh <- server.Serve(apiListener)
@@ -173,8 +188,17 @@ func dialableAddr(a net.Addr) string {
 		if tcp.IP.To4() != nil || len(tcp.IP) == 0 {
 			ip = net.IPv4(127, 0, 0, 1)
 		}
+		// A wildcard carries no meaningful zone into loopback.
+		return net.JoinHostPort(ip.String(), strconv.Itoa(tcp.Port))
 	}
-	return net.JoinHostPort(ip.String(), strconv.Itoa(tcp.Port))
+	host := ip.String()
+	if tcp.Zone != "" {
+		// A link-local address is unusable without its zone, and the
+		// zone delimiter must be percent-ENCODED inside a URL host —
+		// a bare "%" would make the URL unparseable (review 1930).
+		host += "%25" + tcp.Zone
+	}
+	return net.JoinHostPort(host, strconv.Itoa(tcp.Port))
 }
 
 // browserAuthority returns the Host value a browser would send for a

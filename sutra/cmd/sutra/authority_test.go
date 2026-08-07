@@ -44,6 +44,13 @@ func TestDialableAddr(t *testing.T) {
 		{name: "ipv4 wildcard", addr: &net.TCPAddr{IP: net.IPv4zero, Port: 7357}, want: "127.0.0.1:7357"},
 		{name: "ipv6 wildcard", addr: &net.TCPAddr{IP: net.IPv6unspecified, Port: 7357}, want: "[::1]:7357"},
 		{name: "no host", addr: &net.TCPAddr{Port: 7357}, want: "127.0.0.1:7357"},
+		{
+			// A link-local address is unusable without its zone, and a
+			// bare "%" would make the URL unparseable (review 1930).
+			name: "scoped ipv6 keeps its zone, percent-encoded",
+			addr: &net.TCPAddr{IP: net.ParseIP("fe80::1"), Zone: "en0", Port: 7357},
+			want: "[fe80::1%25en0]:7357",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := dialableAddr(tc.addr); got != tc.want {

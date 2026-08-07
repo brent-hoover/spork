@@ -265,68 +265,57 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw[:len(raw)-1])
-	_, _ = w.Write([]byte(`,"documents":[`))
-	for i, id := range docIDs {
-		doc, err := docs.Get(tx, id)
-		if err != nil {
-			return // truncation is the only signal after the first byte
-		}
-		one, err := json.Marshal(doc)
-		if err != nil {
-			return
-		}
-		if i > 0 {
-			_, _ = w.Write([]byte{','})
-		}
-		_, _ = w.Write(one)
-	}
-	// Reviews stream one row at a time — summaries are unbounded.
-	_, _ = w.Write([]byte(`],"reviews":[`))
+	// The same failure-tracking writer the export uses: a client that
+	// stops reading must stop the scan, not have every remaining record
+	// loaded and marshaled into a dead connection while the read
+	// transaction pins the WAL (review 1930).
+	arr := newArrayWriter(w)
+	arr.write(raw[:len(raw)-1])
+
 	slices.Sort(reviewIDs)
-	for i, id := range reviewIDs {
-		rv, err := review.Get(tx, id)
-		if err != nil {
-			return // truncation is the only signal after the first byte
+	for _, group := range []struct {
+		name string
+		ids  []string
+		load func(string) (any, error)
+	}{
+		{"documents", docIDs, func(id string) (any, error) { return docs.Get(tx, id) }},
+		// Reviews stream one row at a time — summaries are unbounded.
+		{"reviews", reviewIDs, func(id string) (any, error) { return review.Get(tx, id) }},
+		{"issues", issueIDs, func(id string) (any, error) { return issues.Get(tx, id) }},
+	} {
+		arr.open(group.name)
+		for _, id := range group.ids {
+			if arr.failed() {
+				return // the client stopped reading; abandon the scan
+			}
+			record, err := group.load(id)
+			if err != nil {
+				return // status committed; truncation is the only signal
+			}
+			if err := arr.marshalElem(record); err != nil {
+				return
+			}
 		}
-		one, err := json.Marshal(rv)
-		if err != nil {
+		arr.close()
+	}
+
+	// Transcripts splice verbatim, so threads write themselves.
+	arr.open("threads")
+	for _, id := range threadIDs {
+		if arr.failed() {
 			return
 		}
-		if i > 0 {
-			_, _ = w.Write([]byte{','})
-		}
-		_, _ = w.Write(one)
-	}
-	_, _ = w.Write([]byte(`],"issues":[`))
-	for i, id := range issueIDs {
-		issue, err := issues.Get(tx, id)
-		if err != nil {
-			return // truncation is the only signal after the first byte
-		}
-		one, err := json.Marshal(issue)
-		if err != nil {
-			return
-		}
-		if i > 0 {
-			_, _ = w.Write([]byte{','})
-		}
-		_, _ = w.Write(one)
-	}
-	_, _ = w.Write([]byte(`],"threads":[`))
-	for i, id := range threadIDs {
 		t, err := threads.Get(tx, id)
 		if err != nil {
 			return
 		}
-		if i > 0 {
-			_, _ = w.Write([]byte{','})
-		}
+		arr.comma()
 		if apiErr := writeThreadJSON(w, t); apiErr != nil {
 			return
 		}
 	}
-	_, _ = w.Write([]byte(`]}`))
+	arr.close()
+	arr.write([]byte{'}'})
 }
 
 // issueMatchesQ reports whether one issue text-matches the term —
