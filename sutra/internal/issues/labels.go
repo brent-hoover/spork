@@ -105,6 +105,30 @@ func ListLabels(tx *sql.Tx) ([]Label, error) {
 }
 
 // GetLabel returns one label.
+// LabelIDsForProject returns the ids of every label attached to any
+// issue in a project, ordered by label name — the SORT happens in SQL
+// so a caller streaming the catalog never holds the names it orders by
+// (review 1920).
+func LabelIDsForProject(tx *sql.Tx, project string) ([]string, error) {
+	rows, err := tx.Query(`SELECT DISTINCT l.id FROM labels l
+		JOIN issue_labels il ON il.label = l.id
+		JOIN issues i ON i.id = il.issue
+		WHERE i.project = ? ORDER BY l.name`, project)
+	if err != nil {
+		return nil, fmt.Errorf("label ids for %s: %w", project, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan label id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func GetLabel(tx *sql.Tx, id string) (Label, error) {
 	var l Label
 	err := tx.QueryRow(`SELECT id, name, color FROM labels WHERE id = ?`, id).Scan(&l.ID, &l.Name, &l.Color)

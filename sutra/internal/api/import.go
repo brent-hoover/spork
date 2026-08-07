@@ -706,6 +706,18 @@ func validateImportShapes(p *importPayload) *apiError {
 		if id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
 			return malformedImport("%s id %q is not a uuidv7", what, id)
 		}
+		// Ids are compared as TEXT everywhere — collision preflights,
+		// reference resolution, duplicate detection — and SQLite's text
+		// comparison is case-sensitive. Two casings of one uuid would
+		// therefore be two distinct rows naming the same entity, so
+		// only the canonical lowercase form is accepted. Rejecting
+		// rather than lowercasing is deliberate: event payloads are
+		// stored VERBATIM and reference ids inside their bytes, so
+		// rewriting the columns would desynchronize them from payloads
+		// this import promises to reproduce unchanged (review 1920).
+		if strings.ToLower(id) != id {
+			return malformedImport("%s id %q must be lowercase; uuids are compared as text", what, id)
+		}
 		return nil
 	}
 	timeOf := func(what, value string) *apiError {

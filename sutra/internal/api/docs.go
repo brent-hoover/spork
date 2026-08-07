@@ -181,7 +181,9 @@ func (s *server) getDocumentMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	doc, err := docs.Get(tx, r.PathValue("documentId"))
+	// Metadata only, both halves: docs.Get selects the unbounded title,
+	// which this endpoint exists to avoid reading (review 1920).
+	doc, err := docs.MetaByID(tx, r.PathValue("documentId"))
 	if err != nil {
 		writeError(w, docErrorFrom(err))
 		return
@@ -347,14 +349,18 @@ func (s *server) diffDocVersions(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) linkDocumentToIssue(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("documentId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Issue string `json:"issue"`
-			Actor string `json:"actor"`
-		}
+	type linkRequest struct {
+		Issue string `json:"issue"`
+		Actor string `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req linkRequest
 		if apiErr := rejectExplicitNulls(r, &req, "issue", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(linkRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

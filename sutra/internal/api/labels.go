@@ -26,17 +26,21 @@ func labelErrorFrom(err error) *apiError {
 }
 
 func (s *server) createLabel(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Name  string  `json:"name"`
-			Color *string `json:"color"`
-		}
+	type createLabelRequest struct {
+		Name  string  `json:"name"`
+		Color *string `json:"color"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req createLabelRequest
 		if apiErr := rejectExplicitNulls(r, &req, "name", "color"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Name == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "name is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "name is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(createLabelRequest)
 		label, err := issues.CreateLabel(tx, req.Name, req.Color)
 		if err != nil {
 			return 0, nil, labelErrorFrom(err)
@@ -93,14 +97,18 @@ func (s *server) mutateLabel(tx *sql.Tx, issueID, actor, eventKind string, op fu
 
 func (s *server) attachLabel(w http.ResponseWriter, r *http.Request) {
 	issueID := r.PathValue("issueId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Label string `json:"label"`
-			Actor string `json:"actor"`
-		}
+	type attachRequest struct {
+		Label string `json:"label"`
+		Actor string `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req attachRequest
 		if apiErr := rejectExplicitNulls(r, &req, "label", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(attachRequest)
 		return s.mutateLabel(tx, issueID, req.Actor, "issue.labeled", func() error {
 			return issues.AttachLabel(tx, issueID, req.Label)
 		})

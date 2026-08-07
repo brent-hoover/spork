@@ -353,11 +353,14 @@ func isUUID(s string) bool {
 // 409.
 func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("issueId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
 		req, apiErr := decodeTransition(r)
 		if apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(transitionRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -442,29 +445,33 @@ func applyTransition(tx *sql.Tx, id, status, actor string) (issues.Issue, *apiEr
 // nullable: absent is invalid, explicit null clears (AC-issue-assign).
 func (s *server) assignIssue(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("issueId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
+	type assignRequest struct {
+		Assignee *string `json:"assignee"`
+		Actor    string  `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
 		var raw map[string]json.RawMessage
 		if apiErr := decodeBody(r, &raw); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		assigneeRaw, present := raw["assignee"]
 		if !present {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee is required; send null to clear"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee is required; send null to clear"}
 		}
-		var req struct {
-			Assignee *string `json:"assignee"`
-			Actor    string  `json:"actor"`
-		}
+		var req assignRequest
 		reencoded, err := json.Marshal(raw)
 		if err == nil {
 			err = json.Unmarshal(reencoded, &req)
 		}
 		if err != nil {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("malformed request body: %v", err)}
 		}
 		if string(assigneeRaw) != "null" && (req.Assignee == nil || !isUUID(*req.Assignee)) {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee must be an identity uuid or null"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee must be an identity uuid or null"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(assignRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -584,18 +591,22 @@ func (s *server) closeIssue(tx *sql.Tx, id string, current issues.Issue, req tra
 
 func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 	from := r.PathValue("issueId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Kind  string `json:"kind"`
-			To    string `json:"to"`
-			Actor string `json:"actor"`
-		}
+	type relationRequest struct {
+		Kind  string `json:"kind"`
+		To    string `json:"to"`
+		Actor string `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req relationRequest
 		if apiErr := decodeBody(r, &req); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Kind != "parent_of" && req.Kind != "blocks" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("kind %q must be parent_of or blocks", req.Kind)}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("kind %q must be parent_of or blocks", req.Kind)}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(relationRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

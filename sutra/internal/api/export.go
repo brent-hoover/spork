@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 
 	"sutra/internal/comments"
 	"sutra/internal/docs"
@@ -19,16 +18,14 @@ import (
 	"sutra/internal/threads"
 )
 
-// exportMeta is the bounded portion of ProjectExport — record
-// metadata, never unbounded content. The content-bearing groups
-// (comments, doc versions, review submissions, thread transcripts) are
-// streamed around it row by row at serving time, so export memory
-// stays at one record regardless of project size.
+// exportMeta is the ONLY part of ProjectExport that marshals up front:
+// one project record. Every group — identities, labels, relations,
+// documents, and the content-bearing ones — streams row by row at
+// serving time, because the contract leaves display names, label names
+// and colors, and document titles as unconstrained as content
+// (review 1920). Export memory is one record regardless of project size.
 type exportMeta struct {
-	Project        projects.Project    `json:"project"`
-	Identities     []identity.Identity `json:"identities"`
-	Labels         []issues.Label      `json:"labels"`
-	IssueRelations []issues.Relation   `json:"issue_relations"`
+	Project projects.Project `json:"project"`
 }
 
 // documentExport mirrors the contract's DocumentExport; import decodes
@@ -40,12 +37,15 @@ type documentExport struct {
 
 // exportPlan carries the id lists the streaming writer walks.
 type exportPlan struct {
-	meta       exportMeta
-	issueIDs   []string
-	docs       []docs.Document
-	versionIDs []string
-	reviewIDs  []string // ids only; each review loads at write time
-	threadIDs  []string
+	meta        exportMeta
+	identityIDs []string
+	labelIDs    []string
+	relations   []issues.Relation // bounded: kind plus three uuids
+	issueIDs    []string
+	docIDs      []string
+	versionIDs  []string
+	reviewIDs   []string // ids only; each review loads at write time
+	threadIDs   []string
 }
 
 // assembleExportPlan collects id lists and identity references in one
@@ -62,7 +62,6 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 		return plan, err
 	}
 	issueIDSet := map[string]bool{}
-	labelSet := map[string]issues.Label{}
 	identityIDs := map[string]bool{}
 	irows, err := tx.QueryContext(ctx, `SELECT id, assignee FROM issues WHERE project = ? ORDER BY number`, projectID)
 	if err != nil {
@@ -86,22 +85,13 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 		return plan, err
 	}
 	_ = irows.Close()
-	for _, id := range plan.issueIDs {
-		labels, err := issues.LabelsOf(tx, id)
-		if err != nil {
-			return plan, err
-		}
-		for _, l := range labels {
-			labelSet[l.ID] = l
-		}
+	// Label IDS in name order — SQL does the ordering, so the names
+	// being ordered by are never held (review 1920).
+	if plan.labelIDs, err = issues.LabelIDsForProject(tx, projectID); err != nil {
+		return plan, err
 	}
-	plan.meta.Labels = make([]issues.Label, 0, len(labelSet))
-	for _, l := range labelSet {
-		plan.meta.Labels = append(plan.meta.Labels, l)
-	}
-	slices.SortFunc(plan.meta.Labels, func(a, b issues.Label) int { return strings.Compare(a.Name, b.Name) })
 
-	plan.meta.IssueRelations = []issues.Relation{}
+	plan.relations = []issues.Relation{}
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, from_issue, to_issue FROM issue_relations`)
 	if err != nil {
 		return plan, err
@@ -113,20 +103,21 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 			return plan, err
 		}
 		if issueIDSet[rel.From] && issueIDSet[rel.To] {
-			plan.meta.IssueRelations = append(plan.meta.IssueRelations, rel)
+			plan.relations = append(plan.relations, rel)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return plan, err
 	}
 
-	// Documents: metadata plus per-version (id, author) — content
-	// stays in the store until the writer streams it.
-	if plan.docs, err = docs.ListByProject(tx, projectID); err != nil {
+	// Documents: IDS in title order, plus per-version (id, author) —
+	// titles and content both stay in the store until the writer
+	// streams each record.
+	if plan.docIDs, err = docs.IDsByProject(tx, projectID); err != nil {
 		return plan, err
 	}
-	for _, d := range plan.docs {
-		vrows, err := tx.QueryContext(ctx, `SELECT id, author FROM doc_versions WHERE document = ? ORDER BY number`, d.ID)
+	for _, docID := range plan.docIDs {
+		vrows, err := tx.QueryContext(ctx, `SELECT id, author FROM doc_versions WHERE document = ? ORDER BY number`, docID)
 		if err != nil {
 			return plan, err
 		}
@@ -229,14 +220,8 @@ func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (expo
 	}
 	_ = arows.Close()
 
-	plan.meta.Identities = []identity.Identity{}
-	for _, id := range sortedKeys(identityIDs) {
-		ident, err := identity.Get(tx, id)
-		if err != nil {
-			return plan, err
-		}
-		plan.meta.Identities = append(plan.meta.Identities, ident)
-	}
+	// Identity IDS only; each record loads at write time.
+	plan.identityIDs = sortedKeys(identityIDs)
 	return plan, nil
 }
 
@@ -368,6 +353,48 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	arr := newArrayWriter(w)
 	arr.write(raw[:len(raw)-1])
 
+	// Identities and labels carry unconstrained display names, label
+	// names and colors, so they stream by id like every other group.
+	arr.open("identities")
+	for _, id := range plan.identityIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
+		ident, err := identity.Get(tx, id)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		if err := arr.marshalElem(ident); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	arr.open("labels")
+	for _, id := range plan.labelIDs {
+		if arr.failed() {
+			return
+		}
+		label, err := issues.GetLabel(tx, id)
+		if err != nil {
+			return
+		}
+		if err := arr.marshalElem(label); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	// Relations are bounded — a kind and three uuids — so the plan
+	// carries the records themselves.
+	arr.open("issue_relations")
+	for _, rel := range plan.relations {
+		if err := arr.marshalElem(rel); err != nil {
+			return
+		}
+	}
+	arr.close()
+
 	// Issues stream one row at a time — bodies are unbounded strings.
 	arr.open("issues")
 	for _, id := range plan.issueIDs {
@@ -411,9 +438,13 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 	arr.close()
 
 	arr.open("documents")
-	for _, d := range plan.docs {
+	for _, docID := range plan.docIDs {
 		if arr.failed() {
 			return // the client stopped reading; abandon the scan
+		}
+		d, err := docs.Get(tx, docID)
+		if err != nil {
+			return // status committed; truncation is the only signal
 		}
 		docRaw, err := json.Marshal(d)
 		if err != nil {
@@ -424,7 +455,7 @@ func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
 		arr.write(docRaw)
 		arr.write([]byte(`,"versions":[`))
 		inner := arr.nested()
-		if err := docs.VersionsEach(tx, d.ID, func(v docs.Version) error {
+		if err := docs.VersionsEach(tx, docID, func(v docs.Version) error {
 			return inner.marshalElem(v)
 		}); err != nil {
 			return

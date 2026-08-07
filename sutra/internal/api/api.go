@@ -187,22 +187,28 @@ func decodeBody(r *http.Request, into any) *apiError {
 // --------------------------------------------------------------- identities
 
 func (s *server) createIdentity(w http.ResponseWriter, r *http.Request) {
-	// Decoding and semantic validation run INSIDE the idempotent
-	// wrapper: a keyed 400 is a settled outcome, and replaying the key
-	// with a corrected body must return the original rejection, not
-	// perform the mutation.
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Handle      string  `json:"handle"`
-			Kind        string  `json:"kind"`
-			DisplayName *string `json:"display_name"`
-		}
+	// Decoding and body-only validation run in the PREPARE stage —
+	// before the reservation takes SQLite's write lock — so an
+	// unbounded display_name is decoded and rejected without any other
+	// mutation waiting behind it (review 1920). A prepare rejection is
+	// still a settled outcome: replaying the key with a corrected body
+	// returns the original rejection rather than mutating.
+	type createIdentityRequest struct {
+		Handle      string  `json:"handle"`
+		Kind        string  `json:"kind"`
+		DisplayName *string `json:"display_name"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req createIdentityRequest
 		if apiErr := rejectExplicitNulls(r, &req, "handle", "kind", "display_name"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Handle == "" || (req.Kind != "human" && req.Kind != "agent") {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "handle and kind (human|agent) are required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "handle and kind (human|agent) are required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(createIdentityRequest)
 		created, err := identity.Create(tx, req.Handle, req.Kind, req.DisplayName)
 		if err != nil {
 			return 0, nil, errorFrom(err)
@@ -214,26 +220,32 @@ func (s *server) createIdentity(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------- projects
 
 func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Key           string  `json:"key"`
-			Name          string  `json:"name"`
-			Description   *string `json:"description"`
-			RepoPath      *string `json:"repo_path"`
-			DefaultBranch *string `json:"default_branch"`
-			Actor         string  `json:"actor"`
-		}
+	type createProjectRequest struct {
+		Key           string  `json:"key"`
+		Name          string  `json:"name"`
+		Description   *string `json:"description"`
+		RepoPath      *string `json:"repo_path"`
+		DefaultBranch *string `json:"default_branch"`
+		Actor         string  `json:"actor"`
+	}
+	// Body decode and body-only checks run pre-lock (review 1920);
+	// actor existence needs the transaction and stays below.
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req createProjectRequest
 		if apiErr := rejectExplicitNulls(r, &req, "key", "name", "description", "repo_path", "default_branch", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Key == "." || req.Key == ".." {
 			// Dot-segment keys make the declared /p/:key web routes
 			// unreachable — URL canonicalization swallows them.
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key must not be a dot segment"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key must not be a dot segment"}
 		}
 		if req.Key == "" || req.Name == "" {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key and name are required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "key and name are required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(createProjectRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -271,13 +283,17 @@ func (s *server) getProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) archiveProject(w http.ResponseWriter, r *http.Request) {
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Actor string `json:"actor"`
-		}
+	type archiveRequest struct {
+		Actor string `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req archiveRequest
 		if apiErr := decodeBody(r, &req); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(archiveRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

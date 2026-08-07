@@ -223,6 +223,23 @@ type Ref struct {
 	Number  int64
 }
 
+// RefByID reads one issue's reference. Callers deciding whether an
+// issue belongs in a result set need its project and number, never its
+// body or labels — those load only for the records that survive
+// (review 1920).
+func RefByID(tx *sql.Tx, id string) (Ref, error) {
+	var r Ref
+	err := tx.QueryRow(`SELECT id, project, number FROM issues WHERE id = ?`, id).
+		Scan(&r.ID, &r.Project, &r.Number)
+	if err == sql.ErrNoRows {
+		return Ref{}, &NotFoundError{ID: id}
+	}
+	if err != nil {
+		return Ref{}, fmt.Errorf("issue ref %s: %w", id, err)
+	}
+	return r, nil
+}
+
 // SearchIDs runs List's filters but returns only references — search
 // discovery never loads unbounded bodies it will reduce to ids anyway.
 func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {

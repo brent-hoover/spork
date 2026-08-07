@@ -633,21 +633,25 @@ func (s *server) listReviews(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) setReviewVerdict(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("reviewId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Verdict  string `json:"verdict"`
-			Revision *int64 `json:"revision"`
-			Actor    string `json:"actor"`
-		}
+	type verdictRequest struct {
+		Verdict  string `json:"verdict"`
+		Revision *int64 `json:"revision"`
+		Actor    string `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req verdictRequest
 		if apiErr := decodeBody(r, &req); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.Verdict != review.StateApproved && req.Verdict != review.StateChangesRequested {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("verdict %q must be approved or changes-requested", req.Verdict)}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("verdict %q must be approved or changes-requested", req.Verdict)}
 		}
 		if req.Revision == nil {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "revision is required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "revision is required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(verdictRequest)
 		if apiErr := requireHumanVerdictActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -682,18 +686,22 @@ func (s *server) setReviewVerdict(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) consumeReviewApproval(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("reviewId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			ExpectedRevision     *int64 `json:"expected_revision"`
-			ExpectedVerdictEvent string `json:"expected_verdict_event"`
-			Actor                string `json:"actor"`
-		}
+	type consumeRequest struct {
+		ExpectedRevision     *int64 `json:"expected_revision"`
+		ExpectedVerdictEvent string `json:"expected_verdict_event"`
+		Actor                string `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req consumeRequest
 		if apiErr := decodeBody(r, &req); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
 		if req.ExpectedRevision == nil || !isUUID(req.ExpectedVerdictEvent) {
-			return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "expected_revision and expected_verdict_event are required"}
+			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "expected_revision and expected_verdict_event are required"}
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(consumeRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

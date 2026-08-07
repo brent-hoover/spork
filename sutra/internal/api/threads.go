@@ -164,15 +164,19 @@ func (s *server) listIssueThreads(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) setThreadAnchor(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("threadId")
-	s.idempotent(w, r, func(tx *sql.Tx) (int, any, *apiError) {
-		var req struct {
-			Project *string `json:"project"`
-			Issue   *string `json:"issue"`
-			Actor   string  `json:"actor"`
-		}
+	type anchorRequest struct {
+		Project *string `json:"project"`
+		Issue   *string `json:"issue"`
+		Actor   string  `json:"actor"`
+	}
+	s.idempotentPrepared(w, r, func(r *http.Request) (any, *apiError) {
+		var req anchorRequest
 		if apiErr := rejectExplicitNulls(r, &req, "project", "issue", "actor"); apiErr != nil {
-			return 0, nil, apiErr
+			return nil, apiErr
 		}
+		return req, nil
+	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
+		req := prepped.(anchorRequest)
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}

@@ -195,6 +195,31 @@ func ListByIssue(tx *sql.Tx, issue string) ([]Document, error) {
 	return list(tx, `SELECT id, project, issue, title, current_version FROM documents WHERE issue = ? ORDER BY title`, issue)
 }
 
+// Meta is the fixed-size facts about a document: identity, ownership,
+// current version pointer. The title is unbounded, so callers that only
+// need scope or the current-version pointer must not read it — that is
+// the whole point of the bounded document endpoint (review 1920).
+type Meta struct {
+	ID             string
+	Project        string
+	Issue          *string
+	CurrentVersion *string
+}
+
+// MetaByID reads that projection; the title column is never selected.
+func MetaByID(tx *sql.Tx, id string) (Meta, error) {
+	var m Meta
+	err := tx.QueryRow(`SELECT id, project, issue, current_version FROM documents WHERE id = ?`, id).
+		Scan(&m.ID, &m.Project, &m.Issue, &m.CurrentVersion)
+	if err == sql.ErrNoRows {
+		return Meta{}, &NotFoundError{ID: id}
+	}
+	if err != nil {
+		return Meta{}, fmt.Errorf("document meta %s: %w", id, err)
+	}
+	return m, nil
+}
+
 // SearchIDs is Search's discovery projection: matching ids in the same
 // order, without the titles. Callers that stream documents to the wire
 // must use it — titles are unbounded, so an accumulated result set is

@@ -45,7 +45,6 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	issueSet := map[string]issueKey{}
 	noteRef := func(r issues.Ref) { issueSet[r.ID] = issueKey{r.Project, r.Number} }
-	noteIssue := func(i issues.Issue) { issueSet[i.ID] = issueKey{i.Project, i.Number} }
 	reviewIDs := []string{}
 
 	// Text matches over issues, project-scoped when given. With q
@@ -95,32 +94,56 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Deciding whether a session-reached issue belongs in the result
+	// needs its project and number — never its body or labels — and
+	// several reviews or threads commonly name the SAME issue, so each
+	// verdict is computed once from a light reference and memoized
+	// (review 1920). Full issues load only while streaming survivors.
+	type issueVerdict struct {
+		ref issues.Ref
+		ok  bool
+	}
+	verdicts := map[string]issueVerdict{}
+	verdictFor := func(issueID string) (issueVerdict, error) {
+		if v, seen := verdicts[issueID]; seen {
+			return v, nil
+		}
+		ref, err := issues.RefByID(tx, issueID)
+		if err != nil {
+			return issueVerdict{}, err
+		}
+		v := issueVerdict{ref: ref, ok: true}
+		if project != nil && ref.Project != *project {
+			v.ok = false
+		}
+		if v.ok && q != nil {
+			// Filters intersect: a session issue failing the text term
+			// drops, and so does the review that led to it.
+			match, err := issueMatchesQ(tx, ref.ID, *q)
+			if err != nil {
+				return issueVerdict{}, err
+			}
+			v.ok = match
+		}
+		verdicts[issueID] = v
+		return v, nil
+	}
+
 	// A session filter defines the scope; a text term then narrows
 	// WITHIN it (filters intersect, never union) via issueMatchesQ.
 	// Session joins: reviews by any submission, plus their issues —
 	// both confined to the project scope when one is given.
 	if session != nil {
 		err := review.EachRef(tx, "", "", *session, func(rev review.Ref) error {
-			iss, err := issues.Get(tx, rev.Issue)
+			v, err := verdictFor(rev.Issue)
 			if err != nil {
 				return err
 			}
-			if project != nil && iss.Project != *project {
+			if !v.ok {
 				return nil
 			}
-			if q != nil {
-				match, err := issueMatchesQ(tx, iss.ID, *q)
-				if err != nil {
-					return err
-				}
-				if !match {
-					// Filters intersect: a session review whose issue
-					// fails the text term drops entirely.
-					return nil
-				}
-			}
 			reviewIDs = append(reviewIDs, rev.ID)
-			noteIssue(iss)
+			noteRef(v.ref)
 			return nil
 		})
 		if err != nil {
@@ -156,22 +179,13 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			if t.Issue == nil {
 				return nil
 			}
-			iss, err := issues.Get(tx, *t.Issue)
+			v, err := verdictFor(*t.Issue)
 			if err != nil {
 				return err
 			}
-			if q != nil {
-				match, err := issueMatchesQ(tx, iss.ID, *q)
-				if err != nil {
-					return err
-				}
-				if !match {
-					// Filters intersect: a session issue failing the
-					// text term drops.
-					return nil
-				}
+			if v.ok {
+				noteRef(v.ref)
 			}
-			noteIssue(iss)
 			return nil
 		})
 		if err != nil {
