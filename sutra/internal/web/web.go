@@ -224,8 +224,12 @@ type project struct {
 }
 
 func (s *Server) projectByKey(key string) (project, error) {
+	// Archived projects stay READABLE (hidden and frozen, not
+	// deleted): route resolution must see them, while the projects
+	// nav keeps the default filtered listing. Mutations still reject
+	// server-side via the project-archived guard.
 	var list []project
-	if err := s.get("/projects", &list); err != nil {
+	if err := s.get("/projects?includeArchived=true", &list); err != nil {
 		return project{}, err
 	}
 	for _, p := range list {
@@ -865,6 +869,20 @@ func (s *Server) commentDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	versionID := r.Form.Get("doc_version")
+	// The form value is independently controlled; the version must
+	// belong to the ROUTE's document, or a forged form could comment
+	// on another document under a misleading scoped URL.
+	var version struct {
+		Document string `json:"document"`
+	}
+	if err := s.get("/doc-versions/"+url.PathEscape(versionID), &version); err != nil {
+		htmlError(w, err)
+		return
+	}
+	if version.Document != id {
+		http.NotFound(w, r)
+		return
+	}
 	payload := map[string]any{
 		"doc_version": versionID,
 		"body":        r.Form.Get("body"),
