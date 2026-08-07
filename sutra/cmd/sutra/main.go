@@ -74,6 +74,16 @@ func run() error {
 		return fmt.Errorf("wire api: %w", err)
 	}
 
+	// The listener opens HERE, before the UI is wired, because the UI
+	// must be told the port the API actually got: with an ephemeral
+	// bind (":0") the kernel assigns one, and deriving the UI's API URL
+	// from the requested address would point it at port 0 (review 1926).
+	apiListener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", *addr, err)
+	}
+	apiURL := "http://" + dialableAddr(apiListener.Addr())
+
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           handler,
@@ -112,7 +122,7 @@ func run() error {
 			// The UI's own bind address is ALWAYS canonical; extra
 			// hosts (a reverse proxy's name) add to it. The allowlist
 			// is never empty, so the rebinding guard always applies.
-			Handler:           web.New("http://"+*addr, *uiActor, canonical...).Handler(),
+			Handler:           web.New(apiURL, *uiActor, canonical...).Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -125,8 +135,8 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("sutra serving on %s (db %s)", *addr, *dbPath)
-		errCh <- server.ListenAndServe()
+		log.Printf("sutra serving on %s (db %s)", apiListener.Addr(), *dbPath)
+		errCh <- server.Serve(apiListener)
 	}()
 
 	select {
@@ -146,6 +156,25 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+// dialableAddr renders a listener's address as one a client in this
+// process can connect to: the RESOLVED port (an ephemeral bind only
+// knows it after listening) and loopback in place of a wildcard host,
+// which is an accept-any address rather than a destination.
+func dialableAddr(a net.Addr) string {
+	tcp, ok := a.(*net.TCPAddr)
+	if !ok {
+		return a.String()
+	}
+	ip := tcp.IP
+	if len(ip) == 0 || ip.IsUnspecified() {
+		ip = net.IPv6loopback
+		if tcp.IP.To4() != nil || len(tcp.IP) == 0 {
+			ip = net.IPv4(127, 0, 0, 1)
+		}
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(tcp.Port))
 }
 
 // browserAuthority returns the Host value a browser would send for a

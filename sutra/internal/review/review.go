@@ -369,15 +369,32 @@ func listQuery(selectClause, issue, state, session string) (string, []any) {
 // hydrates the whole submission history, so anything that merely
 // collects reviews must use EachRef instead (review 1906).
 type Ref struct {
-	ID     string
-	Issue  string
-	Author string
+	ID       string
+	Issue    string
+	Author   string
+	Revision int64
+}
+
+// RefByID reads one review's bounded projection. Validating a comment
+// target needs the issue and the revision, never the summary or the
+// submission history Get hydrates (review 1926).
+func RefByID(tx *sql.Tx, id string) (Ref, error) {
+	var r Ref
+	err := tx.QueryRow(`SELECT id, issue, author, revision FROM reviews WHERE id = ?`, id).
+		Scan(&r.ID, &r.Issue, &r.Author, &r.Revision)
+	if err == sql.ErrNoRows {
+		return Ref{}, &NotFoundError{ID: id}
+	}
+	if err != nil {
+		return Ref{}, fmt.Errorf("review ref %s: %w", id, err)
+	}
+	return r, nil
 }
 
 // EachRef streams matching review refs, selected by the same
 // predicates as ListEach but projecting only bounded columns.
 func EachRef(tx *sql.Tx, issue, state, session string, fn func(Ref) error) error {
-	query, args := listQuery(`SELECT DISTINCT r.id, r.issue, r.author FROM reviews r`, issue, state, session)
+	query, args := listQuery(`SELECT DISTINCT r.id, r.issue, r.author, r.revision FROM reviews r`, issue, state, session)
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("list review refs: %w", err)
@@ -385,7 +402,7 @@ func EachRef(tx *sql.Tx, issue, state, session string, fn func(Ref) error) error
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var r Ref
-		if err := rows.Scan(&r.ID, &r.Issue, &r.Author); err != nil {
+		if err := rows.Scan(&r.ID, &r.Issue, &r.Author, &r.Revision); err != nil {
 			return fmt.Errorf("scan review ref: %w", err)
 		}
 		if err := fn(r); err != nil {

@@ -137,8 +137,20 @@ func walkImport(body io.Reader, cb importCallbacks) *apiError {
 					ReviewRevision json.RawMessage `json:"review_revision"`
 					Parent         json.RawMessage `json:"parent"`
 					Anchor         json.RawMessage `json:"anchor"`
+					// body is REQUIRED but unconstrained in length, so
+					// presence is the rule and "" is a valid value — the
+					// shadow is what tells the two apart (review 1926).
+					Body json.RawMessage `json:"body"`
 				}
 				if err := dec.Decode(&v); err != nil {
+					return err
+				}
+				if len(v.Body) == 0 {
+					return fmt.Errorf("comment %s omits body", v.ID)
+				}
+				// The shadow intercepted the value, so hand it back —
+				// the embedded struct is what the callback receives.
+				if err := json.Unmarshal(v.Body, &v.Comment.Body); err != nil {
 					return err
 				}
 				fields := map[string]json.RawMessage{"issue": v.Issue, "doc_version": v.DocVersion,

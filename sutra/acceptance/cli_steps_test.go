@@ -116,66 +116,47 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err != nil {
 			return err
 		}
-		// Coverage is the id AND what it resolves to: a command wired to
-		// the right operationId but the wrong method or path is still a
-		// parity break, and would otherwise pass silently (review 1924).
-		mapping := cli.OperationMapping()
-		missing, wrong := []string{}, []string{}
-		for pathTemplate, path := range doc.Paths.Map() {
-			for method, operation := range path.Operations() {
-				if operation.OperationID == "" {
-					continue
-				}
-				m, ok := mapping[operation.OperationID]
-				if !ok {
-					missing = append(missing, operation.OperationID)
-					continue
-				}
-				if !strings.EqualFold(m.Method, method) || m.Path != pathTemplate {
-					wrong = append(wrong, fmt.Sprintf("%s: CLI calls %s %s, contract declares %s %s",
-						operation.OperationID, m.Method, m.Path, method, pathTemplate))
-				}
-			}
-		}
-		sort.Strings(missing)
-		sort.Strings(wrong)
-		if len(missing) > 0 {
-			return fmt.Errorf("operations without a CLI command: %v", missing)
-		}
-		if len(wrong) > 0 {
-			return fmt.Errorf("CLI commands mapped to the wrong request: %v", wrong)
-		}
-		// Every CLI mapping must also name a real operation — a stale
-		// entry would keep the coverage count right while pointing at
-		// nothing.
-		declared := map[string]bool{}
-		for _, path := range doc.Paths.Map() {
-			for _, operation := range path.Operations() {
-				declared[operation.OperationID] = true
-			}
-		}
-		stale := []string{}
-		for id := range mapping {
-			if !declared[id] {
-				stale = append(stale, id)
-			}
-		}
-		sort.Strings(stale)
-		if len(stale) > 0 {
-			return fmt.Errorf("CLI commands for operations the contract does not declare: %v", stale)
-		}
-		return nil
+		return checkParity(doc, cli.OperationMapping())
 	})
 	sc.Step(`^the check fails if a new operation lacks one$`, func() error {
-		// The check above enumerates the CONTRACT and diffs against the
-		// CLI's table — an uncovered id makes it return an error, which
-		// fails this scenario. Prove the failure path with a synthetic id.
-		covered := map[string]bool{}
-		for _, id := range cli.CoveredOperations() {
-			covered[id] = true
+		// Prove the CHECKER, not just the absence of a sentinel: give it
+		// a contract carrying an operation the CLI does not map, and a
+		// mapping pointing at the wrong request, and require it to
+		// report both. A checker that always succeeded would fail here
+		// (review 1926).
+		loader := openapi3.NewLoader()
+		doc, err := loader.LoadFromFile("../contracts/sutra.openapi.yaml")
+		if err != nil {
+			return err
 		}
-		if covered["aBrandNewOperation"] {
-			return fmt.Errorf("sentinel operation unexpectedly covered")
+		if err := checkParity(doc, cli.OperationMapping()); err != nil {
+			return fmt.Errorf("the real contract should pass: %w", err)
+		}
+
+		synthetic := &openapi3.T{Paths: &openapi3.Paths{}}
+		for path, item := range doc.Paths.Map() {
+			synthetic.Paths.Set(path, item)
+		}
+		synthetic.Paths.Set("/synthetic-operation", &openapi3.PathItem{
+			Get: &openapi3.Operation{OperationID: "syntheticUncoveredOperation"},
+		})
+		err = checkParity(synthetic, cli.OperationMapping())
+		if err == nil {
+			return fmt.Errorf("parity check accepted an operation with no CLI command")
+		}
+		if !strings.Contains(err.Error(), "syntheticUncoveredOperation") {
+			return fmt.Errorf("parity failure does not name the uncovered operation: %v", err)
+		}
+
+		// The same for a mapping pointing at the wrong request.
+		wrong := cli.OperationMapping()
+		wrong["listProjects"] = cli.Mapping{Method: http.MethodDelete, Path: "/nowhere"}
+		err = checkParity(doc, wrong)
+		if err == nil {
+			return fmt.Errorf("parity check accepted a command mapped to the wrong request")
+		}
+		if !strings.Contains(err.Error(), "listProjects") {
+			return fmt.Errorf("parity failure does not name the mismapped operation: %v", err)
 		}
 		return nil
 	})
@@ -546,4 +527,50 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return nil
 	})
+}
+
+// checkParity compares the CLI's operation table against a contract:
+// every declared operation must have a command, each command must call
+// the method and path the contract declares, and no command may name an
+// operation the contract does not declare. Extracted so the failure
+// scenario can exercise it against a synthetic contract rather than
+// assert around it (review 1926).
+func checkParity(doc *openapi3.T, mapping map[string]cli.Mapping) error {
+	missing, wrong := []string{}, []string{}
+	declared := map[string]bool{}
+	for pathTemplate, path := range doc.Paths.Map() {
+		for method, operation := range path.Operations() {
+			if operation.OperationID == "" {
+				continue
+			}
+			declared[operation.OperationID] = true
+			m, ok := mapping[operation.OperationID]
+			if !ok {
+				missing = append(missing, operation.OperationID)
+				continue
+			}
+			if !strings.EqualFold(m.Method, method) || m.Path != pathTemplate {
+				wrong = append(wrong, fmt.Sprintf("%s: CLI calls %s %s, contract declares %s %s",
+					operation.OperationID, m.Method, m.Path, method, pathTemplate))
+			}
+		}
+	}
+	stale := []string{}
+	for id := range mapping {
+		if !declared[id] {
+			stale = append(stale, id)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(wrong)
+	sort.Strings(stale)
+	switch {
+	case len(missing) > 0:
+		return fmt.Errorf("operations without a CLI command: %v", missing)
+	case len(wrong) > 0:
+		return fmt.Errorf("CLI commands mapped to the wrong request: %v", wrong)
+	case len(stale) > 0:
+		return fmt.Errorf("CLI commands for operations the contract does not declare: %v", stale)
+	}
+	return nil
 }

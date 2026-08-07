@@ -61,16 +61,25 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 		if err != nil {
 			return "", docErrorFrom(err)
 		}
-		doc, err := docs.Get(tx, version.Document)
+		// Metadata again: this needs the document's project and issue
+		// anchor, and docs.Get would read its unbounded title under the
+		// write lock (review 1926).
+		doc, err := docs.MetaByID(tx, version.Document)
 		if err != nil {
 			return "", docErrorFrom(err)
 		}
 		if apiErr := guardWritable(tx, doc.Project); apiErr != nil {
 			return "", apiErr
 		}
-		return docEventSubject(doc), nil
+		if doc.Issue != nil {
+			return *doc.Issue, nil
+		}
+		return doc.Project, nil
 	default:
-		rev, err := review.Get(tx, *reviewID)
+		// The bounded projection: validation compares a revision and
+		// follows the issue. review.Get would load the unbounded
+		// summary AND the whole submission history to do it.
+		rev, err := review.RefByID(tx, *reviewID)
 		if err != nil {
 			return "", reviewErrorFrom(err)
 		}
@@ -97,7 +106,11 @@ type newCommentRequest struct {
 	Parent         *string `json:"parent"`
 	Anchor         *string `json:"anchor"`
 	Author         string  `json:"author"`
-	Body           string  `json:"body"`
+	// Body is a POINTER so an omitted property is distinguishable from
+	// a present empty one: NewComment.body constrains no length and
+	// AC-comment-no-cap declares no minimum, so "" is a valid body and
+	// only absence is an error (review 1926).
+	Body *string `json:"body"`
 }
 
 func (s *server) createComment(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +122,7 @@ func (s *server) createComment(w http.ResponseWriter, r *http.Request) {
 		if apiErr := rejectExplicitNulls(r, &req, "issue", "doc_version", "review", "review_revision", "parent", "anchor", "author", "body"); apiErr != nil {
 			return nil, apiErr
 		}
-		if req.Body == "" {
+		if req.Body == nil {
 			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "body is required"}
 		}
 		return req, nil
@@ -125,7 +138,7 @@ func (s *server) createComment(w http.ResponseWriter, r *http.Request) {
 		created, err := comments.Create(tx, comments.New{
 			Issue: req.Issue, DocVersion: req.DocVersion, Review: req.Review,
 			ReviewRevision: req.ReviewRevision, Parent: req.Parent, Anchor: req.Anchor,
-			Author: req.Author, Body: req.Body,
+			Author: req.Author, Body: *req.Body,
 		})
 		if err != nil {
 			return 0, nil, commentErrorFrom(err)

@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -275,5 +276,39 @@ func TestOversizedBody400Replays(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("settled oversize-400 key still mutated: %d identities", count)
+	}
+}
+
+// TestEmptyCommentBodyAccepted pins that "" is a VALUE, not an absence:
+// NewComment.body constrains no length and AC-comment-no-cap declares no
+// minimum, so only omitting the property is an error (review 1926).
+func TestEmptyCommentBodyAccepted(t *testing.T) {
+	srv, _ := startAPI(t)
+	id := func(body string) string {
+		var v struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			t.Fatalf("decode id from %s: %v", body, err)
+		}
+		return v.ID
+	}
+	_, raw := post(t, srv, "/identities", "k-i", `{"handle":"a","kind":"human"}`)
+	actor := id(raw)
+	_, raw = post(t, srv, "/projects", "k-p", fmt.Sprintf(`{"key":"SUT","name":"S","actor":%q}`, actor))
+	project := id(raw)
+	_, raw = post(t, srv, "/projects/"+project+"/issues", "k-iss", fmt.Sprintf(`{"title":"t","actor":%q}`, actor))
+	issue := id(raw)
+
+	status, body := post(t, srv, "/comments", "k-empty",
+		fmt.Sprintf(`{"issue":%q,"author":%q,"body":""}`, issue, actor))
+	if status != http.StatusCreated {
+		t.Fatalf("empty comment body rejected: %d %s", status, body)
+	}
+	// Absence still rejects.
+	status, body = post(t, srv, "/comments", "k-absent",
+		fmt.Sprintf(`{"issue":%q,"author":%q}`, issue, actor))
+	if status != http.StatusBadRequest {
+		t.Fatalf("comment without a body accepted: %d %s", status, body)
 	}
 }

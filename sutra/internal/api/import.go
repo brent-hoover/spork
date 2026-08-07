@@ -858,9 +858,6 @@ func validateImportShapes(p *importPayload) *apiError {
 		if apiErr := uuidOf("comment", c.ID); apiErr != nil {
 			return apiErr
 		}
-		if c.Body == "" {
-			return malformedImport("comment %s has no body", c.ID)
-		}
 		if apiErr := timeOf("comment created", c.Created); apiErr != nil {
 			return apiErr
 		}
