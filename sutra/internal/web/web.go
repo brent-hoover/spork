@@ -1109,6 +1109,32 @@ var (
 	threadTailTmpl = template.Must(template.New("thread-tail").Parse(`</ol>`))
 )
 
+// threadFailureTurn marks a transcript that stopped mid-stream.
+var threadFailureTurn = threadTurn{Speaker: "system", Text: "⚠ transcript unavailable: response incomplete"}
+
+// threadEnvelopeComplete drains the thread envelope's remaining
+// members and reports whether it closed with a well-formed end.
+func threadEnvelopeComplete(dec *json.Decoder) bool {
+	for dec.More() {
+		if _, err := dec.Token(); err != nil {
+			return false
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return false
+		}
+	}
+	closing, err := dec.Token()
+	if err != nil {
+		return false
+	}
+	if d, ok := closing.(json.Delim); !ok || d != '}' {
+		return false
+	}
+	_, err = dec.Token()
+	return err == io.EOF
+}
+
 // threadTurn is one rendered conversation row.
 type threadTurn struct {
 	Speaker string
@@ -1221,6 +1247,7 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 		}
 		if keyTok == "title" {
 			if err := dec.Decode(&title); err != nil {
+				htmlError(w, fmt.Errorf("malformed thread response"))
 				return
 			}
 			continue
@@ -1228,6 +1255,7 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 		if keyTok != "transcript" {
 			var skip json.RawMessage
 			if err := dec.Decode(&skip); err != nil {
+				htmlError(w, fmt.Errorf("malformed thread response"))
 				return
 			}
 			continue
@@ -1242,6 +1270,9 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 			for dec.More() {
 				var entry json.RawMessage
 				if err := dec.Decode(&entry); err != nil {
+					// Output has begun; the failure must be VISIBLE.
+					_ = threadTurnTmpl.Execute(w, threadFailureTurn)
+					_ = threadTailTmpl.Execute(w, nil)
 					return
 				}
 				var decoded threadTurn
@@ -1255,12 +1286,20 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 				_ = threadTurnTmpl.Execute(w, threadTurn{Speaker: "entry", Text: string(entry)})
 			}
 			if _, err := dec.Token(); err != nil { // ']'
+				_ = threadTurnTmpl.Execute(w, threadFailureTurn)
+				_ = threadTailTmpl.Execute(w, nil)
 				return
 			}
 		} else {
 			// A non-array transcript is ONE value — the
 			// record-granularity floor — rendered raw.
 			_ = threadTurnTmpl.Execute(w, threadTurn{Speaker: "transcript", Text: tokenText(open, dec)})
+		}
+		// The envelope must CLOSE and the body must END: a truncated
+		// response would otherwise render as a complete conversation
+		// under a 200 (review 1891).
+		if !threadEnvelopeComplete(dec) {
+			_ = threadTurnTmpl.Execute(w, threadFailureTurn)
 		}
 		_ = threadTailTmpl.Execute(w, nil)
 		return
