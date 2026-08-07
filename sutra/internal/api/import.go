@@ -600,8 +600,10 @@ func validateImport(p *importPayload, actor string) *apiError {
 // the OpenAPI schema would reject must never persist.
 func validateImportShapes(p *importPayload) *apiError {
 	uuidOf := func(what, id string) *apiError {
-		if !isUUID(id) {
-			return malformedImport("%s id %q is not a uuid", what, id)
+		// CON-uuid-keys pins entity primary keys to UUIDv7: version
+		// nibble 7, RFC 9562 variant.
+		if !isUUID(id) || id[14] != '7' || (id[19] != '8' && id[19] != '9' && id[19] != 'a' && id[19] != 'b') {
+			return malformedImport("%s id %q is not a uuidv7", what, id)
 		}
 		return nil
 	}

@@ -52,7 +52,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// omitted, the contract requires ALL content in the remaining
 	// scope — a project when set, otherwise EVERYTHING.
 	bare := q == nil && project == nil && session == nil
-	if q != nil || (project != nil && session == nil) || bare {
+	if (q != nil && session == nil) || (project != nil && session == nil) || bare {
 		scope := []string{}
 		if project != nil {
 			scope = append(scope, *project)
@@ -93,6 +93,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A session filter defines the scope; a text term then narrows
+	// WITHIN it (filters intersect, never union) via issueMatchesQ.
 	// Session joins: reviews by any submission, plus their issues —
 	// both confined to the project scope when one is given.
 	if session != nil {
@@ -109,6 +111,17 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			}
 			if project != nil && iss.Project != *project {
 				continue
+			}
+			if q != nil {
+				match, err := issueMatchesQ(tx, iss.ID, *q)
+				if err != nil {
+					writeError(w, errorFrom(err))
+					return
+				}
+				if !match {
+					reviewList = append(reviewList, rev)
+					continue
+				}
 			}
 			reviewList = append(reviewList, rev)
 			noteIssue(iss)
@@ -127,6 +140,15 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					return err
 				}
+				if q != nil {
+					match, err := issueMatchesQ(tx, iss.ID, *q)
+					if err != nil {
+						return err
+					}
+					if !match {
+						return nil
+					}
+				}
 				noteIssue(iss)
 			}
 			return nil
@@ -141,7 +163,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// under a project-only query.
 	docList := []docs.Document{}
 	switch {
-	case q != nil:
+	case q != nil && session == nil:
 		matched, err := docs.Search(tx, project, *q)
 		if err != nil {
 			writeError(w, docErrorFrom(err))
@@ -241,6 +263,24 @@ func mustProjects(tx *sql.Tx) []string {
 		return nil
 	}
 	return ids
+}
+
+// issueMatchesQ reports whether one issue text-matches the term —
+// the intersection primitive for q composed with session scope.
+func issueMatchesQ(tx *sql.Tx, issueID, q string) (bool, error) {
+	term := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q) + "%"
+	var one int
+	err := tx.QueryRow(`
+		SELECT 1 FROM issues WHERE id = ? AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM comments c WHERE c.issue = issues.id AND c.body LIKE ? ESCAPE '\'))`,
+		issueID, term, term, term).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func listProjectIDs(tx *sql.Tx) ([]string, error) {

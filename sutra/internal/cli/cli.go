@@ -471,6 +471,7 @@ func (c *client) emitIssueList(body io.Reader) error {
 				_, _ = fmt.Fprintln(c.env.Stdout, "[")
 			}
 			first := true
+			emitted := false
 			for dec.More() {
 				var elem json.RawMessage
 				if err := dec.Decode(&elem); err != nil {
@@ -483,6 +484,7 @@ func (c *client) emitIssueList(body io.Reader) error {
 					if err := json.Unmarshal(elem, &generic); err != nil {
 						return err
 					}
+					emitted = true
 					_, _ = fmt.Fprintln(c.env.Stdout, "-")
 					writeYAML(c.env.Stdout, generic, 1)
 					continue
@@ -498,6 +500,9 @@ func (c *client) emitIssueList(body io.Reader) error {
 			}
 			if !yamlMode {
 				_, _ = fmt.Fprintln(c.env.Stdout, "\n]")
+			} else if !emitted {
+				// An empty sequence is [], never an empty document.
+				_, _ = fmt.Fprintln(c.env.Stdout, "[]")
 			}
 			return nil
 		}

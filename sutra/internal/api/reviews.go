@@ -415,8 +415,8 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 			// the issue's project — a foreign project's doc must never
 			// authorize this issue's completion, exactly as code
 			// deliverables resolve through the issue's own project.
-			// Its immutable content becomes the stored deliverable
-			// (AC-review-deliverable-kinds).
+			// The immutable version IS the deliverable — served by
+			// resolution, never copied (AC-review-deliverable-kinds).
 			version, err := docs.VersionByID(read, *req.DocVersion)
 			if err != nil {
 				_ = read.Rollback()
@@ -470,7 +470,14 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base, &p.content)
+		// Doc deliverables store NO content copy: the referenced
+		// version is immutable and the deliverable endpoint resolves
+		// it — a stored copy could only ever diverge (review 1841).
+		content := &p.content
+		if p.d.DocVersion != nil {
+			content = nil
+		}
+		created, err := review.Create(tx, p.req.Issue, p.req.Author, p.d, p.req.Summary, p.base, content)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}
@@ -800,7 +807,11 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr := guardReviewProject(tx, current); apiErr != nil {
 			return 0, nil, apiErr
 		}
-		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base, &p.content)
+		content := &p.content
+		if p.d.DocVersion != nil {
+			content = nil
+		}
+		updated, err := review.Resubmit(tx, id, *p.req.ExpectedRevision, p.req.ExpectedVerdictEvent, p.d, p.req.Summary, p.base, content)
 		if err != nil {
 			return 0, nil, reviewErrorFrom(err)
 		}

@@ -172,6 +172,35 @@ func (ie *ieWorld) seedRichProject() error {
 		return err
 	}
 
+	// A doc-deliverable review: its submission carries NO stored
+	// content (the immutable version resolves), and the round trip
+	// must carry it (review 1841 regression).
+	if err := iw.s.call(http.MethodGet, "/documents/"+doc.ID, nil); err != nil {
+		return err
+	}
+	var docView struct {
+		Version struct {
+			ID string `json:"id"`
+		} `json:"version"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &docView); err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodPost, "/reviews", map[string]string{
+		"issue": iw.issues["SUT-2"], "author": iw.identities["operator"], "doc_version": docView.Version.ID}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var docReview struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &docReview); err != nil {
+		return err
+	}
+	ie.recordIDs["doc-review"] = docReview.ID
+
 	// A consumed approval: approve, then consume at that revision.
 	if err := cw.approvedReview("SUT-1", "exported"); err != nil {
 		return err
