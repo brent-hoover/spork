@@ -1076,3 +1076,37 @@ property, not a production one.
 Left alone deliberately — restructuring the harness is not in scope for the
 build — but it is the thing to fix first if the mutation gate is ever to run in
 CI, and it belongs in whatever respecifies that gate.
+
+## A guard duplicated at every call site, where the callee already knew
+
+Both operands of `if req.ExpectedBaseCommit != nil || req.ExpectedDefaultHead
+!= nil` survived, at the create door and again at the resubmit door, where the
+identical guard is copied. It wraps `RevalidateFences`, the second fence check
+that runs at the tail of prepare. Nothing observable distinguishes the guard
+from its absence: the fences were already validated inside `resolveDeliverable`,
+so the recheck exists to narrow the window between that validation and the
+commit, and the only input that separates "rechecked" from "not rechecked" is a
+push landing inside that window. The acceptance suite cannot stage that race,
+and neither can any test that drives the server over HTTP.
+
+So the guard is not a rule at all — it is a cost decision, avoiding a git
+subprocess when there is nothing to check. And it was stated twice in the API
+layer while the function it guards, which alone knows what a fence means, said
+nothing. Moved: `RevalidateFences` now returns before touching git when no
+fence was supplied, and both callers hand their fences over unconditionally.
+
+The consolidated decision is falsifiable in a way the two copies were not,
+because it can be asked directly rather than through a race. Point it at a
+repository that cannot be read: with nothing pinned it must still succeed —
+a submission that made no claim about the repository must not be refused over
+one — and with either fence supplied it must fail, or the short-circuit would
+be indistinguishable from skipping revalidation altogether. Three unit cases,
+and all four mutants of the surviving guard die, including its outright
+removal.
+
+This is the same lesson as the key-capture cap one section up, arriving by a
+different road. There the rule was copied three times inside one function; here
+twice across two handlers, with the callee that owned the concept left out of
+it. In both cases the duplication was what made the site unfalsifiable, and
+stating the rule once — in the place that owns it — made it testable without
+weakening anything.

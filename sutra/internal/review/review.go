@@ -669,7 +669,18 @@ func Render(repoPath, baseCommit, commit string) (string, error) {
 // observed-at-submission semantics (they reject stale caller
 // knowledge) and nothing serializes against concurrent pushes — see
 // the contract's expected_base_commit/expected_default_head.
+//
+// A submission that pins nothing has nothing to recheck, and this is
+// the one place that decides so — every caller hands its fences over
+// unconditionally. Returning before resolveHead is not merely an
+// optimization: with no fence supplied there is no expectation any
+// repository state could contradict, so consulting git here could only
+// invent a failure about a repository the submission never made a
+// claim on.
 func RevalidateFences(repo Repo, commit string, f Fences) error {
+	if f.ExpectedBaseCommit == nil && f.ExpectedDefaultHead == nil {
+		return nil
+	}
 	head, err := resolveHead(repo, 500*time.Millisecond)
 	if err != nil {
 		return err

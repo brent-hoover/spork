@@ -469,13 +469,13 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		// COMMIT is inherent to fencing an external store: even an
 		// in-transaction recheck leaves the same gap between its
 		// rev-parse and the commit, so this placement trades nothing
-		// while keeping git out of the SQLite writer entirely.
-		if req.ExpectedBaseCommit != nil || req.ExpectedDefaultHead != nil {
-			if err := review.RevalidateFences(repo, *d.Commit, review.Fences{
-				ExpectedBaseCommit: req.ExpectedBaseCommit, ExpectedDefaultHead: req.ExpectedDefaultHead,
-			}); err != nil {
-				return nil, reviewErrorFrom(err)
-			}
+		// while keeping git out of the SQLite writer entirely. Fences
+		// that were never supplied are RevalidateFences' business, not
+		// the caller's — it returns before touching git.
+		if err := review.RevalidateFences(repo, *d.Commit, review.Fences{
+			ExpectedBaseCommit: req.ExpectedBaseCommit, ExpectedDefaultHead: req.ExpectedDefaultHead,
+		}); err != nil {
+			return nil, reviewErrorFrom(err)
 		}
 		return preparedReview{req: req, d: d, base: base, content: content, repo: repo}, nil
 	}
@@ -833,12 +833,10 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if apiErr != nil {
 			return nil, apiErr
 		}
-		if req.ExpectedBaseCommit != nil || req.ExpectedDefaultHead != nil {
-			if err := review.RevalidateFences(repo, *d.Commit, review.Fences{
-				ExpectedBaseCommit: req.ExpectedBaseCommit, ExpectedDefaultHead: req.ExpectedDefaultHead,
-			}); err != nil {
-				return nil, reviewErrorFrom(err)
-			}
+		if err := review.RevalidateFences(repo, *d.Commit, review.Fences{
+			ExpectedBaseCommit: req.ExpectedBaseCommit, ExpectedDefaultHead: req.ExpectedDefaultHead,
+		}); err != nil {
+			return nil, reviewErrorFrom(err)
 		}
 		return preparedResubmit{req: req, d: d, base: base, content: content, repo: repo}, nil
 	}
