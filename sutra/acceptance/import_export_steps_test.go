@@ -62,11 +62,14 @@ type ieWorld struct {
 	createdOnTarget struct {
 		Number int64 `json:"number"`
 	}
-	tampered    []byte
-	target      *importTarget
-	lastStatus  int
-	lastBody    string
-	actorForImp string
+	// projectsBefore is how many projects the source held before a
+	// rejected import, so the check after it compares against reality.
+	projectsBefore int
+	tampered       []byte
+	target         *importTarget
+	lastStatus     int
+	lastBody       string
+	actorForImp    string
 }
 
 func (ie *ieWorld) reset() {
@@ -250,6 +253,61 @@ func (ie *ieWorld) seedRichProject() error {
 		return err
 	}
 	if err := iw.s.call(http.MethodDelete, "/issues/"+issueID+"/relations/"+removedParent.Relation.ID+"?actor="+actor, nil); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusNoContent); err != nil {
+		return err
+	}
+
+	// And a removed blocks relation pointing OUT of the project. Only
+	// blocks may cross a project boundary, and the live edge cannot
+	// round-trip (the cross-project gap in spec-gaps.md) — but its
+	// removal event does, because export scopes events by subject and
+	// the subject is the in-project source. So import must accept a
+	// snapshot whose `to` names an issue the payload does not carry,
+	// for a blocks removal and only for one.
+	if err := iw.s.call(http.MethodPost, "/projects",
+		map[string]string{"key": "OUT", "name": "Outside", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var outside struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &outside); err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodPost, "/projects/"+outside.ID+"/issues",
+		map[string]string{"title": "an issue in another project", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var foreign struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &foreign); err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodPost, "/issues/"+issueID+"/relations",
+		map[string]string{"to": foreign.ID, "kind": "blocks", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var crossing struct {
+		Relation struct {
+			ID string `json:"id"`
+		} `json:"relation"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &crossing); err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodDelete, "/issues/"+issueID+"/relations/"+crossing.Relation.ID+"?actor="+actor, nil); err != nil {
 		return err
 	}
 	if err := iw.s.expectStatus(http.StatusNoContent); err != nil {
@@ -472,6 +530,26 @@ func (ie *ieWorld) postToTarget(path string, body any) (int, []byte, error) {
 		return 0, nil, err
 	}
 	return resp.StatusCode, respBody, nil
+}
+
+// sourceProjectCount reports how many projects the SOURCE server lists.
+func (ie *ieWorld) sourceProjectCount() (int, error) {
+	if err := ie.iw.s.call(http.MethodGet, "/projects", nil); err != nil {
+		return 0, err
+	}
+	var projects []any
+	if err := json.Unmarshal(ie.iw.s.lastBody, &projects); err != nil {
+		return 0, err
+	}
+	return len(projects), nil
+}
+
+// nextUUID returns a different but still canonical uuid, advancing the
+// last hex digit — a position that carries neither the version nor the
+// variant nibble, so the result still passes import's shape check.
+func nextUUID(id string) string {
+	const hex = "0123456789abcdef"
+	return id[:len(id)-1] + string(hex[(strings.IndexByte(hex, id[len(id)-1])+1)%len(hex)])
 }
 
 // getFromTarget reads a resource back from the import target, returning
@@ -878,6 +956,36 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return fmt.Errorf("export carries no relation-removed event")
 		},
 	}
+	sc.Step(`^an export payload whose parent_of relations form a cycle$`, func() error {
+		if err := ie.ensureExport(); err != nil {
+			return err
+		}
+		return ie.tamper(func(p map[string]any) error {
+			relations, ok := p["issue_relations"].([]any)
+			if !ok {
+				return fmt.Errorf("export carries no relations")
+			}
+			for _, entry := range relations {
+				rel, ok := entry.(map[string]any)
+				if !ok || rel["kind"] != "parent_of" {
+					continue
+				}
+				id, ok := rel["id"].(string)
+				if !ok {
+					return fmt.Errorf("relation carries no id")
+				}
+				reversed := map[string]any{}
+				for key, value := range rel {
+					reversed[key] = value
+				}
+				reversed["from"], reversed["to"] = rel["to"], rel["from"]
+				reversed["id"] = nextUUID(id)
+				p["issue_relations"] = append(relations, reversed)
+				return nil
+			}
+			return fmt.Errorf("export carries no parent_of relation to reverse")
+		})
+	})
 	sc.Step(`^an export payload whose (.+) is malformed$`, func(where string) error {
 		mutate, ok := malformedAt[where]
 		if !ok {
@@ -1100,7 +1208,18 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err := ie.seedRichProject(); err != nil {
 			return err
 		}
-		return ie.export()
+		if err := ie.export(); err != nil {
+			return err
+		}
+		// The seed leaves more than one project behind — a rejected
+		// import must add none, so the count to compare against is the
+		// one taken here, not a literal.
+		count, err := ie.sourceProjectCount()
+		if err != nil {
+			return err
+		}
+		ie.projectsBefore = count
+		return nil
 	})
 	sc.Step(`^the same export is imported again$`, func() error {
 		// Import into the SOURCE server: every UUID already exists.
@@ -1117,16 +1236,13 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 	sc.Step(`^no records were partially written$`, func() error {
-		// The source server still lists exactly one project.
-		if err := iw.s.call(http.MethodGet, "/projects", nil); err != nil {
+		// The source server lists no more projects than it did before.
+		count, err := ie.sourceProjectCount()
+		if err != nil {
 			return err
 		}
-		var projects []any
-		if err := json.Unmarshal(iw.s.lastBody, &projects); err != nil {
-			return err
-		}
-		if len(projects) != 1 {
-			return fmt.Errorf("expected 1 project after rejected re-import, got %d", len(projects))
+		if count != ie.projectsBefore {
+			return fmt.Errorf("expected %d projects after rejected re-import, got %d", ie.projectsBefore, count)
 		}
 		return nil
 	})

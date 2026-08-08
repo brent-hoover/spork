@@ -407,6 +407,9 @@ requirements:
       - id: AC-import-round-trip
         statement: Importing an export into an empty server reconstructs the project with UUIDs preserved; re-export matching excludes the import audit event itself.
         test: verification/REQ-import-export.feature#import round-trips losslessly
+      - id: AC-import-foreign-block-removal
+        statement: An export carrying the removal of a cross-project block imports intact — only blocks may cross a project boundary and the live edge has no representable foreign endpoint, but its removal event is exported because export scopes events by subject, so import must accept a relation-removed snapshot whose destination the payload does not carry, for a blocks removal and only for one.
+        test: verification/REQ-import-export.feature#import round-trips losslessly
       - id: AC-import-collision
         statement: Importing an export whose UUIDs already exist is rejected as a whole, naming the conflict; no partial imports.
         test: verification/REQ-import-export.feature#colliding import is rejected whole
@@ -422,6 +425,9 @@ requirements:
       - id: AC-import-malformed-anywhere
         statement: An import payload carrying a malformed identifier or timestamp is rejected as malformed and nothing is written, wherever the fault sits — in the payload's first record or its last, in a field the payload was free to omit, at the top level or inside an event's snapshot; validation does not stop at the first record it finds well-formed.
         test: verification/REQ-import-export.feature#a malformed value is rejected wherever it sits in the payload
+      - id: AC-import-relation-cycle
+        statement: An import payload whose relations form a cycle is rejected as malformed and nothing is written — the API builds the graph one edge at a time and refuses the closing one, so import is the only door a cycle can enter by, and a cycle in the parent_of tree makes every ancestor walk below it non-terminating.
+        test: verification/REQ-import-export.feature#a relation cycle is rejected at import
       - id: AC-import-archived-round-trip
         statement: An export taken of an archived project imports still archived — the archive stamp is what makes a project read-only, so a round trip that drops it hands back a project the API will accept writes on.
         test: verification/REQ-import-export.feature#an archived project imports still archived

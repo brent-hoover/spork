@@ -781,3 +781,32 @@ The archived case earns its own guarantee rather than a tamper row alone:
 archiving is what makes a project read-only, and it is a nullable field a
 round trip can silently drop while every record still comes back and the
 import reports success. Now `AC-import-archived-round-trip`.
+
+## The cycle the API can never build, and import can
+
+`findCycle` guards three graphs at import — parent_of, blocks, and comment
+reply threads — under a comment reading "cycles in either graph are
+unreachable through the API". That is exactly why they matter: the API
+attaches one edge at a time and refuses the one that closes the loop, so
+import, which writes the whole graph at once, is the only door a cycle can
+come through. A cycle in the parent_of tree makes every ancestor walk below
+it non-terminating — the reopen cascade, the subtree revision, the
+completion check. No acceptance criterion said so, and the DFS was reachable
+only through payloads that had no cycle in them: negate its unvisited-node
+guard and it detects nothing, and every scenario still passed. Now
+`AC-import-relation-cycle`.
+
+The other survivor in that region is the cross-project asymmetry already
+logged above, seen from the test side. Only `blocks` may cross a project
+boundary; the live edge cannot round-trip, but its removal event does,
+because export scopes events by subject and the subject is the in-project
+source. So import carries a deliberate exception — a relation-removed
+snapshot whose destination the payload does not carry is legal for a blocks
+removal and only for one — and the seeded export contained no such removal,
+so the exception was never taken. Now `AC-import-foreign-block-removal`,
+discharged by the round trip with a crossing block seeded and removed.
+
+Seeding a second project also broke the collision scenario's "no records
+were partially written", which asserted the source still listed exactly one
+project. It was reading a constant, not a consequence: it now compares
+against the count taken before the rejected import.

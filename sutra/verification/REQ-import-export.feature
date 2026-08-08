@@ -100,6 +100,17 @@ Feature: Import and export
       | event timestamp, the last record in the payload      |
       | identifier inside a removed relation's snapshot      |
 
+  # The API can never build a relation cycle — it attaches one edge at a
+  # time and refuses the one that closes the loop. Import writes the whole
+  # graph at once, so it is the only door a cycle can come through, and a
+  # cycle in the parent_of tree makes every ancestor walk below it
+  # non-terminating: the reopen cascade, the subtree revision, the
+  # completion check.
+  Scenario: a relation cycle is rejected at import
+    Given an export payload whose parent_of relations form a cycle
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
   # Archiving is what makes a project read-only, and the stamp that says
   # so is a nullable field the round trip can silently drop: every record
   # comes back, the import reports success, and the project is writable
