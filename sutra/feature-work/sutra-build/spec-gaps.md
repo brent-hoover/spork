@@ -1050,3 +1050,29 @@ makes it untestable. The second is that "unkillable" was a poor diagnosis: the
 site was unkillable as written, and rewriting it — once, honestly, without
 weakening the guarantee — made it killable. Three copies of a rule are three
 places for it to be wrong; one copy is one place to test.
+
+## Timeouts that are neither survivors nor defects
+
+Twice now the gate has reported `TIMED OUT` rather than `LIVED` — first at the
+commit-shape check, then at the doc-deliverable branch. Both mutants negate a
+nil check whose body dereferences the very pointer being checked, so the
+mutated server panics on the first request that reaches it. Neither is a
+reachable state in unmutated code: the guard is what makes the dereference
+safe, and negating it produces a program no input could have produced.
+
+Two things follow. Gremlins scores efficacy as killed/(killed+lived), so a
+timeout costs nothing and needs no exclusion — the right response is to read
+the site, confirm the panic is guard-manufactured, and move on. But the four
+minutes each one burns is not gremlins' doing: a handler panic should fail the
+acceptance suite immediately, and instead the run hangs until the *binary*
+timeout fires. `go test -timeout` is not honored here — something in godog's
+flag handling inside `TestMain` overrides it — so every panicking mutant costs
+the wall clock of a full binary timeout rather than a failed scenario. Both
+mechanisms that could plausibly wedge a real server were checked and are
+panic-safe (every `s.db.Begin()` is followed by a deferred rollback; the
+large-body slot is released by a deferred `release()`), so this is a harness
+property, not a production one.
+
+Left alone deliberately — restructuring the harness is not in scope for the
+build — but it is the thing to fix first if the mutation gate is ever to run in
+CI, and it belongs in whatever respecifies that gate.
