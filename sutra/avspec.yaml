@@ -181,6 +181,9 @@ requirements:
       - id: AC-doc-link
         statement: An existing document can be tied to an issue and untied after creation.
         test: verification/REQ-doc-issue-links.feature#link and unlink after creation
+      - id: AC-doc-relink
+        statement: Tying a document that is already tied elsewhere is a move, not an overwrite — the issue losing it records the departure alongside the arrival, so a document never silently vanishes from an issue's history.
+        test: verification/REQ-doc-issue-links.feature#relinking to another issue records the departure
       - id: AC-doc-list-by-issue
         statement: An issue lists its currently tied documents; a document shows its issue.
         test: verification/REQ-doc-issue-links.feature#both sides see the link

@@ -445,3 +445,41 @@ unverified. It has not produced surviving mutants because in most
 handlers the negated guard also breaks the happy path loudly — the
 mutants die for a reason unrelated to the archive behavior, which is its
 own warning about reading a kill as evidence.
+
+## Relinking a document was implemented but never specified
+
+The fourth surviving mutant, `CONDITIONALS_NEGATION` at
+`internal/api/docs.go:398:41`, negates the departure guard in
+`linkDocumentToIssue`:
+
+```go
+if formerIssue != nil && *formerIssue != req.Issue {
+    events.Emit(tx, "doc.unlinked", *formerIssue, operation, req.Actor, &payload)
+}
+```
+
+Negated, moving a document from SUT-1 to SUT-2 emits no `doc.unlinked` on
+SUT-1 — the document disappears from the losing issue's history with no
+record. Nothing failed, because no scenario ever relinks a document.
+
+`AC-doc-link` says only "An existing document can be tied to an issue and
+untied after creation." Tie and untie: two states, and the scenario walks
+both. Relink is the third — a tie onto an issue that already has one — and
+the interview never asked about it. The implementation nonetheless treats a
+relink as a move and emits the departure under the *same* operation id as
+the arrival, with a code comment asserting the intent ("a document never
+silently vanishes from an issue's history"). That intent lived only in the
+comment.
+
+Same ruling as the issue-page comment form and `GET /labels`: behavior that
+was wanted but missed at interview, so it earns an acceptance criterion
+rather than deletion. Recorded as AC-doc-relink with a scenario that moves a
+document between two issues and asserts both events land on the right
+subjects. Mutant applied by hand and confirmed dead.
+
+Worth separating from the AC-audit-mutations gap above, because the failure
+mode differs. There the AC named the behavior and the scenario undersampled
+it. Here no AC named it at all — the behavior existed only as code plus a
+comment, and a comment is not a gate. Mutation testing is the only check in
+the chain that can distinguish "deliberate branch nothing asked for" from
+"deliberate branch nothing tests".
