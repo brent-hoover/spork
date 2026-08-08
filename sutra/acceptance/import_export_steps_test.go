@@ -413,6 +413,19 @@ func (ie *ieWorld) seedRichProject() error {
 	}
 	ie.recordIDs["review-comment"] = reviewComment.ID
 
+	// And a CHANGES-REQUESTED verdict on it, left standing. A review has
+	// two verdicts and every export so far carried only approvals, so
+	// the walk that finds a review's latest verdict event never had to
+	// recognise the other kind — it could skip changes-requested
+	// entirely and no round trip would notice.
+	if err := iw.s.call(http.MethodPost, "/reviews/"+docReview.ID+"/verdict", map[string]any{
+		"verdict": "changes-requested", "revision": 1, "actor": author}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusOK); err != nil {
+		return err
+	}
+
 	// A consumed approval: approve, then consume at that revision.
 	if err := cw.approvedReview("SUT-1", "exported"); err != nil {
 		return err
@@ -671,7 +684,7 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	})
 
 	// --- export captures the whole project
-	sc.Step(`^project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval — and events$`, func() error {
+	sc.Step(`^project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval and one with changes requested — and events$`, func() error {
 		return ie.seedRichProject()
 	})
 	sc.Step(`^"SUT" is exported$`, func() error {

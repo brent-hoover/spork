@@ -1,7 +1,7 @@
 Feature: Import and export
 
   Scenario: export captures the whole project
-    Given project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval — and events
+    Given project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval and one with changes requested — and events
     When "SUT" is exported
     Then the export contains every one of those records
 

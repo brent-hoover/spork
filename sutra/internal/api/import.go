@@ -1208,8 +1208,14 @@ func latestVerdictEventFor(reviewID string, list []events.Event) (events.Event, 
 // last resubmission is carrying a STALE human approval that could
 // close an issue on content nobody reviewed.
 func verdictPrecedesResubmission(reviewID, verdictEventID string, list []events.Event) bool {
-	verdictIndex, resubmitIndex := -1, -1
-	for i, e := range list {
+	// "Later" is position in the list, so one pass answers it: the
+	// question is whether a resubmission appears after the verdict, not
+	// which resubmission that is. Comparing two indices instead would
+	// need sentinels for the not-found cases, and the caller has already
+	// found the verdict event in this very list — a not-found no input
+	// can produce.
+	verdictSeen := false
+	for _, e := range list {
 		var payload struct {
 			Review string `json:"review"`
 		}
@@ -1217,13 +1223,14 @@ func verdictPrecedesResubmission(reviewID, verdictEventID string, list []events.
 			continue
 		}
 		if e.ID == verdictEventID {
-			verdictIndex = i
+			verdictSeen = true
+			continue
 		}
-		if e.Kind == "review.resubmitted" {
-			resubmitIndex = i
+		if verdictSeen && e.Kind == "review.resubmitted" {
+			return true
 		}
 	}
-	return verdictIndex >= 0 && resubmitIndex > verdictIndex
+	return false
 }
 
 // checkImportCollisions rejects the payload whole if ANY of its UUIDs

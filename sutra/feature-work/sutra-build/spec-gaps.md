@@ -816,3 +816,39 @@ check was written `humanSet != nil && !humanSet[actual.Actor]`, but the set
 is built unconditionally by the function's one caller. No input can make the
 first operand false, so the mutant that negates it is equivalent by
 construction — removed, not excluded.
+
+## A set of two, sampled once — and two sentinels for a case with no input
+
+Six mutants clustered in the review half of import's validation, and they
+divided into the two species that keep recurring.
+
+`latestVerdictEventFor` skips every event that is not a verdict:
+`e.Kind != "review.approved" && e.Kind != "review.changes-requested"`. A
+review has two verdicts. Every export the suite had ever built carried only
+approvals, so the walk never had to recognise the other kind — it could drop
+`changes-requested` entirely and no round trip would notice. That is species
+one again, an AC that names a set discharged by a scenario that samples one
+member, and the fix is the same: seed a standing changes-requested verdict
+in the rich project so both operands are load-bearing.
+
+`AC-export-full` was the AC that let it through. It said the export captures
+"reviews" and the scenario's check asks whether the record type is present —
+which one approval satisfies as well as ten. The same blindness had already
+produced four holes earlier in this document, so the statement now says the
+thing the check cannot: where a record type has kinds or states, the export
+carries more than one of each.
+
+`verdictPrecedesResubmission` was the other kind. It scanned for two
+indices, seeded `-1`, and returned `verdictIndex >= 0 && resubmitIndex >
+verdictIndex`. But the sole caller has already found the verdict event in
+the very list it passes, so `verdictIndex >= 0` is unfalsifiable — four
+mutants (two boundary, two invert-negatives, on the sentinels and the
+comparison) sitting on a not-found case no input can produce. The question
+the function actually answers is "does a resubmission appear after the
+verdict", which one pass with a boolean answers without inventing an absent
+value to compare against. Rewritten that way, the sentinels are gone and
+every mutant on the remaining conditions dies.
+
+Species four says an equivalent mutant is a defect in the code, not in the
+gate. This is the second time the defect was the same one: a comparison
+written against a state the caller has already excluded.
