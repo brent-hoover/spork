@@ -948,3 +948,38 @@ invisible whenever the un-enforced doors fail for some other reason anyway. The
 spec named the rule and named the door that keeps it; it never said the rule
 holds at EVERY door, and the checks at the others were free to be laxer than
 the contract without a single scenario noticing.
+
+## A path parameter nobody said had to mean anything
+
+`DELETE /issues/{issueId}/relations/{relationId}` refuses when the relation
+involves neither issue: `rel.From != pathIssue && rel.To != pathIssue`. The
+mutation gate reported the SECOND operand surviving at negation, and the first
+one killed — which is the whole story. Every scenario that removes a relation
+removes it from the `from` end, so a check that examines one endpoint and a
+check that examines both agree on every input the suite produces. The mutant
+that survives is the one that breaks the untested end, and it also lets any
+issue id in the path remove any relation in the system.
+
+The contract describes the removal's effects at length — clears both sides,
+snapshots the relation into the event, bumps ancestor subtree revisions — and
+never says what `{issueId}` is for. It is the only reason the route is nested,
+and no acceptance criterion mentioned it. `AC-block-remove-endpoint` now names
+the set (either end works, anything else is a 404 naming both the relation and
+the issue) and its scenario samples the untested member.
+
+The same handler produced a second survivor two lines on:
+`if toIssue.Project != fromIssue.Project` guards the far project only when the
+relation spans two. For a same-project relation, guarding one end and guarding
+both are indistinguishable — so, again, the only input that separates them is
+the one no scenario built. A cross-project blocks relation is a designed
+feature (`parent_of` is refused across projects precisely because its cascades
+walk out of one; blocks never cascade, so it may span "with both sides
+guarded"), and that design lived entirely in a code comment. Archive the far
+project and the live side becomes a lever for writing into a frozen one.
+`AC-block-cross-project` now carries the rule and covers both writes.
+
+Both are the same shape: a guard whose two readings coincide on every input the
+suite happens to produce, so the AC is discharged without ever exercising what
+it claims. Note that this is the second of the sixteen `guardWritable` call
+sites the gate has reached; `AC-project-archive` still says "read-only" and
+still samples one door, which stays open as a question for Brent.

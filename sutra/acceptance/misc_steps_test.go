@@ -22,6 +22,7 @@ type miscWorld struct {
 	otherProject string // "OTH"
 	otherIssue   string
 	otherDoc     string
+	crossBlock   string // a blocks relation spanning SUT and OTH
 	ghostID      string // an identity id naming nothing
 	collisionErr struct {
 		status int
@@ -182,6 +183,117 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		return iw.s.expectStatus(http.StatusOK)
+	})
+
+	// --- a cross-project block is guarded at both ends
+	sc.Step(`^issue SUT-1 blocks issue OTH-1 in another project$`, func() error {
+		from, err := iw.ensureIssue("SUT-1")
+		if err != nil {
+			return err
+		}
+		other, err := mw.createProjectKeyed("OTH")
+		if err != nil {
+			return err
+		}
+		mw.otherProject = other
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		// Archiving comes later, so OTH-1 is minted while OTH is still
+		// writable — the block has to predate the freeze for removal to
+		// be the thing under test.
+		if err := iw.s.call(http.MethodPost, "/projects/"+other+"/issues",
+			map[string]string{"title": "blocked elsewhere", "actor": actor}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		var oi struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &oi); err != nil {
+			return err
+		}
+		mw.otherIssue = oi.ID
+		if err := iw.s.call(http.MethodPost, "/issues/"+from+"/relations",
+			map[string]string{"kind": "blocks", "to": mw.otherIssue, "actor": actor}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		var created struct {
+			Relation struct {
+				ID string `json:"id"`
+			} `json:"relation"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+			return err
+		}
+		mw.crossBlock = created.Relation.ID
+		return nil
+	})
+	sc.Step(`^"OTH" is archived after the block exists$`, func() error {
+		actor := iw.identities["operator"]
+		if err := iw.s.call(http.MethodPost, "/projects/"+mw.otherProject+"/archive",
+			map[string]string{"actor": actor}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^adding another block into "OTH" is rejected as read-only$`, func() error {
+		from, err := iw.ensureIssue("SUT-2")
+		if err != nil {
+			return err
+		}
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodPost, "/issues/"+from+"/relations",
+			map[string]string{"kind": "blocks", "to": mw.otherIssue, "actor": actor}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusConflict)
+	})
+	sc.Step(`^removing the existing block from SUT-1's side is rejected as read-only$`, func() error {
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		// SUT is live, so the path project passes its own guard: only a
+		// second look at the far end can refuse this.
+		if err := iw.s.call(http.MethodDelete,
+			"/issues/"+iw.issues["SUT-1"]+"/relations/"+mw.crossBlock+"?actor="+actor, nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusConflict)
+	})
+	sc.Step(`^both sides still show the block$`, func() error {
+		for _, issue := range []string{iw.issues["SUT-1"], mw.otherIssue} {
+			if err := iw.s.call(http.MethodGet, "/issues/"+issue+"/relations", nil); err != nil {
+				return err
+			}
+			if err := iw.s.expectStatus(http.StatusOK); err != nil {
+				return err
+			}
+			var rels []map[string]string
+			if err := json.Unmarshal(iw.s.lastBody, &rels); err != nil {
+				return err
+			}
+			found := false
+			for _, rel := range rels {
+				if rel["id"] == mw.crossBlock {
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("block vanished from issue %s: %v", issue, rels)
+			}
+		}
+		return nil
 	})
 
 	// --- unknown identity ids are rejected

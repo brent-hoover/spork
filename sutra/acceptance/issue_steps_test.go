@@ -596,6 +596,54 @@ func registerIssueSteps(sc *godog.ScenarioContext, s *testState) *issueWorld {
 		}
 		return iw.s.expectStatus(http.StatusNoContent)
 	})
+	// --- removed from either end, and from nowhere else
+	sc.Step(`^issue (SUT-\d+) exists, involved in no relation$`, func(name string) error {
+		_, err := iw.ensureIssue(name)
+		return err
+	})
+	sc.Step(`^removing that relation is attempted with (SUT-\d+) as the path issue$`, func(name string) error {
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		rel := iw.relations["SUT-1>SUT-2"]
+		return iw.s.call(http.MethodDelete,
+			"/issues/"+iw.issues[name]+"/relations/"+rel+"?actor="+actor, nil)
+	})
+	sc.Step(`^it is rejected as not found, naming the relation and (SUT-\d+)$`, func(name string) error {
+		if err := iw.s.expectStatus(http.StatusNotFound); err != nil {
+			return err
+		}
+		if err := iw.s.expectErrorCode("not-found"); err != nil {
+			return err
+		}
+		// The relation exists and so does the issue — only the pairing
+		// is wrong, so the message has to say which two it refused.
+		var envelope struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &envelope); err != nil {
+			return err
+		}
+		for _, want := range []string{iw.relations["SUT-1>SUT-2"], iw.issues[name]} {
+			if !strings.Contains(envelope.Message, want) {
+				return fmt.Errorf("refusal does not name %s: %q", want, envelope.Message)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^the relationship is removed from the blocked end by "([^"]*)"$`, func(handle string) error {
+		actor, err := iw.identity(handle)
+		if err != nil {
+			return err
+		}
+		rel := iw.relations["SUT-1>SUT-2"]
+		if err := iw.s.call(http.MethodDelete,
+			"/issues/"+iw.issues["SUT-2"]+"/relations/"+rel+"?actor="+actor, nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusNoContent)
+	})
 	sc.Step(`^neither side shows it$`, func() error {
 		for _, name := range []string{"SUT-1", "SUT-2"} {
 			rels, err := iw.relationsOf(name)

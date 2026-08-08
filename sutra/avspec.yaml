@@ -175,6 +175,12 @@ requirements:
       - id: AC-block-no-cycles
         statement: A blocking relationship that would create a cycle, directly or transitively, is rejected.
         test: verification/REQ-issue-blocking.feature#cycles are rejected
+      - id: AC-block-cross-project
+        statement: A blocks relation may span two projects — it never cascades, so no walk leaves one project for the other; parent_of may not, because its reopen cascade and subtree-revision walk would reach across the boundary. Every write to a spanning relation is guarded at BOTH ends, adding and removing alike, so archiving either project freezes the relation even when the request is routed under an issue in the project still live. The single-endpoint check and the both-endpoint check agree on every same-project input, so only a spanning relation distinguishes them.
+        test: verification/REQ-issue-blocking.feature#a cross-project block is guarded at both ends
+      - id: AC-block-remove-endpoint
+        statement: Relation removal is routed under an issue, and the path issue must be one of the relation's two ends. Either end may remove it — the blocking issue or the blocked one — and an issue that is neither is refused as not found, naming both the relation and the issue it does not involve, with the relation left intact. Without that, any issue id in the path would remove any relation in the system.
+        test: verification/REQ-issue-blocking.feature#a relation is removed from either end, and from nowhere else
   - id: REQ-doc-issue-links
     title: Documents can be tied to issues
     acceptance:
