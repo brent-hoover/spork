@@ -261,7 +261,7 @@ func (rw *crWorld) unchanged() error {
 	return nil
 }
 
-func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
+func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld, ww *webWorld) *crWorld {
 	iw := cw.iw
 	rw := &crWorld{iw: iw, cw: cw, sha: map[string]string{}, verdictEvents: map[string]string{}}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -772,7 +772,17 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 		if err := cw.createReview("SUT-1", "work"); err != nil {
 			return err
 		}
-		return rw.verdictLabeled("changes-requested", "cr1")
+		if err := rw.verdictLabeled("changes-requested", "cr1"); err != nil {
+			return err
+		}
+		// "Open in a browser" is the PRECONDITION, so open it: the
+		// page is what carries revision 1 into the verdict form, and
+		// the stale guard only means anything if the reviewer really
+		// is looking at superseded content.
+		if err := ww.open("/p/SUT/r/" + cw.reviews["SUT-1"].id); err != nil {
+			return err
+		}
+		return ww.expectInHTML(`name="revision" value="1"`)
 	})
 	sc.Step(`^the agent resubmits the deliverable, advancing the review to revision 2$`, func() error {
 		if err := rw.resubmit(nil); err != nil {
@@ -781,18 +791,20 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld) *crWorld {
 		return iw.s.expectStatus(http.StatusOK)
 	})
 	sc.Step(`^the reviewer submits an approval carrying revision 1$`, func() error {
+		// Submitted from the PAGE, through the verdict form. Posting
+		// to the API instead left reviewVerdict — and the rejection
+		// path a reviewer actually sees — unexecuted for the whole
+		// build, while this scenario still passed (spec-gaps.md).
 		ref := cw.reviews["SUT-1"]
-		human := iw.identities["human-brent"]
-		if err := iw.s.call(http.MethodPost, "/reviews/"+ref.id+"/verdict", map[string]any{
-			"verdict": "approved", "revision": 1, "actor": human}); err != nil {
-			return err
-		}
-		rw.lastStatus = iw.s.lastResp.StatusCode
-		rw.lastBody = string(iw.s.lastBody)
-		return nil
+		return ww.postForm("/p/SUT/r/"+ref.id+"/verdict",
+			url.Values{"verdict": {"approved"}, "revision": {"1"}})
 	})
 	sc.Step(`^the verdict is rejected$`, func() error {
-		return rw.expectConflict()
+		// The browser does not get a 409 — it gets the review page
+		// back with the API's conflict rendered where the reviewer
+		// will read it. Asserting the STATUS here would pass on a
+		// blank page.
+		return ww.expectInHTML(`class="error"`, "expected-revision-mismatch")
 	})
 	sc.Step(`^the review remains unapproved$`, func() error {
 		got, err := rw.reviewState()

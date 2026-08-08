@@ -19,7 +19,7 @@ project:
       lint: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run  # pinned via go run like the other gates — no unmanaged PATH binary, clean environments included
       typecheck: go vet ./...
       arch: go run github.com/arch-go/arch-go@v1.7.0  # declared may_import boundaries mirrored in arch-go.yml and checked against real imports; exits nonzero on any violation (spiked 2026-08-06: v1.6.4 does not exist; empty-allowlist modules need explicit-complement shouldNotDependsOn rules — an empty shouldOnlyDependsOn passes silently)
-      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # mktemp + trap cleanup, POSIX sh, spike-validated: covered=0; uncovered, tool-failure, missing-summary all nonzero (kriya R3, retired 2026-08-04)
+      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go test -coverpkg=./... -coverprofile="$out" ./... && go tool cover -func="$out" | awk '/^total:/ {seen=1; pct=$NF; sub(/%/,"",pct); print; if (pct+0 < 65) bad=1} END {exit (bad || !seen)}'  # replaced gobco 2026-08-08 (spec-gaps.md): gobco cannot gate a multi-package module — `./...` instruments NOTHING, several package args panic ("checking multiple packages doesn't work yet"), the export_test.go idiom panics, and per-package attribution scored review/threads/comments at 0% while the acceptance suite covers them 50-82% over HTTP. Go's own -coverpkg attributes across packages: 69.9% measured. 65% is a REGRESSION FLOOR, not a quality proof — the mutation gate is what proves the tests test. Same guard shape as before, revalidated: below-floor and missing-summary both exit nonzero
       mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
 
 constitution:
@@ -269,6 +269,9 @@ requirements:
       - id: AC-comment-no-cap
         statement: No limit on comment count or body length beyond the store's physical limits; large volumes on one issue succeed.
         test: verification/REQ-comments.feature#no artificial caps
+      - id: AC-comment-in-browser
+        statement: A reader viewing an issue in the web UI comments from that page, and the comment lands on that issue and appears in its discussion — the browser is a way to comment, not only a way to read comments made elsewhere.
+        test: verification/REQ-comments.feature#a reader comments from the issue page
   - id: REQ-cli-output-formats
     title: Issues can be output as JSON or YAML from the CLI
     rationale: Agent-consumable output is a first-class contract, not a scrape.

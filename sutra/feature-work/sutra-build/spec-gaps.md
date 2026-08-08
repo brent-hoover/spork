@@ -137,6 +137,34 @@ per-package, so the acceptance suite exercising internal packages over
 HTTP does not count toward their mutants. Both quality gates need a
 spec decision on measurement architecture and attainable bars.
 
+RESOLVED 2026-08-08 by replacing the tool. A fourth gobco defect
+surfaced on re-examination: passing several packages in one invocation
+panics on gobco's own assertion, `checking multiple packages doesn't
+work yet`. So the pinned `./...` silently instruments nothing, the
+obvious repair crashes, and the only working form — one package per
+run — is exactly the form whose attribution does not fit this
+architecture. There is no invocation of gobco that gates this module.
+
+The gate is now `go test -coverpkg=./... ./...` with a 65% floor.
+Go's own coverage attributes ACROSS packages, so the acceptance suite
+counts toward the code it drives: review 0% -> 71.5%, threads 0% ->
+81.5%, comments 0% -> 50.8%, api and docs (which gobco could not
+instrument at all) 74.3% and 70.5%. Module total 69.9%. This trades
+condition coverage for statement coverage — a real loss in strictness,
+accepted because a condition gate that cannot execute measures
+nothing, and because the mutation gate is the one that proves the
+tests test. 65% is a REGRESSION FLOOR, not a quality claim.
+
+The number should not be read as reassurance. Sampling the 1,830
+uncovered statements found ordinary logic, not defensive plumbing —
+an import loop over document versions, an export row loop, the
+verdict-staleness check, duplicate-label detection. Path-based
+exclusion cannot rescue the bar either: excluding all of cmd/sutra,
+the most defensible exclusion available, moves the total 69.9% ->
+70.7%. And neither gobco nor Go's coverage supports a source-level
+ignore directive, so there is no way to annotate a branch as
+deliberately unreachable. Raising this bar means writing tests.
+
 ## No metadata-only document version history in the contract
 
 listDocVersions returns full DocVersion records (content required by the
@@ -231,3 +259,50 @@ Deciding this needs a spec answer — pagination in the contract, a
 declared maximum project size, or an accepted memory profile stated in
 terms of record count. Surfaced by roborev review 1922 (declined pending
 that decision).
+
+## A scenario naming an interface does not bind execution to it
+
+REQ-code-review opens with "humans read, discuss, and pass verdict in
+the web UI", and its stale-feedback scenario reads `Given a review at
+revision 1 open in a reviewer's browser`. The step definition behind
+it posted straight to `/reviews/{id}/verdict` on the API. Same shape in
+REQ-doc-review-server: `When a new version is saved` posted to
+`/documents/{id}/versions`. Both scenarios passed for the entire build
+while `reviewVerdict` and `saveDocVersion` — including the branch that
+re-renders the review page with the API's conflict where the reviewer
+will actually read it — never executed once.
+
+The browser framing is prose. avspec's `test:` field points at a
+scenario by name, and nothing in the scenario constrains which surface
+the step drives; a step is free to satisfy browser language through the
+API sitting behind it. That is the same failure mode as the coverage
+gate above — a check that reads as coverage and is not — and it
+survived 137 passing scenarios and 102 LLM review rounds, because
+reviewers read diffs and the suite read green. Repairing the coverage
+gate is what exposed it: the handlers sat at 0%.
+
+Fixed 2026-08-08 by rewriting both step definitions to drive the web
+handlers, and by making the browser precondition real (the page is
+opened, and the revision the form carries is asserted on the rendered
+page before the verdict is submitted). Proposed home: let an
+acceptance criterion or scenario declare the surface it exercises, so
+a step entering through a different door fails verification instead of
+passing quietly.
+
+## Issue commenting in the browser was never specified
+
+The issue page carries a comment form (`POST /p/{key}/i/{num}/comment`)
+with no requirement behind it — REQ-comments never mentions the web,
+the browser, or a page. It surfaced at 0% coverage alongside the two
+above, and it is a different problem: not an untested requirement but
+an untethered implementation.
+
+Brent's call on finding it: a spec miss, not unrequested scope —
+commenting on an issue from its page is wanted behavior that the
+interview simply never asked about. Recorded as AC-comment-in-browser
+with a scenario that drives the form. Proposed home: interview
+coverage. When a requirement (comments) and a surface (the web UI)
+both exist independently, the interview should ask whether they meet.
+sutra ended up with thirteen web routes and only four requirements
+that mention the browser at all, so the gap was structural rather
+than an oversight about this one form.

@@ -14,3 +14,9 @@ Feature: Comments on issues
     Given issue SUT-1 has one thousand comments
     When another comment is added
     Then it succeeds like the first
+
+  Scenario: a reader comments from the issue page
+    Given issue SUT-1 exists
+    And SUT-1 is open in a reader's browser
+    When they comment "looks wrong" from the page
+    Then the comment appears in SUT-1's discussion on the page

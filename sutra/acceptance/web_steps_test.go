@@ -95,7 +95,10 @@ func (ww *webWorld) expectInHTML(wants ...string) error {
 	return nil
 }
 
-func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
+// registerWebSteps returns the browser world so scenarios owned by
+// other step files — a reviewer passing verdict on a page they are
+// looking at — can drive the real UI instead of the API behind it.
+func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) *webWorld {
 	iw := cw.iw
 	ww := &webWorld{iw: iw, cw: cw}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -449,12 +452,18 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return ww.open("/p/SUT/d/" + ww.docID)
 	})
 	sc.Step(`^a new version is saved$`, func() error {
-		author := iw.identities["human-brent"]
-		if err := iw.s.call(http.MethodPost, "/documents/"+ww.docID+"/versions",
-			map[string]string{"content": "updated text", "author": author}); err != nil {
+		// Saved through the BROWSER's save form. This feature is "Doc
+		// review in the browser"; a scenario naming the browser has to
+		// drive it, and posting straight to the API left saveDocVersion
+		// at zero coverage for the whole build (spec-gaps.md).
+		if err := ww.postForm("/p/SUT/d/"+ww.docID+"/save",
+			url.Values{"content": {"updated text"}}); err != nil {
 			return err
 		}
-		return iw.s.expectStatus(http.StatusCreated)
+		if ww.lastCode != http.StatusOK {
+			return fmt.Errorf("save form returned %d:\n%.2000s", ww.lastCode, ww.lastHTML)
+		}
+		return nil
 	})
 	sc.Step(`^the viewer is notified or refreshed to the new version$`, func() error {
 		if err := ww.open(fmt.Sprintf("/p/SUT/d/%s/poll?since=%d", ww.docID, ww.seenVersion)); err != nil {
@@ -552,4 +561,24 @@ func registerWebSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	sc.Step(`^it shows progress "3 of 5 complete"$`, func() error {
 		return ww.expectInHTML(`class="progress"`, "3 of 5 complete")
 	})
+
+	// --- commenting from the issue page (AC-comment-in-browser)
+	sc.Step(`^(SUT-\d+) is open in a reader's browser$`, func(string) error {
+		if err := ww.open("/p/SUT/i/1"); err != nil {
+			return err
+		}
+		return ww.expectInHTML(`class="comment-form"`)
+	})
+	sc.Step(`^they comment "([^"]*)" from the page$`, func(body string) error {
+		return ww.postForm("/p/SUT/i/1/comment", url.Values{"body": {body}})
+	})
+	sc.Step(`^the comment appears in (SUT-\d+)'s discussion on the page$`, func(string) error {
+		// Re-opened rather than read off the redirect: the comment has
+		// to have LANDED on the issue, not merely been echoed back.
+		if err := ww.open("/p/SUT/i/1"); err != nil {
+			return err
+		}
+		return ww.expectInHTML(`class="comment"`, "looks wrong")
+	})
+	return ww
 }
