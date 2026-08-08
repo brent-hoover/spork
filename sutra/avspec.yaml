@@ -413,6 +413,9 @@ requirements:
       - id: AC-import-actor
         statement: The import actor must be an identity contained in the export; an unknown actor rejects the import whole.
         test: verification/REQ-import-export.feature#unknown import actor is rejected
+      - id: AC-no-ambiguous-bodies
+        statement: A mutating request whose body repeats a property name at any depth is rejected as a bad request naming the property, and nothing is written — transcripts and payloads are stored verbatim, so an ambiguity accepted at the door would outlive the request and re-export differently than it arrived.
+        test: verification/REQ-import-export.feature#an ambiguous body never enters the system
   - id: REQ-thread-links
     title: Threads can be tied to either projects or issues
     acceptance:

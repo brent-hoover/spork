@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"runtime"
@@ -165,6 +166,145 @@ func TestScanDuplicateKeysHonoursCancellation(t *testing.T) {
 	}
 	if counter.n >= len(body) {
 		t.Fatalf("cancelled scan consumed the whole body (%d of %d bytes)", counter.n, len(body))
+	}
+}
+
+// TestByteAtChecksCancellationOnTheInterval pins WHERE the disconnect
+// test falls. The earlier cancellation test only proves a cancelled
+// scan stops somewhere; a check that fired one byte late — or never,
+// because the counter ran the wrong way — would still pass it while
+// costing a gigabyte spool's worth of scanning.
+func TestByteAtChecksCancellationOnTheInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name  string
+		start int
+		stops bool
+	}{
+		{name: "one byte short of the interval", start: cancelCheckBytes - 2},
+		{name: "exactly on the interval", start: cancelCheckBytes - 1, stops: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &jsonLexer{br: bufio.NewReader(strings.NewReader("xx")), ctx: ctx, read: tc.start}
+			_, err := l.byteAt()
+			switch {
+			case tc.stops && err == nil:
+				t.Fatalf("byte %d did not test for a disconnect", tc.start+1)
+			case !tc.stops && err != nil:
+				t.Fatalf("byte %d tested for a disconnect early: %v", tc.start+1, err)
+			}
+		})
+	}
+}
+
+// TestScanDuplicateKeysBoundsDepth straddles maxScanDepth from both
+// sides. The cap exists to match encoding/json's own limit, so it has
+// to reject deeper AND accept everything the decoder would take — a cap
+// that fires one level early silently rejects valid payloads.
+func TestScanDuplicateKeysBoundsDepth(t *testing.T) {
+	nest := map[string]func(int) string{
+		"arrays":  func(d int) string { return strings.Repeat("[", d) + strings.Repeat("]", d) },
+		"objects": func(d int) string { return strings.Repeat(`{"a":`, d) + `1` + strings.Repeat("}", d) },
+	}
+	for kind, build := range nest {
+		t.Run(kind+" at the limit", func(t *testing.T) {
+			if apiErr := scanDuplicateKeys(context.Background(),
+				strings.NewReader(build(maxScanDepth))); apiErr != nil {
+				t.Fatalf("%d levels rejected: %q", maxScanDepth, apiErr.message)
+			}
+		})
+		t.Run(kind+" one past the limit", func(t *testing.T) {
+			apiErr := scanDuplicateKeys(context.Background(),
+				strings.NewReader(build(maxScanDepth + 1)))
+			if apiErr == nil {
+				t.Fatalf("%d levels accepted", maxScanDepth+1)
+			}
+			if !strings.Contains(apiErr.message, "nests deeper") {
+				t.Fatalf("expected a nesting rejection, got %q", apiErr.message)
+			}
+		})
+	}
+}
+
+// TestScanDuplicateKeysReleasesDepth pins that depth is given back as
+// each container closes. Without that, siblings accumulate and a
+// shallow-but-wide payload — a list of records, the commonest shape
+// this API receives — trips a cap meant for runaway NESTING.
+func TestScanDuplicateKeysReleasesDepth(t *testing.T) {
+	// Enough siblings that an unreleased level would breach the cap:
+	// each unreleased container costs two levels instead of none.
+	const siblings = maxScanDepth/2 + 1
+	bodies := map[string]string{
+		"sibling arrays":  "[" + strings.TrimSuffix(strings.Repeat("[],", siblings), ",") + "]",
+		"sibling objects": "[" + strings.TrimSuffix(strings.Repeat("{},", siblings), ",") + "]",
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			if apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(body)); apiErr != nil {
+				t.Fatalf("%d shallow siblings rejected: %q", siblings, apiErr.message)
+			}
+		})
+	}
+}
+
+// TestScanDuplicateKeysBudgetStraddlesTheLimit pins the budget at its
+// edge, in raw bytes, and pins that names already held count toward it.
+// The fat-object test overshoots the budget several times over, which
+// proves a breach is caught but says nothing about where the line is.
+func TestScanDuplicateKeysBudgetStraddlesTheLimit(t *testing.T) {
+	// A name's raw form carries its two quotes, so an n-byte name costs
+	// n+2 against the budget.
+	cases := []struct {
+		name     string
+		body     string
+		rejected bool
+	}{
+		{
+			name: "one name whose raw form exactly fills the budget",
+			body: `{"` + strings.Repeat("x", maxKeyMemory-2) + `":1}`,
+		},
+		{
+			name:     "one name whose raw form is a byte over",
+			body:     `{"` + strings.Repeat("x", maxKeyMemory-1) + `":1}`,
+			rejected: true,
+		},
+		{
+			// The outer name is still live inside the nested object, so
+			// it is the SUM that breaches — the inner name alone fits.
+			name: "a held name pushes a fitting name over",
+			body: `{"` + strings.Repeat("x", 1000) + `":{"` +
+				strings.Repeat("y", maxKeyMemory-1001) + `":1}}`,
+			rejected: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(tc.body))
+			switch {
+			case tc.rejected && apiErr == nil:
+				t.Fatal("a body over the budget was accepted")
+			case tc.rejected && !strings.Contains(apiErr.message, "scan budget"):
+				t.Fatalf("expected a budget rejection, got %q", apiErr.message)
+			case !tc.rejected && apiErr != nil:
+				t.Fatalf("a body exactly at the budget was rejected: %q", apiErr.message)
+			}
+		})
+	}
+}
+
+// TestScanDuplicateKeysNamesTrailingData pins that data after the value
+// is reported as trailing data rather than as a read failure. The two
+// arms of that check are a byte apart in the source and produce
+// indistinguishable rejections unless the message is asserted.
+func TestScanDuplicateKeysNamesTrailingData(t *testing.T) {
+	apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(`{"a":1} {"b":2}`))
+	if apiErr == nil {
+		t.Fatal("trailing data accepted")
+	}
+	if !strings.Contains(apiErr.message, "carries trailing data") {
+		t.Fatalf("expected a trailing-data rejection, got %q", apiErr.message)
 	}
 }
 

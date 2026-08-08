@@ -483,3 +483,91 @@ it. Here no AC named it at all — the behavior existed only as code plus a
 comment, and a comment is not a gate. Mutation testing is the only check in
 the chain that can distinguish "deliberate branch nothing asked for" from
 "deliberate branch nothing tests".
+
+## A 311-line hardening file with no requirement behind it
+
+Twelve mutants survived in `internal/api/dupkeys.go`, the streaming lexer
+that rejects a request body repeating a property name. Grepping `avspec.yaml`
+for the behaviour returns nothing: no requirement, no acceptance criterion,
+no scenario mentions duplicate JSON keys. The whole file — a recursive
+scanner, a 10,000-level depth cap, a 1 MiB property-name budget, a
+cancellation interval — exists because of code review, and its own comments
+cite the review numbers ("review 1900", "review 1902", "review 1906").
+
+The intent was not undocumented. The OpenAPI contract states it in prose:
+
+> REQUEST BODIES: a JSON object must not repeat a property name at any
+> depth. […] thread transcripts and event payloads are stored VERBATIM and
+> re-served, so the ambiguity would outlive the request.
+
+So the contract knew, the code knew, and the spec did not. Recorded as
+`AC-no-ambiguous-bodies` under REQ-import-export — that is where the
+rationale points, since the guarantee is what makes an accepted transcript
+re-importable — with a three-row outline importing transcripts that repeat a
+property at the top level, inside a nested object, and inside an object in
+an array.
+
+### The interesting part: good tests that still cannot see a boundary
+
+Four of the twelve survivors are the same species as the gaps above. The
+other eight are new, and more uncomfortable, because the tests covering them
+were *already thoughtful*. `TestScanDuplicateKeysBoundsKeyMemory` builds a
+4,000-key object; `TestScanDuplicateKeysStreamsValues` measures allocation
+against a ceiling to prove values stream. Neither is lazy. Both still let
+their boundary mutants live:
+
+| Test | Budget | Payload | Distance from the line |
+|---|---|---|---|
+| BoundsKeyMemory | 1 MiB | 4,000 × 600 B = 2.4 MiB | 2.4× over |
+| HonoursCancellation | every 64 KiB | 8 MiB, cancelled *before* the scan | never reaches the check |
+
+A test that overshoots a threshold proves a breach is caught. It says
+nothing about *where* the threshold is, so `>` and `>=` are
+indistinguishable to it — and so is a counter running the wrong way. The
+depth cap had no test at all, in either its object or its array arm.
+
+Replaced with tests that straddle each bound from both sides: exactly
+`maxScanDepth` accepted and one deeper rejected, for objects and for arrays;
+a name whose raw form exactly fills the budget accepted and one byte more
+rejected; a held name pushing a fitting name over; and a white-box check
+that the disconnect test falls on byte 65,536 and not 65,535. Eleven of the
+twelve mutants confirmed dead by hand.
+
+This is the clearest evidence in the build for what the mutation gate buys
+over the coverage gate. Every one of these lines was already covered. Line
+coverage cannot express "the test is on the wrong side of the boundary".
+
+### The twelfth mutant: a guard that cannot be killed because it is dead
+
+`dupkeys.go:193` checks the property-name budget again after a name is
+decoded:
+
+```go
+if l.keyBytes += len(key); l.keyBytes > maxKeyMemory {
+    return fmt.Errorf("property names exceed the %d-byte scan budget", maxKeyMemory)
+}
+```
+
+`str()` already enforced the same budget as the name's bytes arrived, and it
+counts RAW bytes — both quotes and every escape included — which are never
+fewer than the decoded name's. So any name that would breach the budget here
+was rejected there. The branch is unreachable.
+
+Two independent confirmations: the coverage profile records
+`dupkeys.go:193.56,195.4` with an execution count of **0**, even under the
+test that deliberately overshoots the budget 2.4×; and the mutant survives
+every test in the package, by construction.
+
+The fix is to delete the check and keep the accumulation. That edit was
+**blocked by the tooling's safety classifier**, which reads the removal of a
+bounds check as weakening a limit. It is left in place, and the gate will
+keep reporting it. Flagged for the operator rather than forced.
+
+It is also a finding about the gate itself, and belongs with the mutation
+gate respecification: **a 100%-efficacy threshold is unsatisfiable over
+provably-dead defensive code.** There is no test that can kill such a
+mutant. The only ways out are to delete the code or to let the gate carry an
+explicit, justified exclusion. That is an argument for the gate — it found
+genuinely dead code that `deadcode` cannot see, because the function is
+reachable and only the branch is not — but it means "any surviving mutant
+fails the gate" cannot be the literal rule.

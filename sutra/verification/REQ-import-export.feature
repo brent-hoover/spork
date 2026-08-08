@@ -58,6 +58,22 @@ Feature: Import and export
     Then the import is rejected naming the conflicting records
     And no records were partially written
 
+  # A repeated property is the one input that could store content no
+  # export could faithfully reproduce: a decoder keeping the last value
+  # and one keeping the first read the same bytes differently. Depth
+  # matters as much as the top level — a transcript is stored exactly
+  # as it arrived, so an ambiguity buried in it is served back forever.
+  Scenario Outline: an ambiguous body never enters the system
+    When a thread transcript repeating "<property>" <where> is imported
+    Then the import is rejected as malformed, naming "<property>"
+    And no thread was created
+
+    Examples:
+      | property | where                         |
+      | speaker  | at the transcript's top level |
+      | speaker  | inside a nested object        |
+      | speaker  | inside an object in an array  |
+
   Scenario: unknown import actor is rejected
     Given an export of project "SUT"
     And identity "outsider" exists on the server but not in the export's identities

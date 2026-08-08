@@ -29,9 +29,9 @@ func (tw *threadsWorld) reset() {
 	tw.title = ""
 }
 
-// importThread posts the held transcript anchored to the world's
-// project and records the minted thread id.
-func (tw *threadsWorld) importThread(title string) error {
+// postTranscript posts one transcript verbatim and asserts nothing —
+// the rejection scenarios need the response, not a thread.
+func (tw *threadsWorld) postTranscript(title string, transcript []byte) error {
 	iw := tw.iw
 	if err := tw.cw.ensureGitProject(); err != nil {
 		return err
@@ -52,9 +52,16 @@ func (tw *threadsWorld) importThread(title string) error {
 		return err
 	}
 	body := append(encoded[:len(encoded)-1], []byte(`,"transcript":`)...)
-	body = append(body, tw.transcript...)
+	body = append(body, transcript...)
 	body = append(body, '}')
-	if err := iw.s.call(http.MethodPost, "/threads", json.RawMessage(body)); err != nil {
+	return iw.s.call(http.MethodPost, "/threads", json.RawMessage(body))
+}
+
+// importThread posts the held transcript anchored to the world's
+// project and records the minted thread id.
+func (tw *threadsWorld) importThread(title string) error {
+	iw := tw.iw
+	if err := tw.postTranscript(title, tw.transcript); err != nil {
 		return err
 	}
 	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
@@ -113,6 +120,50 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		tw.reset()
 		return ctx, nil
+	})
+
+	// --- ambiguity is rejected at the door (AC-no-ambiguous-bodies)
+	// A transcript is the sharpest case for the guarantee: it is stored
+	// verbatim and re-served, so a repeat accepted here would outlive
+	// the request and re-export differently than it arrived.
+	ambiguous := map[string]string{
+		"at the transcript's top level": `{"%[1]s":"human","%[1]s":"agent"}`,
+		"inside a nested object":        `{"turn":{"%[1]s":"human","%[1]s":"agent"}}`,
+		"inside an object in an array":  `[{"ok":1},{"%[1]s":"human","%[1]s":"agent"}]`,
+	}
+	sc.Step(`^a thread transcript repeating "([^"]*)" (.+) is imported$`, func(property, where string) error {
+		shape, ok := ambiguous[where]
+		if !ok {
+			return fmt.Errorf("no transcript shape for %q", where)
+		}
+		return tw.postTranscript("ambiguous transcript", []byte(fmt.Sprintf(shape, property)))
+	})
+	sc.Step(`^the import is rejected as malformed, naming "([^"]*)"$`, func(property string) error {
+		if err := iw.s.expectStatus(http.StatusBadRequest); err != nil {
+			return err
+		}
+		if err := iw.s.expectErrorCode("bad-request"); err != nil {
+			return err
+		}
+		// Naming the property is what makes the rejection actionable —
+		// an ambiguous body gives the client no other way to find it.
+		if !strings.Contains(string(iw.s.lastBody), property) {
+			return fmt.Errorf("rejection does not name %q — body %s", property, iw.s.lastBody)
+		}
+		return nil
+	})
+	sc.Step(`^no thread was created$`, func() error {
+		if err := iw.s.call(http.MethodGet, "/threads/search?project="+iw.project, nil); err != nil {
+			return err
+		}
+		var threads []json.RawMessage
+		if err := json.Unmarshal(iw.s.lastBody, &threads); err != nil {
+			return fmt.Errorf("decode thread list: %w — body %s", err, iw.s.lastBody)
+		}
+		if len(threads) != 0 {
+			return fmt.Errorf("expected no threads, got %d — body %s", len(threads), iw.s.lastBody)
+		}
+		return nil
 	})
 
 	// --- import preserves the transcript
