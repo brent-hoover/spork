@@ -810,3 +810,9 @@ Seeding a second project also broke the collision scenario's "no records
 were partially written", which asserted the source still listed exactly one
 project. It was reading a constant, not a consequence: it now compares
 against the count taken before the rejected import.
+
+The fourth species surfaced once more in the review pass: the human-verdict
+check was written `humanSet != nil && !humanSet[actual.Actor]`, but the set
+is built unconditionally by the function's one caller. No input can make the
+first operand false, so the mutant that negates it is equivalent by
+construction — removed, not excluded.

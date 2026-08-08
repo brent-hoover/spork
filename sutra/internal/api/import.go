@@ -1162,7 +1162,9 @@ func validateImportedReview(r *review.Review, p *importPayload, issueSet, humanS
 		}
 		// Verdicts are human-only (AC-review-verdict); a fabricated
 		// agent-authored approval cannot arrive through import either.
-		if humanSet != nil && !humanSet[actual.Actor] {
+		// The set itself is built above and passed by the one caller, so
+		// testing it for nil would be a condition no input can falsify.
+		if !humanSet[actual.Actor] {
 			return malformedImport("review %s verdict event's actor is not a human identity", r.ID)
 		}
 	}
