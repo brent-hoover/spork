@@ -11,7 +11,7 @@ project:
     approval. Loops until the app is complete. Kriya: Sanskrit, a
     deliberate, practiced sequence of actions.
   stack:
-    languages: [{ name: go, version: "1.23" }]
+    languages: [{ name: go, version: "1.25" }]  # bumped from 1.23 2026-08-08: 1.23 is out of security support and current deps floor at 1.25 — sutra hit this on its first build and bumped for the same reason (sutra spec-gaps.md 2026-08-06)
     package_manager: go
     frameworks: [bubbletea]  # TUI (REQ-tui); bubbles/lipgloss ride along
     bdd: godog
@@ -19,11 +19,11 @@ project:
     commands:
       install: go mod download  # gate tools need no install — coverage and mutation invoke exact pinned versions via `go run pkg@version`, immune to PATH and preinstalled binaries
       test: go test ./...
-      lint: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run  # pinned via go run like the other gates — no unmanaged PATH binary, clean environments included
+      lint: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run && go run golang.org/x/tools/cmd/deadcode@v0.48.0 -test ./... > "$out" && cat "$out" && test ! -s "$out"  # pinned via go run like the other gates — no unmanaged PATH binary, clean environments included. deadcode rides inside lint because avspec's Commands model forbids extra keys: staticcheck's `unused` EXEMPTS exported identifiers and the exemption is transitive, so sutra finished its build with ten unreachable functions that lint reported as 0 issues. deadcode does reachability from real entry points; -test counts test binaries so test-only helpers are not false positives. It exits 0 while printing findings, hence the empty-output test
       typecheck: go vet ./...
       arch: go run github.com/arch-go/arch-go@v1.7.0  # declared may_import boundaries mirrored in arch-go.yml and checked against real imports; exits nonzero on any violation (spiked 2026-08-06: v1.6.4 does not exist; empty-allowlist modules need explicit-complement shouldNotDependsOn rules — an empty shouldOnlyDependsOn passes silently)
-      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # sutra's spike-validated compound (kriya R3, retired 2026-08-04): 100% condition coverage = no uncovered conditional arm (REQ-gate-branch-coverage)
-      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # documented to exit nonzero below thresholds; R2's residue is incremental per-ticket SPEED, observed in use
+      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # UNRESOLVED — left as pinned pending a decision on REQ-gate-branch-coverage itself. sutra's build (2026-08-08) established that gobco cannot gate a multi-package Go module at all: `./...` instruments NOTHING, several package args panic on gobco's own assertion, and the export_test.go idiom panics. There is no gobco invocation that works here, and Go's own cross-package coverage measures STATEMENTS, not conditional arms. So REQ-gate-branch-coverage as written — per-arm, no threshold — has no working Go toolchain, and sutra (which had to move to `go test -coverpkg` at a percentage floor) would now be REJECTED at kriya's own spec intake. Fails closed today: no summary line means the awk guard exits nonzero, so nothing passes vacuously
+      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # UNRESOLVED — same shape as coverage above, pending a decision on REQ-gate-mutation. Documented to exit nonzero below thresholds, and it does run; but sutra's build found gremlins v0.5.0 measures mutant coverage per-package, so an end-to-end suite scores 39.09% where cross-package attribution scores 91.02%. Making the kills honest needs -i (whole suite per mutant), whose per-mutant timeout is derived from coverage-gathering time observed to vary 947ms..40s on an unchanged tree; --diff, which would make -i affordable, silently matches nothing for a module in a repo SUBDIRECTORY (as both kriya and sutra are). AC-mutation-kill-all's zero-survivor bar has not been shown reachable on a real module
   status: ready
 
 constitution:
