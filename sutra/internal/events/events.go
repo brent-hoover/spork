@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strconv"
 	"time"
 )
@@ -218,32 +217,6 @@ func list(db *sql.DB, cursor, kind, subject string, limit int, until string, fn 
 		page.Drained = n == 0
 	}
 	return page, nil
-}
-
-// SortByFeedOrder orders events by their feed position, so an export
-// assembled per-subject reads as the original append order.
-func SortByFeedOrder(list []Event) {
-	slices.SortFunc(list, func(a, b Event) int {
-		switch {
-		case a.seq < b.seq:
-			return -1
-		case a.seq > b.seq:
-			return 1
-		default:
-			return 0
-		}
-	})
-}
-
-// BySubject returns every event for one subject in chronological
-// order — the per-issue audit history (AC-audit-query).
-func BySubject(tx *sql.Tx, subject string) ([]Event, error) {
-	out := []Event{}
-	err := BySubjectEach(tx, subject, func(e Event) error {
-		out = append(out, e)
-		return nil
-	})
-	return out, err
 }
 
 // BySubjectEach streams a subject's audit history row by row — the

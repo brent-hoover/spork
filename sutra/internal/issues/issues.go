@@ -283,17 +283,6 @@ func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {
 	return out, rows.Err()
 }
 
-// List returns a project's issues, filterable per Filters — a
-// convenience over ListEach for callers that keep results in memory.
-func List(tx *sql.Tx, project string, f Filters) ([]Issue, error) {
-	out := []Issue{}
-	err := ListEach(tx, project, f, func(i Issue) error {
-		out = append(out, i)
-		return nil
-	})
-	return out, err
-}
-
 // ListEach streams a project's filtered issues one row at a time, in
 // filter order (Q ranks title, then body, then comments; number
 // otherwise). Bodies are unbounded strings — wire-serving listings

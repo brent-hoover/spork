@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -103,17 +102,6 @@ func OperationMapping() map[string]Mapping {
 	for id, o := range operations {
 		out[id] = Mapping{Method: o.method, Path: o.path}
 	}
-	return out
-}
-
-// CoveredOperations returns every operationId the CLI can invoke — the
-// parity scenario compares it against the contract.
-func CoveredOperations() []string {
-	out := make([]string, 0, len(operations))
-	for id := range operations {
-		out = append(out, id)
-	}
-	slices.Sort(out)
 	return out
 }
 

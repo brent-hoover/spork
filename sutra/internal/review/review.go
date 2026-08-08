@@ -327,17 +327,6 @@ func scanReview(row rowScanner) (Review, error) {
 	return r, nil
 }
 
-// List returns reviews filtered by issue, state, and session — a
-// session matches when ANY submission carries it (AC-search-session).
-func List(tx *sql.Tx, issue, state, session string) ([]Review, error) {
-	out := []Review{}
-	err := ListEach(tx, issue, state, session, func(r Review) error {
-		out = append(out, r)
-		return nil
-	})
-	return out, err
-}
-
 // listQuery builds the shared review-selection predicate, so the full
 // listing and the light projection can never drift apart in what they
 // match — only in what they carry.

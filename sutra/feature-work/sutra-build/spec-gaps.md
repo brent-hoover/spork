@@ -306,3 +306,59 @@ both exist independently, the interview should ask whether they meet.
 sutra ended up with thirteen web routes and only four requirements
 that mention the browser at all, so the gap was structural rather
 than an oversight about this one form.
+
+## Dead code survived because the unused-identifier exemption is transitive
+
+Ten functions were unreachable when the build finished: cli.CoveredOperations,
+comments.Get, comments.ListByAnchor, docs.Search, docs.list, docs.ListVersions,
+events.SortByFeedOrder, events.BySubject, issues.List, review.List.
+
+All ten are residue from the streaming campaign. Reviews 1805-1833, then 1918
+and 1926, each replaced a materializing call with a cursor or an ids-only
+projection: the new function was added, the call site was pointed at it, and
+the old one stayed. That is not carelessness — the finding was always "this
+materializes unbounded data", and switching the call site answers it
+completely. Deleting the superseded function is a separate act that nothing
+in the loop prompts.
+
+Four mechanisms could have caught it. None did, each for a structural reason:
+
+1. Go rejects unused imports and unused locals but never unused package-level
+   functions. Deleting the ten immediately produced two unused-import errors,
+   which demonstrates the asymmetry rather than contradicting it.
+2. staticcheck's `unused` — on by default in golangci-lint — EXEMPTS exported
+   identifiers, and nine of the ten are exported. Verified on a two-function
+   probe module where nothing calls either function: the unexported one is
+   reported, the exported one is not, and `unused.exported-is-used: false` is
+   accepted but inert. Worse, the exemption is TRANSITIVE: docs.list is
+   unexported and still went unreported, because its only caller was the
+   exempt-and-dead docs.Search. One exported dead function shields every
+   unexported function beneath it. The exemption exists so libraries do not
+   flag their own public API, but these live under internal/ where nothing
+   outside the module can call them — the tool cannot tell the difference.
+3. Review reads diffs. A function that should have been deleted does not
+   appear in a diff; its absence is invisible. 102 rounds, none flagged it.
+4. The gate that would have shown all ten at 0% was the gobco gate, which was
+   instrumenting nothing.
+
+Fixed 2026-08-08: all ten deleted (no cascade — deadcode reports zero after),
+and `golang.org/x/tools/cmd/deadcode@v0.48.0 -test ./...` pinned as a gate.
+It does reachability from real entry points rather than staticcheck's
+per-identifier rule, `-test` counts test binaries as entry points so
+test-only helpers are not false positives, and it found all ten with ten
+findings total — quiet enough to gate at zero tolerance. It exits 0 while
+printing findings, so the gate tests for empty output.
+
+## avspec's stack cannot pin a gate it did not anticipate
+
+`Commands` is a strict model (`extra="forbid"`) over a fixed set: install,
+test, lint, typecheck, arch, coverage, mutation. Adding `deadcode:` fails
+`avspec verify`, so the new gate had to ride inside `lint` as a second
+command. That works, but it hides a distinct check behind another one's
+name — the thing this log keeps finding fault with elsewhere.
+
+The deeper point is that the gate set is a closed vocabulary decided by
+avspec, while which checks a project needs is a property of the project and
+its language. Proposed home: an open map of named checks (`checks: {deadcode:
+"..."}`) alongside the well-known ones, so a stack can declare a gate avspec
+has never heard of and still have it named, run, and reported honestly.

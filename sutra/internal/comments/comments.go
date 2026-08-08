@@ -163,46 +163,6 @@ func sameAnchor(a, b *string) bool {
 	return a == nil || *a == *b
 }
 
-// Get returns one comment.
-func Get(tx *sql.Tx, id string) (Comment, error) {
-	c, err := scanComment(tx.QueryRow(`
-		SELECT id, issue, doc_version, review, review_revision, parent, anchor, author, body, created
-		FROM comments WHERE id = ?`, id))
-	if err == sql.ErrNoRows {
-		return Comment{}, &NotFoundError{ID: id}
-	}
-	if err != nil {
-		return Comment{}, fmt.Errorf("get comment %s: %w", id, err)
-	}
-	return c, nil
-}
-
-// ListByAnchor returns the comments on one anchor target in creation
-// order; threading reconstructs client-side via parent.
-func ListByAnchor(tx *sql.Tx, column, id string) ([]Comment, error) {
-	switch column {
-	case "issue", "doc_version", "review":
-	default:
-		return nil, fmt.Errorf("unknown anchor column %q", column)
-	}
-	rows, err := tx.Query(`
-		SELECT id, issue, doc_version, review, review_revision, parent, anchor, author, body, created
-		FROM comments WHERE `+column+` = ? ORDER BY created, id`, id)
-	if err != nil {
-		return nil, fmt.Errorf("list comments by %s: %w", column, err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []Comment{}
-	for rows.Next() {
-		c, err := scanComment(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan comment: %w", err)
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
 // EachByAnchor streams the comments on one anchor target in creation
 // order — comment bodies carry no cap (AC-comment-no-cap), so export
 // never accumulates them.

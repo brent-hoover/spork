@@ -179,21 +179,6 @@ func VersionMetaByID(tx *sql.Tx, id string) (Version, error) {
 	return v, nil
 }
 
-// Search returns documents whose title or ANY version content matches
-// the term, optionally project-scoped (AC-search-cross).
-func Search(tx *sql.Tx, project *string, q string) ([]Document, error) {
-	term := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q) + "%"
-	query := `SELECT id, project, issue, title, current_version FROM documents
-		WHERE (title LIKE ? ESCAPE '\'
-			OR EXISTS (SELECT 1 FROM doc_versions v WHERE v.document = documents.id AND v.content LIKE ? ESCAPE '\'))`
-	args := []any{term, term}
-	if project != nil {
-		query += ` AND project = ?`
-		args = append(args, *project)
-	}
-	return list(tx, query+` ORDER BY title`, args...)
-}
-
 // Meta is the fixed-size facts about a document: identity, ownership,
 // current version pointer. The title is unbounded, so callers that only
 // need scope or the current-version pointer must not read it — that is
@@ -295,23 +280,6 @@ func (c *DocumentCursor) Each(fn func(Document) error) error {
 
 func (c *DocumentCursor) Close() error { return c.rows.Close() }
 
-func list(tx *sql.Tx, query string, args ...any) ([]Document, error) {
-	rows, err := tx.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list documents: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []Document{}
-	for rows.Next() {
-		var d Document
-		if err := rows.Scan(&d.ID, &d.Project, &d.Issue, &d.Title, &d.CurrentVersion); err != nil {
-			return nil, fmt.Errorf("scan document: %w", err)
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
-}
-
 // SaveVersion appends the next immutable version and moves
 // current_version (AC-doc-versioning).
 func SaveVersion(tx *sql.Tx, documentID, content, author string) (Version, error) {
@@ -389,28 +357,6 @@ func VersionByID(tx *sql.Tx, id string) (Version, error) {
 		return Version{}, fmt.Errorf("doc version %s: %w", id, err)
 	}
 	return v, nil
-}
-
-// ListVersions returns a document's history, oldest first
-// (AC-doc-history).
-func ListVersions(tx *sql.Tx, documentID string) ([]Version, error) {
-	if _, err := Get(tx, documentID); err != nil {
-		return nil, err
-	}
-	rows, err := tx.Query(`SELECT id, document, number, content, author, created FROM doc_versions WHERE document = ? ORDER BY number`, documentID)
-	if err != nil {
-		return nil, fmt.Errorf("versions of %s: %w", documentID, err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []Version{}
-	for rows.Next() {
-		var v Version
-		if err := rows.Scan(&v.ID, &v.Document, &v.Number, &v.Content, &v.Author, &v.Created); err != nil {
-			return nil, fmt.Errorf("scan version: %w", err)
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
 }
 
 // SetIssue ties or unties the document (AC-doc-link).
