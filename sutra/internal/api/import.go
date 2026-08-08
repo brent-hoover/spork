@@ -756,15 +756,16 @@ func validateImport(p *importPayload, actor string) *apiError {
 // description declares. Record ids and the identifiers inside event
 // payloads must both satisfy it — a payload id is preserved verbatim,
 // so a non-canonical one would outlive the import (review 1924).
+// The casing lives entirely in isUUID, which accepts lowercase hex and
+// nothing else, so the version and variant nibbles read as written: a
+// case-folding pass here would have no input that could tell it from
+// its absence.
 func canonicalUUIDv7(id string) bool {
 	if !isUUID(id) {
 		return false
 	}
-	variant := id[19] | 0x20 // lowercase the hex nibble
-	if id[14] != '7' || (variant != '8' && variant != '9' && variant != 'a' && variant != 'b') {
-		return false
-	}
-	return strings.ToLower(id) == id
+	variant := id[19]
+	return id[14] == '7' && (variant == '8' || variant == '9' || variant == 'a' || variant == 'b')
 }
 
 func validateImportShapes(p *importPayload) *apiError {

@@ -324,7 +324,15 @@ func decodeTransition(r *http.Request) (transitionRequest, *apiError) {
 	return req, nil
 }
 
-// isUUID accepts the canonical 8-4-4-4-12 hex form.
+// isUUID accepts the canonical 8-4-4-4-12 form in LOWERCASE hex only.
+// The contract fixes identifiers at that one spelling (RFC 9562 §4):
+// they are compared as text at every layer — storage, collision
+// detection, reference resolution — and SQLite's text comparison is
+// case-sensitive, so two casings of one uuid would name one entity
+// while behaving as two. Accepting uppercase here and refusing it
+// downstream would put the rule in two places, and leave every door
+// that only calls this one reporting a lookup miss for an id that
+// plainly exists.
 func isUUID(s string) bool {
 	if len(s) != 36 {
 		return false
@@ -336,7 +344,7 @@ func isUUID(s string) bool {
 				return false
 			}
 		default:
-			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 			if !isHex {
 				return false
 			}

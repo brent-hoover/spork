@@ -908,3 +908,43 @@ generalises past this guard: when a check is shadowed by a downstream one, the
 scenario that discharges it has to be built from the input the downstream check
 cannot see, or the AC is discharged by a different mechanism than the one it
 describes — and the gate is the only thing that notices.
+
+## A contract rule enforced at one door, and refusals that all look alike
+
+`isUUID` is the shape check every API door runs on an identifier arriving in a
+request body — actor, assignee, review, review verdict event. Its comment said
+it accepts "the canonical 8-4-4-4-12 hex form", and it accepted uppercase hex
+too. The contract does not: `contracts/sutra.openapi.yaml` states that every
+`format: uuid` value is the CANONICAL LOWERCASE form (RFC 9562 §4), because
+identifiers are compared as text at every layer and SQLite's comparison is
+case-sensitive, so two casings of one uuid would name one entity while behaving
+as two.
+
+Import enforced the rule; nothing else did. `canonicalUUIDv7` called `isUUID`,
+then case-folded the variant nibble and re-checked `strings.ToLower(id) == id` —
+accept-then-reject, the same rule in two places. Every other door let uppercase
+through the shape check and into the store, where the lookup missed, and the
+server answered that an id which plainly exists names no identity.
+
+That answer is why the laxity survived: the two refusals are both `400
+bad-request`, so no scenario asserting merely "rejected" can tell them apart.
+The mutation gate found it from the other side — `c >= 'A'` and `c <= 'F'` both
+LIVED, at boundary and negation, because no test ever fed a character near
+those bounds. Per the equivalent-mutant ruling the fix is to REMOVE the site:
+`isUUID` is now lowercase-only, and `canonicalUUIDv7` drops both the fold and
+the ToLower re-check, which have no input left that could tell them from their
+absence.
+
+Two things follow. The observable half — an existing id in uppercase is refused
+for its FORM, not reported as unknown — is a guarantee, so it earned
+`AC-identity-canonical-casing` and a scenario at the assign door. The character
+rule itself is not reachable from any scenario: the acceptance suite only ever
+sends ids the server minted, all canonical, so no input can reach the far side
+of any of those four comparisons. That half earned unit tests (`TestIsUUID`,
+`TestCanonicalUUIDv7`) pinning each boundary and its neighbour.
+
+The generalisation: a rule stated in contract prose but enforced at one door is
+invisible whenever the un-enforced doors fail for some other reason anyway. The
+spec named the rule and named the door that keeps it; it never said the rule
+holds at EVERY door, and the checks at the others were free to be laxer than
+the contract without a single scenario noticing.

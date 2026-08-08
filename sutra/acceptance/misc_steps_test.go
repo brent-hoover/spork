@@ -213,6 +213,40 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 
+	// --- an identifier in non-canonical casing
+	sc.Step(`^an existing identity id rendered in uppercase$`, func() error {
+		id, err := iw.identity("claude")
+		if err != nil {
+			return err
+		}
+		mw.ghostID = strings.ToUpper(id)
+		return nil
+	})
+	sc.Step(`^the operation is rejected for the identifier's form, not as an unknown identity$`, func() error {
+		if err := iw.s.expectStatus(http.StatusBadRequest); err != nil {
+			return err
+		}
+		if err := iw.s.expectErrorCode("bad-request"); err != nil {
+			return err
+		}
+		// Both refusals are bad requests, so the message is what tells
+		// them apart — and the wrong one of the two is a lie: the id
+		// names an identity, in the only casing the system stores.
+		var envelope struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &envelope); err != nil {
+			return err
+		}
+		if strings.Contains(envelope.Message, "names no identity") {
+			return fmt.Errorf("uppercase id reached the store and came back unknown: %s", envelope.Message)
+		}
+		if !strings.Contains(envelope.Message, "must be an identity uuid") {
+			return fmt.Errorf("expected the refusal to name the identifier's form, got %q", envelope.Message)
+		}
+		return nil
+	})
+
 	// --- uniqueness collisions name their colliding resource
 	sc.Step(`^a request that would create (.+)$`, func(kind string) error {
 		actor, err := iw.identity("operator")

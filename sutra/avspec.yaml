@@ -370,6 +370,9 @@ requirements:
       - id: AC-identity-referenced
         statement: At the API, actor and assignee fields are identity ids, not handles — handle-to-id resolution is the CLI's job; unknown ids are rejected, never silently created.
         test: verification/REQ-identities.feature#unknown identity ids are rejected
+      - id: AC-identity-canonical-casing
+        statement: An identifier supplied to any API door is accepted only in the canonical lowercase form the contract declares. An existing id sent in another casing is refused for its form — a bad request naming what an identifier must look like — rather than passed down to the store, where it misses and comes back reported as an id that names no identity. Identifiers are compared as case-sensitive text at every layer, so a second accepted casing would let one entity be named by two values.
+        test: verification/REQ-identities.feature#an identifier in non-canonical casing is refused for its form
   - id: REQ-notifications
     title: Event feed with cursor-based polling
     rationale: Poll-only by design — every subscriber today lives on the same machine; webhooks return only when a remote subscriber exists (delivery-only change, the Event stream already carries everything).
