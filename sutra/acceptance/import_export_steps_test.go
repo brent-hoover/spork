@@ -65,11 +65,14 @@ type ieWorld struct {
 	// projectsBefore is how many projects the source held before a
 	// rejected import, so the check after it compares against reality.
 	projectsBefore int
-	tampered       []byte
-	target         *importTarget
-	lastStatus     int
-	lastBody       string
-	actorForImp    string
+	// heldOnTarget are the ids of records the TARGET minted itself that
+	// already hold a key the incoming export also claims.
+	heldOnTarget []string
+	tampered     []byte
+	target       *importTarget
+	lastStatus   int
+	lastBody     string
+	actorForImp  string
 }
 
 func (ie *ieWorld) reset() {
@@ -1256,6 +1259,76 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		if count != ie.projectsBefore {
 			return fmt.Errorf("expected %d projects after rejected re-import, got %d", ie.projectsBefore, count)
+		}
+		return nil
+	})
+
+	// --- an import colliding on keys but not on ids
+	sc.Step(`^a server that independently holds the same project key, identity handle, and label name$`, func() error {
+		target, err := newImportTarget()
+		if err != nil {
+			return err
+		}
+		ie.target = target
+		// Minted HERE, so every id is this server's own: the uuid pass
+		// finds nothing and the uniqueness pass is the only door left.
+		seed := func(path string, body map[string]string) error {
+			status, respBody, err := ie.postToTarget(path, body)
+			if err != nil {
+				return err
+			}
+			if status != http.StatusCreated {
+				return fmt.Errorf("seed %s on target: %d %s", path, status, respBody)
+			}
+			var created struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(respBody, &created); err != nil {
+				return fmt.Errorf("decode %s: %w (%s)", path, err, respBody)
+			}
+			ie.heldOnTarget = append(ie.heldOnTarget, created.ID)
+			return nil
+		}
+		if err := seed("/identities", map[string]string{"handle": "human-brent", "kind": "human"}); err != nil {
+			return err
+		}
+		if err := seed("/projects", map[string]string{
+			"key": "SUT", "name": "Elsewhere", "actor": ie.heldOnTarget[0]}); err != nil {
+			return err
+		}
+		return seed("/labels", map[string]string{"name": "exported-label", "color": "#123456"})
+	})
+	sc.Step(`^the export is imported there$`, func() error {
+		return ie.importInto(ie.target, ie.exported, ie.actorForImp)
+	})
+	sc.Step(`^the import is rejected with code "unique-violation" naming every holder$`, func() error {
+		if ie.lastStatus != http.StatusConflict {
+			return fmt.Errorf("expected 409, got %d: %s", ie.lastStatus, ie.lastBody)
+		}
+		if !strings.Contains(ie.lastBody, "unique-violation") {
+			return fmt.Errorf("expected unique-violation, got %s", ie.lastBody)
+		}
+		for _, id := range ie.heldOnTarget {
+			if !strings.Contains(ie.lastBody, id) {
+				return fmt.Errorf("conflicts do not name the holder %s: %s", id, ie.lastBody)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^that server still holds only what it had$`, func() error {
+		status, body, err := ie.getFromTarget("/projects")
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("list projects on target: %d %s", status, body)
+		}
+		var projects []any
+		if err := json.Unmarshal(body, &projects); err != nil {
+			return fmt.Errorf("decode projects: %w (%s)", err, body)
+		}
+		if len(projects) != 1 {
+			return fmt.Errorf("expected the one seeded project to remain, got %d: %s", len(projects), body)
 		}
 		return nil
 	})

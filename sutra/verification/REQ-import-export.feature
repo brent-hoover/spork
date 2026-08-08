@@ -58,6 +58,21 @@ Feature: Import and export
     Then the import is rejected naming the conflicting records
     And no records were partially written
 
+  # A colliding UUID and a colliding key are different doors, and re-importing
+  # an export only ever reaches the first: same records, same ids, rejected
+  # before the uniqueness preflight runs at all. Two servers that independently
+  # minted a project with the same key, an identity with the same handle, and a
+  # label with the same name share none of their UUIDs, so only the second door
+  # can catch them — and it has to keep walking past each record type that
+  # comes back clean, or the collision behind it fails mid-insert as a
+  # constraint error instead of naming what already holds the key.
+  Scenario: an import colliding on keys but not on ids names every holder
+    Given an export of project "SUT"
+    And a server that independently holds the same project key, identity handle, and label name
+    When the export is imported there
+    Then the import is rejected with code "unique-violation" naming every holder
+    And that server still holds only what it had
+
   # A repeated property is the one input that could store content no
   # export could faithfully reproduce: a decoder keeping the last value
   # and one keeping the first read the same bytes differently. Depth

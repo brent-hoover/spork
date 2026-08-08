@@ -1350,14 +1350,18 @@ func (s *server) checkImportCollisions(tx *sql.Tx, p *importPayload) *apiError {
 	return nil
 }
 
+// chunkIDs splits ids into runs of at most size, keeping the IN (...)
+// probe under SQLite's bound-variable limit. Walking a cursor rather
+// than reslicing leaves one comparison to get wrong instead of two, and
+// the two it replaced disagreed only when len(ids) was an exact multiple
+// of size — a case that produced identical output either way, so no
+// input could tell them apart. The remaining one is answerable: at an
+// exact multiple, an off-by-one appends an empty trailing chunk, and an
+// empty chunk builds `IN ()` from a repeat count of -1.
 func chunkIDs(ids []string, size int) [][]string {
 	var out [][]string
-	for len(ids) > size {
-		out = append(out, ids[:size])
-		ids = ids[size:]
-	}
-	if len(ids) > 0 {
-		out = append(out, ids)
+	for start := 0; start < len(ids); start += size {
+		out = append(out, ids[start:min(start+size, len(ids))])
 	}
 	return out
 }

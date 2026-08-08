@@ -852,3 +852,35 @@ every mutant on the remaining conditions dies.
 Species four says an equivalent mutant is a defect in the code, not in the
 gate. This is the second time the defect was the same one: a comparison
 written against a state the caller has already excluded.
+
+## Two doors for a collision, and only one of them ever opened
+
+Import rejects a colliding payload at two separate points: a UUID pass that
+probes thirteen tables for ids the payload already claims, and a uniqueness
+preflight that probes the project key, every identity handle, and every label
+name. `AC-import-collision` is discharged by re-importing an export into the
+server it came from — same records, same ids — which trips the first door and
+returns before the second one runs. Every guard in the uniqueness preflight,
+and the 409 it raises, was unreachable by any scenario.
+
+The case the spec never named is two servers that independently minted a
+project with the same key. Nothing about their UUIDs collides, so only the
+second door can catch them; without it the import fails mid-insert as a
+constraint error instead of naming the records that already hold each key.
+Now `AC-import-unique-violation`, discharged by seeding a target with the
+export's project key, one of its handles, and its label name — all minted on
+the target, so all three probes must run and all three holders must be named.
+This is species six again: three early-return guards in a linear walk, killed
+by making the collision reachable at all rather than by planting it at the far
+end.
+
+`chunkIDs` gave the fourth species one more turn. It batched the id probe with
+`for len(ids) > size` followed by `if len(ids) > 0`, and those two comparisons
+disagree only when `len(ids)` is an exact multiple of `size` — where they
+produce identical output. No input can tell `>` from `>=` there. Rewritten to
+walk a cursor, it has one comparison instead of two, and that one is
+answerable: at an exact multiple an off-by-one appends an empty trailing chunk,
+and an empty chunk builds `IN (?` + `strings.Repeat(",?", -1)` + `)`, which
+panics. Batching is a resource decision, so by the ruling above it earns a unit
+test rather than an acceptance criterion — `TestChunkIDs`, whose exact-multiple
+case is the one real payloads (never a multiple of 500 ids) cannot reach.

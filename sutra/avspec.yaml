@@ -404,6 +404,9 @@ requirements:
       - id: AC-export-full
         statement: A project export captures identities, issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project. Where a record type has kinds or states, the export carries more than one of each — both relation kinds, both verdicts, a thread anchored to a project and one anchored to an issue, a review whose approval was consumed and one carrying changes requested. A check that only asks whether a collection is present is satisfied by an empty one.
         test: verification/REQ-import-export.feature#export captures the whole project
+      - id: AC-import-unique-violation
+        statement: An import whose project key, identity handle, or label name is already held by a record the receiving server minted itself — sharing no UUID with the payload, so the uuid-collision check passes — is rejected with code unique-violation naming every existing holder, and nothing is written. All three record types are checked; the walk does not stop at the first one that comes back clean.
+        test: verification/REQ-import-export.feature#an import colliding on keys but not on ids names every holder
       - id: AC-import-round-trip
         statement: Importing an export into an empty server reconstructs the project with UUIDs preserved; re-export matching excludes the import audit event itself.
         test: verification/REQ-import-export.feature#import round-trips losslessly
