@@ -108,6 +108,32 @@ func (ie *ieWorld) seedRichProject() error {
 	}
 	ie.recordIDs["comment"] = comment.ID
 
+	// A label, attached to an issue. The completeness check looks for
+	// the "labels" key, which an EMPTY array satisfies — so an export
+	// with no label passes it while carrying none, and import's label
+	// validation never sees one.
+	if err := iw.s.call(http.MethodPost, "/labels",
+		map[string]any{"name": "exported-label", "color": "#abcdef"}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var label struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &label); err != nil {
+		return err
+	}
+	ie.recordIDs["label"] = label.ID
+	if err := iw.s.call(http.MethodPost, "/issues/"+issueID+"/labels",
+		map[string]any{"label": label.ID, "actor": iw.identities["operator"]}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusOK); err != nil {
+		return err
+	}
+
 	if err := iw.s.call(http.MethodPost, "/projects/"+iw.project+"/documents",
 		map[string]string{"title": "exported doc", "content": "v1 body", "author": author}); err != nil {
 		return err
@@ -202,6 +228,34 @@ func (ie *ieWorld) seedRichProject() error {
 		return err
 	}
 
+	// And a removed relation of the OTHER kind. The snapshot inside a
+	// relation-removed event carries the kind it removed, and import
+	// validates that field too — so an export whose only removal is a
+	// "blocks" one leaves the "parent_of" half of that check unexercised
+	// and every parent_of removal ever imported would be called
+	// malformed.
+	if err := iw.s.call(http.MethodPost, "/issues/"+issueID+"/relations",
+		map[string]string{"to": iw.issues["SUT-2"], "kind": "parent_of", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var removedParent struct {
+		Relation struct {
+			ID string `json:"id"`
+		} `json:"relation"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &removedParent); err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodDelete, "/issues/"+issueID+"/relations/"+removedParent.Relation.ID+"?actor="+actor, nil); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusNoContent); err != nil {
+		return err
+	}
+
 	// A LIVE relation as well — an export whose only relation is a
 	// deleted one round-trips without ever exercising the edge itself,
 	// and a parent still holding an open child is the ordinary
@@ -223,6 +277,35 @@ func (ie *ieWorld) seedRichProject() error {
 		return err
 	}
 	ie.recordIDs["relation"] = live.Relation.ID
+
+	// The OTHER relation kind, live as well. Only "blocks" and
+	// "parent_of" exist, and an export carrying one of them leaves
+	// import's kind check half-exercised — it would reject every
+	// "blocks" edge ever imported and the round trip would not notice.
+	// A fresh pair, both open: blocking is what the edge means, and
+	// hanging it off the closed issue would make the seed a
+	// completion-invariant test instead of a round-trip one.
+	blockedID, err := iw.ensureIssue("SUT-4")
+	if err != nil {
+		return err
+	}
+	ie.recordIDs["blocked-issue"] = blockedID
+	if err := iw.s.call(http.MethodPost, "/issues/"+iw.issues["SUT-2"]+"/relations",
+		map[string]string{"to": blockedID, "kind": "blocks", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var blocking struct {
+		Relation struct {
+			ID string `json:"id"`
+		} `json:"relation"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &blocking); err != nil {
+		return err
+	}
+	ie.recordIDs["blocks-relation"] = blocking.Relation.ID
 
 	// A doc-deliverable review: its submission carries NO stored
 	// content (the immutable version resolves), and the round trip
@@ -391,6 +474,21 @@ func (ie *ieWorld) postToTarget(path string, body any) (int, []byte, error) {
 	return resp.StatusCode, respBody, nil
 }
 
+// getFromTarget reads a resource back from the import target, returning
+// its status and body.
+func (ie *ieWorld) getFromTarget(path string) (int, []byte, error) {
+	resp, err := ie.target.server.Client().Get(ie.target.server.URL + path)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, respBody, nil
+}
+
 // popOnTarget claims the next issue off an identity's work stack on the
 // IMPORT TARGET, returning the claimed issue's id ("" for an empty
 // stack).
@@ -522,6 +620,40 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		return ie.export()
+	})
+	sc.Step(`^an export of project "SUT", archived before it was exported$`, func() error {
+		if err := ie.seedRichProject(); err != nil {
+			return err
+		}
+		// Archiving LAST: it makes the project read-only, so nothing
+		// else can be seeded afterwards.
+		if err := iw.s.call(http.MethodPost, "/projects/"+iw.project+"/archive",
+			map[string]any{"actor": iw.identities["operator"]}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		return ie.export()
+	})
+	sc.Step(`^the imported project is still archived$`, func() error {
+		status, body, err := ie.getFromTarget("/projects/" + iw.project)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("read imported project: %d %s", status, body)
+		}
+		var project struct {
+			ArchivedAt *string `json:"archived_at"`
+		}
+		if err := json.Unmarshal(body, &project); err != nil {
+			return fmt.Errorf("decode project: %w (%s)", err, body)
+		}
+		if project.ArchivedAt == nil {
+			return fmt.Errorf("the imported project came back writable — the archive stamp did not survive the round trip")
+		}
+		return nil
 	})
 	sc.Step(`^it is imported into an empty server$`, func() error {
 		target, err := newImportTarget()
@@ -690,6 +822,71 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			delete(t, "transcript")
 			return nil
 		})
+	})
+
+	// malformedAt corrupts one well-formedness rule at a named place in
+	// the payload. The places are the payload's extremes on purpose: the
+	// shape pass walks record types in a fixed order, so a fault in the
+	// FIRST one proves nothing about the last, and one at the top level
+	// proves nothing about the identifiers buried in an event payload.
+	malformedAt := map[string]func(map[string]any) error{
+		"project id, the first record in the payload": func(p map[string]any) error {
+			project, ok := p["project"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("export carries no project")
+			}
+			project["id"] = "not-a-uuid"
+			return nil
+		},
+		"archive stamp on a project the export left unarchived": func(p map[string]any) error {
+			project, ok := p["project"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("export carries no project")
+			}
+			project["archived_at"] = "the day before yesterday"
+			return nil
+		},
+		"event timestamp, the last record in the payload": func(p map[string]any) error {
+			events, ok := p["events"].([]any)
+			if !ok || len(events) == 0 {
+				return fmt.Errorf("export carries no events")
+			}
+			last, ok := events[len(events)-1].(map[string]any)
+			if !ok {
+				return fmt.Errorf("event is not an object")
+			}
+			last["created"] = "the day before yesterday"
+			return nil
+		},
+		"identifier inside a removed relation's snapshot": func(p map[string]any) error {
+			events, ok := p["events"].([]any)
+			if !ok {
+				return fmt.Errorf("export carries no events")
+			}
+			for _, entry := range events {
+				e, ok := entry.(map[string]any)
+				if !ok || e["kind"] != "issue.relation-removed" {
+					continue
+				}
+				snapshot, ok := e["payload"].(map[string]any)
+				if !ok {
+					return fmt.Errorf("relation-removed event carries no payload")
+				}
+				snapshot["relation"] = "not-a-uuid"
+				return nil
+			}
+			return fmt.Errorf("export carries no relation-removed event")
+		},
+	}
+	sc.Step(`^an export payload whose (.+) is malformed$`, func(where string) error {
+		mutate, ok := malformedAt[where]
+		if !ok {
+			return fmt.Errorf("no tampering defined for %q", where)
+		}
+		if err := ie.ensureExport(); err != nil {
+			return err
+		}
+		return ie.tamper(mutate)
 	})
 
 	sc.Step(`^an export payload whose comment names a review revision the review never had$`, func() error {

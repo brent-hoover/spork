@@ -742,3 +742,42 @@ the revision range check behind it needed one both valid and invalid. Now
 `AC-import-comment-revision`: the API pins a review comment to the revision
 it was written against, and an import that does not check the same thing can
 seat a comment on work that never existed.
+
+## A validator that walks in order, and a spec that never says so
+
+`validateImportShapes` checks every identifier and timestamp in the payload,
+record type by record type, each guard written the same way:
+
+```go
+if apiErr := uuidOf("thread", t.ID); apiErr != nil {
+    return apiErr
+}
+```
+
+Negate any one of those 23 conditions and it returns `nil` — "shapes fine" —
+the instant that check *passes*, silently skipping every record type after
+it. One structural fact, 23 mutants: a guard that stops early is
+indistinguishable from one that passes, and the only way to tell them apart
+is to plant a fault at the far end of the walk. `AC-import-thread-transcript`
+and its siblings each corrupt one record and assert rejection, which the
+first guard alone satisfies. Nothing in the spec said the walk finishes.
+
+Now `AC-import-malformed-anywhere`, an outline that corrupts the payload's
+extremes on purpose: its first record, its last, a field it was free to omit,
+and an identifier buried inside an event's snapshot. Twenty-one of the 23
+died to it.
+
+The two that did not were a different failure: the export carried no such
+record at all. `p.Labels` was empty, so the label guard's mutant never
+executed — and `AC-export-full`'s completeness check only asserts the literal
+`"labels"` key is present, which an empty array satisfies. The spec named
+labels and the scenario never checked one existed. The same hole covered
+`archived_at` (no export was ever taken of an archived project), the `blocks`
+half of the relation-kind check, and the `parent_of` half of the kind carried
+inside a relation-removed snapshot. Four holes, one shape: **an
+export-completeness check that counts keys cannot see an empty collection.**
+
+The archived case earns its own guarantee rather than a tamper row alone:
+archiving is what makes a project read-only, and it is a nullable field a
+round trip can silently drop while every record still comes back and the
+import reports success. Now `AC-import-archived-round-trip`.

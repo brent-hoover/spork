@@ -82,6 +82,33 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
+  # Identifiers and timestamps are written verbatim and re-exported
+  # forever, so a malformed one is permanent. The shape pass walks record
+  # types in a fixed order and returns on the first fault it finds, which
+  # means a check that stops early is indistinguishable from one that
+  # passes: only a fault planted at the far end of the walk, or inside a
+  # payload the walk has to descend into, can tell the two apart.
+  Scenario Outline: a malformed value is rejected wherever it sits in the payload
+    Given an export payload whose <where> is malformed
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+    Examples:
+      | where                                                |
+      | project id, the first record in the payload          |
+      | archive stamp on a project the export left unarchived |
+      | event timestamp, the last record in the payload      |
+      | identifier inside a removed relation's snapshot      |
+
+  # Archiving is what makes a project read-only, and the stamp that says
+  # so is a nullable field the round trip can silently drop: every record
+  # comes back, the import reports success, and the project is writable
+  # again on the other side.
+  Scenario: an archived project imports still archived
+    Given an export of project "SUT", archived before it was exported
+    When it is imported into an empty server
+    Then the imported project is still archived
+
   # A review comment is pinned to the revision it was written against —
   # the API refuses to anchor one to any other. Import writes comments
   # and reviews from the same payload, so nothing outside it constrains
