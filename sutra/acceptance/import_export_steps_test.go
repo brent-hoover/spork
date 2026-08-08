@@ -900,6 +900,33 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 
+	sc.Step(`^an export payload with a documents element that (omits its versions|is empty)$`, func(flaw string) error {
+		if err := ie.ensureExport(); err != nil {
+			return err
+		}
+		return ie.tamper(func(p map[string]any) error {
+			exported, ok := p["documents"].([]any)
+			if !ok || len(exported) == 0 {
+				return fmt.Errorf("export carries no documents")
+			}
+			element, ok := exported[0].(map[string]any)
+			if !ok {
+				return fmt.Errorf("documents element is not an object")
+			}
+			switch flaw {
+			case "omits its versions":
+				delete(element, "versions")
+			case "is empty":
+				// ADDED alongside the real document, not carved out of
+				// it: emptying the only element would strand the review
+				// anchored to its version, and that dangling reference
+				// is what would do the rejecting. An extra empty element
+				// leaves every other check with nothing to object to.
+				p["documents"] = append(exported, map[string]any{})
+			}
+			return nil
+		})
+	})
 	sc.Step(`^an export payload whose thread carries no transcript$`, func() error {
 		if err := ie.ensureExport(); err != nil {
 			return err

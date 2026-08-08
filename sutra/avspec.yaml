@@ -422,6 +422,9 @@ requirements:
       - id: AC-no-ambiguous-bodies
         statement: A mutating request whose body repeats a property name at any depth is rejected as a bad request naming the property, and nothing is written — transcripts and payloads are stored verbatim, so an ambiguity accepted at the door would outlive the request and re-export differently than it arrived.
         test: verification/REQ-import-export.feature#an ambiguous body never enters the system
+      - id: AC-import-document-element
+        statement: An import payload carrying an incomplete documents element is rejected as malformed and nothing is written, whether it omits its versions array or carries neither half. A document's content lives entirely in its versions and creating one mints v1 in the same breath, so no other door produces a document that renders nothing; and an element carrying nothing at all is invisible to every later check, which reads it as one document fewer rather than as a fault.
+        test: verification/REQ-import-export.feature#an incomplete documents element is rejected at import
       - id: AC-import-thread-transcript
         statement: An import payload carrying a thread without its transcript is rejected as malformed and nothing is written — a thread IS its transcript, and a catalogue entry with nothing behind it could never be exported back.
         test: verification/REQ-import-export.feature#a thread without its transcript is rejected at import

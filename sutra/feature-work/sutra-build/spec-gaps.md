@@ -884,3 +884,27 @@ and an empty chunk builds `IN (?` + `strings.Repeat(",?", -1)` + `)`, which
 panics. Batching is a resource decision, so by the ruling above it earns a unit
 test rather than an acceptance criterion — `TestChunkIDs`, whose exact-multiple
 case is the one real payloads (never a multiple of 500 ids) cannot reach.
+
+## The check that only owns the case nothing else can see
+
+`walkDocumentExport` requires both halves of a documents element and reports
+`documents element requires document and versions` when one is missing. The
+obvious scenario — omit the versions array — does not exercise it: import's
+later pass already rejects that with `document %s carries no versions`, naming
+the document. Omit the document instead and the versions fall through to
+`doc versions name unknown document %s`. Both single-key faults are caught
+downstream by better messages, and a first attempt at killing the guard
+SURVIVED for exactly that reason.
+
+The one input the guard uniquely owns is an element carrying neither half.
+Nothing downstream can object to it: no document is emitted, no version is,
+and every later check reads the payload as one document fewer rather than as a
+fault. That case has to be constructed by ADDING an empty element beside the
+real one — emptying the only element strands the review anchored to its
+version, and the dangling reference does the rejecting instead.
+
+`AC-import-document-element` now names both flaws as one outline. The lesson
+generalises past this guard: when a check is shadowed by a downstream one, the
+scenario that discharges it has to be built from the input the downstream check
+cannot see, or the AC is discharged by a different mechanism than the one it
+describes — and the gate is the only thing that notices.

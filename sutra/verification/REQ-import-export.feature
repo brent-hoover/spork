@@ -89,6 +89,24 @@ Feature: Import and export
       | speaker  | inside a nested object        |
       | speaker  | inside an object in an array  |
 
+  # A document's content lives entirely in its versions — creating one mints
+  # v1 in the same breath, and no API call produces a document without them.
+  # Import writes both halves of the element from one payload, so it is the
+  # only door an incomplete one can arrive through. The two flaws fail
+  # differently: an element without its versions seats a document that renders
+  # nothing, while an element carrying nothing at all is invisible to every
+  # later check, which reads it as simply one document fewer — so only the
+  # element's own walk can refuse it.
+  Scenario Outline: an incomplete documents element is rejected at import
+    Given an export payload with a documents element that <flaw>
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+    Examples:
+      | flaw               |
+      | omits its versions |
+      | is empty           |
+
   # The POST /threads door already refuses a thread with no transcript;
   # import must refuse the same thing, or the one path that writes
   # threads without going through that door becomes the way around it.
