@@ -571,3 +571,55 @@ explicit, justified exclusion. That is an argument for the gate — it found
 genuinely dead code that `deadcode` cannot see, because the function is
 reachable and only the branch is not — but it means "any surviving mutant
 fails the gate" cannot be the literal rule.
+
+## Decisions no scenario can observe
+
+Six more survivors, in two clusters, share a property none of the earlier
+gaps had: **both branches produce identical output.** They are not
+behaviours a scenario could assert, because from outside the API there is
+nothing to see.
+
+`export.go:266` and `export.go:587` guard the same guarantee: an export
+abandoned by its reader stops early. `write()` records the first failed
+write into a single shared flag; `eachSubmission` returns the moment its
+callback reports trouble. Ten `failed()` checkpoints read that flag. Negate
+either mutant and the export still emits exactly the bytes it managed to
+emit — it just keeps scanning rows for a client that has gone, holding a
+read transaction and pinning the WAL. The intent is stated only in a code
+comment citing review 1889. `avspec.yaml` and the contract say nothing about
+client disconnect.
+
+`idempotency.go:91` routes a request body: buffered in RAM below
+largeBodyThreshold, spooled to an unlinked temp file above it *or when the
+length is unknown*. All four mutants on that line — both boundaries, both
+negations — leave the response byte-identical. They only change whether a
+4 MiB body lands in memory or on disk, and whether a chunked upload
+declaring no length is treated as small.
+
+Covered with white-box unit tests that assert the mechanism directly: a
+ResponseWriter whose client hangs up mid-stream, a submission walk counting
+its callbacks, and a routing table straddling the threshold with the
+unknown-length case pinned to the spooling side. All six mutants confirmed
+dead by hand, plus two neighbours.
+
+### What this says about where acceptance criteria stop
+
+The earlier gaps in this document all resolved the same way: behaviour was
+wanted, the interview missed it, so it earned an acceptance criterion. That
+ruling does not reach these. An AC states something a reader of the spec
+could check; "the export stops scanning when nobody is listening" has no
+observable form at the API boundary, and writing a Gherkin scenario for it
+would mean asserting on a timing artefact.
+
+So the line drawn here is: **observable guarantees earn acceptance criteria;
+resource and robustness decisions earn unit tests.** The duplicate-key
+scan's ambiguity rejection is observable — a 400 naming the property — and
+got `AC-no-ambiguous-bodies`. Its 1 MiB budget, its depth cap, the spool
+threshold, and the disconnect abort are not, and got tests instead.
+
+That line is a proposal, not a settled rule, and it bears directly on the
+mutation gate's threshold. A 100%-efficacy gate demands a test for every
+branch, including these; it does not demand an AC for every branch. The two
+gates measure different things, and the spec is the weaker instrument here —
+which is worth saying plainly in an experiment whose premise is that a ready
+avspec is buildable.
