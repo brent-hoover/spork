@@ -82,6 +82,16 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
+  # A review comment is pinned to the revision it was written against —
+  # the API refuses to anchor one to any other. Import writes comments
+  # and reviews from the same payload, so nothing outside it constrains
+  # that pin: unchecked, an import can seat a comment on a revision the
+  # review never had, and it renders forever against work never written.
+  Scenario: a comment naming a nonexistent review revision is rejected at import
+    Given an export payload whose comment names a review revision the review never had
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
   # A work stack's order is internal state the export never carries as a
   # field of its own, so import has to reconstruct each assignee's queue
   # position. Reconstruct it wrong and the queue silently falls back to

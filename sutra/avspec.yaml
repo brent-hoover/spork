@@ -419,6 +419,9 @@ requirements:
       - id: AC-import-thread-transcript
         statement: An import payload carrying a thread without its transcript is rejected as malformed and nothing is written — a thread IS its transcript, and a catalogue entry with nothing behind it could never be exported back.
         test: verification/REQ-import-export.feature#a thread without its transcript is rejected at import
+      - id: AC-import-comment-revision
+        statement: An import payload whose comment names a review revision that review never had is rejected as malformed and nothing is written — the API pins a review comment to the revision it was written against, and an import must not seat one on work that never existed.
+        test: verification/REQ-import-export.feature#a comment naming a nonexistent review revision is rejected at import
       - id: AC-import-queue-order
         statement: An imported assignee keeps its place in the work stack — issues pop in the order they were assigned on the source, not in issue-number order.
         test: verification/REQ-import-export.feature#an imported work stack pops in its original order

@@ -715,3 +715,30 @@ carry either. Without seeding it past the highest imported number, the next
 create mints 1 again and collides with an imported issue on
 `(project, number)` — a 500 on the first issue created after any import.
 Now `AC-import-number-sequence`.
+
+## The two anchors the round-trip only ever exercised one of
+
+Threads and comments both carry an exclusive choice of anchor, and the
+seeded export picked the same side of each: the thread was project-anchored,
+the comment issue-anchored. So half of each `oneOf` reached import's
+validation only through the malformed payloads that get rejected — which
+proves nothing about the legitimate case.
+
+`import.go:672` rejects a thread with neither anchor. Negate its second
+operand and an ISSUE-anchored thread reads as anchorless; every import
+carrying one fails, and none did. `import.go:675` guards the
+wrong-project check — negated, it dereferences a nil project anchor, which
+only an issue-anchored thread has. One seeded issue-anchored thread kills
+both.
+
+The comment side is the same shape with an extra wrinkle. `import.go:646`
+was written `c.Review != nil && c.ReviewRevision != nil`, but the pass ten
+lines above already rejects the two apart, so the second operand can never
+be false when the first is true. That is the fourth species again — a
+condition no input can falsify on its own — and the fix is again to remove
+the site, not to exclude it: the guard is now `c.ReviewRevision != nil`
+alone. What remained needed a review-anchored comment to reach at all, and
+the revision range check behind it needed one both valid and invalid. Now
+`AC-import-comment-revision`: the API pins a review comment to the revision
+it was written against, and an import that does not check the same thing can
+seat a comment on work that never existed.

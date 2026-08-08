@@ -150,6 +150,30 @@ func (ie *ieWorld) seedRichProject() error {
 	}
 	ie.recordIDs["thread"] = thread.ID
 
+	// An ISSUE-anchored thread too. A thread carries exactly one of the
+	// two anchors, so an export holding only the project-anchored kind
+	// round-trips without the issue anchor ever reaching import's
+	// validation — and import must accept it, not read it as anchorless.
+	issueTranscript, err := json.Marshal([]map[string]string{{"speaker": "claude", "text": "anchored to an issue"}})
+	if err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodPost, "/threads", map[string]any{
+		"title": "exported issue thread", "transcript": json.RawMessage(issueTranscript),
+		"issue": issueID, "actor": iw.identities["operator"]}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var issueThread struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &issueThread); err != nil {
+		return err
+	}
+	ie.recordIDs["issue-thread"] = issueThread.ID
+
 	// A removed relation: its relation-removed event (flat
 	// RelationRemovedPayload) must survive the round trip.
 	if _, err := iw.ensureIssue("SUT-2"); err != nil {
@@ -228,6 +252,25 @@ func (ie *ieWorld) seedRichProject() error {
 		return err
 	}
 	ie.recordIDs["doc-review"] = docReview.ID
+
+	// A REVIEW-anchored comment, pinned to the revision it was written
+	// against. The export's other comment anchors to an issue, so
+	// without this one the review anchor and its revision never
+	// round-trip and import's revision check never runs on real input.
+	if err := iw.s.call(http.MethodPost, "/comments", map[string]any{
+		"review": docReview.ID, "review_revision": 1, "author": author, "body": "exported review comment"}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var reviewComment struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &reviewComment); err != nil {
+		return err
+	}
+	ie.recordIDs["review-comment"] = reviewComment.ID
 
 	// A consumed approval: approve, then consume at that revision.
 	if err := cw.approvedReview("SUT-1", "exported"); err != nil {
@@ -646,6 +689,27 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			}
 			delete(t, "transcript")
 			return nil
+		})
+	})
+
+	sc.Step(`^an export payload whose comment names a review revision the review never had$`, func() error {
+		if err := ie.ensureExport(); err != nil {
+			return err
+		}
+		return ie.tamper(func(p map[string]any) error {
+			exported, ok := p["comments"].([]any)
+			if !ok {
+				return fmt.Errorf("export carries no comments")
+			}
+			for _, entry := range exported {
+				c, ok := entry.(map[string]any)
+				if !ok || c["review"] == nil {
+					continue
+				}
+				c["review_revision"] = 99
+				return nil
+			}
+			return fmt.Errorf("export carries no review-anchored comment to misnumber")
 		})
 	})
 

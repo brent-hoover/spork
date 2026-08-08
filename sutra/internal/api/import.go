@@ -654,9 +654,12 @@ func validateImport(p *importPayload, actor string) *apiError {
 	}
 	parentGraph := map[string][]string{}
 	for _, c := range p.Comments {
-		if c.Review != nil && c.ReviewRevision != nil {
+		if c.ReviewRevision != nil {
 			// The named revision must exist: submissions are validated
 			// contiguous 1..revision, so the range check is existence.
+			// A revision implies a review — the pass above rejects the
+			// two apart — so testing both would be one condition no
+			// input can ever falsify on its own.
 			if *c.ReviewRevision < 1 || *c.ReviewRevision > reviewRevisions[*c.Review] {
 				return malformedImport("comment %s names review revision %d, which does not exist", c.ID, *c.ReviewRevision)
 			}
