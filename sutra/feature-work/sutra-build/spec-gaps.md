@@ -1014,3 +1014,39 @@ so no amount of scenario-writing in the existing style would have reached it.
 The inputs had to be synthesised by hand, against the grain of a harness built
 to be realistic. Realistic fixtures are exactly the ones that never produce the
 malformed input a validator exists to refuse.
+
+## A bound chosen to be invisible, duplicated three times, hiding a real refusal
+
+`scanExplicitNulls` caps how much of a JSON key it retains, so the scan stays
+O(1) over hostile input. The mutation gate reported all three copies of that
+cap check as survivors, and the reason they survive is the reason the cap was
+chosen: 256 bytes is far past any field name a handler looks up, so moving the
+bound by one byte changes only a map entry nobody reads. The bound is deliberately
+set where it cannot matter — which is exactly what makes it unfalsifiable.
+
+Chasing that, though, turned up something that does matter. The captured prefix
+was handed to `encoding/json` whenever it contained a backslash, and a prefix
+can end *inside* an escape sequence. A body whose long key merely happens to
+carry a backslash across the cap came back rejected — 400, "bad key escape" —
+for an escape it does not contain. The function's own contract says it reports
+gross shape errors only and leaves malformed JSON to pass B; this was neither
+shape nor malformed. An overlong key's decoded spelling is discarded three
+lines later regardless, so the decode bought nothing and cost a refusal on
+well-formed input. It is now skipped when the key is overlong.
+
+The three duplicated cap checks are now one closure that every byte passes
+through — plain, backslash, escaped alike — so the bound cannot drift between
+the three routes a byte takes into the buffer. Collapsing them also collapses
+three unfalsifiable sites into one, and the one that remains is falsifiable
+after all: a key *at* the cap is a name and its null-ness is honored, a key one
+byte past it is a prefix and is dropped. Sample one side and a bound at 256
+reads exactly like a bound at 257. Four unit cases pin both sides by both
+routes; all four mutants of the surviving check die.
+
+Two lessons, and they pull in opposite directions. The first is that a constant
+chosen so generously that no input can reach its boundary is a constant whose
+boundary no test can pin — the generosity is what makes it safe *and* what
+makes it untestable. The second is that "unkillable" was a poor diagnosis: the
+site was unkillable as written, and rewriting it — once, honestly, without
+weakening the guarantee — made it killable. Three copies of a rule are three
+places for it to be wrong; one copy is one place to test.

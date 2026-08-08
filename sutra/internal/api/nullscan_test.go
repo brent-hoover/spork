@@ -28,6 +28,32 @@ func TestScanExplicitNulls(t *testing.T) {
 		{name: "deep nesting", body: `{"a":[[{"x":[null]}]],"b":null}`, nulls: []string{"b"}},
 		{name: "unicode-escaped key null", body: `{"expected\u005fdefault\u005fhead":null}`, nulls: []string{"expected_default_head"}},
 		{name: "escaped key no null", body: `{"a\u0062c":"x","d":null}`, nulls: []string{"d"}},
+		// Key retention is capped so the scan stays O(1) over hostile
+		// input. No handler field is anywhere near that long, so an
+		// overlong key's null-ness is irrelevant — but it must still
+		// not be mistaken for malformed input. The cut lands wherever
+		// the bytes put it, including inside an escape sequence, and a
+		// severed escape is an artifact of the cap, not a defect in the
+		// body.
+		{name: "overlong key is ignored, not rejected",
+			body: `{"` + strings.Repeat("a", 400) + `":null,"b":null}`, nulls: []string{"b"}},
+		{name: "overlong key severed mid-escape",
+			body: `{"` + strings.Repeat("a", 255) + `\"` + strings.Repeat("c", 60) + `":1,"b":null}`, nulls: []string{"b"}},
+		{name: "overlong key severed after a backslash pair",
+			body: `{"` + strings.Repeat("a", 254) + `\\` + strings.Repeat("c", 60) + `":null,"b":null}`, nulls: []string{"b"}},
+		// The cap's exact edge, from both sides and by both routes a
+		// byte can reach the buffer. A key at the cap is a name and is
+		// honored; one byte past it is a prefix and is dropped. Sample
+		// only one side and a bound at 256 reads the same as a bound at
+		// 257.
+		{name: "key at the cap is honored",
+			body: `{"` + strings.Repeat("a", 256) + `":null}`, nulls: []string{strings.Repeat("a", 256)}},
+		{name: "key one past the cap is dropped",
+			body: `{"` + strings.Repeat("a", 257) + `":null,"b":null}`, nulls: []string{"b"}},
+		{name: "escaped byte landing one past the cap is dropped",
+			body: `{"` + strings.Repeat("a", 255) + `\n":null,"b":null}`, nulls: []string{"b"}},
+		{name: "escaped byte landing at the cap is honored",
+			body: `{"` + strings.Repeat("a", 254) + `\n":null}`, nulls: []string{strings.Repeat("a", 254) + "\n"}},
 		{name: "not an object", body: `[1,2]`, bad: true},
 		{name: "bad literal", body: `{"a":nope}`, bad: true},
 		{name: "truncated", body: `{"a":`, bad: true},

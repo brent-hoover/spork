@@ -227,6 +227,16 @@ func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
 		key := make([]byte, 0, 32)
 		overlong := false
 		escaped := false
+		// One cap, checked in one place: every byte of the key — plain,
+		// backslash, or escaped — passes through here, so the retention
+		// bound cannot drift between the three ways a byte arrives.
+		capture := func(b byte) {
+			if len(key) < maxKeyCapture {
+				key = append(key, b)
+				return
+			}
+			overlong = true
+		}
 		for {
 			b, err := br.ReadByte()
 			if err != nil {
@@ -234,33 +244,30 @@ func scanExplicitNulls(body io.Reader) (map[string]bool, *apiError) {
 			}
 			if escaped {
 				escaped = false
-				if len(key) < maxKeyCapture {
-					key = append(key, b)
-				} else {
-					overlong = true
-				}
+				capture(b)
 				continue
 			}
 			if b == '\\' {
 				escaped = true
-				if len(key) < maxKeyCapture {
-					key = append(key, b)
-				} else {
-					overlong = true
-				}
+				capture(b)
 				continue
 			}
 			if b == '"' {
 				break
 			}
-			if len(key) < maxKeyCapture {
-				key = append(key, b)
-			} else {
-				overlong = true
-			}
+			capture(b)
 		}
+		// An overlong key was cut off mid-stream, so what sits in the
+		// buffer is a prefix, not a name — and a prefix can end inside
+		// an escape sequence, which decodes as garbage or not at all.
+		// Its null-ness is already discarded below, so decoding it buys
+		// nothing and costs a refusal: without this guard a body whose
+		// key merely happens to carry a backslash across the cap comes
+		// back rejected as a bad escape it does not contain. This pass
+		// only reports gross shape errors; the decode in pass B is the
+		// authority on malformed JSON.
 		decodedKey := string(key)
-		if bytes.ContainsRune(key, '\\') {
+		if !overlong && bytes.ContainsRune(key, '\\') {
 			var s string
 			if err := json.Unmarshal(append(append([]byte{'"'}, key...), '"'), &s); err != nil {
 				return nil, malformed("bad key escape")
