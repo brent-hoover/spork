@@ -574,7 +574,7 @@ fails the gate" cannot be the literal rule.
 
 ## Decisions no scenario can observe
 
-Six more survivors, in two clusters, share a property none of the earlier
+Thirteen more survivors, in five clusters, share a property none of the earlier
 gaps had: **both branches produce identical output.** They are not
 behaviours a scenario could assert, because from outside the API there is
 nothing to see.
@@ -596,11 +596,35 @@ negations — leave the response byte-identical. They only change whether a
 4 MiB body lands in memory or on disk, and whether a chunked upload
 declaring no length is treated as small.
 
+`idempotency.go:224` decides the same question one level up: which requests
+queue for the single large-body slot. Four more mutants, same invisibility.
+Widen the test and a 4 MiB body serializes behind every earlier large upload
+for no reason; narrow it and two gigabyte uploads buffer at once — the exact
+thing the slot exists to prevent. The response is identical in every case.
+
+`idempotency.go:133` is the smallest of them: `close()` releases the spool
+file only if one was opened. Negate it and every spooled body leaks its
+descriptor *and* its disk bytes, because the temp file is unlinked at
+creation and the descriptor is the only thing holding it. Nothing fails
+loudly — `(*os.File).Close()` on a nil receiver returns `ErrInvalid` rather
+than panicking — so the leak is silent, and the response is, again,
+byte-identical.
+
+`idempotency.go:282` is the one member of this cluster whose consequence is
+observable — eventually. It draws the line between a rejection the client
+caused, which spends the (operation, key) pair, and a failure the server
+had, which leaves it fresh. Both write the same status to the same response;
+the difference only surfaces on the retry, which no scenario makes. Move the
+boundary by one and a transient 500 becomes permanent: every retry replays
+the error instead of running the mutation.
+
 Covered with white-box unit tests that assert the mechanism directly: a
 ResponseWriter whose client hangs up mid-stream, a submission walk counting
-its callbacks, and a routing table straddling the threshold with the
-unknown-length case pinned to the spooling side. All six mutants confirmed
-dead by hand, plus two neighbours.
+its callbacks, a routing table straddling the threshold with the
+unknown-length case pinned to the spooling side, a handler that reads slot
+occupancy from inside the request it is serving, and a seek on the spool
+file after close. All thirteen mutants confirmed dead by hand-applied
+mutation, plus two neighbours.
 
 ### What this says about where acceptance criteria stop
 
@@ -615,7 +639,8 @@ So the line drawn here is: **observable guarantees earn acceptance criteria;
 resource and robustness decisions earn unit tests.** The duplicate-key
 scan's ambiguity rejection is observable — a 400 naming the property — and
 got `AC-no-ambiguous-bodies`. Its 1 MiB budget, its depth cap, the spool
-threshold, and the disconnect abort are not, and got tests instead.
+threshold, the admission slot, the descriptor release, and the disconnect
+abort are not, and got tests instead.
 
 That line is a proposal, not a settled rule, and it bears directly on the
 mutation gate's threshold. A 100%-efficacy gate demands a test for every

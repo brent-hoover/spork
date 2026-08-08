@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,4 +46,45 @@ func TestCaptureBodyRoutesByContentLength(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCapturedBodyCloseReleasesTheSpool pins that closing a spooled
+// body actually closes its file. The spool is unlinked at creation, so
+// the descriptor is the ONLY thing holding the disk space — a close
+// that skipped it would leak a descriptor and its bytes on every large
+// mutation, while the response stayed perfectly correct.
+func TestCapturedBodyCloseReleasesTheSpool(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"a":1}`))
+	req.ContentLength = largeBodyThreshold + 1
+
+	body, err := captureBody(httptest.NewRecorder(), req, 8<<20)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if body.file == nil {
+		t.Fatal("an oversized body did not spool")
+	}
+
+	spool := body.file
+	body.close()
+	if _, err := spool.Seek(0, io.SeekStart); err == nil {
+		t.Fatal("spool file still open after close; every large mutation would leak a descriptor")
+	}
+}
+
+// TestCapturedBodyCloseIsSafeInRAM pins that the buffered path has
+// nothing to release — close() is reached on every request, spooled or
+// not, and must not reach for a file that was never opened.
+func TestCapturedBodyCloseIsSafeInRAM(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"a":1}`))
+	req.ContentLength = 7
+
+	body, err := captureBody(httptest.NewRecorder(), req, 8<<20)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if body.file != nil {
+		t.Fatal("a small body spooled")
+	}
+	body.close()
 }

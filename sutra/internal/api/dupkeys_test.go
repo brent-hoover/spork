@@ -217,7 +217,7 @@ func TestScanDuplicateKeysBoundsDepth(t *testing.T) {
 		})
 		t.Run(kind+" one past the limit", func(t *testing.T) {
 			apiErr := scanDuplicateKeys(context.Background(),
-				strings.NewReader(build(maxScanDepth + 1)))
+				strings.NewReader(build(maxScanDepth+1)))
 			if apiErr == nil {
 				t.Fatalf("%d levels accepted", maxScanDepth+1)
 			}
