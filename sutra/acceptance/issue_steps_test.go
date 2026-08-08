@@ -216,6 +216,143 @@ func (iw *issueWorld) expectEventBySubject(kind, subject, byHandle string) error
 	return fmt.Errorf("no %s event for subject %s by %s in %s", kind, subject, byHandle, iw.s.lastBody)
 }
 
+// applyMutation performs one of the mutation kinds AC-audit-mutations
+// enumerates against SUT-1, as the named actor. Each arm goes through the
+// public API so the event it emits is the one a real client would produce.
+func (iw *issueWorld) applyMutation(handle, mutation string) error {
+	actor, err := iw.identity(handle)
+	if err != nil {
+		return err
+	}
+	issue, err := iw.ensureIssue("SUT-1")
+	if err != nil {
+		return err
+	}
+	body := "audit trail"
+	switch mutation {
+	case "its creation":
+		// Already performed by the Given; the creation event is the assertion.
+		return nil
+	case "a status change":
+		if err := iw.s.call(http.MethodPost, "/issues/"+issue+"/status",
+			map[string]string{"status": "in-progress", "actor": actor}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	case "an assignment":
+		if err := iw.s.call(http.MethodPost, "/issues/"+issue+"/assign",
+			map[string]string{"assignee": actor, "actor": actor}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	case "a label":
+		label, err := iw.createLabel("audited")
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodPost, "/issues/"+issue+"/labels",
+			map[string]string{"label": label, "actor": actor}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	case "a comment":
+		return iw.comment(map[string]any{"issue": issue, "author": actor, "body": body})
+	case "a comment on one of its documents":
+		_, version, err := iw.createDoc("Audited design", &issue)
+		if err != nil {
+			return err
+		}
+		return iw.comment(map[string]any{"doc_version": version, "author": actor, "body": body})
+	case "a comment on one of its reviews":
+		// Doc-anchored: a code deliverable would need the project's
+		// repo_path, which this scenario has no reason to configure.
+		_, version, err := iw.createDoc("Reviewed design", &issue)
+		if err != nil {
+			return err
+		}
+		review, revision, err := iw.createReview(issue, actor, version)
+		if err != nil {
+			return err
+		}
+		return iw.comment(map[string]any{
+			"review": review, "review_revision": revision, "author": actor, "body": body})
+	case "a document link":
+		doc, _, err := iw.createDoc("Unfiled note", nil)
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodPost, "/documents/"+doc+"/issue",
+			map[string]string{"issue": issue, "actor": actor}); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	case "a relation to another issue":
+		return iw.addRelation("blocks", "SUT-1", "SUT-2", handle)
+	}
+	return fmt.Errorf("unknown mutation %q", mutation)
+}
+
+func (iw *issueWorld) createLabel(name string) (string, error) {
+	if err := iw.s.call(http.MethodPost, "/labels", map[string]string{"name": name}); err != nil {
+		return "", err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", err
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	err := json.Unmarshal(iw.s.lastBody, &created)
+	return created.ID, err
+}
+
+// createDoc creates a document with inline content, optionally anchored to
+// an issue, and returns its document and first-version ids.
+func (iw *issueWorld) createDoc(title string, issue *string) (string, string, error) {
+	req := map[string]any{"title": title, "content": "# " + title, "author": iw.identities["operator"]}
+	if issue != nil {
+		req["issue"] = *issue
+	}
+	if err := iw.s.call(http.MethodPost, "/projects/"+iw.project+"/documents", req); err != nil {
+		return "", "", err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", "", err
+	}
+	var created struct {
+		ID      string `json:"id"`
+		Version struct {
+			ID string `json:"id"`
+		} `json:"version"`
+	}
+	err := json.Unmarshal(iw.s.lastBody, &created)
+	return created.ID, created.Version.ID, err
+}
+
+func (iw *issueWorld) createReview(issue, author, docVersion string) (string, int64, error) {
+	if err := iw.s.call(http.MethodPost, "/reviews", map[string]string{
+		"issue": issue, "author": author, "doc_version": docVersion,
+	}); err != nil {
+		return "", 0, err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", 0, err
+	}
+	var created struct {
+		ID       string `json:"id"`
+		Revision int64  `json:"revision"`
+	}
+	err := json.Unmarshal(iw.s.lastBody, &created)
+	return created.ID, created.Revision, err
+}
+
+func (iw *issueWorld) comment(payload map[string]any) error {
+	if err := iw.s.call(http.MethodPost, "/comments", payload); err != nil {
+		return err
+	}
+	return iw.s.expectStatus(http.StatusCreated)
+}
+
 func registerIssueSteps(sc *godog.ScenarioContext, s *testState) *issueWorld {
 	iw := &issueWorld{s: s}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -494,20 +631,13 @@ func registerIssueSteps(sc *godog.ScenarioContext, s *testState) *issueWorld {
 	})
 
 	// --- audit: every mutation is recorded
-	sc.Step(`^"claude" changes SUT-1 status to "in-progress"$`, func() error {
-		actor, err := iw.identity("claude")
-		if err != nil {
-			return err
-		}
-		if err := iw.s.call(http.MethodPost, "/issues/"+iw.issues["SUT-1"]+"/status",
-			map[string]string{"status": "in-progress", "actor": actor}); err != nil {
-			return err
-		}
-		return iw.s.expectStatus(http.StatusOK)
+	sc.Step(`^"([^"]*)" applies (.+) to SUT-1$`, func(handle, mutation string) error {
+		return iw.applyMutation(handle, mutation)
 	})
-	sc.Step(`^an event exists for SUT-1 with actor "claude", kind "issue.status-changed", and a timestamp$`, func() error {
-		return iw.expectEvent("issue.status-changed", "SUT-1", "claude")
-	})
+	sc.Step(`^an event exists for SUT-1 with actor "([^"]*)", kind "([^"]*)", and a timestamp$`,
+		func(handle, kind string) error {
+			return iw.expectEvent(kind, "SUT-1", handle)
+		})
 
 	// --- audit: events are append-only
 	sc.Step(`^an event exists for issue SUT-1$`, func() error {

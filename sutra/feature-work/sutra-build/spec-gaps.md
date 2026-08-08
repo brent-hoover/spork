@@ -387,3 +387,61 @@ REQ-cli-parity forced a CLI command for it, and the contract declared a
 response schema for it, so two mechanical checks were satisfied by an
 operation nothing wanted. Coverage was the only gate that could see the
 difference between "declared and wired" and "actually exercised".
+
+## An AC that enumerates a set, verified by a scenario that checks one member
+
+The mutation gate's first surviving mutants — three of them, all
+`CONDITIONALS_NEGATION` on the `guardWritable` check in
+`resolveCommentAnchor` (`internal/api/comments.go` lines 53, 73, 93, one
+per comment anchor: issue, doc version, review) — traced back to a single
+under-specified scenario.
+
+`AC-audit-mutations` reads:
+
+> When an issue is created, changes status, is assigned, labeled,
+> commented, or linked, an Event is recorded with actor, change kind, and
+> timestamp.
+
+Six mutation kinds. Its scenario verified one:
+
+```gherkin
+Scenario: every mutation is recorded
+  Given issue SUT-1 exists
+  When "claude" changes SUT-1 status to "in-progress"
+  Then an event exists for SUT-1 with actor "claude", kind "issue.status-changed", and a timestamp
+```
+
+The scenario name promises the enumeration; the body samples it. Nothing
+ever asserted that commenting emits an event at all, let alone on the
+right subject — so negating those three guards, which makes
+`resolveCommentAnchor` return `("", nil)` on the happy path, changed
+observable behavior in a way no test could see. The comment is still
+created and still appears in the issue's comment list, because that list
+is queried by the comment's anchor column. Only the `comment.created`
+event goes out with an empty subject, silently dropping the comment from
+the issue's audit history — the exact thing AC-audit-mutations exists to
+guarantee.
+
+Fixed by turning the scenario into a `Scenario Outline` with a row per
+enumerated kind, each asserting the event lands on **SUT-1's own
+subject**. Comments get three rows, one per anchor, because each anchor
+resolves its subject through separate code. Verified directly rather than
+by waiting for the gate: each of the three mutants was applied by hand
+and the suite failed on all three.
+
+This is the same defect species as `And writing to "OTH" is rejected`
+(below) and as the browser-framed scenarios satisfied through the API: a
+step whose prose covers a set while its implementation covers one case.
+Gherkin makes this easy to write and impossible to detect by reading —
+the scenario reads as complete. Coverage could not see it (the lines all
+ran); only mutation testing could.
+
+**Still open, same species, not yet fixed:** `AC-project-archive` says
+archived projects are "read-only", and its scenario discharges that with
+one step, `And writing to "OTH" is rejected`, implemented as a single
+POST that creates an issue. There are sixteen `guardWritable` call sites
+across ten handlers; that step exercises one. The other nine are
+unverified. It has not produced surviving mutants because in most
+handlers the negated guard also breaks the happy path loudly — the
+mutants die for a reason unrelated to the archive behavior, which is its
+own warning about reading a kill as evidence.
