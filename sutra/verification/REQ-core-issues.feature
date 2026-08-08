@@ -20,6 +20,11 @@ Feature: Core issue tracking
     Then SUT-1's label list reflects each change
     And an event of kind "issue.unlabeled" with actor and timestamp is recorded for SUT-1
 
+  Scenario: the label catalog is listable
+    Given labels "ui", "bug", and "docs" exist
+    When the label catalog is listed
+    Then it holds bug, docs, and ui in name order
+
   Scenario: assignment to any identity
     Given identities "human-brent" and "claude" exist
     When SUT-1 is assigned to "claude"

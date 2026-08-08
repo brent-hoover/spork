@@ -211,6 +211,44 @@ func registerCommentsSteps(sc *godog.ScenarioContext, iw *issueWorld) {
 		cw.labels[name] = created.ID
 		return nil
 	})
+	// --- the label catalog (AC-label-catalog)
+	sc.Step(`^labels "([^"]*)", "([^"]*)", and "([^"]*)" exist$`, func(a, b, c string) error {
+		// Created OUT of alphabetical order, so the ordering assertion
+		// tests the catalog's sort rather than creation order.
+		for _, name := range []string{a, b, c} {
+			if err := iw.s.call(http.MethodPost, "/labels", map[string]string{"name": name}); err != nil {
+				return err
+			}
+			if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	sc.Step(`^the label catalog is listed$`, func() error {
+		if err := iw.s.call(http.MethodGet, "/labels", nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^it holds ([a-z]+), ([a-z]+), and ([a-z]+) in name order$`, func(a, b, c string) error {
+		var got []struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &got); err != nil {
+			return err
+		}
+		names := make([]string, 0, len(got))
+		for _, l := range got {
+			names = append(names, l.Name)
+		}
+		want := strings.Join([]string{a, b, c}, ",")
+		if strings.Join(names, ",") != want {
+			return fmt.Errorf("catalog = %q, want %q", strings.Join(names, ","), want)
+		}
+		return nil
+	})
+
 	sc.Step(`^"([^"]*)" is attached to (SUT-\d+) and then detached$`, func(name, issueName string) error {
 		issueID := iw.issues[issueName]
 		actor, err := iw.identity("human-brent")

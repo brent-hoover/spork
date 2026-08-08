@@ -50,6 +50,9 @@ requirements:
       - id: AC-issue-labels
         statement: Labels attach and detach; an issue lists its current labels.
         test: verification/REQ-core-issues.feature#labels attach and detach
+      - id: AC-label-catalog
+        statement: Labels are a catalog with unique names, and the catalog is listable in name order — a client offers the labels that already exist rather than minting near-duplicates of them.
+        test: verification/REQ-core-issues.feature#the label catalog is listable
       - id: AC-issue-assign
         statement: An issue can be assigned to any identity, human or agent, and unassigned; assignment feeds the agent work stack.
         test: verification/REQ-core-issues.feature#assignment to any identity

@@ -362,3 +362,28 @@ avspec, while which checks a project needs is a property of the project and
 its language. Proposed home: an open map of named checks (`checks: {deadcode:
 "..."}`) alongside the well-known ones, so a stack can declare a gate avspec
 has never heard of and still have it named, run, and reported honestly.
+
+## The label catalog listing had no acceptance criterion
+
+`GET /labels` (listLabels) is declared in the contract and registered on
+the mux, and the CLI carries a command for it because REQ-cli-parity
+requires one per operation — but no acceptance criterion asked for it,
+so nothing ever called it. It surfaced at 0% coverage with the three web
+handlers, and it is the same shape as the issue-page comment form: an
+operation that exists because building the surface implied it, not
+because a requirement named it.
+
+Treated the same way, per the ruling on that form: wanted behavior the
+interview never asked about, not unrequested scope. A catalog of unique
+label names is only useful if a client can read it — otherwise callers
+mint near-duplicates of labels that already exist, which is exactly what
+the uniqueness constraint is there to prevent. Recorded as
+AC-label-catalog with a scenario that creates labels out of alphabetical
+order so the assertion tests the catalog's sort rather than insertion
+order.
+
+Note what carried the operation this far with no requirement behind it:
+REQ-cli-parity forced a CLI command for it, and the contract declared a
+response schema for it, so two mechanical checks were satisfied by an
+operation nothing wanted. Coverage was the only gate that could see the
+difference between "declared and wired" and "actually exercised".
