@@ -9,6 +9,26 @@ Feature: Review lifecycle
     Then the review exists in state "open"
     And it is listed for reviewers
 
+  # A review pins its deliverable to an immutable commit, and only a full
+  # object id is one: an abbreviation names whatever it currently
+  # disambiguates to, and a repository that grows can make that prefix name
+  # a second object, or none. Git runs two object formats, so "full" is two
+  # widths, and the pair is the whole rule — sample one and a check for
+  # either width reads exactly like a check for that one. The two refusals
+  # are what carry the distinction outward: a bad request means the id is
+  # not an id, a conflict means it is one and this repository has no such
+  # object.
+  Scenario Outline: a deliverable is pinned only by a full object id
+    Given a git-backed project and issue SUT-1
+    When an agent creates a review pinned at <commit>
+    Then the submission is <outcome>
+
+    Examples:
+      | commit                                  | outcome                            |
+      | an unknown object id of the other width | refused as a conflict              |
+      | a real object id cut to twelve digits   | refused as a bad request, naming the form |
+      | a full-width string that is not hex     | refused as a bad request, naming the form |
+
   Scenario: reviewer sees the deliverable
     Given an open review with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
     When a human opens it in the web UI

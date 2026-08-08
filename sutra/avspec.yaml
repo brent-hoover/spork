@@ -221,6 +221,9 @@ requirements:
       - id: AC-review-create
         statement: An agent creates a Review naming an issue and exactly one deliverable — a code deliverable pinned at an immutable commit (branch is display metadata) or a doc version — optionally stamped with its session id; it exists in state open and is visible to reviewers.
         test: verification/REQ-code-review.feature#agent submits a review
+      - id: AC-review-commit-pin
+        statement: A code deliverable's commit is accepted only as a full object id — the whole hash, at either width git's two object formats produce — because only a full id is an immutable pin; an abbreviation names whatever it currently disambiguates to and can come to name a second object, or none, as the repository grows. An id of any other form is refused as a bad request naming the form, which is a different refusal from a well-formed id that the project's repository does not hold — that one is a conflict.
+        test: verification/REQ-code-review.feature#a deliverable is pinned only by a full object id
       - id: AC-review-web
         statement: Opening a Review in the web UI shows the deliverable's content for reading.
         test: verification/REQ-code-review.feature#reviewer sees the deliverable

@@ -983,3 +983,34 @@ suite happens to produce, so the AC is discharged without ever exercising what
 it claims. Note that this is the second of the sixteen `guardWritable` call
 sites the gate has reached; `AC-project-archive` still says "read-only" and
 still samples one door, which stays open as a question for Brent.
+
+## A shape rule the fixtures could never break
+
+`isCommitSHA` accepts a commit id at 40 hex digits or 64 — git's two object
+formats — and refuses everything else with a 400 naming the form. The mutation
+gate reported the second width's check as a survivor, and the reason is in the
+harness rather than the feature files: every commit in every scenario is a real
+sha minted by `git commit` in a real repository, and `git init` builds sha-1
+repositories, so the shape check has never seen anything but a well-formed
+40-hex id. The 40-hex operand was already killed; its twin could not be, because
+nothing in the suite is 64 hex digits or shorter than 40.
+
+The spec is thinner than the code. `AC-review-create` says "pinned at an
+immutable commit" and the contract annotates the field `# canonical full object
+id`; neither states a width, and nothing anywhere says an abbreviation is
+refused. That silence is the gap, not the width itself — *why* a full id is
+required is the whole point: an abbreviation names whatever it currently
+disambiguates to, and a repository that grows can make the same prefix name a
+second object, or none, at which point the review's pin has quietly stopped
+being a pin. `AC-review-commit-pin` now says that, and its outline samples the
+members the fixtures cannot mint: an unknown 64-hex id, a real id cut to twelve
+digits, and a full-width non-hex string.
+
+The species this belongs to is worth naming on its own: **a rule the test
+fixtures are structurally incapable of violating.** Every earlier gap was a
+scenario that could have exercised the branch and didn't. Here the harness
+generates its inputs from a real tool, and that tool only emits valid ones —
+so no amount of scenario-writing in the existing style would have reached it.
+The inputs had to be synthesised by hand, against the grain of a harness built
+to be realistic. Realistic fixtures are exactly the ones that never produce the
+malformed input a validator exists to refuse.

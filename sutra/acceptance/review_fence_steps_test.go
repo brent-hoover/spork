@@ -309,6 +309,65 @@ func registerReviewFenceSteps(sc *godog.ScenarioContext, cw *closeWorld, rw *crW
 		return err
 	})
 
+	// --- a deliverable is pinned only by a full object id (outline)
+	sc.Step(`^a git-backed project and issue (SUT-\d+)$`, func(issueName string) error {
+		if err := cw.ensureGitProject(); err != nil {
+			return err
+		}
+		_, err := iw.ensureIssue(issueName)
+		return err
+	})
+	sc.Step(`^an agent creates a review pinned at (.+)$`, func(form string) error {
+		var commit string
+		switch strings.TrimSpace(form) {
+		case "an unknown object id of the other width":
+			// 64 hex digits — git's sha-256 object format, well formed
+			// and held by no repository here.
+			commit = strings.Repeat("deadbeef", 8)
+		case "a real object id cut to twelve digits":
+			sha, err := fw.rw.real("pin")
+			if err != nil {
+				return err
+			}
+			commit = sha[:12]
+		case "a full-width string that is not hex":
+			commit = strings.Repeat("z", 40)
+		default:
+			return fmt.Errorf("unknown commit form %q", form)
+		}
+		issueID, err := iw.ensureIssue("SUT-1")
+		if err != nil {
+			return err
+		}
+		author, err := iw.identity("claude")
+		if err != nil {
+			return err
+		}
+		return iw.s.call(http.MethodPost, "/reviews", map[string]any{
+			"issue": issueID, "author": author, "branch": "work", "commit": commit})
+	})
+	sc.Step(`^the submission is refused as a conflict$`, func() error {
+		return iw.s.expectStatus(http.StatusConflict)
+	})
+	sc.Step(`^the submission is refused as a bad request, naming the form$`, func() error {
+		if err := iw.s.expectStatus(http.StatusBadRequest); err != nil {
+			return err
+		}
+		if err := iw.s.expectErrorCode("bad-request"); err != nil {
+			return err
+		}
+		var envelope struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &envelope); err != nil {
+			return err
+		}
+		if !strings.Contains(envelope.Message, "canonical full object id") {
+			return fmt.Errorf("expected the refusal to name the id's form, got %q", envelope.Message)
+		}
+		return nil
+	})
+
 	// --- unresolvable repository rejects submission (outline)
 	sc.Step(`^a project with (.+)$`, func(failure string) error {
 		fw.failure = strings.TrimSpace(failure)
