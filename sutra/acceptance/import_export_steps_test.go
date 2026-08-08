@@ -54,8 +54,14 @@ type ieWorld struct {
 	iw *issueWorld
 	cw *closeWorld
 
-	recordIDs   map[string]string // kind -> id minted while seeding
-	exported    []byte
+	recordIDs map[string]string // kind -> id minted while seeding
+	assigned  []string          // issue ids, in the order they were assigned
+	exported  []byte
+	// createdOnTarget is the issue minted on the import target after
+	// the import — its number is what the sequence check reads.
+	createdOnTarget struct {
+		Number int64 `json:"number"`
+	}
 	tampered    []byte
 	target      *importTarget
 	lastStatus  int
@@ -172,6 +178,28 @@ func (ie *ieWorld) seedRichProject() error {
 		return err
 	}
 
+	// A LIVE relation as well — an export whose only relation is a
+	// deleted one round-trips without ever exercising the edge itself,
+	// and a parent still holding an open child is the ordinary
+	// arrangement import must accept while it rejects the invariant
+	// violation.
+	if err := iw.s.call(http.MethodPost, "/issues/"+issueID+"/relations",
+		map[string]string{"to": iw.issues["SUT-2"], "kind": "parent_of", "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	var live struct {
+		Relation struct {
+			ID string `json:"id"`
+		} `json:"relation"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &live); err != nil {
+		return err
+	}
+	ie.recordIDs["relation"] = live.Relation.ID
+
 	// A doc-deliverable review: its submission carries NO stored
 	// content (the immutable version resolves), and the round trip
 	// must carry it (review 1841 regression).
@@ -215,6 +243,27 @@ func (ie *ieWorld) seedRichProject() error {
 	if err := iw.s.expectStatus(http.StatusOK); err != nil {
 		return err
 	}
+	// A CLOSED issue and the review spent to close it. Completeness is
+	// reachable only through a review-gated close, so an export with no
+	// complete issue never puts that invariant to the import: the only
+	// complete issues the suite imports are the malformed ones, and a
+	// rejection proves nothing about the legitimate case.
+	closedID, err := iw.ensureIssue("SUT-3")
+	if err != nil {
+		return err
+	}
+	ie.recordIDs["closed-issue"] = closedID
+	if err := cw.approvedReview("SUT-3", "closed-work"); err != nil {
+		return err
+	}
+	ie.recordIDs["close-used-review"] = cw.reviews["SUT-3"].id
+	if err := cw.close("SUT-3", 0, ""); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusOK); err != nil {
+		return err
+	}
+
 	ie.actorForImp = iw.identities["operator"]
 	return nil
 }
@@ -251,6 +300,77 @@ func (ie *ieWorld) importInto(target *importTarget, payload []byte, actor string
 	ie.lastStatus = resp.StatusCode
 	ie.lastBody = string(body)
 	return nil
+}
+
+// assignTo assigns a source-server issue to a handle, recording the
+// order — the work stack is FIFO by assignment, so the order IS the
+// thing under test.
+func (ie *ieWorld) assignTo(issueID, handle string) error {
+	iw := ie.iw
+	assignee, err := iw.identity(handle)
+	if err != nil {
+		return err
+	}
+	if err := iw.s.call(http.MethodPost, "/issues/"+issueID+"/assign",
+		map[string]any{"assignee": assignee, "actor": iw.identities["operator"]}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusOK); err != nil {
+		return err
+	}
+	ie.assigned = append(ie.assigned, issueID)
+	return nil
+}
+
+// postToTarget posts a mutating request to the import target under a
+// fresh key, returning its status and body. Scenarios that read the
+// imported state back need the TARGET's own API, not the source's.
+func (ie *ieWorld) postToTarget(path string, body any) (int, []byte, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, ie.target.server.URL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", newIdempotencyKey())
+	resp, err := ie.target.server.Client().Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+// popOnTarget claims the next issue off an identity's work stack on the
+// IMPORT TARGET, returning the claimed issue's id ("" for an empty
+// stack).
+func (ie *ieWorld) popOnTarget(identityID string) (string, error) {
+	status, body, err := ie.postToTarget("/identities/"+identityID+"/work-stack/pop", map[string]any{})
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("pop on target: %d %s", status, body)
+	}
+	var popped struct {
+		Issue *struct {
+			ID string `json:"id"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(body, &popped); err != nil {
+		return "", fmt.Errorf("decode pop: %w (%s)", err, body)
+	}
+	if popped.Issue == nil {
+		return "", nil
+	}
+	return popped.Issue.ID, nil
 }
 
 // tamper decodes the export, applies mutate to the first review (or
@@ -374,6 +494,80 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return nil
 	})
+	// --- an imported work stack pops in its original order
+	sc.Step(`^an export of project "SUT" whose work stack was filled against issue-number order$`, func() error {
+		// Numbers are minted in creation order and the queue breaks
+		// assigned_at ties by number, so assigning the SECOND-created
+		// issue FIRST is the one arrangement where a preserved queue
+		// position and the number fallback disagree.
+		first, err := iw.ensureIssue("SUT-1")
+		if err != nil {
+			return err
+		}
+		second, err := iw.ensureIssue("SUT-2")
+		if err != nil {
+			return err
+		}
+		if err := ie.assignTo(second, "claude"); err != nil {
+			return err
+		}
+		if err := ie.assignTo(first, "claude"); err != nil {
+			return err
+		}
+		ie.actorForImp = iw.identities["operator"]
+		return ie.export()
+	})
+	sc.Step(`^the imported work stack pops in the order the issues were assigned$`, func() error {
+		assignee, err := iw.identity("claude")
+		if err != nil {
+			return err
+		}
+		for i, want := range ie.assigned {
+			got, err := ie.popOnTarget(assignee)
+			if err != nil {
+				return err
+			}
+			if got != want {
+				return fmt.Errorf("pop %d claimed %q, wanted %q — the imported stack lost its assignment order",
+					i+1, got, want)
+			}
+		}
+		return nil
+	})
+
+	// --- issue numbering continues past an import
+	sc.Step(`^an issue is created on the imported project$`, func() error {
+		status, body, err := ie.postToTarget("/projects/"+iw.project+"/issues",
+			map[string]string{"title": "created after the import", "actor": ie.actorForImp})
+		if err != nil {
+			return err
+		}
+		if status != http.StatusCreated {
+			return fmt.Errorf("create on imported project: %d %s", status, body)
+		}
+		return json.Unmarshal(body, &ie.createdOnTarget)
+	})
+	sc.Step(`^it gets a number no imported issue already holds$`, func() error {
+		var exported struct {
+			Issues []struct {
+				Number int64 `json:"number"`
+			} `json:"issues"`
+		}
+		if err := json.Unmarshal(ie.exported, &exported); err != nil {
+			return err
+		}
+		if len(exported.Issues) == 0 {
+			return fmt.Errorf("the export carries no issues, so no number could collide")
+		}
+		for _, i := range exported.Issues {
+			if i.Number == ie.createdOnTarget.Number {
+				return fmt.Errorf("the new issue reused number %d — the display sequence restarted at the import",
+					i.Number)
+			}
+		}
+		return nil
+	})
+
 	sc.Step(`^the project's content matches the original, excluding the import audit event$`, func() error {
 		resp, err := ie.target.server.Client().Get(ie.target.server.URL + "/projects/" + iw.project + "/export")
 		if err != nil {
@@ -435,6 +629,24 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return fmt.Errorf("consumption stamps lost: %+v", got)
 		}
 		return nil
+	})
+
+	sc.Step(`^an export payload whose thread carries no transcript$`, func() error {
+		if err := ie.ensureExport(); err != nil {
+			return err
+		}
+		return ie.tamper(func(p map[string]any) error {
+			exported, ok := p["threads"].([]any)
+			if !ok || len(exported) == 0 {
+				return fmt.Errorf("export carries no threads")
+			}
+			t, ok := exported[0].(map[string]any)
+			if !ok {
+				return fmt.Errorf("thread is not an object")
+			}
+			delete(t, "transcript")
+			return nil
+		})
 	})
 
 	// --- malformed review payloads

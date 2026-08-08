@@ -236,7 +236,12 @@ func collectImportMeta(body io.Reader) (*importPayload, *apiError) {
 					From     string `json:"from"`
 					To       string `json:"to"`
 				}
-				if len(e.Payload) > 0 && json.Unmarshal(e.Payload, &p) == nil {
+				// No length guard on the decode: Unmarshal already fails
+				// on empty input, landing in exactly the branch a length
+				// check would have chosen. Keeping one would make the
+				// condition equivalent to its own boundary mutant —
+				// unkillable by any test, by construction.
+				if json.Unmarshal(e.Payload, &p) == nil {
 					e.Payload = json.RawMessage(fmt.Sprintf(`{"relation":%q,"kind":%q,"from":%q,"to":%q}`,
 						p.Relation, p.Kind, p.From, p.To))
 				} else if len(e.Payload) > 0 {
@@ -406,14 +411,20 @@ func insertImportStream(tx *sql.Tx, body io.Reader, meta *importPayload) *apiErr
 	if apiErr != nil {
 		return &apiError{status: http.StatusInternalServerError, code: "bad-request", message: apiErr.message}
 	}
+	// Future creates continue the display sequence past the import
+	// (AC-import-number-sequence) — without the seed, the next create
+	// mints 1 again and collides with an imported issue on
+	// (project, number). Neither the running maximum nor its guard uses
+	// an ordered comparison, on purpose: `>` and `>=` pick the same
+	// maximum, and a `> 0` guard differs from a `>= 0` one only for an
+	// issue-less import, where seeding 0 and seeding nothing both leave
+	// the next create at 1. Written the obvious way, that is two
+	// equivalent mutants — unkillable by construction, not by omission.
 	maxNumber := int64(0)
 	for _, i := range meta.Issues {
-		if i.Number > maxNumber {
-			maxNumber = i.Number
-		}
+		maxNumber = max(maxNumber, i.Number)
 	}
-	if maxNumber > 0 {
-		// Future creates continue the display sequence past the import.
+	if maxNumber != 0 {
 		if _, err := tx.Exec(`INSERT INTO issue_numbers (project, next) VALUES (?, ?)`, meta.Project.ID, maxNumber); err != nil {
 			return errorFrom(fmt.Errorf("import issue numbers: %w", err))
 		}

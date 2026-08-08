@@ -648,3 +648,70 @@ branch, including these; it does not demand an AC for every branch. The two
 gates measure different things, and the spec is the weaker instrument here —
 which is worth saying plainly in an experiment whose premise is that a ready
 avspec is buildable.
+
+## A fourth species: mutants no test could ever kill
+
+Three survivors in `import.go` turned out to be **equivalent mutants** — the
+mutated program computes exactly what the original does, so no test
+distinguishes them and none ever will. They are not gaps in the suite; they
+are artefacts of how the code happened to be written.
+
+`import.go:239` guarded a decode with a length check the decode already
+subsumed: `json.Unmarshal` fails on empty input, landing in the very branch
+the length check would have chosen. `import.go:411` picked a running maximum
+with `>`, where `>=` picks the same maximum. `import.go:415` gated the
+sequence seed on `maxNumber > 0`, where `>= 0` differs only for an
+issue-less import — and seeding 0 leaves the next create at 1, exactly as
+seeding nothing does.
+
+All three were removed rather than excluded: the guard is gone, the maximum
+now goes through the `max` builtin, and the seed is gated on `!= 0`. The
+mutation gate does not need an allowlist for code that no longer contains
+the site. This is worth separating from `dupkeys.go:193`, which is also
+unkillable but for a different reason — that guard is *dead*, reachable by
+no input at all, rather than equivalent to its own mutant.
+
+## The export the round-trip scenario never exported
+
+Four survivors clustered in `import.go` shared one cause, and it is the
+sharpest instance yet of the first species in this document — **an AC that
+names a set, discharged by a scenario that samples one member.**
+`AC-import-round-trip` says the imported project "matches the original".
+The original, as seeded, contained no live relation (only a deleted one)
+and no complete issue. So import's relation validation and its
+completeness invariant were exercised in exactly one direction: the
+malformed payloads that must be rejected. Nothing proved a *legitimate*
+relation or a legitimately closed issue survives the trip.
+
+That let three guards flip undetected. `import.go:508` rejects a
+self-relation — negated, it rejects every relation between distinct issues
+instead, and no export carried one. `import.go:543` skips non-complete
+issues before the descendant walk — negated, it checks the non-complete
+ones, which the only complete-issue scenario in the suite also rejects, for
+a different reason, so the scenario stayed green. `import.go:586` builds the
+close-used index — negated, it indexes the reviews that were *not* spent,
+and with no closed issue in the export nothing consulted it.
+
+Fixed by seeding what the AC already claimed: a live `parent_of` relation
+and a review-gated closed issue. All three mutants then die inside the
+round-trip scenario itself.
+
+## Two guarantees the interview missed, both observable
+
+`import.go:313` and the number-sequence seed are the second species again —
+implemented behaviour with no acceptance criterion — and both are visible at
+the API boundary, so both earned one.
+
+`assigned_at` is FIFO queue state the contract never carries, so import
+reconstructs each assignee's position from the issue's `updated` stamp.
+Negate the guard and assigned issues import with a NULL position while
+unassigned ones gain a spurious stamp; the queue silently falls back to
+issue-number order. Every record round-trips intact and the import reports
+success. Now `AC-import-queue-order`, with a scenario that assigns issues
+against their number order so the two orderings disagree.
+
+Display numbers are minted from a per-project sequence the export does not
+carry either. Without seeding it past the highest imported number, the next
+create mints 1 again and collides with an imported issue on
+`(project, number)` — a 500 on the first issue created after any import.
+Now `AC-import-number-sequence`.

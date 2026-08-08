@@ -74,6 +74,34 @@ Feature: Import and export
       | speaker  | inside a nested object        |
       | speaker  | inside an object in an array  |
 
+  # The POST /threads door already refuses a thread with no transcript;
+  # import must refuse the same thing, or the one path that writes
+  # threads without going through that door becomes the way around it.
+  Scenario: a thread without its transcript is rejected at import
+    Given an export payload whose thread carries no transcript
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+  # A work stack's order is internal state the export never carries as a
+  # field of its own, so import has to reconstruct each assignee's queue
+  # position. Reconstruct it wrong and the queue silently falls back to
+  # issue-number order: every record round-trips intact, the import
+  # reports success, and the next agent to pop gets the wrong issue.
+  Scenario: an imported work stack pops in its original order
+    Given an export of project "SUT" whose work stack was filled against issue-number order
+    When it is imported into an empty server
+    Then the imported work stack pops in the order the issues were assigned
+
+  # Display numbers are project-scoped and unique. Import writes them
+  # verbatim but they are minted from a sequence the payload never
+  # carries, so unless that sequence is carried over too, the next
+  # create restarts at 1 and collides with an issue the import wrote.
+  Scenario: issue numbering continues past an import
+    Given an export of project "SUT"
+    When it is imported into an empty server
+    And an issue is created on the imported project
+    Then it gets a number no imported issue already holds
+
   Scenario: unknown import actor is rejected
     Given an export of project "SUT"
     And identity "outsider" exists on the server but not in the export's identities
