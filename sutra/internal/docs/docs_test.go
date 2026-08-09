@@ -59,6 +59,87 @@ func TestUnifiedDiffMinimalPath(t *testing.T) {
 	}
 }
 
+// TestUnifiedDiffLCSWalk pins the LCS path's WHOLE output, and does it
+// at a middle bigger than one line against one line.
+//
+// Both of those matter. Every other diff test above asserts fragments
+// with strings.Contains, which cannot see a line that is emitted twice,
+// emitted in the wrong order, or emitted from the wrong side of the
+// file; and every one of them leaves a middle of at most 1x1, where the
+// LCS matrix is a single cell, the walk takes one step, and skipping
+// the matrix entirely produces byte-identical output. At that size the
+// minimal-diff path and the pure-replacement path are the same
+// function, so nothing distinguishes them.
+//
+// These cases are built so that they do differ: a line that MOVES
+// across the edit is context in a minimal diff and a delete-plus-add in
+// a replacement. Each keeps a common first and last line, so the middle
+// sits at a nonzero offset and an index computed from the wrong origin
+// reads the wrong line rather than coincidentally the right one.
+func TestUnifiedDiffLCSWalk(t *testing.T) {
+	cases := []struct {
+		name     string
+		from, to string
+		want     string
+	}{
+		// "gamma" moves ahead of "alpha". A minimal diff keeps it as
+		// context; the walk must end on the a-side and drain b.
+		{
+			name: "a line moves earlier",
+			from: "head\nalpha\nbeta\ngamma\ntail\n",
+			to:   "head\ngamma\nalpha\ndelta\ntail\n",
+			want: "--- v1\n+++ v2\n@@ -1,5 +1,5 @@\n head\n-alpha\n-beta\n gamma\n+alpha\n+delta\n tail\n",
+		},
+		// "x" moves later, so the FIRST step of the walk has to take
+		// the b-side — the only thing that reads the matrix row the
+		// fill loop visits last. Here the walk drains b and exits with
+		// the a-side unfinished, the mirror of the case above.
+		{
+			name: "a line moves later",
+			from: "head\nx\ny\ntail\n",
+			to:   "head\nz\nx\ntail\n",
+			want: "--- v1\n+++ v2\n@@ -1,4 +1,4 @@\n head\n+z\n x\n-y\n tail\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := docs.UnifiedDiff(version(1, tc.from), version(2, tc.to)); got != tc.want {
+				t.Fatalf("diff mismatch\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnifiedDiffCellBoundary pins WHICH input gets a minimal diff and
+// which gets the linear fallback, by sitting on the bound rather than
+// far past it. TestUnifiedDiffBoundedFallback proves the fallback is
+// correct; it does not prove the switch happens in the right place, and
+// a bound off by one in either direction still passes it.
+//
+// Each case shares a line across the middle, so the two paths are
+// distinguishable: minimal keeps it as context, the fallback restates
+// it on both sides.
+func TestUnifiedDiffCellBoundary(t *testing.T) {
+	docs.SetMaxDiffCellsForTest(9)
+	defer docs.SetMaxDiffCellsForTest(4 << 20)
+
+	// Middles of 2 and 2: (2+1) cells wide against 9/(2+1) — exactly
+	// at the bound, so the minimal diff still runs.
+	got := docs.UnifiedDiff(version(1, "head\np\nq\ntail\n"), version(2, "head\nq\nr\ntail\n"))
+	want := "--- v1\n+++ v2\n@@ -1,4 +1,4 @@\n head\n-p\n q\n+r\n tail\n"
+	if got != want {
+		t.Fatalf("at the bound the minimal diff must still run\n got: %q\nwant: %q", got, want)
+	}
+
+	// One line more on the a-side is one cell too many: the same
+	// shared "q" is now restated instead of kept as context.
+	got = docs.UnifiedDiff(version(1, "head\np\nq\nr\ntail\n"), version(2, "head\nq\ns\ntail\n"))
+	want = "--- v1\n+++ v2\n@@ -1,5 +1,4 @@\n head\n-p\n-q\n-r\n+q\n+s\n tail\n"
+	if got != want {
+		t.Fatalf("one line past the bound must fall back\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // TestUnifiedDiffBoundedFallback pins linear memory: a middle whose
 // LCS matrix would exceed the cell bound falls back to one exact
 // replacement hunk — still a correct old→new diff.
@@ -122,6 +203,33 @@ func TestCheckDiffableLineBound(t *testing.T) {
 	err := docs.CheckDiffable(version(1, dense), version(2, "x\n"))
 	if _, ok := err.(*docs.DiffTooDenseError); !ok {
 		t.Fatalf("dense content must be rejected, got %v", err)
+	}
+	// The same pair the other way round. The bound is on the SUM of the
+	// two sides, and the case above trips it from the larger side alone
+	// — so it is equally satisfied by a check that subtracts the new
+	// side from the old instead of adding it.
+	err = docs.CheckDiffable(version(1, "x\n"), version(2, dense))
+	if _, ok := err.(*docs.DiffTooDenseError); !ok {
+		t.Fatalf("density must count both sides, got %v", err)
+	}
+}
+
+// TestCheckDiffableCountsUnterminatedAtLimit pins the unterminated-tail
+// increment at the boundary. TestCheckDiffableCountsLines exercises
+// unterminated content, but only far inside the limit, where counting
+// that last line and not counting it reach the same verdict.
+func TestCheckDiffableCountsUnterminatedAtLimit(t *testing.T) {
+	docs.SetMaxDiffLinesForTest(8)
+	defer docs.SetMaxDiffLinesForTest(8 << 20)
+
+	// Seven newlines plus an unterminated eighth line: exactly at the
+	// limit, and only if that last line counts.
+	atLimit := strings.Repeat("x\n", 7) + "x"
+	if err := docs.CheckDiffable(version(1, atLimit), version(2, "")); err != nil {
+		t.Fatalf("eight lines is the limit, not past it: %v", err)
+	}
+	if err := docs.CheckDiffable(version(1, atLimit+"\ny"), version(2, "")); err == nil {
+		t.Fatal("nine lines must be rejected")
 	}
 }
 

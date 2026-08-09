@@ -60,33 +60,81 @@ func seedDocument(t *testing.T, srv *httptest.Server, v1, v2 string) string {
 }
 
 // TestDiffSizeBoundRejectsBeforeLoad pins that the combined-size bound
-// rejects with 400 via SQL length() — and that within the bound the
-// same request diffs fine.
+// rejects with 400 via SQL length(), and pins it AT the boundary rather
+// than far past it. A bound that rejects at 4 bytes and accepts at 64
+// MiB says nothing about which side of "exactly at the limit" the limit
+// falls on, so the two legs below sit one byte apart.
 func TestDiffSizeBoundRejectsBeforeLoad(t *testing.T) {
 	srv, _ := startAPI(t)
-	docID := seedDocument(t, srv, "one\n", "two\n")
+	const v1, v2 = "one\n", "two\n"
+	docID := seedDocument(t, srv, v1, v2)
+	combined := int64(len(v1) + len(v2))
 
 	orig := docs.MaxDiffInput
-	docs.MaxDiffInput = 4
 	t.Cleanup(func() { docs.MaxDiffInput = orig })
 
-	resp, err := srv.Client().Get(srv.URL + "/documents/" + docID + "/diff?from=1&to=2")
-	if err != nil {
-		t.Fatalf("diff: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("oversize diff must 400, got %d", resp.StatusCode)
+	diffStatus := func() int {
+		t.Helper()
+		resp, err := srv.Client().Get(srv.URL + "/documents/" + docID + "/diff?from=1&to=2")
+		if err != nil {
+			t.Fatalf("diff: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
 	}
 
-	docs.MaxDiffInput = orig
-	resp, err = srv.Client().Get(srv.URL + "/documents/" + docID + "/diff?from=1&to=2")
+	docs.MaxDiffInput = combined - 1
+	if got := diffStatus(); got != http.StatusBadRequest {
+		t.Fatalf("one byte over the bound must 400, got %d", got)
+	}
+	docs.MaxDiffInput = combined
+	if got := diffStatus(); got != http.StatusOK {
+		t.Fatalf("exactly at the bound must 200, got %d", got)
+	}
+}
+
+// TestTemplateUpdateWithNothingToChange pins that a PUT naming neither
+// a new name nor new content is a no-op that returns the template, not
+// a 500. Nothing in the request layer rejects an empty object — it only
+// rejects explicit nulls — so the store's own guard is the only thing
+// standing between `{}` and an UPDATE statement with an empty SET
+// clause, which SQLite rejects as a syntax error.
+func TestTemplateUpdateWithNothingToChange(t *testing.T) {
+	srv, _ := startAPI(t)
+	status, body := post(t, srv, "/templates", "tpl-1", `{"name":"tech-spec","content":"body"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create template: %d %s", status, body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(body), &created); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/templates/"+created.ID, strings.NewReader(`{}`))
 	if err != nil {
-		t.Fatalf("diff: %v", err)
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "tpl-noop")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("put: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("in-bound diff must 200, got %d", resp.StatusCode)
+		t.Fatalf("empty update must 200, got %d", resp.StatusCode)
+	}
+	var updated struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if updated.Name != "tech-spec" || updated.Content != "body" {
+		t.Fatalf("empty update changed the template: %+v", updated)
 	}
 }
 

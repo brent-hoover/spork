@@ -412,8 +412,11 @@ func emit(out *strings.Builder, mark byte, s diffSide, idx int) {
 }
 
 // maxDiffCells bounds the LCS matrix (4 bytes per cell); beyond it the
-// fallback keeps memory linear.
-const maxDiffCells = 4 << 20
+// fallback keeps memory linear. It is a var for the same reason
+// maxDiffLines is: pinning the BOUNDARY — the last input that still
+// gets a minimal diff, and the first that does not — otherwise needs
+// two ~2048-line fixtures per assertion.
+var maxDiffCells = 4 << 20
 
 // MaxDiffInput bounds the combined content size the diff endpoint will
 // process — diffing materializes both versions plus output, so the
@@ -559,10 +562,12 @@ func writeLCSDiff(out *strings.Builder, a, b diffSide, offset, lenA, lenB int) {
 		for j := lenB - 1; j >= 0; j-- {
 			if lineEqual(a, offset+i, b, offset+j) {
 				lcs[i][j] = lcs[i+1][j+1] + 1
-			} else if lcs[i+1][j] >= lcs[i][j+1] {
-				lcs[i][j] = lcs[i+1][j]
 			} else {
-				lcs[i][j] = lcs[i][j+1]
+				// A tie-break here is unobservable — both arms of
+				// >= and > store the same number — so the branch
+				// was an unkillable mutation site. The walk below
+				// DOES tie-break, and that one is load-bearing.
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
 			}
 		}
 	}
