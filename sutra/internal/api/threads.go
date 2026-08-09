@@ -120,9 +120,10 @@ func (s *server) getThread(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if apiErr := writeThreadJSON(w, thread); apiErr != nil {
-		return // status committed; truncation is the only signal
-	}
+	// The status is committed and this is the last thing the handler does,
+	// so a write failure has nowhere to go: the truncated body the client
+	// already holds IS the signal. Nothing left to branch on.
+	_ = writeThreadJSON(w, thread)
 }
 
 func (s *server) searchThreads(w http.ResponseWriter, r *http.Request) {
@@ -266,9 +267,14 @@ func threadJSON(t threads.Thread) (json.RawMessage, *apiError) {
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	buf := make([]byte, 0, len(raw)+len(t.Transcript)+16)
+	// Sized EXACTLY: the metadata minus its closing brace, the key, the
+	// transcript, and one brace back. A transcript is unbounded, so a
+	// capacity that merely approximates would copy it a second time on
+	// growth — the one thing this whole file is arranged to avoid.
+	const key = `,"transcript":`
+	buf := make([]byte, 0, len(raw)-1+len(key)+len(t.Transcript)+1)
 	buf = append(buf, raw[:len(raw)-1]...)
-	buf = append(buf, `,"transcript":`...)
+	buf = append(buf, key...)
 	buf = append(buf, t.Transcript...)
 	buf = append(buf, '}')
 	return buf, nil

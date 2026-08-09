@@ -20,6 +20,9 @@ type threadsWorld struct {
 	session    string
 	threadID   string
 	title      string
+	// The second project the both-ends guard needs: somewhere live for a
+	// thread in an archived project to try to move to.
+	otherProject string
 }
 
 func (tw *threadsWorld) reset() {
@@ -27,6 +30,7 @@ func (tw *threadsWorld) reset() {
 	tw.session = ""
 	tw.threadID = ""
 	tw.title = ""
+	tw.otherProject = ""
 }
 
 // postTranscript posts one transcript verbatim and asserts nothing —
@@ -349,6 +353,64 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		if newAnchor["project"] == nil || *newAnchor["project"] != iw.project || newAnchor["issue"] != nil {
 			return fmt.Errorf("new anchor wrong on retarget event: %v", newAnchor)
+		}
+		return nil
+	})
+
+	// --- an anchor is guarded at both ends
+	sc.Step(`^it is anchored to project "SUT" and an issue in another project$`, func() error {
+		other, err := iw.createProjectKeyed("OTH")
+		if err != nil {
+			return err
+		}
+		tw.otherProject = other
+		foreign, err := iw.createIssueIn(other, "someone else's work", "not SUT's")
+		if err != nil {
+			return err
+		}
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		return iw.s.call(http.MethodPost, "/threads/"+tw.threadID+"/anchor",
+			map[string]string{"project": iw.project, "issue": foreign, "actor": actor})
+	})
+	sc.Step(`^the anchor is refused as a bad request$`, func() error {
+		return iw.s.expectStatus(http.StatusBadRequest)
+	})
+	sc.Step(`^"SUT" is archived and the thread is retargeted to the other project$`, func() error {
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodPost, "/projects/"+iw.project+"/archive",
+			map[string]string{"actor": actor}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		return iw.s.call(http.MethodPost, "/threads/"+tw.threadID+"/anchor",
+			map[string]string{"project": tw.otherProject, "actor": actor})
+	})
+	sc.Step(`^the anchor is refused as a conflict and the thread still belongs to "SUT"$`, func() error {
+		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodGet, "/threads/"+tw.threadID, nil); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		var thread struct {
+			Project *string `json:"project"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &thread); err != nil {
+			return err
+		}
+		if thread.Project == nil || *thread.Project != iw.project {
+			return fmt.Errorf("the thread left the archived project: %s", iw.s.lastBody)
 		}
 		return nil
 	})

@@ -1242,3 +1242,62 @@ So the output is a *candidate* list, not a work queue. Line numbers belong to
 the snapshot, not to HEAD: reading them needs `git show '<tree>:./path.go'`, and
 acting on them needs a re-probe. Before merge the gate has to run again against
 the tree it is judging.
+
+## An anchor has two halves, and a retarget has two ends
+
+Six survivors in `internal/api/threads.go`. Confirmed current first — the file
+is byte-identical between the gremlins tree `b51d4d8` and HEAD, so these line
+numbers meant what they said. Three of the six were species 2 again, and they
+all trace to one AC that under-described what it was guarding.
+
+`AC-thread-anchor` said a thread is anchored to a project or an issue, at least
+one, retargetable later, and that both sides list it. Every word of that is
+true, and none of it covers either thing the code actually checks:
+
+- **An anchor naming both a project and an issue has two halves that can
+  disagree.** `resolveAnchor:39` refuses the pair when the issue lives in some
+  other project. Nothing in the spec said the halves must agree, so nothing
+  tested it, so the guard was free.
+- **A retarget touches two projects, not one.** `guardCurrentAnchor` resolves
+  the project the thread is *leaving* — through its issue at `:228`, or
+  directly — and guards that too. Only the destination was ever exercised, so
+  the whole current-anchor path (`:228`, and the `project == ""` shortcut at
+  `:231` for a thread anchored to nothing) never had to be right.
+
+The second one is the interesting failure, because the guarantee it protects
+belongs to a *different* requirement: archiving a project freezes its contents.
+A thread anchored inside an archived project is that project's content, and
+without this guard it could walk out while everything around it stayed frozen.
+`AC-thread-anchor-guarded` states both halves; one scenario with two `When`s
+kills all three mutants.
+
+### Two mutants that were never about behavior
+
+The other three were the familiar species-4 shape — sites where no output can
+change — and both got removed rather than excluded.
+
+`:123` was `if apiErr := writeThreadJSON(...); apiErr != nil { return }` as the
+last statement of a handler. The status is already committed; the branch
+returns, and falling through also returns. Byte-identical either way. Deleting
+the conditional deletes the mutant: `_ = writeThreadJSON(w, thread)`.
+
+`:269` was arithmetic on a capacity hint — `len(raw)+len(t.Transcript)+16`,
+where the `16` is slack chosen so nobody has to count. A capacity that only
+approximates cannot be wrong in any observable way, which is exactly why two
+mutants lived there. Sizing it *exactly* turns the hint into a claim:
+
+    const key = `,"transcript":`
+    buf := make([]byte, 0, len(raw)-1+len(key)+len(t.Transcript)+1)
+
+and now `cap(out) == len(out)` iff the buffer never grew. That is a resource
+guarantee, not an observable one, so under the established ruling it earns a
+unit test rather than an AC. Both arithmetic mutants die on it.
+
+### The lesson: slack is what makes a resource claim untestable
+
+Species 10 was a constant so generous no input reached its boundary. This is the
+same shape one level down: `+16` is slack, and slack is unfalsifiable by
+construction — every arithmetic perturbation of it still produces a buffer big
+enough. Counting the bytes exactly costs one `const` and makes the thing the
+comment already claimed ("no second copy of an unbounded transcript") into
+something a test can check.

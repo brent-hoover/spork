@@ -112,6 +112,31 @@ func (iw *issueWorld) createProjectKeyed(key string) (string, error) {
 	return created.ID, nil
 }
 
+// createdID reads the id out of the last creation response.
+func (iw *issueWorld) createdID() (string, error) {
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", err
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+		return "", err
+	}
+	return created.ID, nil
+}
+
+// createIssueIn mints an issue in a NAMED project. Every other fixture
+// works in the one project the suite lives in; the scenarios that need a
+// second project need this instead.
+func (iw *issueWorld) createIssueIn(projectID, title, body string) (string, error) {
+	if err := iw.s.call(http.MethodPost, "/projects/"+projectID+"/issues",
+		map[string]string{"title": title, "body": body, "actor": iw.identities["operator"]}); err != nil {
+		return "", err
+	}
+	return iw.createdID()
+}
+
 // ensureIssue creates the named issue (SUT-n) if absent; creation order
 // follows first mention, which matches the display-number sequence in
 // every scenario that names more than one.

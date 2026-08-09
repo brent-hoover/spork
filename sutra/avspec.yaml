@@ -485,6 +485,17 @@ requirements:
       - id: AC-thread-anchor
         statement: Every thread is anchored from import onward — to a project or an issue, at least one, retargetable later; both sides list it.
         test: verification/REQ-thread-links.feature#threads anchor to their work
+      - id: AC-thread-anchor-guarded
+        statement: >-
+          An anchor naming both a project and an issue is refused unless the
+          issue belongs to that project, so the two halves can never disagree
+          about which project governs the thread. Retargeting is guarded at
+          BOTH ends: the project governing the anchor the thread leaves and
+          the project governing the one it arrives at must each be live, so
+          archiving either freezes the move — a thread anchored inside an
+          archived project is that project's read-only content and cannot be
+          moved out of it.
+        test: verification/REQ-thread-links.feature#an anchor is guarded at both ends
 
 apps:
   - id: APP-sutra

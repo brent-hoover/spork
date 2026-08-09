@@ -98,38 +98,16 @@ func (sw *searchWorld) createIssueWith(title, body, status, assigneeHandle strin
 	return created.ID, nil
 }
 
-// createdID reads the id out of the last creation response.
-func (sw *searchWorld) createdID() (string, error) {
-	if err := sw.iw.s.expectStatus(http.StatusCreated); err != nil {
-		return "", err
-	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(sw.iw.s.lastBody, &created); err != nil {
-		return "", err
-	}
-	return created.ID, nil
-}
-
-// The scope scenarios need an issue, a doc, and a thread in each of two
-// projects. Every other fixture in the suite mints its content in the
-// one project the rest of the suite works in, so these take the project
-// as an argument rather than assuming it.
-func (sw *searchWorld) createIssueIn(projectID, title, body string) (string, error) {
-	if err := sw.iw.s.call(http.MethodPost, "/projects/"+projectID+"/issues",
-		map[string]string{"title": title, "body": body, "actor": sw.iw.identities["operator"]}); err != nil {
-		return "", err
-	}
-	return sw.createdID()
-}
-
+// The scope scenarios need a doc and a thread in each of two projects
+// (issues come from issueWorld.createIssueIn). Every other fixture in
+// the suite mints its content in the one project the rest of the suite
+// works in, so these take the project as an argument.
 func (sw *searchWorld) createDocIn(projectID, title, content string) (string, error) {
 	if err := sw.iw.s.call(http.MethodPost, "/projects/"+projectID+"/documents",
 		map[string]string{"title": title, "content": content, "author": sw.iw.identities["operator"]}); err != nil {
 		return "", err
 	}
-	return sw.createdID()
+	return sw.iw.createdID()
 }
 
 func (sw *searchWorld) createThreadIn(projectID, title, text string) (string, error) {
@@ -142,7 +120,7 @@ func (sw *searchWorld) createThreadIn(projectID, title, text string) (string, er
 		"project": projectID, "actor": sw.iw.identities["operator"]}); err != nil {
 		return "", err
 	}
-	return sw.createdID()
+	return sw.iw.createdID()
 }
 
 func (sw *searchWorld) createLabel(name string) (string, error) {
@@ -522,13 +500,13 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		var err error
-		if sw.scopeIssue, err = sw.createIssueIn(iw.project, "flaky uploads", "the "+phrase+" masks the real bug"); err != nil {
+		if sw.scopeIssue, err = iw.createIssueIn(iw.project, "flaky uploads", "the "+phrase+" masks the real bug"); err != nil {
 			return err
 		}
 		// Siblings in the SAME project: ordering within a project has
 		// nothing to compare until several of its issues are here.
 		for _, title := range []string{"duplicate uploads", "the " + phrase + " loops", "uploads stall"} {
-			sibling, err := sw.createIssueIn(iw.project, title, "another "+phrase+" symptom")
+			sibling, err := iw.createIssueIn(iw.project, title, "another "+phrase+" symptom")
 			if err != nil {
 				return err
 			}
@@ -549,7 +527,7 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err != nil {
 			return err
 		}
-		if sw.otherIssue, err = sw.createIssueIn(other, "slow restores", "their "+phrase+" is too eager"); err != nil {
+		if sw.otherIssue, err = iw.createIssueIn(other, "slow restores", "their "+phrase+" is too eager"); err != nil {
 			return err
 		}
 		if sw.otherDoc, err = sw.createDocIn(other, "restore notes", "the "+phrase+" we inherited"); err != nil {
