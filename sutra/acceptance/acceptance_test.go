@@ -274,7 +274,7 @@ func registerIdentitySteps(sc *godog.ScenarioContext, s *testState) {
 		}
 		return s.expectStatus(http.StatusCreated)
 	})
-	sc.Step(`^it exists with handle "([^"]*)" and kind "([^"]*)"$`, func(handle, kind string) error {
+	sc.Step(`^"([^"]*)" exists with kind "([^"]*)"$`, func(handle, kind string) error {
 		if err := s.call(http.MethodGet, "/identities", nil); err != nil {
 			return err
 		}

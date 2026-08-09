@@ -193,9 +193,10 @@ func Get(tx *sql.Tx, id string) (Issue, error) {
 	if err != nil {
 		return Issue{}, err
 	}
-	if len(labels) > 0 {
-		i.Labels = labels
-	}
+	// Assigned unconditionally: LabelsOf returns nil for an unlabelled
+	// issue and the field is omitempty, so guarding on the length was a
+	// branch whose two arms produce the same bytes on the wire.
+	i.Labels = labels
 	return i, nil
 }
 
@@ -240,34 +241,48 @@ func RefByID(tx *sql.Tx, id string) (Ref, error) {
 	return r, nil
 }
 
-// SearchIDs runs List's filters but returns only references — search
-// discovery never loads unbounded bodies it will reduce to ids anyway.
-func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {
-	query := `SELECT id, project, number FROM issues WHERE project = ?`
+// filterClause builds the WHERE clause every project-scoped issue query
+// shares. It is stated ONCE on purpose: a filter written out twice is
+// two places a rule can drift apart, and neither copy can be falsified
+// by a test that only reaches the other.
+func filterClause(project string, f Filters) (string, []any) {
+	clause := ` WHERE project = ?`
 	args := []any{project}
+	if f.Number != nil {
+		clause += ` AND number = ?`
+		args = append(args, *f.Number)
+	}
 	if len(f.Statuses) > 0 {
-		query += ` AND status IN (?` + strings.Repeat(",?", len(f.Statuses)-1) + `)`
+		clause += ` AND status IN (?` + strings.Repeat(",?", len(f.Statuses)-1) + `)`
 		for _, s := range f.Statuses {
 			args = append(args, s)
 		}
 	}
 	if f.Assignee != "" {
-		query += ` AND assignee = ?`
+		clause += ` AND assignee = ?`
 		args = append(args, f.Assignee)
 	}
 	for _, name := range f.Labels {
-		query += ` AND EXISTS (SELECT 1 FROM issue_labels il JOIN labels l ON l.id = il.label
+		clause += ` AND EXISTS (SELECT 1 FROM issue_labels il JOIN labels l ON l.id = il.label
 			WHERE il.issue = issues.id AND l.name = ?)`
 		args = append(args, name)
 	}
 	if f.Q != "" {
 		term := "%" + escapeLike(f.Q) + "%"
-		query += ` AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\'
+		// The comments table joins by column, not by package import —
+		// module boundaries constrain code, the schema is shared.
+		clause += ` AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\'
 			OR EXISTS (SELECT 1 FROM comments c WHERE c.issue = issues.id AND c.body LIKE ? ESCAPE '\'))`
 		args = append(args, term, term, term)
 	}
-	query += ` ORDER BY number`
-	rows, err := tx.Query(query, args...)
+	return clause, args
+}
+
+// SearchIDs runs List's filters but returns only references — search
+// discovery never loads unbounded bodies it will reduce to ids anyway.
+func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {
+	clause, args := filterClause(project, f)
+	rows, err := tx.Query(`SELECT id, project, number FROM issues`+clause+` ORDER BY number`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search issue ids: %w", err)
 	}
@@ -289,41 +304,16 @@ func SearchIDs(tx *sql.Tx, project string, f Filters) ([]Ref, error) {
 // must never accumulate them, so the filter pass collects only ids
 // and each issue loads as it is handed over.
 func ListEach(tx *sql.Tx, project string, f Filters, fn func(Issue) error) error {
-	query := `SELECT id FROM issues WHERE project = ?`
-	args := []any{project}
-	if f.Number != nil {
-		query += ` AND number = ?`
-		args = append(args, *f.Number)
-	}
-	if len(f.Statuses) > 0 {
-		query += ` AND status IN (?` + strings.Repeat(",?", len(f.Statuses)-1) + `)`
-		for _, s := range f.Statuses {
-			args = append(args, s)
-		}
-	}
-	if f.Assignee != "" {
-		query += ` AND assignee = ?`
-		args = append(args, f.Assignee)
-	}
-	for _, name := range f.Labels {
-		query += ` AND EXISTS (SELECT 1 FROM issue_labels il JOIN labels l ON l.id = il.label
-			WHERE il.issue = issues.id AND l.name = ?)`
-		args = append(args, name)
-	}
-	order := ` ORDER BY number`
+	query, args := filterClause(project, f)
+	query = `SELECT id FROM issues` + query
+	// A text search ranks its hits — title before body before comment —
+	// where an unfiltered listing has only number to go on.
 	if f.Q != "" {
 		term := "%" + escapeLike(f.Q) + "%"
-		// The comments table joins by column, not by package import —
-		// module boundaries constrain code, the schema is shared.
-		query += ` AND (title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\'
-			OR EXISTS (SELECT 1 FROM comments c WHERE c.issue = issues.id AND c.body LIKE ? ESCAPE '\'))`
-		args = append(args, term, term, term)
-		order = ` ORDER BY CASE WHEN title LIKE ? ESCAPE '\' THEN 0 WHEN body LIKE ? ESCAPE '\' THEN 1 ELSE 2 END, number`
-	}
-	query += order
-	if f.Q != "" {
-		term := "%" + escapeLike(f.Q) + "%"
+		query += ` ORDER BY CASE WHEN title LIKE ? ESCAPE '\' THEN 0 WHEN body LIKE ? ESCAPE '\' THEN 1 ELSE 2 END, number`
 		args = append(args, term, term)
+	} else {
+		query += ` ORDER BY number`
 	}
 	rows, err := tx.Query(query, args...)
 	if err != nil {

@@ -23,6 +23,11 @@ type threadsWorld struct {
 	// The second project the both-ends guard needs: somewhere live for a
 	// thread in an archived project to try to move to.
 	otherProject string
+	// The search scenario's fixtures: every thread that must come back,
+	// keyed by id so each result is checked against its OWN transcript,
+	// and the one that must not come back at all.
+	matching  map[string]json.RawMessage
+	unrelated string
 }
 
 func (tw *threadsWorld) reset() {
@@ -31,6 +36,8 @@ func (tw *threadsWorld) reset() {
 	tw.threadID = ""
 	tw.title = ""
 	tw.otherProject = ""
+	tw.matching = map[string]json.RawMessage{}
+	tw.unrelated = ""
 }
 
 // postTranscript posts one transcript verbatim and asserts nothing —
@@ -224,7 +231,7 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	})
 
 	// --- thread content is searchable
-	sc.Step(`^a thread containing the phrase "([^"]*)"$`, func(phrase string) error {
+	importMentioning := func(phrase string) error {
 		raw, err := json.Marshal([]map[string]string{
 			{"speaker": "claude", "text": "I found a " + phrase + " while tracing the claim path."},
 		})
@@ -232,7 +239,27 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		tw.transcript = raw
-		return tw.importThread("thread mentioning " + phrase)
+		if err := tw.importThread("thread mentioning " + phrase); err != nil {
+			return err
+		}
+		tw.matching[tw.threadID] = raw
+		return nil
+	}
+	sc.Step(`^a thread containing the phrase "([^"]*)"$`, importMentioning)
+	sc.Step(`^another thread containing the phrase "([^"]*)"$`, importMentioning)
+	sc.Step(`^a thread that mentions neither$`, func() error {
+		raw, err := json.Marshal([]map[string]string{
+			{"speaker": "claude", "text": "unrelated notes about the export format"},
+		})
+		if err != nil {
+			return err
+		}
+		tw.transcript = raw
+		if err := tw.importThread("unrelated thread"); err != nil {
+			return err
+		}
+		tw.unrelated = tw.threadID
+		return nil
 	})
 	sc.Step(`^threads are searched for "([^"]*)"$`, func(q string) error {
 		if err := iw.s.call(http.MethodGet, "/threads/search?q="+url.QueryEscape(q), nil); err != nil {
@@ -240,7 +267,7 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return iw.s.expectStatus(http.StatusOK)
 	})
-	sc.Step(`^that thread is returned with surrounding context$`, func() error {
+	sc.Step(`^each matching thread is returned with surrounding context$`, func() error {
 		var found []struct {
 			ID         string          `json:"id"`
 			Transcript json.RawMessage `json:"transcript"`
@@ -248,17 +275,28 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err := json.Unmarshal(iw.s.lastBody, &found); err != nil {
 			return err
 		}
+		seen := map[string]bool{}
 		for _, t := range found {
-			if t.ID == tw.threadID {
-				// The full transcript IS the surrounding context: the
-				// match comes back inside its conversation, not alone.
-				if string(t.Transcript) != string(tw.transcript) {
-					return fmt.Errorf("search result lost its context: %s", t.Transcript)
-				}
-				return nil
+			if t.ID == tw.unrelated {
+				return fmt.Errorf("thread without the phrase came back: %s", iw.s.lastBody)
+			}
+			want, ok := tw.matching[t.ID]
+			if !ok {
+				return fmt.Errorf("unexpected thread %s in results: %s", t.ID, iw.s.lastBody)
+			}
+			// The full transcript IS the surrounding context: the
+			// match comes back inside its conversation, not alone.
+			if string(t.Transcript) != string(want) {
+				return fmt.Errorf("search result lost its context: %s", t.Transcript)
+			}
+			seen[t.ID] = true
+		}
+		for id := range tw.matching {
+			if !seen[id] {
+				return fmt.Errorf("thread %s missing from search results: %s", id, iw.s.lastBody)
 			}
 		}
-		return fmt.Errorf("thread %s missing from search results: %s", tw.threadID, iw.s.lastBody)
+		return nil
 	})
 
 	// --- threads anchor to their work

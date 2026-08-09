@@ -1,5 +1,9 @@
 Feature: Search and filter
 
+  # The three matches are created in reverse rank order, so issue number runs
+  # opposite to the ranking. Created in rank order the two sequences coincide,
+  # and "returned ranked" is then satisfied by a search that only sorts by
+  # number — which is to say, by one that does not rank at all.
   Scenario: text search over issues
     Given issues exist mentioning "tokenizer" in title, body, or comments
     When project "SUT" is searched for "tokenizer"

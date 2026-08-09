@@ -1,9 +1,15 @@
 Feature: Identities without auth
   Plain strings, no auth model — single-user system.
 
+  # Both kinds, because the criterion names two and one identity discharges
+  # neither the choice nor the roster it lands in: the roster is ordered by
+  # handle, and at cardinality one a listing that streams every row and one
+  # that stops after the first hand back the same bytes.
   Scenario: identity is just a named kind
     When identity "claude" is created with kind "agent"
-    Then it exists with handle "claude" and kind "agent"
+    And identity "human-brent" is created with kind "human"
+    Then "claude" exists with kind "agent"
+    And "human-brent" exists with kind "human"
     And creating another "claude" is rejected as a duplicate
 
   Scenario: unknown identity ids are rejected

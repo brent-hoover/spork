@@ -174,16 +174,11 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	// --- text search over issues
 	sc.Step(`^issues exist mentioning "([^"]*)" in title, body, or comments$`, func(term string) error {
 		sw.matching = map[string]string{}
-		titleHit, err := sw.createIssueWith("the "+term+" crashes", "", "", "", nil)
-		if err != nil {
-			return err
-		}
-		sw.matching["title"] = titleHit
-		bodyHit, err := sw.createIssueWith("parser regression", "traced to the "+term+" table", "", "", nil)
-		if err != nil {
-			return err
-		}
-		sw.matching["body"] = bodyHit
+		// Created in REVERSE rank order — comment hit first, title hit
+		// last — so the issue numbers run opposite to the ranking. Built
+		// in rank order, issue number and rank are the same sequence, and
+		// a search that never ranked at all would satisfy the assertion
+		// below just as well as one that did.
 		commentHit, err := sw.createIssueWith("nightly failure", "no details yet", "", "", nil)
 		if err != nil {
 			return err
@@ -200,6 +195,16 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		sw.matching["comment"] = commentHit
+		bodyHit, err := sw.createIssueWith("parser regression", "traced to the "+term+" table", "", "", nil)
+		if err != nil {
+			return err
+		}
+		sw.matching["body"] = bodyHit
+		titleHit, err := sw.createIssueWith("the "+term+" crashes", "", "", "", nil)
+		if err != nil {
+			return err
+		}
+		sw.matching["title"] = titleHit
 		other, err := sw.createIssueWith("unrelated work", "nothing to see", "", "", nil)
 		if err != nil {
 			return err

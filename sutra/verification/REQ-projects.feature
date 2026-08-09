@@ -22,8 +22,17 @@ Feature: Repo-anchored projects
     When SUT's issues and docs are listed
     Then nothing from "OTH" appears
 
+  # Two live projects, because "default listings" is a set and one member
+  # cannot tell a listing that hides archived rows from one that stops after
+  # its first row. Projects come back in key order, so "WEB" — the later key
+  # — is exactly the row a truncating listing drops. Both live projects are
+  # named by steps that CREATE them: a project the scenario only assumes
+  # exists leaves the assertion looking for an empty id, which every
+  # response body contains.
   Scenario: archive hides without deleting
-    Given project "OTH" is archived
-    Then "OTH" is absent from default project listings
+    Given live project "SUT" exists
+    And live project "WEB" exists
+    And project "OTH" is archived
+    Then default project listings hold "SUT" and "WEB", and not "OTH"
     And writing to "OTH" is rejected
     And reading "OTH"'s content still works

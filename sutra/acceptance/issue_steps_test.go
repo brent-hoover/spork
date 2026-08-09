@@ -602,6 +602,32 @@ func registerIssueSteps(sc *godog.ScenarioContext, s *testState) *issueWorld {
 		}
 		return iw.s.expectErrorCode("ancestry-cycle")
 	})
+	sc.Step(`^giving SUT-2 a second parent is rejected, naming SUT-1 as the one it has$`, func() error {
+		if err := iw.addRelation("parent_of", "SUT-3", "SUT-2", "human-brent"); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
+			return err
+		}
+		if err := iw.s.expectErrorCode("relation-exists"); err != nil {
+			return err
+		}
+		var envelope struct {
+			Conflicts []string `json:"conflicts"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &envelope); err != nil {
+			return err
+		}
+		// Naming the parent it already has is the whole point: a bare
+		// conflict cannot be told from the relation-already-exists
+		// rejection, which carries the same code.
+		for _, c := range envelope.Conflicts {
+			if c == iw.issues["SUT-1"] {
+				return nil
+			}
+		}
+		return fmt.Errorf("conflicts %v does not name SUT-1 (%s)", envelope.Conflicts, iw.issues["SUT-1"])
+	})
 
 	// --- both sides see the block / cycles are rejected
 	sc.Step(`^SUT-1 is marked as blocking SUT-2 by "([^"]*)"$`, func(handle string) error {

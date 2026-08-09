@@ -20,6 +20,11 @@ type miscWorld struct {
 	cw *closeWorld
 
 	otherProject string // "OTH"
+	// Every unarchived project the scenario created, keyed by project
+	// key. Keyed, not counted: an id looked up under the wrong name —
+	// or an id that is the empty string, which every body contains —
+	// is an assertion that cannot fail.
+	liveProjects map[string]string
 	otherIssue   string
 	otherDoc     string
 	crossBlock   string // a blocks relation spanning SUT and OTH
@@ -36,12 +41,12 @@ type miscWorld struct {
 }
 
 func (mw *miscWorld) reset() {
-	*mw = miscWorld{iw: mw.iw, cw: mw.cw, templates: map[string]string{}}
+	*mw = miscWorld{iw: mw.iw, cw: mw.cw, templates: map[string]string{}, liveProjects: map[string]string{}}
 }
 
 func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	iw := cw.iw
-	mw := &miscWorld{iw: iw, cw: cw, templates: map[string]string{}}
+	mw := &miscWorld{iw: iw, cw: cw, templates: map[string]string{}, liveProjects: map[string]string{}}
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		mw.reset()
 		return ctx, nil
@@ -139,12 +144,33 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return iw.s.expectStatus(http.StatusOK)
 	})
-	sc.Step(`^"OTH" is absent from default project listings$`, func() error {
+	sc.Step(`^live project "([^"]*)" exists$`, func(key string) error {
+		live, err := iw.createProjectKeyed(key)
+		if err != nil {
+			return err
+		}
+		mw.liveProjects[key] = live
+		return nil
+	})
+	sc.Step(`^default project listings hold "([^"]*)" and "([^"]*)", and not "OTH"$`, func(first, second string) error {
 		if err := iw.s.call(http.MethodGet, "/projects", nil); err != nil {
 			return err
 		}
-		if strings.Contains(string(iw.s.lastBody), mw.otherProject) {
-			return fmt.Errorf("archived project in default listing: %s", iw.s.lastBody)
+		body := string(iw.s.lastBody)
+		if strings.Contains(body, mw.otherProject) {
+			return fmt.Errorf("archived project in default listing: %s", body)
+		}
+		// Both live projects, named individually: "the archived one is
+		// gone" is equally true of a listing that returned nothing, or
+		// one that stopped after its first row.
+		for _, key := range []string{first, second} {
+			id, ok := mw.liveProjects[key]
+			if !ok {
+				return fmt.Errorf("scenario never created live project %q", key)
+			}
+			if !strings.Contains(body, id) {
+				return fmt.Errorf("live project %q (%s) missing from default listing: %s", key, id, body)
+			}
 		}
 		return nil
 	})

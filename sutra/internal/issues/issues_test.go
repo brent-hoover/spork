@@ -173,6 +173,52 @@ func TestPopDeepestAcrossBranches(t *testing.T) {
 	})
 }
 
+// TestPopEqualDepthBlockersBreakTowardLowerNumber pins the tie-break the
+// deepest-branch rule leaves open. Every other branch test here gives the
+// branches DIFFERENT depths, where "keep the deepest" and "keep the last
+// one that ties the deepest" pick the same issue; two branches of equal
+// depth are the only shape that separates them. The blocker query is
+// ordered by display number, so keeping the first of an equal-depth pair
+// is what makes the claim deterministic — and, since numbers follow
+// creation, hands out the older prerequisite.
+func TestPopEqualDepthBlockersBreakTowardLowerNumber(t *testing.T) {
+	db := openDB(t)
+	agent := "00000000-0000-7000-8000-00000000000a"
+	var lower issues.Issue
+	inTx(t, db, func(tx *sql.Tx) error {
+		project, err := projects.Create(tx, projects.New{Key: "SUT", Name: "S"})
+		if err != nil {
+			return err
+		}
+		mk := func(title string) issues.Issue {
+			i, err := issues.Create(tx, project.ID, title, nil, &agent)
+			if err != nil {
+				t.Fatalf("create %s: %v", title, err)
+			}
+			return i
+		}
+		candidate := mk("candidate")
+		lower = mk("first blocker")
+		higher := mk("second blocker")
+		for _, blocker := range []issues.Issue{lower, higher} {
+			if _, err := issues.AddRelation(tx, "blocks", blocker.ID, candidate.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	inTx(t, db, func(tx *sql.Tx) error {
+		claim, err := issues.PopCandidate(tx, agent)
+		if err != nil {
+			return err
+		}
+		if claim == nil || claim.ID != lower.ID {
+			return fmt.Errorf("equal-depth blockers must break toward %s, got %+v", lower.ID, claim)
+		}
+		return nil
+	})
+}
+
 // TestPopDiamondBlockerGraph pins converging DAGs with the shared node
 // reached through the SHORT branch first (blocker order is by number,
 // so "a shared" sorts before "m mid"). The fallback sits second in

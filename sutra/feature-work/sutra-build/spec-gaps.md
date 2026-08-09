@@ -1645,3 +1645,99 @@ scenario has to reach two. One is the cardinality at which set behaviour and
 scalar behaviour are the same observation, and it is the cardinality that
 fixtures fall into by default, because one is the cheapest number of things to
 set up.
+
+### And then the domain core said it in eight more ways
+
+Ten survivors were reproduced by hand across `threads`, `identity`, `projects`,
+`issues`, and `events`. All ten are now killed. Grouped by what each one was
+actually complaining about:
+
+**Cardinality one, three more times.** `threads.queryThreadsEach`,
+`identity.Cursor.Each`, and `projects.Cursor.Each` are the same truncation
+mutant as the two docs cursors. Thread search was asserted with one matching
+thread; the identity roster with one identity; the project listing with one live
+project. The fixes are the same shape and the ordering discipline is the same:
+threads come back by import time, identities by handle, projects by key, so the
+*added* row has to sort after the existing one or the mutant keeps exactly the
+row the old assertion was watching.
+
+Two of the three were also species 1 at the criterion level, not just the
+fixture level. `AC-identity-kinds` names two kinds — agent and human — and the
+scenario created one identity, so a single fixture failed to discharge both the
+choice and the roster it lands in. Adding the second kind fixes both defects
+with one row.
+
+**An assertion whose expected value was never built.** The projects fix did not
+work the first time. The scenario asserted that the default listing holds "SUT"
+and "WEB", but nothing in it ever created "SUT" — the step read a world field
+that no step had written, so it compared the response body against the empty
+string. `strings.Contains(body, "")` is true of every response, including the
+truncated one. The assertion had two legs and one of them could not fail.
+
+This is worth its own species, because it is invisible in review: the step
+*looks* like it checks two things.
+
+> **Species 15: an assertion against a value the scenario never constructed.**
+> An expected id that was never created is not a weak assertion, it is an absent
+> one — and the zero value of a string is a substring of everything.
+
+The fix is structural rather than local: live projects are now recorded in a map
+keyed by project key, and the assertion looks each name up and fails loudly if
+the scenario never created it. A missing fixture is now a test failure instead
+of a silent pass.
+
+**A discriminator built along the axis it was meant to discriminate.** The
+search AC says a term match returns issues *ranked* — title, then body, then
+comments. There was a real ranking assertion, and it passed under a mutant that
+removed ranking entirely, because the three fixture issues were created in rank
+order. Issue number and rank were the same sequence, so `ORDER BY number`
+satisfied "returned ranked". Creating them in reverse — comment hit first, title
+hit last — makes the two orders disagree, and only then does the assertion test
+the `ORDER BY CASE`.
+
+The general form: an ordering assertion is only an ordering assertion if the
+fixtures are built along a *different* order than the one being asserted. This
+is the ordering counterpart of cardinality one — the default fixture order is
+insertion order, and insertion order is what most rules accidentally agree with.
+
+**An AC with three clauses, discharged by one.** `AC-issue-hierarchy` says a
+child has at most one parent, cycles are refused, and the refusal names the
+conflict. The scenario exercised the cycle. "At most one parent" is not a cycle,
+so nothing reached the guard that enforces it, and the `kind == "parent_of"`
+branch that separates the two rules survived. The added step gives an issue a
+second, unrelated parent and requires the 409 to name the parent it already has
+— because a bare conflict is indistinguishable from the relation-already-exists
+refusal, which carries the same error code.
+
+**A tie the rule never had to break.** The pop-candidate walk keeps the deepest
+blocker branch. Every branch test gave the branches different depths, where
+"keep the deepest" and "keep the last one that ties the deepest" choose the same
+issue. Two branches of *equal* depth are the only shape that separates them, and
+that is the shape that pins the tie-break to the lower issue number. A strict
+comparison against a non-strict one is a defect that only exists at the tie.
+
+**Boundaries need legs one unit apart.** Two `events` survivors were both bound
+checks whose tests only ever passed values comfortably inside the range. Cursor
+`0` is the position a client holds before it has seen anything and must be
+accepted; `-1` names nothing the feed could have issued and must be refused.
+`until` at the head is a legal bound; `head + 1` is a drain declaring itself
+complete over events that do not exist. In both cases the two legs sit one apart
+— anything wider tests the same thing twice.
+
+**Duplication is what made a site unfalsifiable.** The `f.Q != ""` predicate
+appeared in two query builders in `issues.go`: `SearchIDs` and `ListEach`. The
+copy in `SearchIDs` survived not because the rule was untested but because the
+tests all reached the *other* copy. The fix is not another test, it is
+`filterClause` — the project-scoped WHERE clause stated once, in the place that
+owns it, so the existing tests reach the only copy there is.
+
+> A rule written twice is two places it can drift, and neither copy can be
+> falsified by a test that only reaches the other. Deduplication is a testability
+> fix, not a tidiness one.
+
+**And one that was never a defect.** `if len(labels) > 0 { i.Labels = labels }`
+in `issues.Get` — `LabelsOf` returns nil for an unlabelled issue and the field is
+`omitempty`, so both arms of the branch produce identical bytes on the wire. That
+is species 4, an equivalent mutant, and the fix is to *remove the site* rather
+than exclude it: the guard was never doing anything, so deleting it removes the
+unkillable mutant and a line of code at the same time.
