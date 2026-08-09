@@ -25,7 +25,10 @@ type searchWorld struct {
 	crossThread string
 	crossIssue  string
 
-	sessionReview   string
+	// Every review the session reaches. A slice because "the session's
+	// work" is a set: with one member, a search that streams all of it
+	// and one that stops after the first return the same bytes.
+	sessionReviews  []string
 	unrelatedReview string
 	sessionThread   string
 	sessionIssues   []string
@@ -377,7 +380,7 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err := sw.reviewWithSession("SUT-1", "sessioned", s1); err != nil {
 			return err
 		}
-		sw.sessionReview = cw.reviews["SUT-1"].id
+		sw.sessionReviews = append(sw.sessionReviews, cw.reviews["SUT-1"].id)
 		sw.sessionIssues = append(sw.sessionIssues, iw.issues["SUT-1"])
 		if err := cw.verdict("SUT-1", "changes-requested"); err != nil {
 			return err
@@ -401,6 +404,17 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		sw.unrelatedReview = cw.reviews["SUT-2"].id
+		return nil
+	})
+	sc.Step(`^a second review under session "([^"]*)"$`, func(session string) error {
+		if err := sw.reviewWithSession("SUT-4", "also-sessioned", session); err != nil {
+			return err
+		}
+		// Appended after the first, and review ids are UUIDv7, so this is
+		// the row that sorts last under ORDER BY r.id — exactly the one a
+		// listing that stops after its first row drops.
+		sw.sessionReviews = append(sw.sessionReviews, cw.reviews["SUT-4"].id)
+		sw.sessionIssues = append(sw.sessionIssues, iw.issues["SUT-4"])
 		return nil
 	})
 	sc.Step(`^an imported thread carrying session "([^"]*)"$`, func(session string) error {
@@ -437,10 +451,12 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return iw.s.expectStatus(http.StatusOK)
 	})
-	sc.Step(`^the review, the thread, and their linked issues are returned$`, func() error {
+	sc.Step(`^the reviews, the thread, and their linked issues are returned$`, func() error {
 		body := string(iw.s.lastBody)
-		if !strings.Contains(body, sw.sessionReview) {
-			return fmt.Errorf("session review missing")
+		for _, id := range sw.sessionReviews {
+			if !strings.Contains(body, id) {
+				return fmt.Errorf("session review %s missing", id)
+			}
 		}
 		if !strings.Contains(body, sw.sessionThread) {
 			return fmt.Errorf("session thread missing")
@@ -458,7 +474,7 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return nil
 	})
-	sc.Step(`^listing reviews filtered by session "([^"]*)" also returns the review and excludes the unrelated one$`, func(session string) error {
+	sc.Step(`^listing reviews filtered by session "([^"]*)" also returns the reviews and excludes the unrelated one$`, func(session string) error {
 		if err := iw.s.call(http.MethodGet, "/reviews?session="+url.QueryEscape(session), nil); err != nil {
 			return err
 		}
@@ -466,8 +482,10 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		body := string(iw.s.lastBody)
-		if !strings.Contains(body, sw.sessionReview) {
-			return fmt.Errorf("session review missing from listing")
+		for _, id := range sw.sessionReviews {
+			if !strings.Contains(body, id) {
+				return fmt.Errorf("session review %s missing from listing", id)
+			}
 		}
 		if strings.Contains(body, sw.unrelatedReview) {
 			return fmt.Errorf("unrelated review present in listing")
@@ -486,9 +504,9 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return err
 		}
 		body := string(iw.s.lastBody)
-		for name, id := range map[string]string{"review": sw.sessionReview, "thread": sw.sessionThread} {
+		for _, id := range append(append([]string{}, sw.sessionReviews...), sw.sessionThread) {
 			if strings.Contains(body, id) {
-				return fmt.Errorf("session %s survived a scope its work never touched", name)
+				return fmt.Errorf("session content %s survived a scope its work never touched", id)
 			}
 		}
 		for _, id := range sw.sessionIssues {

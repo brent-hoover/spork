@@ -48,11 +48,17 @@ Feature: Search and filter
   Scenario: session id joins an instance's work
     Given a review whose revision 1 was submitted under session "sess-42" and revision 2 under session "sess-43"
     And an unrelated review whose submissions never carried "sess-42"
+    # An instance's work is a SET of reviews, and a second one is what makes
+    # that word mean anything: at one review, a search that streams every
+    # review the session reaches and one that stops after the first return
+    # the same bytes. Reviews come back in id order and ids are time-ordered,
+    # so the review created last is exactly the row a truncating read drops.
+    And a second review under session "sess-42"
     And an imported thread carrying session "sess-42"
     When "sess-42" is searched
-    Then the review, the thread, and their linked issues are returned
+    Then the reviews, the thread, and their linked issues are returned
     And the unrelated review is not returned
-    And listing reviews filtered by session "sess-42" also returns the review and excludes the unrelated one
+    And listing reviews filtered by session "sess-42" also returns the reviews and excludes the unrelated one
     # A session names work, not a place. Scoping the same session to a project
     # that work never touched must come back empty — the filters intersect, so
     # a session reaching an issue outside the named project is out of scope,

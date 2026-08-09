@@ -1741,3 +1741,95 @@ in `issues.Get` — `LabelsOf` returns nil for an unlabelled issue and the field
 is species 4, an equivalent mutant, and the fix is to *remove the site* rather
 than exclude it: the guard was never doing anything, so deleting it removes the
 unkillable mutant and a line of code at the same time.
+
+## The gate that could not fail, and three ways its report lies
+
+The scoped domain-core mutation gate was run for real, end to end, for the
+first time: 444 killed, 6 lived, 15 not covered across eight packages. Almost
+none of that summary means what it appears to mean.
+
+### The gate could not reject anything
+
+The command carried `--threshold-efficacy 100 --threshold-mcover 100` and
+relied on gremlins' exit code. `internal/docs` came in at 97.11% efficacy and
+96.65% mutator coverage and exited **0**. So did `internal/review` at 98.65%.
+So did a dry run at 66.67% coverage. gremlins v0.5.0 accepts both threshold
+flags, documents them as quality gates that "exit with an error", and ignores
+them.
+
+This is species 13 with a new face. The earlier version was a gate that never
+ran; this one runs, prints a number, and cannot act on it. Both produce the
+same artifact — a green check mark standing for nothing — and neither is
+visible without deliberately feeding the gate something that should fail.
+
+> **The generalisation:** a gate is not the tool, it is the tool *plus the
+> thing that reads its answer*. Until you have watched a gate reject
+> something, you have tested the first half.
+
+The fix parses the summary rather than trusting the exit status, and drops the
+two flags instead of leaving them decorative — a flag that does nothing is a
+claim the gate cannot honour. `!seen` fails the gate when gremlins dies before
+printing a summary, because `tee` masks its exit status.
+
+### Every NOT COVERED verdict was false
+
+All 15 sit on `case` conditions inside tagless `switch` blocks — `case err ==
+sql.ErrNoRows:`, `case len(blockers) == 0:`, `case lineEqual(...)`. Two were
+planted by hand and both were **killed** by the suite; the docs pair was
+planted and both were killed too. gremlins maps a `case` condition to a
+coverage block that does not contain it, and reports covered code as unreached.
+
+Mutator coverage is therefore not gateable while such switches exist: a 100%
+threshold would be unreachable for reasons that have nothing to do with the
+tests. It is now reported and not enforced — a real weakening, recorded here
+rather than hidden, because the alternative is the gate-that-cannot-pass
+failure this branch already fixed once.
+
+### Timeouts hide survivors, and they are load-dependent
+
+The first `review` run: 73 killed, 1 lived, **29 timed out**, efficacy 98.65%.
+The second, on a quieter machine, same code: 97 killed, 6 lived, **0 timed
+out**, efficacy 94.17%. The 29 timeouts were not noise — five of them were real
+survivors, including two cursor-truncation mutants and a boundary.
+
+Efficacy is `killed / (killed + lived)`, so a timeout is excluded from the
+denominator: it cannot lower the score. A run with enough timeouts scores well
+*because* it measured less. The number moves the wrong way under load.
+
+> **Species 16: a metric whose denominator excludes the cases it failed to
+> decide.** Timeouts do not fail the gate, do not lower efficacy, and are the
+> most likely outcome for exactly the mutants that make the suite do the most
+> work. "100% efficacy over 8 mutants and 14 timeouts" is the same green as
+> 100% over 22.
+
+### And one more false verdict
+
+`review.go:688` was reported LIVED and is killed by the unchanged suite — the
+second false positive on this branch after `docs/docs.go:217`. Two out of the
+roughly two dozen survivor claims examined here were wrong. Species 14 holds:
+reproduce every one by hand before writing a line of test code.
+
+### What the five real survivors said
+
+`EachRef` and `ListEach` were both cardinality one again — the session
+scenario had exactly one review in it, so a cursor that streams the session's
+work and one that stops after the first row were indistinguishable. Reviews
+sort by id and ids are time-ordered, so the second review has to be created
+last to be the row a truncating read drops.
+
+`Diff`'s size bound was tested only from far away: the existing test sets the
+limit to 16 bytes against a diff of hundreds, where "reject over the limit" and
+"reject at the limit" agree. The two legs now sit one byte apart around the
+real diff's exact length.
+
+`RevalidateFences` was reached only through a repository that cannot be read,
+where `resolveHead` fails and returns before either fence comparison runs.
+Every "rejected" the old test observed was really the repository being
+unreadable — which holds equally for an implementation that abandons the
+fences the moment the repository answers, the one case fences exist for. A
+live repository separates them.
+
+> The pattern under all three: a guard tested only through a path that fails
+> *before* it is a guard that is not tested at all. Unreadable repositories,
+> limits set far from the edge, and sets of one are three shapes of the same
+> mistake.
