@@ -1357,3 +1357,23 @@ Every acceptance scenario in this build observes the *response*. Four of the six
 CLI decisions here are about the *request*, and two of them are invisible to a
 server that happens to be lenient. Testing a client only through the server it
 ships with cannot see anything the server chooses to ignore.
+
+### The init that could have said nothing
+
+One more in the same file, and the smallest gap yet. `initProject:275` writes
+the marker and then, on the next line, prints what it created. Negating the
+write's error check makes the successful path return *before* the print — and
+no scenario noticed, because the init scenario checked the project, checked the
+marker, and never looked at stdout.
+
+`AC-project-init` listed three things init does — create, record, mark — and the
+fourth, telling you, was not among them. It is not decoration: the project id in
+that line is what a script carries forward, since the key is only what the
+caller already typed.
+
+The ORDER is the other half. A report printed first and a report printed last
+are indistinguishable on a successful init, so the AC's promise — nothing is
+announced that did not happen — is only falsifiable when the marker write fails.
+That is a robustness direction, so it earns a unit test: a Workdir that is a
+regular file makes the write fail without permission games, and the assertion is
+that stdout stayed empty. Both halves stated, both halves tested.

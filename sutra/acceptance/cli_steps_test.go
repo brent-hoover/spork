@@ -567,6 +567,16 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return nil
 	})
+	sc.Step(`^it reports "SUT" and the project it created$`, func() error {
+		// The project id, not just the key: the id is the thing a script
+		// carries forward, and the key is what the caller already typed.
+		for _, want := range []string{"SUT", iw.project} {
+			if !strings.Contains(clw.lastOut, want) {
+				return fmt.Errorf("init said %q, missing %q", clw.lastOut, want)
+			}
+		}
+		return nil
+	})
 
 	// --- repo context is implicit
 	sc.Step(`^a repository initialized for project "SUT"$`, func() error {

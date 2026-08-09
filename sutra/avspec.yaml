@@ -387,7 +387,13 @@ requirements:
     title: Projects as first-class containers for issues and docs
     acceptance:
       - id: AC-project-init
-        statement: Running `sutra init` in a repository creates the project via the public API, records the repo path, and writes a local marker linking the directory to the project.
+        statement: >-
+          Running `sutra init` in a repository creates the project via the
+          public API, records the repo path, and writes a local marker
+          linking the directory to the project. It then reports the key
+          and the project it created — the report comes after the marker
+          is on disk, so a directory the marker could not be written into
+          is never announced as initialized.
         test: verification/REQ-projects.feature#init anchors a project to a repo
       - id: AC-project-context
         statement: CLI commands inside an initialized repo default to that repo's project; outside one, project-scoped commands require an explicit project flag.
