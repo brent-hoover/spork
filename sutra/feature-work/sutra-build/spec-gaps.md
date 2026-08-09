@@ -1509,3 +1509,79 @@ anywhere.** When a malformed input has more than one thing wrong with it — and
 malformed inputs usually do — `wantErr: true` cannot tell a checker that found
 the fault from one that stumbled into the debris. Assert the message, or build
 an input with exactly one thing wrong.
+
+## The gate that could not pass
+
+The mutation gate was declared in `avspec.yaml` as
+
+```
+gremlins unleash --threshold-efficacy 100 --threshold-mcover 100
+```
+
+and nobody had ever run it. Running it took **15 hours 48 minutes** and returned
+**88.74% efficacy, 90.50% mutator coverage** — roughly 1680 mutants actually
+executed out of about 1855 found: 189 survivors and 6 timeouts. The gate as written fails, and the interesting part is
+that it could not have done anything else.
+
+**100% efficacy is not a high bar. It is an unreachable one.** Mutation testing
+produces *equivalent mutants* — mutations that yield a semantically identical
+program. No test can kill one, because there is nothing to catch. This build
+already found one and logged it as species 4: a guard in `dupkeys.go` that no
+input can reach, so negating it changes nothing observable. The only ways to
+clear an equivalent mutant are to delete the site or to exempt it, and gremlins
+v0.5.0 has no per-line exemption. A threshold of 100 therefore demands that the
+production code contain no unreachable branch anywhere, forever — which is not a
+statement about the tests at all.
+
+This is the same defect as the coverage gate two entries above, and it is worth
+naming as a class. **Species 13: a gate specified but never executed is a
+guess.** Both gates were written into a spec marked `ready`. Both were plausible
+on the page. One measured nothing and passed; the other demanded the impossible
+and failed. Neither had been run once. "Ready" verified that the gate had a
+command, not that the command had ever produced a number.
+
+### What the survivors said about where the tests actually are
+
+The 189 survivors were not evenly spread. 147 of them sat in three packages —
+`api` (106), `web` (25), `cli` (16) — and 42 in the eight
+domain packages. That distribution is a fact about the test architecture, not
+about care taken. The wire layers are exercised end-to-end by the acceptance
+suite: a broken handler shows up as a wrong response, and the scenario that
+catches it is the one a human would write. The domain packages are where a rule
+lives as a rule, and where a mutated rule is exactly the thing an acceptance
+criterion claims to pin down.
+
+`internal/review` is the evidence. 757 lines, 103 runnable mutants, **zero
+survivors** — because REQ-code-review and REQ-close-requires-review pin its
+rules directly, and every branch in it is somebody's stated guarantee.
+
+So the gate was rescoped to the eight domain packages: 522 mutants instead of
+1855, and the thresholds left at 100/100 where 100 is a claim about behavior
+under specification rather than about every line of plumbing. Two flags turned
+out to be mandatory and neither was in the original command:
+
+- `-i --coverpkg ./...` — without them each package is measured against only its
+  own unit tests, and `internal/docs` scores 59% mutator coverage instead of
+  91%. The acceptance suite is what exercises these packages; a per-package
+  measurement cannot see it. This is the identical mistake the coverage gate
+  made with gobco.
+- `--timeout-coefficient 4` — gremlins budgeted 75 seconds against a suite that
+  takes ~55, a 1.36x margin. Worse, **every timeout leaks the test binary**:
+  gremlins gives up on the run but never kills the child, so each `TIMED OUT`
+  left an `acceptance.test` process spinning at 100% CPU, reparented to launchd.
+  Six accumulated over the run, one of them burning a core for twelve hours.
+  They compound — each orphan slows the next mutant, which makes the next
+  timeout likelier.
+
+### The verdicts are not all true
+
+`internal/docs/docs.go:217` was reported LIVED. It is killed by the *unchanged*
+acceptance suite. Whatever scoping the run applied to that mutant, it was not
+the suite that covers it.
+
+That single false positive changes how the report has to be used. A survivor is
+a hypothesis, not a finding: every one has to be reproduced by hand before it is
+worth a line of test code. Doing that is cheap — plant the mutation, run the
+suite, restore — and skipping it means writing tests against defects that do not
+exist. **Species 14: a tool that reports a gap has not proved one.** The report
+is a list of places to look.
