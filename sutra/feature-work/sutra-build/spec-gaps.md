@@ -1565,13 +1565,35 @@ out to be mandatory and neither was in the original command:
   91%. The acceptance suite is what exercises these packages; a per-package
   measurement cannot see it. This is the identical mistake the coverage gate
   made with gobco.
-- `--timeout-coefficient 4` — gremlins budgeted 75 seconds against a suite that
-  takes ~55, a 1.36x margin. Worse, **every timeout leaks the test binary**:
-  gremlins gives up on the run but never kills the child, so each `TIMED OUT`
-  left an `acceptance.test` process spinning at 100% CPU, reparented to launchd.
-  Six accumulated over the run, one of them burning a core for twelve hours.
-  They compound — each orphan slows the next mutant, which makes the next
-  timeout likelier.
+- `--timeout-coefficient 300` — and the reason it has to be that large is a trap
+  that only appears once the gate is scoped. gremlins derives each mutant's
+  timeout from the **coverage-gathering run**, not from the test run it is about
+  to perform. Scoped to one package that gathering takes ~0.56 seconds, while
+  `-i` then executes the whole ~55-second suite for every mutant. The budget and
+  the workload are measured from different things.
+
+  The first scoped attempt used coefficient 4 — a 2.2-second budget — and
+  reported **211 timeouts out of 211 mutants across six packages, each in about
+  a third of a second**, with efficacy 0.00%. That is what a completely broken
+  run looks like, and it looks exactly like a completely honest one: gremlins
+  exits 0 having tested nothing, and prints two clean percentages. At 300 the
+  budget is 2m49s and the same packages return real verdicts.
+
+  Whole-module the trap is hidden, because there the coverage run and the test
+  run are the same work, so the ratio is near 1. Scoping is what separates them.
+
+  Timeouts are also not free: **every timeout leaks the test binary.** gremlins
+  gives up on the run but never kills the child, so each `TIMED OUT` left an
+  `acceptance.test` process spinning at 100% CPU, reparented to launchd. Six
+  accumulated over the whole-module run, one burning a core for twelve hours.
+  They compound — each orphan slows the next mutant, making the next timeout
+  likelier.
+
+  And timeouts count against mutator coverage: `identity` scored 84.62% mcover
+  with 11 of 13 mutants resolved and 2 timed out. So `--threshold-mcover 100`
+  additionally requires that no mutant ever hangs — including the mutants that
+  hang *because* they are mutants, such as a negated loop condition. That bar is
+  not reliably reachable either.
 
 ### The verdicts are not all true
 
