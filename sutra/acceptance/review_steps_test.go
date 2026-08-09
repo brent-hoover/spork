@@ -749,6 +749,16 @@ func registerReviewSteps(sc *godog.ScenarioContext, cw *closeWorld, ww *webWorld
 		}
 		return nil
 	})
+	sc.Step(`^reading a revision the review never had is refused as not found$`, func() error {
+		ref := rw.cw.reviews["SUT-1"]
+		if err := rw.iw.s.call(http.MethodGet, "/reviews/"+ref.id+"/deliverable?revision=99", nil); err != nil {
+			return err
+		}
+		if err := rw.iw.s.expectStatus(http.StatusNotFound); err != nil {
+			return err
+		}
+		return rw.iw.s.expectErrorCode("not-found")
+	})
 	sc.Step(`^revision 2's submission exists and carries the deliverable pinned at commit "([0-9a-f]{40})"$`, func(symbolic string) error {
 		got, err := rw.reviewState()
 		if err != nil {

@@ -100,6 +100,14 @@ Feature: Review lifecycle
     And the earlier comment remains associated with revision 1
     And revision 1's submission still exists and resolves to its original deliverable
     And revision 2's submission exists and carries the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
+    # Every read above names a revision the review HAS, and the response
+    # carries no submission identity — only kind and content, and the
+    # content is fetched by revision number rather than from the submission
+    # the search returned. So a search that hands back the WRONG submission
+    # is invisible on the happy path. The only place the search is
+    # observable is a revision that matches nothing, where finding
+    # something is the entire error.
+    And reading a revision the review never had is refused as not found
 
   Scenario: stale feedback is rejected
     Given a review at revision 1 open in a reviewer's browser

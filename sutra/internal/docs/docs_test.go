@@ -110,6 +110,69 @@ func TestUnifiedDiffLCSWalk(t *testing.T) {
 	}
 }
 
+// TestUnifiedDiffRepeatedLineAcrossTheTrim pins the two bounds that stop
+// the common-suffix scan from reaching back into the common prefix.
+//
+// Both bounds subtract the prefix, and every other diff test here leaves
+// them slack: the suffix scan stops on a line that genuinely differs long
+// before it runs out of room, so a bound that allows too much room is
+// never reached. The scan only walks into the prefix when the SAME line
+// is both the prefix and the suffix candidate, which is what a file of
+// repeated lines gives — and then a loosened bound counts one line as
+// context twice and the edit disappears from the diff entirely.
+//
+// The two directions are separate legs because the bounds are separate
+// expressions, one per side: a fixture that only shortens the file leaves
+// the other side's bound as slack as before.
+func TestUnifiedDiffRepeatedLineAcrossTheTrim(t *testing.T) {
+	cases := []struct {
+		name     string
+		from, to string
+		want     string
+	}{
+		{
+			name: "repeated line deleted",
+			from: "a\na\n",
+			to:   "a\n",
+			want: "--- v1\n+++ v2\n@@ -1,2 +1,1 @@\n a\n-a\n",
+		},
+		{
+			name: "repeated line added",
+			from: "a\n",
+			to:   "a\na\n",
+			want: "--- v1\n+++ v2\n@@ -1,1 +1,2 @@\n a\n+a\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := docs.UnifiedDiff(version(1, tc.from), version(2, tc.to)); got != tc.want {
+				t.Fatalf("diff mismatch\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnifiedDiffConsecutiveAdditionsInTheWalk pins the b-side index of
+// the walk's addition step at an offset the origin cannot be guessed
+// from.
+//
+// TestUnifiedDiffLCSWalk already reaches this step, but only ever as the
+// FIRST thing the walk does, where the b-cursor is still zero and every
+// arithmetic on it — plus, minus, or dropped entirely — names the same
+// line. Two additions in a row are what move the cursor off zero while
+// the step is still being taken, so the second one reads a line the
+// prefix already emitted if the origin is wrong.
+func TestUnifiedDiffConsecutiveAdditionsInTheWalk(t *testing.T) {
+	got := docs.UnifiedDiff(
+		version(1, "head\nM\nend1\n"),
+		version(2, "head\nP\nQ\nM\nend2\n"),
+	)
+	want := "--- v1\n+++ v2\n@@ -1,3 +1,5 @@\n head\n+P\n+Q\n M\n-end1\n+end2\n"
+	if got != want {
+		t.Fatalf("diff mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // TestUnifiedDiffCellBoundary pins WHICH input gets a minimal diff and
 // which gets the linear fallback, by sitting on the bound rather than
 // far past it. TestUnifiedDiffBoundedFallback proves the fallback is
