@@ -1480,3 +1480,32 @@ The general shape, and the eleventh species: **an AC that asserts a mapping
 exists is discharged by checking the map, not the territory.** Where a spec says
 "there is a command for every X," some scenario has to actually run one for an X
 that is not the easiest X.
+
+### An error from somewhere is not an error about something
+
+Two mutants in the streaming listing decoder — `expectDelim`'s `if err != nil`
+and the trailing-property drain's — and this time a thorough test already
+existed. `TestEmitIssueListRejectsMalformed` had eleven cases: truncated
+mid-array, envelope not an object, issues not an array, trailing data. Both
+mutants walked through it.
+
+They walked through because the test asked `(err != nil) == wantErr` and nothing
+more. Every malformed stream in that table breaks in more than one place. Skip
+the delimiter check and the walker trips over the wreckage two tokens later and
+returns *an* error — the assertion is satisfied, and what the user is told has
+changed from `expected "[", found {` to `expected "]", found <nil>`: a symptom
+three steps downstream of the fault. The fix is to assert the message where the
+message is the point.
+
+The drain mutant had a different hiding place. Every stream in the table that
+carried a property after the issues array was otherwise well formed, so a drain
+that returned early — skipping the envelope's close AND the trailing-data check —
+was indistinguishable from one that finished. Two cases close it: a property
+after the array with the envelope left open, and a property after the array with
+a second document glued on.
+
+**Species 12: an assertion that something failed is satisfied by a failure from
+anywhere.** When a malformed input has more than one thing wrong with it — and
+malformed inputs usually do — `wantErr: true` cannot tell a checker that found
+the fault from one that stumbled into the debris. Assert the message, or build
+an input with exactly one thing wrong.
