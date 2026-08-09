@@ -303,6 +303,17 @@ requirements:
       - id: AC-cli-stable-shape
         statement: JSON/YAML field names match the API contract's schema, so one parser handles HTTP and stdout alike.
         test: verification/REQ-cli-output-formats.feature#output shape matches the api contract
+      - id: AC-cli-flag-grammar
+        statement: >-
+          A flag reaches the command the same way wherever it sits on the
+          line. --json and --yaml select a format and never consume the
+          argument after them, so a format flag written ahead of its
+          positional leaves that positional alone. Every other flag takes
+          the next argument as its value, and takes one only when there is
+          one to take: a flag written last, with nothing following it, is
+          set to "true" and the parser stops at the end of the line rather
+          than reaching past it.
+        test: verification/REQ-cli-output-formats.feature#flags read the same wherever they sit on the line
   - id: REQ-status-workflow
     title: "Issue statuses: open, in-progress, blocked, deferred, complete"
     acceptance:

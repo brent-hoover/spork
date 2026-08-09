@@ -1301,3 +1301,59 @@ construction — every arithmetic perturbation of it still produces a buffer big
 enough. Counting the bytes exactly costs one `const` and makes the thing the
 comment already claimed ("no second copy of an unbounded transcript") into
 something a test can check.
+
+## Nobody ever wrote a flag anywhere but last
+
+Four survivors in `internal/cli/cli.go`, in two pairs, and the cluster's own
+first lesson is about reading the report. The reported line 188 does not exist
+in the tree the earlier clusters were checked against — cli.go had shifted by
+exactly twelve lines when `CoveredOperations` and its `slices` import were
+deleted — but it is line 188 at HEAD, exactly. The mutation run's snapshot is
+per-file and its age is not uniform. `git rev-list HEAD -- <file>` with the
+target grepped out of each revision says which tree a report belongs to; the
+answer here was HEAD, not the tree the previous cluster used.
+
+### Two mutants at the end of the argument list
+
+`splitFlags:188` is `if i+1 < len(args)`, and both the arithmetic mutant
+(`i-1`) and the boundary mutant (`<=`) make the guard true when `i` is the last
+index — so `args[i+1]` reads past the end and the CLI panics. Neither could be
+observed, because **every scenario in the suite writes its flag last**, and the
+only flags written last were `--json` and `--yaml`, which are caught by the
+boolean case above and never reach line 188 at all.
+
+The spec is why. `AC-cli-json`, `AC-cli-yaml` and `AC-cli-stable-shape` are all
+about what comes *out*. Nothing described what goes *in* — the argument grammar
+was never specified, so the scenarios wrote the one command line that asks
+nothing of the parser. `AC-cli-flag-grammar` states the grammar: format flags
+never consume the argument after them, every other flag takes the next argument
+and takes one only when there is one to take. Two `When`s kill both mutants —
+`--json` written ahead of its positional, and a value-taking flag written last.
+
+This is species 1 with an unusual shape. The AC named a *set* implicitly — the
+positions a flag can occupy — and the scenarios sampled the one position where
+the code has nothing to decide.
+
+### Two mutants the API cannot see
+
+`doRaw:231` and `:234` decide two request headers: `Content-Type` when there is
+a body, `Idempotency-Key` when the method is not GET. Negating either changes
+nothing an acceptance scenario can observe, because sutra's own daemon reads
+neither back and accepts a body whether or not it is labelled. Species 8 in its
+purest form: a contract rule — the OpenAPI document declares request bodies as
+`application/json` — enforced at *no* door.
+
+Both still matter off loopback, which is what `AC-parity-remote` is about: an
+unlabelled body is at the mercy of whatever the receiving server assumes, and an
+idempotency key on a GET asks a proxy to remember a read. That is a protocol
+decision, not an observable guarantee, so under the established ruling it earns
+a unit test — one that runs the client against an `httptest` server and reads
+the headers off the wire. It kills `:231`, and it kills `:234` before that
+mutant was even reported.
+
+### The lesson: the wire is a surface, and the suite was only watching one
+
+Every acceptance scenario in this build observes the *response*. Four of the six
+CLI decisions here are about the *request*, and two of them are invisible to a
+server that happens to be lenient. Testing a client only through the server it
+ships with cannot see anything the server chooses to ignore.

@@ -457,6 +457,34 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 
+	// --- flags read the same wherever they sit on the line
+	sc.Step(`^"sutra issue show --json (SUT-\d+)" is run$`, func(ref string) error {
+		if err := clw.run("sutra issue show --json "+ref, nil); err != nil {
+			return err
+		}
+		if err := clw.expectSuccess(); err != nil {
+			return err
+		}
+		clw.jsonOut = clw.lastOut
+		return nil
+	})
+	sc.Step(`^"sutra issue list --project" is run with nothing after the flag$`, func() error {
+		// Deliberately the LAST word on the line: --project takes a
+		// value, and there is none to take.
+		return clw.run("sutra issue list --project", nil)
+	})
+	sc.Step(`^it reports no project keyed "true", having taken the flag as boolean$`, func() error {
+		if clw.lastCode == 0 {
+			return fmt.Errorf("the trailing flag was accepted as a project: %s", clw.lastOut)
+		}
+		// The key in the message IS the parser's product — it shows the
+		// flag became "true" rather than reaching past the end of args.
+		if !strings.Contains(clw.lastErrOut, `no project with key "true"`) {
+			return fmt.Errorf("expected the boolean value to reach the lookup, got: %s", clw.lastErrOut)
+		}
+		return nil
+	})
+
 	// --- output shape matches the api contract
 	sc.Step(`^the API contract defines the issue schema$`, func() error {
 		if err := cw.ensureGitProject(); err != nil {
