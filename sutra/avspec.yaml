@@ -83,6 +83,18 @@ requirements:
           the lookup and comes back as a complaint about a project the
           caller never typed.
         test: verification/REQ-cli-parity.feature#a reference that cannot name an issue is refused on its shape
+      - id: AC-cli-generic-invoker
+        statement: >-
+          `sutra api <operationId>` is what makes the coverage above real
+          for every operation with no bespoke wrapper, so it carries the
+          WHOLE request: path parameters substituted, query parameters
+          appended, and --body sent verbatim as the request body. A
+          response the server refused is a failure and not a result — the
+          command exits nonzero and reports the status, rather than
+          printing the error document as though it were the answer. What
+          it does print is a complete line, terminated by a newline, so
+          the output composes in a pipeline.
+        test: verification/REQ-cli-parity.feature#the generic invoker carries the whole request
   - id: REQ-doc-database
     title: Doc database — planning docs filed under project and issue, with versioning
     rationale: Planning artifacts live with the work they describe, not in a separate wiki.

@@ -493,6 +493,80 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 
+	// --- the generic invoker carries the whole request
+	sc.Step(`^project "SUT" has two issues$`, func() error {
+		if err := iw.ensureProject(); err != nil {
+			return err
+		}
+		// Two, so a filter that selected NOTHING and a filter that
+		// selected everything are different answers.
+		for _, title := range []string{"the first issue", "the second issue"} {
+			if _, err := iw.createIssueIn(iw.project, title, "body"); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	sc.Step(`^"sutra api listIssues" is run for "SUT" with --query.number (\d+)$`, func(number string) error {
+		return clw.run("sutra api listIssues --path.projectId "+iw.project+" --query.number "+number, nil)
+	})
+	sc.Step(`^only the second issue is listed, on a line of its own$`, func() error {
+		if err := clw.expectSuccess(); err != nil {
+			return err
+		}
+		// A dropped query would list BOTH — the filter is the only thing
+		// standing between this assertion and the whole project.
+		var listing struct {
+			Issues []struct {
+				Number int64  `json:"number"`
+				Title  string `json:"title"`
+			} `json:"issues"`
+		}
+		if err := json.Unmarshal([]byte(clw.lastOut), &listing); err != nil {
+			return fmt.Errorf("decode %q: %w", clw.lastOut, err)
+		}
+		if len(listing.Issues) != 1 || listing.Issues[0].Number != 2 {
+			return fmt.Errorf("expected only issue 2, got %+v", listing.Issues)
+		}
+		// The response is streamed, so the terminating newline is the
+		// command's own doing and the only thing making the output a
+		// LINE rather than a fragment a pipeline has to guess at.
+		if !strings.HasSuffix(clw.lastOut, "\n") {
+			return fmt.Errorf("output is not a complete line: %q", clw.lastOut)
+		}
+		return nil
+	})
+	sc.Step(`^"sutra api createIssue" is run for "SUT" with a body carrying a title$`, func() error {
+		body := fmt.Sprintf(`{"title":"minted-through-the-generic-invoker","actor":%q}`, iw.identities["operator"])
+		return clw.run("sutra api createIssue --path.projectId "+iw.project+" --body "+body, nil)
+	})
+	sc.Step(`^the issue is created with that title$`, func() error {
+		if err := clw.expectSuccess(); err != nil {
+			return err
+		}
+		// A body that never reached the server would come back refused,
+		// not created — and a body mangled on the way would come back
+		// carrying something other than what was typed.
+		if !strings.Contains(clw.lastOut, "minted-through-the-generic-invoker") {
+			return fmt.Errorf("created something else: %s", clw.lastOut)
+		}
+		return nil
+	})
+	sc.Step(`^"sutra api createIssue" is run for "SUT" with a body carrying no title$`, func() error {
+		return clw.run("sutra api createIssue --path.projectId "+iw.project+" --body {}", nil)
+	})
+	sc.Step(`^it exits nonzero and reports the status the server refused it with$`, func() error {
+		if clw.lastCode == 0 {
+			return fmt.Errorf("a refused request was reported as success: %s", clw.lastOut)
+		}
+		// 400 exactly: the lowest status that is a refusal at all, so a
+		// threshold set one higher would let this through as a result.
+		if !strings.Contains(clw.lastErrOut, "createIssue returned 400") {
+			return fmt.Errorf("refusal did not name the status: %q", clw.lastErrOut)
+		}
+		return nil
+	})
+
 	// --- flags read the same wherever they sit on the line
 	sc.Step(`^"sutra issue show --json (SUT-\d+)" is run$`, func(ref string) error {
 		if err := clw.run("sutra issue show --json "+ref, nil); err != nil {

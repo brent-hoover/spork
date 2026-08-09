@@ -218,21 +218,36 @@ func (c *client) do(method, path string, body any) (int, []byte, error) {
 	return c.doRaw(method, path, raw)
 }
 
-// doRaw sends pre-encoded bytes verbatim.
-func (c *client) doRaw(method, path string, body []byte) (int, []byte, error) {
+// newRequest builds the one request shape every CLI call takes: the body
+// verbatim, labelled only when there is one, and an idempotency key on
+// everything that is not a read. Both doors go through here — the typed
+// commands via doRaw and the generic `sutra api` invoker — so the rule is
+// stated once, in the place that owns it, and a test of it covers both.
+// Written twice it was written differently by definition: neither copy
+// could be falsified without the other.
+func (c *client) newRequest(method, path string, body []byte) (*http.Request, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
 	req, err := http.NewRequest(method, c.base+path, payload)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if method != http.MethodGet {
 		req.Header.Set("Idempotency-Key", newKey())
+	}
+	return req, nil
+}
+
+// doRaw sends pre-encoded bytes verbatim.
+func (c *client) doRaw(method, path string, body []byte) (int, []byte, error) {
+	req, err := c.newRequest(method, path, body)
+	if err != nil {
+		return 0, nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -423,23 +438,13 @@ func (c *client) generic(args []string) error {
 		}
 		body = []byte(raw)
 	}
-	// Successful responses stream to stdout — exports and listings are
-	// unbounded and the server streams them deliberately; only error
-	// bodies buffer (bounded) for the message.
-	var payload io.Reader
-	if body != nil {
-		payload = bytes.NewReader(body)
-	}
-	req, err := http.NewRequest(o.method, c.base+path, payload)
+	req, err := c.newRequest(o.method, path, body)
 	if err != nil {
 		return err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if o.method != http.MethodGet {
-		req.Header.Set("Idempotency-Key", newKey())
-	}
+	// Successful responses stream to stdout — exports and listings are
+	// unbounded and the server streams them deliberately; only error
+	// bodies buffer (bounded) for the message.
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

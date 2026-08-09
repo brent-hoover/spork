@@ -35,3 +35,18 @@ Feature: CLI parity with the API
       | SUT-      | must be KEY-N                 |
       | SUT-x     | must end in a positive number |
       | SUT-0     | must end in a positive number |
+
+  # `sutra api` is what backs the coverage promise above for every
+  # operation with no bespoke wrapper — and every invocation the suite ever
+  # made was a bare operation id on a parameterless read that succeeded.
+  # Nothing had ever been put THROUGH it: not a query, not a body, not a
+  # refusal. A command that exists but drops half the request covers the
+  # operation on paper only.
+  Scenario: the generic invoker carries the whole request
+    Given project "SUT" has two issues
+    When "sutra api listIssues" is run for "SUT" with --query.number 2
+    Then only the second issue is listed, on a line of its own
+    When "sutra api createIssue" is run for "SUT" with a body carrying a title
+    Then the issue is created with that title
+    When "sutra api createIssue" is run for "SUT" with a body carrying no title
+    Then it exits nonzero and reports the status the server refused it with

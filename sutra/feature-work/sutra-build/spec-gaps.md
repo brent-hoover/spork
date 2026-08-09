@@ -1407,3 +1407,76 @@ Three of this build's clusters now have the same root: a linear validator whose
 every guard is untested because the only inputs the suite ever built were valid
 ones. Guards are the cheapest place for a mutant to hide, and an outline is the
 cheapest thing that flushes them — one row per way the input can be wrong.
+
+## The door every operation walks through, and nobody walked through it
+
+Seven mutants in `generic()`, the function behind `sutra api <operationId>` — the
+generic invoker that reaches any operation with no bespoke command. They arrived
+one at a time and read like seven unrelated leaks; they are one hole.
+
+`AC-parity-coverage` promises that "for every operation in the API contract, a
+CLI command exists that invokes it." The suite discharges that promise with a
+**static mapping check** over the contract, plus exactly two invocations:
+
+```
+"sutra api listIdentities --json",
+"sutra api listProjects --json",
+```
+
+Both are parameterless reads that succeed. Between them they exercise the
+operation lookup and nothing else. Every decision `generic()` makes after that
+line was untouched, and each one grew a mutant:
+
+| site | mutant | what it did |
+|---|---|---|
+| `len(query) > 0` | `>= 0` | appended a bare `?` to every URL |
+| `len(query) > 0` | `<= 0` | dropped every query parameter |
+| `body != nil` (payload) | `== nil` | dropped every request body |
+| `body != nil` (header) | `== nil` | mislabelled the Content-Type |
+| `method != GET` | `== GET` | keyed reads, left writes unkeyed |
+| `StatusCode >= 400` | `> 400` | reported a 400 as a result |
+| `io.Copy(...); err != nil` | `== nil` | dropped the terminating newline |
+
+This is species 1 at its largest scale. The AC names a set — every operation in
+the contract — and the coverage check samples it *statically*, which proves a
+mapping exists and nothing about what happens when you use it. A command that
+exists but drops half the request covers the operation on paper only.
+
+### Three of them were the same code, written twice
+
+`generic()`'s request construction was a verbatim copy of `doRaw`'s: the same
+nil-body check, the same Content-Type line, the same idempotency-key rule. The
+previous cluster pinned `doRaw`'s copy with `request_test.go`. The other copy sat
+there unfalsifiable, because nothing that tested one touched the other.
+
+The fix was not a second test. It was `newRequest` — one function both doors call
+— which deletes three mutant sites outright and leaves the surviving copy already
+covered. This is the same lesson as the duplicated status rule earlier in this
+document, and it keeps arriving: **duplication is what makes a site
+unfalsifiable, because neither copy can be falsified without the other.**
+
+### One promise the API cannot show you
+
+`>= 0` only ever appends `"?"` to a path with no query. sutra's daemon reads
+`/projects` and `/projects?` as the same request, so nothing an acceptance
+scenario can observe distinguishes them — species 4's neighbourhood, an
+*apparently* equivalent mutant.
+
+It is not equivalent off loopback: an empty query component is a distinct URI,
+and a cache keyed on the request line holds two entries for one resource. So it
+gets the same treatment Content-Type got — a unit test asserting the exact
+`RequestURI` — under the standing rule that **observable guarantees earn
+acceptance criteria; wire and resource decisions earn unit tests.**
+
+### The lesson: coverage of a set is not coverage through it
+
+`AC-parity-coverage` was satisfiable by a check that never sent a request. The
+new `AC-cli-generic-invoker` states what the invoker carries — path parameters
+substituted, query appended, `--body` verbatim, a refusal reported as a failure
+and not a result, output terminated as a line — and the scenario puts a query, a
+body, and a rejection through it.
+
+The general shape, and the eleventh species: **an AC that asserts a mapping
+exists is discharged by checking the map, not the territory.** Where a spec says
+"there is a command for every X," some scenario has to actually run one for an X
+that is not the easiest X.
