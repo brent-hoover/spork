@@ -34,6 +34,7 @@ type cliWorld struct {
 	lastCode   int
 	jsonOut    string
 	yamlOut    string
+	refIssue   string
 	remoteOut  string
 	remote     *importTarget
 	// remotePairs holds one (command, local, remote) triple per command
@@ -453,6 +454,41 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		if !reflect.DeepEqual(a, b) {
 			return fmt.Errorf("yaml diverged from json:\nyaml: %s\njson: %s", clw.yamlOut, clw.jsonOut)
+		}
+		return nil
+	})
+
+	// --- an issue reference splits at the last hyphen
+	sc.Step(`^project "MY-PROJ" exists with one issue$`, func() error {
+		// A key with a hyphen IN it: the split rule only means anything
+		// when the first hyphen and the last are different hyphens.
+		hyphenated, err := iw.createProjectKeyed("MY-PROJ")
+		if err != nil {
+			return err
+		}
+		clw.refIssue, err = iw.createIssueIn(hyphenated, "work in a hyphenated project", "body")
+		return err
+	})
+	sc.Step(`^"sutra issue show" is given the reference (\S+)$`, func(ref string) error {
+		return clw.run("sutra issue show "+ref, nil)
+	})
+	sc.Step(`^it shows that issue$`, func() error {
+		if err := clw.expectSuccess(); err != nil {
+			return err
+		}
+		if !strings.Contains(clw.lastOut, clw.refIssue) {
+			return fmt.Errorf("showed something else: %s", clw.lastOut)
+		}
+		return nil
+	})
+	sc.Step(`^it is refused, naming (\S+) and "([^"]*)"$`, func(ref, complaint string) error {
+		if clw.lastCode == 0 {
+			return fmt.Errorf("reference %q was accepted: %s", ref, clw.lastOut)
+		}
+		for _, want := range []string{ref, complaint} {
+			if !strings.Contains(clw.lastErrOut, want) {
+				return fmt.Errorf("refusal %q missing %q", clw.lastErrOut, want)
+			}
 		}
 		return nil
 	})

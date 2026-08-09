@@ -1377,3 +1377,33 @@ announced that did not happen — is only falsifiable when the marker write fail
 That is a robustness direction, so it earns a unit test: a Workdir that is a
 regular file makes the write fail without permission games, and the assertion is
 that stdout stayed empty. Both halves stated, both halves tested.
+
+### The reference nobody typed wrong
+
+Three more in `cli.go`, all on one line — `if cut <= 0 || cut == len(args[1])-1`
+— and one line is the whole shape check for how an issue is named on the command
+line. The boundary mutant lets a leading hyphen through; the two arithmetic
+mutants let a trailing one through. Every one of them survived because **no
+scenario in the suite ever typed a reference wrong**. `SUT-1` was the only
+reference ever written, and it is well formed.
+
+`SUT-1` also hides the rule the line exists for. A reference splits at the LAST
+hyphen because a project key may contain hyphens of its own — `MY-PROJ-42` is
+issue 42 of `MY-PROJ`, not issue 42 of `MY`. In `SUT-1` the first hyphen and the
+last are the same hyphen, so the split rule decides nothing and a wrong rule
+would pass. That is species 9 once more: a fixture structurally incapable of
+violating the rule it was supposed to check.
+
+`AC-cli-issue-reference` states the split; `AC-cli-reference-shape` states the
+refusal and, more importantly, *when* — on shape alone, before the key becomes a
+lookup. Without that ordering a mistyped reference comes back as `no project
+with key ""`, a complaint about a project the caller never typed. A five-row
+outline covers the ways the alias can fail and kills all three mutants, plus the
+`n < 1` guard on the next line before it was reported.
+
+### The lesson: a validator is a set, and the happy path samples none of it
+
+Three of this build's clusters now have the same root: a linear validator whose
+every guard is untested because the only inputs the suite ever built were valid
+ones. Guards are the cheapest place for a mutant to hide, and an outline is the
+cheapest thing that flushes them — one row per way the input can be wrong.

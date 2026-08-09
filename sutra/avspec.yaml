@@ -66,6 +66,23 @@ requirements:
       - id: AC-parity-remote
         statement: With --server pointing at any sutra instance, every CLI command behaves identically to loopback — the CLI has no private path to daemon internals.
         test: verification/REQ-cli-parity.feature#remote server behaves like loopback
+      - id: AC-cli-issue-reference
+        statement: >-
+          An issue is named on the command line by its display alias,
+          KEY-N, and the alias splits at the LAST hyphen — a project key
+          may contain hyphens of its own, so MY-PROJ-42 is issue 42 of
+          project MY-PROJ and not issue 42 of project MY.
+        test: verification/REQ-cli-parity.feature#an issue reference splits at the last hyphen
+      - id: AC-cli-reference-shape
+        statement: >-
+          A reference that cannot name an issue is refused on its shape
+          alone, before any project is looked up, and the refusal names the
+          reference and the form it must take: a key must precede the
+          hyphen, something must follow it, and what follows must be a
+          positive whole number. Otherwise a malformed reference reaches
+          the lookup and comes back as a complaint about a project the
+          caller never typed.
+        test: verification/REQ-cli-parity.feature#a reference that cannot name an issue is refused on its shape
   - id: REQ-doc-database
     title: Doc database — planning docs filed under project and issue, with versioning
     rationale: Planning artifacts live with the work they describe, not in a separate wiki.
