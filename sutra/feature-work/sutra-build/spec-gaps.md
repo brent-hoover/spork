@@ -1607,3 +1607,41 @@ worth a line of test code. Doing that is cheap — plant the mutation, run the
 suite, restore — and skipping it means writing tests against defects that do not
 exist. **Species 14: a tool that reports a gap has not proved one.** The report
 is a list of places to look.
+
+### What the survivors said first: every listing was tested at cardinality one
+
+The first two survivors reproduced by hand were the same defect in two places:
+`DocumentCursor.Each` and `TemplateCursor.Each`, both mutated so the `err != nil`
+check on the callback becomes `err == nil` — which makes the loop return after
+the first row. Both survived. Neither is a subtle mutation; each turns a listing
+into a listing of one.
+
+They survived because **no scenario ever listed two of anything.** An issue's
+documents were asserted with one document tied, or with none. The template
+catalog was asserted with one template created, then with that template removed
+and the catalog empty. At cardinality zero and one a cursor that streams every
+row and a cursor that stops after the first emit identical bytes, so no
+assertion in either feature could tell them apart.
+
+This is species 1 again — an acceptance criterion that names a set, discharged
+by a scenario that samples one member. `AC-doc-list-by-issue` reads "An issue
+lists its currently tied **documents**"; the scenario tied one. `AC-template-crud`
+says templates can be "created, **listed**, updated, and removed"; the scenario
+listed one. The criteria were not wrong. The scenarios simply never reached the
+cardinality where the word "documents" means more than "document", and nothing
+in the process required them to.
+
+The fix is two extra rows and two extra assertions, and the ordering matters:
+both queries are `ORDER BY` name, so the truncating version keeps the
+first-sorting row and drops the last. `design` before `rollout`, `onboarding`
+before `tech-spec` — in both cases the pre-existing assertion still passes under
+the mutant and only the added one fails. A scenario that added a second item
+sorting *earlier* would have proved nothing.
+
+Both mutants are now KILLED by the unchanged production code.
+
+**The generalisation worth carrying:** wherever a criterion uses a plural, the
+scenario has to reach two. One is the cardinality at which set behaviour and
+scalar behaviour are the same observation, and it is the cardinality that
+fixtures fall into by default, because one is the cheapest number of things to
+set up.

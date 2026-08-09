@@ -263,7 +263,7 @@ func registerDocsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		dw.templates[name] = created.ID
 		return nil
 	})
-	sc.Step(`^it appears in the template list$`, func() error {
+	sc.Step(`^each appears in the template list$`, func() error {
 		if err := iw.s.call(http.MethodGet, "/templates", nil); err != nil {
 			return err
 		}
@@ -274,10 +274,10 @@ func registerDocsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return nil
 	})
-	sc.Step(`^it is updated and then removed$`, func() error {
-		var name, id string
-		for n, i := range dw.templates {
-			name, id = n, i
+	sc.Step(`^"([^"]*)" is updated and then removed$`, func(name string) error {
+		id, ok := dw.templates[name]
+		if !ok {
+			return fmt.Errorf("no template named %q", name)
 		}
 		if err := iw.s.call(http.MethodPut, "/templates/"+id, map[string]string{"content": "updated body"}); err != nil {
 			return err
@@ -306,12 +306,21 @@ func registerDocsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		delete(dw.templates, name)
 		return nil
 	})
-	sc.Step(`^the list reflects each change$`, func() error {
+	// The survivor is named, and it is the ONLY survivor: asserting that
+	// the removed template is gone is not enough on its own, because a
+	// listing that stopped early would also stop showing it.
+	sc.Step(`^the list holds only "([^"]*)"$`, func(name string) error {
 		if err := iw.s.call(http.MethodGet, "/templates", nil); err != nil {
 			return err
 		}
-		if string(iw.s.lastBody) != "[]" {
-			return fmt.Errorf("removed template still listed: %s", iw.s.lastBody)
+		var listed []struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &listed); err != nil {
+			return err
+		}
+		if len(listed) != 1 || listed[0].Name != name {
+			return fmt.Errorf("expected only %q, got %s", name, iw.s.lastBody)
 		}
 		return nil
 	})
