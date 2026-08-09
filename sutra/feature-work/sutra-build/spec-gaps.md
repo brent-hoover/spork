@@ -1110,3 +1110,56 @@ twice across two handlers, with the callee that owned the concept left out of
 it. In both cases the duplication was what made the site unfalsifiable, and
 stating the rule once — in the place that owns it — made it testable without
 weakening anything.
+
+## The kind of deliverable nobody ever read
+
+Both operands of `if (!found || content == nil) && sub.DocVersion != nil`
+survived, in `getReviewDeliverable`. The branch resolves a doc review's text
+from the immutable document version, because a doc review stores no copy of
+what it reviews — a code deliverable renders at submission and the render is
+stored, a doc deliverable is a reference and nothing else. Kill either operand
+and the branch stops firing, and a doc deliverable comes back 409 "submission
+predates stored content" instead of its text.
+
+Nothing caught that, because no scenario had ever read a doc deliverable's
+content. `AC-review-web` says the deliverable's content is shown for reading,
+and the suite discharged it with a code deliverable — species 1, an AC naming
+a set and sampled at one member. The rule that made doc different, that the
+version IS the deliverable and there is no stored copy, appeared only in a
+comment inside the branch it justified — species 2, implemented behavior with
+no AC. The two species compound: the AC that would have covered the doc route
+looks discharged, so the missing AC never shows up as missing.
+
+Added `AC-review-doc-deliverable-resolves`, saying that the two kinds reach
+the reader by different routes and only the doc route has nothing stored to
+fall back on, and a scenario that reads the deliverable of a doc review and
+checks it carries the version's own text. The fixture already existed; no test
+had ever asked it for content.
+
+### A returned bool that was never a second fact
+
+Chasing the survivors turned up a redundant operand. `ContentAt` returned
+`(*string, bool, error)`, and its bool was false exactly when its pointer was
+nil — sql.ErrNoRows was the only path that set it. So `!found || content ==
+nil` was a two-term way of writing `content == nil`, and `!found` could not be
+mutated into anything observable. Dropped the bool: one caller, and the caller
+cared about one thing. Both remaining operands of the branch die under
+mutation, as does the 409 guard below it.
+
+### And one operator that no input can reach
+
+The `&&` itself still survives, and this one is not a testing gap. Swap it for
+`||` and a *code* submission carrying no stored content would enter the doc
+branch and dereference a nil doc version. No such row can exist: the live
+create path renders and stores content for every code deliverable, and import
+refuses a bundle whose code submission omits its content (and, symmetrically,
+one whose doc submission carries any). With both doors enforcing it, `content
+== nil` and `sub.DocVersion != nil` are the same fact about every row the
+database can hold, so `&&` and `||` compute the same answer on all of them.
+
+That also makes the 409 below unreachable — species 5, a guard reachable by no
+input, arrived at from the opposite direction: not a condition nobody thought
+about, but an invariant enforced so completely at every door that the guard
+downstream can never see it broken. Left in place. Removing it would trade a
+dead branch for a live nil dereference the first time an invariant two files
+away stops holding, which is a bad trade for a mutation score.

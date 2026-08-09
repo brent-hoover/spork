@@ -703,8 +703,12 @@ func RevalidateFences(repo Repo, commit string, f Fences) error {
 }
 
 // ContentAt fetches exactly one submission's stored content — the
-// deliverable endpoint's single-row read; 0 selects the latest.
-func ContentAt(tx *sql.Tx, reviewID string, revision int64) (*string, bool, error) {
+// deliverable endpoint's single-row read; 0 selects the latest. A nil
+// content is the one answer for both ways there is none: no such row,
+// and a row that stored none. They are indistinguishable to every
+// caller, because a submission with nothing stored is exactly as
+// unservable as a submission that is not there.
+func ContentAt(tx *sql.Tx, reviewID string, revision int64) (*string, error) {
 	query := `SELECT content FROM review_submissions WHERE review = ? ORDER BY revision DESC LIMIT 1`
 	args := []any{reviewID}
 	if revision != 0 {
@@ -714,12 +718,12 @@ func ContentAt(tx *sql.Tx, reviewID string, revision int64) (*string, bool, erro
 	var content *string
 	err := tx.QueryRow(query, args...).Scan(&content)
 	if err == sql.ErrNoRows {
-		return nil, false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("content of %s r%d: %w", reviewID, revision, err)
+		return nil, fmt.Errorf("content of %s r%d: %w", reviewID, revision, err)
 	}
-	return content, true, nil
+	return content, nil
 }
 
 // SubmissionAt returns the submission for a revision, or the latest

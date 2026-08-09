@@ -29,6 +29,18 @@ Feature: Review lifecycle
       | a real object id cut to twelve digits   | refused as a bad request, naming the form |
       | a full-width string that is not hex     | refused as a bad request, naming the form |
 
+  # A doc review keeps no copy of what it reviews: the immutable version
+  # IS the deliverable, and reading one resolves it from that version.
+  # Code deliverables render at submission and store the render, so every
+  # other scenario that reads a deliverable reads a stored one — and a
+  # handler that could only serve stored content would behave identically
+  # right up until the one kind that has none is asked for, at which
+  # point it reports the submission as predating its own content.
+  Scenario: a doc deliverable resolves from its version, not a stored copy
+    Given issue SUT-1 has a review whose deliverable is a document version
+    When the deliverable of that review is read
+    Then it is served as a doc, carrying the version's own text
+
   Scenario: reviewer sees the deliverable
     Given an open review with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
     When a human opens it in the web UI

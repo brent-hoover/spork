@@ -491,4 +491,32 @@ func registerDocsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		return fmt.Errorf("no review recorded")
 	})
+
+	// --- a doc deliverable resolves from its version
+	sc.Step(`^the deliverable of that review is read$`, func() error {
+		ref, ok := cw.reviews["SUT-1"]
+		if !ok {
+			return fmt.Errorf("no review recorded for SUT-1")
+		}
+		if err := iw.s.call(http.MethodGet, "/reviews/"+ref.id+"/deliverable", nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^it is served as a doc, carrying the version's own text$`, func() error {
+		var resolved struct {
+			Kind    string `json:"kind"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &resolved); err != nil {
+			return err
+		}
+		if resolved.Kind != "doc" {
+			return fmt.Errorf("deliverable kind %q, want doc", resolved.Kind)
+		}
+		if resolved.Content != "the doc under review" {
+			return fmt.Errorf("deliverable content %q, want the document version's own text", resolved.Content)
+		}
+		return nil
+	})
 }

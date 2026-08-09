@@ -560,25 +560,27 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 	if sub.Commit == nil {
 		kind = "doc"
 	}
-	content, found, err := review.ContentAt(tx, rev.ID, revision)
+	content, err := review.ContentAt(tx, rev.ID, revision)
 	if err != nil {
 		_ = tx.Rollback()
 		writeError(w, errorFrom(err))
 		return
 	}
-	if (!found || content == nil) && sub.DocVersion != nil {
-		// Doc deliverables may carry no stored render (imports omit
-		// it); the immutable document version IS the deliverable.
+	if content == nil && sub.DocVersion != nil {
+		// A doc review stores no copy of what it reviews: the immutable
+		// version IS the deliverable, resolved here at read time. Code
+		// deliverables render at submission and store the render, so the
+		// two kinds reach the reader by different routes.
 		version, err := docs.VersionByID(tx, *sub.DocVersion)
 		if err != nil {
 			_ = tx.Rollback()
 			writeError(w, docErrorFrom(err))
 			return
 		}
-		content, found = &version.Content, true
+		content = &version.Content
 	}
 	_ = tx.Rollback()
-	if !found || content == nil {
+	if content == nil {
 		writeError(w, &apiError{status: http.StatusConflict, code: "bad-request", message: "submission predates stored content"})
 		return
 	}

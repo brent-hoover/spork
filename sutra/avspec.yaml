@@ -227,6 +227,9 @@ requirements:
       - id: AC-review-web
         statement: Opening a Review in the web UI shows the deliverable's content for reading.
         test: verification/REQ-code-review.feature#reviewer sees the deliverable
+      - id: AC-review-doc-deliverable-resolves
+        statement: A doc deliverable is stored as a reference to an immutable document version and never as a copy of its text; reading the deliverable resolves that version at read time and serves its own content, identified as a doc. A code deliverable's render is stored at submission, so the two kinds reach the reader by different routes and only the doc route has nothing stored to fall back on.
+        test: verification/REQ-code-review.feature#a doc deliverable resolves from its version, not a stored copy
       - id: AC-review-pinned-base
         statement: For a code deliverable, the stored base_commit and the rendered diff are fixed at submission time; the project's default branch moving afterward changes neither.
         test: verification/REQ-code-review.feature#pinned base survives default branch movement
