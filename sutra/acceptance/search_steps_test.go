@@ -29,6 +29,17 @@ type searchWorld struct {
 	unrelatedReview string
 	sessionThread   string
 	sessionIssues   []string
+
+	// Scope rows: the same three kinds in two projects, plus a review in
+	// the first, so a widening scope has something to widen onto.
+	scopeIssue, scopeDoc, scopeThread, scopeReview string
+	otherIssue, otherDoc, otherThread              string
+	// Siblings of scopeIssue in the same project. The handler gathers
+	// issues into a map before it answers, so the only thing standing
+	// between the reader and an arbitrary order is the sort — and one
+	// sibling is few enough that an arbitrary order comes out sorted by
+	// accident often enough to hide a broken one.
+	scopeSiblings []string
 }
 
 func (sw *searchWorld) reset() {
@@ -85,6 +96,53 @@ func (sw *searchWorld) createIssueWith(title, body, status, assigneeHandle strin
 		}
 	}
 	return created.ID, nil
+}
+
+// createdID reads the id out of the last creation response.
+func (sw *searchWorld) createdID() (string, error) {
+	if err := sw.iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", err
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(sw.iw.s.lastBody, &created); err != nil {
+		return "", err
+	}
+	return created.ID, nil
+}
+
+// The scope scenarios need an issue, a doc, and a thread in each of two
+// projects. Every other fixture in the suite mints its content in the
+// one project the rest of the suite works in, so these take the project
+// as an argument rather than assuming it.
+func (sw *searchWorld) createIssueIn(projectID, title, body string) (string, error) {
+	if err := sw.iw.s.call(http.MethodPost, "/projects/"+projectID+"/issues",
+		map[string]string{"title": title, "body": body, "actor": sw.iw.identities["operator"]}); err != nil {
+		return "", err
+	}
+	return sw.createdID()
+}
+
+func (sw *searchWorld) createDocIn(projectID, title, content string) (string, error) {
+	if err := sw.iw.s.call(http.MethodPost, "/projects/"+projectID+"/documents",
+		map[string]string{"title": title, "content": content, "author": sw.iw.identities["operator"]}); err != nil {
+		return "", err
+	}
+	return sw.createdID()
+}
+
+func (sw *searchWorld) createThreadIn(projectID, title, text string) (string, error) {
+	transcript, err := json.Marshal([]map[string]string{{"speaker": "claude", "text": text}})
+	if err != nil {
+		return "", err
+	}
+	if err := sw.iw.s.call(http.MethodPost, "/threads", map[string]any{
+		"title": title, "transcript": json.RawMessage(transcript),
+		"project": projectID, "actor": sw.iw.identities["operator"]}); err != nil {
+		return "", err
+	}
+	return sw.createdID()
 }
 
 func (sw *searchWorld) createLabel(name string) (string, error) {
@@ -430,6 +488,172 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		if strings.Contains(body, sw.unrelatedReview) {
 			return fmt.Errorf("unrelated review present in listing")
+		}
+		return nil
+	})
+	sc.Step(`^scoping that same session search to a project the work never touched returns nothing$`, func() error {
+		elsewhere, err := iw.createProjectKeyed("OTH")
+		if err != nil {
+			return err
+		}
+		if err := iw.s.call(http.MethodGet, "/search?session=sess-42&project="+url.QueryEscape(elsewhere), nil); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		body := string(iw.s.lastBody)
+		for name, id := range map[string]string{"review": sw.sessionReview, "thread": sw.sessionThread} {
+			if strings.Contains(body, id) {
+				return fmt.Errorf("session %s survived a scope its work never touched", name)
+			}
+		}
+		for _, id := range sw.sessionIssues {
+			if strings.Contains(body, id) {
+				return fmt.Errorf("issue %s survived a scope it does not belong to", id)
+			}
+		}
+		return nil
+	})
+
+	// --- each filter omitted widens the scope
+	sc.Step(`^content in "SUT" and a second project, both mentioning "([^"]*)"$`, func(phrase string) error {
+		if err := cw.ensureGitProject(); err != nil {
+			return err
+		}
+		var err error
+		if sw.scopeIssue, err = sw.createIssueIn(iw.project, "flaky uploads", "the "+phrase+" masks the real bug"); err != nil {
+			return err
+		}
+		// Siblings in the SAME project: ordering within a project has
+		// nothing to compare until several of its issues are here.
+		for _, title := range []string{"duplicate uploads", "the " + phrase + " loops", "uploads stall"} {
+			sibling, err := sw.createIssueIn(iw.project, title, "another "+phrase+" symptom")
+			if err != nil {
+				return err
+			}
+			sw.scopeSiblings = append(sw.scopeSiblings, sibling)
+		}
+		if sw.scopeDoc, err = sw.createDocIn(iw.project, "ops runbook", "our "+phrase+" is exponential backoff"); err != nil {
+			return err
+		}
+		if sw.scopeThread, err = sw.createThreadIn(iw.project, "retry discussion", "we should revisit the "+phrase); err != nil {
+			return err
+		}
+		if err := sw.reviewWithSession("SUT-1", "scoped", "sess-scope"); err != nil {
+			return err
+		}
+		sw.scopeReview = cw.reviews["SUT-1"].id
+
+		other, err := iw.createProjectKeyed("OTH")
+		if err != nil {
+			return err
+		}
+		if sw.otherIssue, err = sw.createIssueIn(other, "slow restores", "their "+phrase+" is too eager"); err != nil {
+			return err
+		}
+		if sw.otherDoc, err = sw.createDocIn(other, "restore notes", "the "+phrase+" we inherited"); err != nil {
+			return err
+		}
+		sw.otherThread, err = sw.createThreadIn(other, "restore chat", "about the "+phrase)
+		return err
+	})
+	sc.Step(`^the search names (.+)$`, func(filters string) error {
+		query := ""
+		switch strings.TrimSpace(filters) {
+		case "nothing at all":
+		case "only the term":
+			query = "?q=" + url.QueryEscape("retry policy")
+		case "only the project":
+			query = "?project=" + iw.project
+		default:
+			return fmt.Errorf("unknown filter set %q", filters)
+		}
+		if err := iw.s.call(http.MethodGet, "/search"+query, nil); err != nil {
+			return err
+		}
+		return iw.s.expectStatus(http.StatusOK)
+	})
+	sc.Step(`^it returns (.+)$`, func(scope string) error {
+		var want map[string]string
+		unwanted := map[string]string{}
+		switch strings.TrimSpace(scope) {
+		case "every issue, review, doc, and thread from both projects":
+			want = map[string]string{
+				"the issue": sw.scopeIssue,
+				"the doc":   sw.scopeDoc, "the thread": sw.scopeThread,
+				"the review": sw.scopeReview, "the far issue": sw.otherIssue,
+				"the far doc": sw.otherDoc, "the far thread": sw.otherThread,
+			}
+		case "the matching issues, docs, and threads from both projects, and no reviews":
+			want = map[string]string{
+				"the issue": sw.scopeIssue,
+				"the doc":   sw.scopeDoc, "the thread": sw.scopeThread,
+				"the far issue": sw.otherIssue, "the far doc": sw.otherDoc, "the far thread": sw.otherThread,
+			}
+			unwanted = map[string]string{"the review": sw.scopeReview}
+		case `everything in "SUT" and nothing from the second project`:
+			want = map[string]string{
+				"the issue": sw.scopeIssue,
+				"the doc":   sw.scopeDoc, "the thread": sw.scopeThread,
+				"the review": sw.scopeReview,
+			}
+			unwanted = map[string]string{
+				"the far issue": sw.otherIssue, "the far doc": sw.otherDoc, "the far thread": sw.otherThread,
+			}
+		default:
+			return fmt.Errorf("unknown scope %q", scope)
+		}
+		// Every row keeps the siblings: they live in "SUT" and mention the
+		// term, so no filter in the table excludes any of them.
+		for idx, id := range sw.scopeSiblings {
+			want[fmt.Sprintf("sibling %d", idx+1)] = id
+		}
+		body := string(iw.s.lastBody)
+		for name, id := range want {
+			if !strings.Contains(body, id) {
+				return fmt.Errorf("%s is missing — the scope did not widen to it", name)
+			}
+		}
+		for name, id := range unwanted {
+			if strings.Contains(body, id) {
+				return fmt.Errorf("%s came back — the scope was wider than the filters asked for", name)
+			}
+		}
+		return nil
+	})
+	sc.Step(`^each project's issues arrive together and in ascending number order$`, func() error {
+		var page struct {
+			Issues []struct {
+				Project string `json:"project"`
+				Number  int64  `json:"number"`
+			} `json:"issues"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &page); err != nil {
+			return err
+		}
+		if len(page.Issues) < 2 {
+			return fmt.Errorf("ordering needs at least two issues, got %d", len(page.Issues))
+		}
+		seen := map[string]bool{}
+		for idx, cur := range page.Issues {
+			if idx == 0 {
+				seen[cur.Project] = true
+				continue
+			}
+			prev := page.Issues[idx-1]
+			if cur.Project == prev.Project {
+				if cur.Number <= prev.Number {
+					return fmt.Errorf("issue %d of the same project came back at number %d after %d",
+						idx, cur.Number, prev.Number)
+				}
+				continue
+			}
+			if seen[cur.Project] {
+				return fmt.Errorf("project %s resumes at position %d after another project interrupted it",
+					cur.Project, idx)
+			}
+			seen[cur.Project] = true
 		}
 		return nil
 	})

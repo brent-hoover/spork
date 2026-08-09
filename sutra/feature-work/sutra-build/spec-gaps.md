@@ -1163,3 +1163,82 @@ about, but an invariant enforced so completely at every door that the guard
 downstream can never see it broken. Left in place. Removing it would trade a
 dead branch for a live nil dereference the first time an invariant two files
 away stops holding, which is a bad trade for a mutation score.
+
+## Every filter named, so the unfiltered query was never asked
+
+Eighteen survivors clustered in one file. `search.go` composes three query
+parameters — `q`, `project`, `session` — and derives a fourth state from them:
+`bare`, meaning none was given. That state gates four separate blocks. Not one
+scenario had ever issued a search with a filter missing. Every scenario in
+REQ-search names a project, a term, or a session, because every AC did.
+
+The handler's own comment claimed the contract required it: "all content in the
+remaining scope — a project when set, otherwise EVERYTHING." The contract says
+that about threads only. The rest was extrapolation, and correct extrapolation
+as it turns out — but a rule nobody wrote down is a rule nobody can check, and
+a handler answering an unfiltered query with nothing at all would have looked
+exactly like one answering it correctly. Species 2, at the widest scale seen so
+far: not one branch unspecified, but a whole axis of the query surface.
+
+`AC-search-scope` states the axis: the filters intersect, so each one omitted
+*widens* the scope rather than narrowing it, and omitting all of them widens it
+to the database. One scenario outline with three rows — nothing at all, only
+the term, only the project — killed fourteen of the fifteen boolean mutants in
+the file.
+
+The asymmetry worth naming in the AC: a review carries no text of its own, so
+it enumerates under a scope but never under a term. That is why the term row
+expects issues, docs, and threads but no reviews, and it is exactly the kind of
+sentence that only gets written when someone tries to state the rule.
+
+### The fifteenth: a filter pair nobody combined
+
+`if project != nil && ref.Project != *project` decides whether a session-reached
+issue belongs in the result. It survived the outline because the outline never
+sets two filters at once, and the session scenario sets `session` alone. Species
+1 again, in its combinatorial form: the rule "filters intersect" was now stated,
+but the one pairing that can violate it — a session whose work reaches an issue
+outside the named project — had no fixture. `AC-search-session` gained the
+second half of its sentence (a session names work, not a place) and the scenario
+gained a step that scopes the same session to a project the work never touched.
+
+### An order the reader depends on and nobody promised
+
+Three more survivors sat in the result sort. The handler gathers issues into a
+map — deliberately, to dedupe across passes — and a Go map has no order at all,
+so the sort is the only thing between the reader and a sequence that changes
+every request. Nothing said so. Every assertion in the suite was
+`strings.Contains(body, id)`, which cannot see order by construction.
+
+`AC-search-scope` gained the guarantee: each project's issues arrive together,
+ascending by number, however many internal passes contributed them. Grouping is
+the promise — not which project leads, since the sort key is a UUID and no
+reader should depend on that.
+
+Killing it took two rounds, and the second round is the lesson. With two issues
+in the project, a mutated comparator that leaves the map order untouched still
+produced a correct-looking answer about a third of the time, because a random
+order of two items is sorted half the time. The assertion was right and the
+fixture was too small to make it bite — species 9, sharpened: not a fixture that
+*cannot* violate the rule, but one that violates it too rarely to notice. Four
+issues in one project, and three runs in a row killed it.
+
+### The meta-lesson: mutants that flip a coin
+
+A mutant whose surviving behavior is *random* cannot be killed by a stronger
+assertion — only by a fixture large enough that accidental correctness stops
+happening. Any gate reporting such a mutant as survived is reporting one sample.
+This is the second sampling trap in this run; the first was the stale tree.
+
+### The first sampling trap: the run tests the tree it started on
+
+Partway through this cluster the survivor list stopped making sense — reported
+mutants in `export.go` were already covered by tests sitting in the working
+tree. The mutation run snapshots the module when it launches, and this one had
+launched 24 commits earlier, before roughly 2,300 lines of unit tests across
+nine new files. Six mutants re-probed by hand against HEAD came back 6/6 killed.
+
+So the output is a *candidate* list, not a work queue. Line numbers belong to
+the snapshot, not to HEAD: reading them needs `git show '<tree>:./path.go'`, and
+acting on them needs a re-probe. Before merge the gate has to run again against
+the tree it is judging.

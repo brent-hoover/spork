@@ -351,8 +351,26 @@ requirements:
       - id: AC-search-cross
         statement: Search spans docs and threads as well — one query surface over issues, docs, and transcripts.
         test: verification/REQ-search.feature#one surface over all content
+      - id: AC-search-scope
+        statement: >-
+          Search filters intersect, so each one omitted widens the scope
+          instead of narrowing it — a term alone searches every project, a
+          project alone returns that project's whole contents, and a query
+          naming no filter at all returns everything in the database.
+          Reviews are the one asymmetry: a review carries no text of its
+          own, so it enumerates under a scope but never under a term.
+          Results carry a stable order that does not leak how they were
+          found: each project's issues arrive together, ascending by issue
+          number, however many internal passes contributed them.
+        test: verification/REQ-search.feature#each filter omitted widens the scope
       - id: AC-search-session
-        statement: Searching by session id returns the work that instance produced — reviews stamped with it, threads imported from it, and their linked issues, including reviews where any historical submission carries the session.
+        statement: >-
+          Searching by session id returns the work that instance produced —
+          reviews stamped with it, threads imported from it, and their linked
+          issues, including reviews where any historical submission carries
+          the session. A session names work, not a place: adding a project
+          narrows that work to the named project rather than letting the
+          session's own reach decide what is in scope.
         test: verification/REQ-search.feature#session id joins an instance's work
   - id: REQ-projects
     title: Projects as first-class containers for issues and docs

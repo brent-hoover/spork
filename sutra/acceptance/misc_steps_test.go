@@ -39,28 +39,6 @@ func (mw *miscWorld) reset() {
 	*mw = miscWorld{iw: mw.iw, cw: mw.cw, templates: map[string]string{}}
 }
 
-func (mw *miscWorld) createProjectKeyed(key string) (string, error) {
-	iw := mw.iw
-	actor, err := iw.identity("operator")
-	if err != nil {
-		return "", err
-	}
-	if err := iw.s.call(http.MethodPost, "/projects", map[string]string{
-		"key": key, "name": "Project " + key, "actor": actor}); err != nil {
-		return "", err
-	}
-	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
-		return "", err
-	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
-		return "", err
-	}
-	return created.ID, nil
-}
-
 func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 	iw := cw.iw
 	mw := &miscWorld{iw: iw, cw: cw, templates: map[string]string{}}
@@ -82,7 +60,7 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			map[string]string{"title": "sut doc", "content": "sut content", "author": actor}); err != nil {
 			return err
 		}
-		other, err := mw.createProjectKeyed("OTH")
+		other, err := iw.createProjectKeyed("OTH")
 		if err != nil {
 			return err
 		}
@@ -138,7 +116,7 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 
 	// --- archive hides without deleting
 	sc.Step(`^project "OTH" is archived$`, func() error {
-		other, err := mw.createProjectKeyed("OTH")
+		other, err := iw.createProjectKeyed("OTH")
 		if err != nil {
 			return err
 		}
@@ -191,7 +169,7 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err != nil {
 			return err
 		}
-		other, err := mw.createProjectKeyed("OTH")
+		other, err := iw.createProjectKeyed("OTH")
 		if err != nil {
 			return err
 		}

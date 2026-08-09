@@ -88,6 +88,30 @@ func (iw *issueWorld) ensureProject() error {
 	return nil
 }
 
+// createProjectKeyed mints an additional project beside the suite's own
+// SUT. Scenarios that need a second project all need the same three
+// lines, so they share these.
+func (iw *issueWorld) createProjectKeyed(key string) (string, error) {
+	actor, err := iw.identity("operator")
+	if err != nil {
+		return "", err
+	}
+	if err := iw.s.call(http.MethodPost, "/projects", map[string]string{
+		"key": key, "name": "Project " + key, "actor": actor}); err != nil {
+		return "", err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return "", err
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+		return "", fmt.Errorf("decode project %s: %w", key, err)
+	}
+	return created.ID, nil
+}
+
 // ensureIssue creates the named issue (SUT-n) if absent; creation order
 // follows first mention, which matches the display-number sequence in
 // every scenario that names more than one.
