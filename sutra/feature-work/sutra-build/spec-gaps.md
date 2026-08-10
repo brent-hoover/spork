@@ -1833,3 +1833,48 @@ live repository separates them.
 > *before* it is a guard that is not tested at all. Unreadable repositories,
 > limits set far from the edge, and sets of one are three shapes of the same
 > mistake.
+
+### The timeouts were the developer's git config
+
+Fifteen mutants in `internal/comments` timed out — 14 on the first run, 15 on
+the second, the same lines both times. None of them was a slow test or a
+mutant-induced infinite loop, the two explanations already catalogued here.
+
+The goroutine dump named the culprit: the test's main goroutine blocked in
+`syscall.Wait4`, waiting on a `git commit` launched by the acceptance
+fixtures. The developer's global git config sets `commit.gpgsign = true`, and
+the fixtures shell out to git with the ambient environment, so every fixture
+commit invokes GPG. With a warm gpg-agent cache it succeeds; with a cold one
+`pinentry` waits for a passphrase that no one is there to type, and the suite
+hangs until something kills it.
+
+So the mutants **were** detected — the suite never passed under any of them.
+The detection surfaced as a hang, and a hang is scored TIMED OUT rather than
+KILLED, which under the old gate meant "excluded from the denominator" and
+under the new one means the gate fails. Either way, fifteen real kills were
+recorded as fifteen unknowns.
+
+The fix is hermetic fixtures: every git invocation in the tests now carries
+`GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_SYSTEM=/dev/null` alongside the
+author and committer variables it already set. The identity was already
+supplied through the environment, so nothing about the fixtures needed the
+ambient config — it was inherited by omission, never by intent.
+
+Two things fell out of it. The three sampled mutants now report KILLED in
+seconds. And the whole suite got faster: acceptance from ~46s to ~18s, the API
+package from ~13s to ~5s. Signing every fixture commit was costing more than
+half the suite's runtime even on the runs that did not hang.
+
+> **Species 17: a test that inherits the developer's environment tests the
+> developer's environment.** The fixtures never asked for signing, a pager, an
+> editor, or a credential helper; they got all of it because they asked for
+> `os.Environ()` and nothing else. The failure is invisible locally — where
+> the config is normal and the agent is usually warm — and changes shape
+> everywhere else: a hang here, a hard failure on CI with no signing key, a
+> different failure again on a machine whose git predates the isolation
+> variables.
+>
+> The same reasoning retires an earlier open question in this document. The
+> "acceptance harness hangs four minutes on a handler panic" was never about
+> panics: it was this, seen through whichever scenario happened to be running
+> when the passphrase cache expired.

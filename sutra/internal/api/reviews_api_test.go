@@ -28,7 +28,7 @@ func newGitRepo(t *testing.T) gitRepo {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v — %s", args, err, out)
@@ -307,7 +307,7 @@ func TestExpectedBaseAndHeadFences(t *testing.T) {
 	crEvent := created["latest_verdict_event"].(string)
 
 	move := exec.Command("git", "-C", repo.path, "merge", "--ff-only", "feature")
-	move.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	move.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	if out, err := move.CombinedOutput(); err != nil {
 		t.Fatalf("advance default branch: %v — %s", err, out)
 	}
@@ -624,7 +624,7 @@ func TestRevisionSyntaxBranchRejected(t *testing.T) {
 	}
 	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "second on main"}} {
 		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v — %s", args, err, out)
 		}
@@ -672,7 +672,7 @@ func TestBinaryDiffServed(t *testing.T) {
 	}
 	for _, args := range [][]string{{"checkout", "feature"}, {"add", "."}, {"commit", "-m", "binary"}} {
 		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v — %s", args, err, out)
 		}
@@ -768,7 +768,7 @@ func TestSubmoduleChangesNeverIgnored(t *testing.T) {
 	sub := newGitRepo(t)
 	repo := newGitRepo(t)
 	gitEnv := append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 		"GIT_ALLOW_PROTOCOL=file")
 	run := func(dir string, args ...string) {
 		t.Helper()
@@ -856,7 +856,7 @@ func TestNonUTF8DiffRejected(t *testing.T) {
 	}
 	for _, args := range [][]string{{"checkout", "feature"}, {"add", "."}, {"commit", "-m", "latin1"}} {
 		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v — %s", args, err, out)
 		}
@@ -938,7 +938,7 @@ func TestDeliverableSurvivesBranchDeletionAndGC(t *testing.T) {
 		{"gc", "--prune=now", "--aggressive"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v — %s", args, err, out)
 		}

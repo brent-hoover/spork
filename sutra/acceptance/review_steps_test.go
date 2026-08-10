@@ -94,7 +94,7 @@ func (rw *crWorld) real(symbolic string) (string, error) {
 func (rw *crWorld) git(args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", rw.cw.repoPath}, args...)...)
 	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %v: %v — %s", args, err, out)
