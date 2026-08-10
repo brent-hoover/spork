@@ -1878,3 +1878,34 @@ half the suite's runtime even on the runs that did not hang.
 > "acceptance harness hangs four minutes on a handler panic" was never about
 > panics: it was this, seen through whichever scenario happened to be running
 > when the passphrase cache expired.
+
+### The one timeout the environment fix did not explain
+
+With the fixtures made hermetic, `internal/comments` went from 7 killed and 15
+timed out to 22 killed and none. One timeout survived, in a different package:
+`identity.go:105`, `OpenList`'s error guard.
+
+Negated, the function returns before the `Cursor` is built, so the `*sql.Rows`
+it just opened is never closed. Every listing leaks a read cursor; the leaked
+readers starve SQLite's writers; the suite goes from 18 seconds to not
+finishing in ten minutes. It is not slow — no timeout coefficient reaches it.
+
+That makes it a genuinely different animal from the GPG hangs. Those were the
+harness failing to report a kill. This one is the mutant *causing* a hang, the
+species already catalogued here as "timeouts that are neither survivors nor
+defects" — and it is the case a zero-timeout gate cannot tell apart from a
+real gap.
+
+The resolution is not to weaken the gate but to remove the shape that makes
+the hang possible. `OpenList` now hands the rows to the cursor before any
+return, so whichever branch returns the error also closes what was opened, and
+`Close` tolerates a cursor whose query never produced rows. Under the same
+mutation the suite now fails in 17 seconds instead of hanging.
+
+> **The generalisation:** a guard whose failure mode is a *leak* is a guard
+> whose mutant hangs, and a hang is the one outcome no test can report as a
+> failure. Owning the resource before the first return converts that hang into
+> an error — which is to say, it converts an unfalsifiable branch into a
+> falsifiable one. This is the same lesson as the duplicated `filterClause`,
+> reached from the opposite direction: structure decides what is testable, and
+> the mutation gate is what finds the structure that is not.

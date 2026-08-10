@@ -102,10 +102,18 @@ func OpenList(db *sql.DB, kind string) (*Cursor, error) {
 		query, args = `SELECT id, handle, kind, display_name FROM identities WHERE kind = ? ORDER BY handle`, []any{kind}
 	}
 	rows, err := db.Query(query, args...)
+	// The cursor takes ownership of the handle before anything can
+	// return, so every exit from here closes what it opened. Returning
+	// the error without closing leaks an open read cursor, and a leaked
+	// read cursor does not fail — it starves SQLite's writers, so the
+	// symptom is a hang rather than an error, which is the one failure
+	// shape no test can report.
+	cursor := &Cursor{rows: rows}
 	if err != nil {
+		_ = cursor.Close()
 		return nil, fmt.Errorf("list identities: %w", err)
 	}
-	return &Cursor{rows: rows}, nil
+	return cursor, nil
 }
 
 func (c *Cursor) Each(fn func(Identity) error) error {
@@ -124,7 +132,15 @@ func (c *Cursor) Each(fn func(Identity) error) error {
 	return nil
 }
 
-func (c *Cursor) Close() error { return c.rows.Close() }
+// Close releases the cursor's rows. A cursor whose query failed holds
+// none, and closing it is still safe — the caller closes what it was
+// handed without having to know whether the query got that far.
+func (c *Cursor) Close() error {
+	if c.rows == nil {
+		return nil
+	}
+	return c.rows.Close()
+}
 
 // Lookup returns the identity an id names, or NotFoundError.
 func Lookup(tx *sql.Tx, id string) (Identity, error) {
