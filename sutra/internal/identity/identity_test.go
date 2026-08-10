@@ -120,3 +120,45 @@ func TestCreateConcurrentDuplicates(t *testing.T) {
 		}
 	}
 }
+
+// TestCursorCloseReleasesTheConnection pins what Close is FOR.
+//
+// Nothing else here observes it. Every other use closes a cursor and then
+// stops caring, so a Close that returns nil without releasing anything
+// passes every test in this package and every scenario in the suite — the
+// rows are simply never read again. What a leaked cursor does instead is
+// hold its connection open, and open readers block writers, so the symptom
+// arrives later and somewhere else as a stall rather than a failure.
+//
+// database/sql counts the connections in use, which turns "the handle was
+// released" into something a test can assert directly: one is held while
+// the cursor is open, and none after it is closed.
+func TestCursorCloseReleasesTheConnection(t *testing.T) {
+	db := openDB(t)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for _, handle := range []string{"claude", "human-brent"} {
+		if _, err := identity.Create(tx, handle, "agent", nil); err != nil {
+			t.Fatalf("create %s: %v", handle, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	cursor, err := identity.OpenList(db, "")
+	if err != nil {
+		t.Fatalf("open list: %v", err)
+	}
+	if got := db.Stats().InUse; got != 1 {
+		t.Fatalf("an open cursor must hold its connection, InUse=%d", got)
+	}
+	if err := cursor.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if got := db.Stats().InUse; got != 0 {
+		t.Fatalf("Close did not release the connection, InUse=%d", got)
+	}
+}

@@ -1909,3 +1909,33 @@ mutation the suite now fails in 17 seconds instead of hanging.
 > falsifiable one. This is the same lesson as the duplicated `filterClause`,
 > reached from the opposite direction: structure decides what is testable, and
 > the mutation gate is what finds the structure that is not.
+
+### The fix moved the hole rather than closing it
+
+Making `OpenList` own its rows removed the hang — identity went from one
+timeout to none, and the killed count rose 12 to 13. But the same run reported
+a LIVED that had not existed before: `identity.go:139`, the `c.rows == nil`
+guard the fix introduced in `Close`.
+
+Negated, `Close` returns without closing anything, and the whole suite passes.
+It passes because no test ever looks: every existing use closes a cursor and
+then stops caring, so the rows are simply never read again. What a leaked
+cursor actually does is hold its connection, and open readers block writers —
+so the consequence surfaces later, somewhere else, as a stall rather than a
+failure.
+
+That is the same unfalsifiability as before, one level down. A guard whose
+only effect is releasing a resource cannot be falsified by any assertion about
+*results*, because the results are identical either way. It needs an assertion
+about the resource.
+
+`database/sql` keeps the count, so the observation is direct: one connection
+in use while the cursor is open, none after it closes. Both mutants now die in
+about seventeen seconds.
+
+> **The generalisation:** the mutation gate does not only find untested rules,
+> it finds untested *obligations*. A `Close` that nobody checks, a lock nobody
+> observes being released, a buffer nobody watches drain — each is a branch the
+> program depends on and no result-shaped assertion can reach. When a fix for
+> one survivor introduces a new guard, the new guard needs its own assertion,
+> or the hole has only moved.
