@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -359,6 +360,44 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		}
 		if !strings.Contains(envelope.Message, "must be an identity uuid") {
 			return fmt.Errorf("expected the refusal to name the identifier's form, got %q", envelope.Message)
+		}
+		return nil
+	})
+
+	// --- every road into the server refuses a non-canonical identifier
+	sc.Step(`^that id is supplied (.+)$`, func(road string) error {
+		issueID, err := iw.ensureIssue("SUT-1")
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(road) {
+		case "as the author of a new comment":
+			return iw.s.call(http.MethodPost, "/comments",
+				map[string]any{"issue": issueID, "author": mw.ghostID, "body": "from nobody"})
+		case "as the identity in a work-stack pop path":
+			return iw.s.call(http.MethodPost, "/identities/"+mw.ghostID+"/work-stack/pop", map[string]any{})
+		case "as the assignee filter on a listing":
+			return iw.s.call(http.MethodGet, "/projects/"+iw.project+"/issues?assignee="+url.QueryEscape(mw.ghostID), nil)
+		}
+		return fmt.Errorf("unknown road %q", road)
+	})
+	sc.Step(`^the request is refused for the identifier's form$`, func() error {
+		if err := iw.s.expectStatus(http.StatusBadRequest); err != nil {
+			return err
+		}
+		if err := iw.s.expectErrorCode("bad-request"); err != nil {
+			return err
+		}
+		var envelope struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &envelope); err != nil {
+			return err
+		}
+		// The message is what separates "this is not an identifier" from
+		// "this identifier names nothing" — and the second is false here.
+		if !strings.Contains(envelope.Message, "uuid") || strings.Contains(envelope.Message, "names no") {
+			return fmt.Errorf("expected a refusal naming the identifier's form, got %q", envelope.Message)
 		}
 		return nil
 	})

@@ -183,8 +183,8 @@ func TestUnifiedDiffConsecutiveAdditionsInTheWalk(t *testing.T) {
 // distinguishable: minimal keeps it as context, the fallback restates
 // it on both sides.
 func TestUnifiedDiffCellBoundary(t *testing.T) {
-	docs.SetMaxDiffCellsForTest(9)
-	defer docs.SetMaxDiffCellsForTest(4 << 20)
+	restoreCells := docs.SetMaxDiffCellsForTest(9)
+	defer docs.SetMaxDiffCellsForTest(restoreCells)
 
 	// Middles of 2 and 2: (2+1) cells wide against 9/(2+1) — exactly
 	// at the bound, so the minimal diff still runs.
@@ -257,8 +257,8 @@ func TestUnifiedDiffNULContent(t *testing.T) {
 // TestCheckDiffableLineBound pins the line-density guard: within the
 // byte bound, newline-dense content still refuses to split.
 func TestCheckDiffableLineBound(t *testing.T) {
-	docs.SetMaxDiffLinesForTest(8)
-	defer docs.SetMaxDiffLinesForTest(8 << 20)
+	restoreLines := docs.SetMaxDiffLinesForTest(8)
+	defer docs.SetMaxDiffLinesForTest(restoreLines)
 	if err := docs.CheckDiffable(version(1, "a\nb\n"), version(2, "a\nc\n")); err != nil {
 		t.Fatalf("sparse content must pass: %v", err)
 	}
@@ -282,8 +282,8 @@ func TestCheckDiffableLineBound(t *testing.T) {
 // unterminated content, but only far inside the limit, where counting
 // that last line and not counting it reach the same verdict.
 func TestCheckDiffableCountsUnterminatedAtLimit(t *testing.T) {
-	docs.SetMaxDiffLinesForTest(8)
-	defer docs.SetMaxDiffLinesForTest(8 << 20)
+	restoreLines := docs.SetMaxDiffLinesForTest(8)
+	defer docs.SetMaxDiffLinesForTest(restoreLines)
 
 	// Seven newlines plus an unterminated eighth line: exactly at the
 	// limit, and only if that last line counts.
@@ -319,9 +319,11 @@ func TestCheckDiffableCountsLines(t *testing.T) {
 			}
 		})
 	}
-	// Exactly at the documented limit passes; one line beyond does not.
-	const limit = 8 << 20 // maxDiffLines
-	atLimit := strings.Repeat("x\n", limit)
+	// Exactly at the bound in force passes; one line beyond does not.
+	// Read from the package rather than restated here: a literal copy
+	// asserts the boundary wherever it used to be.
+	limit := docs.MaxDiffLinesForTest()
+	atLimit := strings.Repeat("x\n", int(limit))
 	if err := docs.CheckDiffable(docs.Version{Content: atLimit}, docs.Version{}); err != nil {
 		t.Fatalf("content at the documented limit rejected: %v", err)
 	}

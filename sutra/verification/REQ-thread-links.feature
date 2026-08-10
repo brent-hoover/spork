@@ -23,3 +23,12 @@ Feature: Threads tied to work
     Then the anchor is refused as a bad request
     When "SUT" is archived and the thread is retargeted to the other project
     Then the anchor is refused as a conflict and the thread still belongs to "SUT"
+
+  # The converse, and the half the case above cannot see: the project the
+  # thread JOINS. There its own project is live, so the request arrives
+  # routed under a writable project — a guard that asked only about that
+  # one would move a thread into a frozen project without noticing.
+  Scenario: a thread cannot be retargeted into an archived project
+    Given a thread imported anchored only to project "SUT"
+    When the other project is archived and the thread is retargeted into it
+    Then the anchor is refused as a conflict and the thread still belongs to "SUT"

@@ -410,6 +410,12 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, errorFrom(err)
 		}
+		// The explicit rollbacks below are what release the connection
+		// before git runs — that ordering is the point of this stage.
+		// This defer covers only what they cannot: a panic between here
+		// and one of them. Rolling back a finished transaction is a
+		// no-op, so it holds nothing open.
+		defer func() { _ = read.Rollback() }()
 		if apiErr := requireActor(read, req.Author); apiErr != nil {
 			_ = read.Rollback()
 			return nil, apiErr
@@ -544,6 +550,9 @@ func (s *server) getReviewDeliverable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errorFrom(err))
 		return
 	}
+	// The explicit rollback before the response is what keeps a
+	// connection off the wire write; this catches a panic before it.
+	defer func() { _ = tx.Rollback() }()
 	rev, err := review.Get(tx, r.PathValue("reviewId"))
 	if err != nil {
 		_ = tx.Rollback()
@@ -767,6 +776,12 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, errorFrom(err)
 		}
+		// The explicit rollbacks below are what release the connection
+		// before git runs — that ordering is the point of this stage.
+		// This defer covers only what they cannot: a panic between here
+		// and one of them. Rolling back a finished transaction is a
+		// no-op, so it holds nothing open.
+		defer func() { _ = read.Rollback() }()
 		if apiErr := requireActor(read, req.Author); apiErr != nil {
 			_ = read.Rollback()
 			return nil, apiErr

@@ -29,6 +29,17 @@ Feature: Review lifecycle
       | a real object id cut to twelve digits   | refused as a bad request, naming the form |
       | a full-width string that is not hex     | refused as a bad request, naming the form |
 
+  # Every id above that was 64 digits wide was also an id no repository
+  # held, so the outline proves only that the validator RECOGNISES the
+  # second width — a submission path that refused every real sha-256
+  # commit, at resolution or at render, would still pass it. Accepting one
+  # is the other half of "either width", and it takes a repository built
+  # that way.
+  Scenario: a sha-256 repository's own commit is accepted
+    Given a git-backed project whose repository uses sha-256 object ids, and issue SUT-1
+    When an agent creates a review at a commit that repository actually holds
+    Then the review is created, pinned at that 64-digit id
+
   # A doc review keeps no copy of what it reviews: the immutable version
   # IS the deliverable, and reading one resolves it from that version.
   # Code deliverables render at submission and store the render, so every

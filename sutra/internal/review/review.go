@@ -704,10 +704,12 @@ func RevalidateFences(repo Repo, commit string, f Fences) error {
 
 // ContentAt fetches exactly one submission's stored content — the
 // deliverable endpoint's single-row read; 0 selects the latest. A nil
-// content is the one answer for both ways there is none: no such row,
-// and a row that stored none. They are indistinguishable to every
-// caller, because a submission with nothing stored is exactly as
-// unservable as a submission that is not there.
+// content conflates the two ways there is none: no such row, and a row
+// whose content is SQL NULL. That conflation is safe because the caller
+// has already established which submission it is asking about, and it
+// resolves the NULL case itself: a doc deliverable stores nothing on
+// purpose — its immutable version IS the deliverable — so a nil sends
+// the caller to that version rather than to an error.
 func ContentAt(tx *sql.Tx, reviewID string, revision int64) (*string, error) {
 	query := `SELECT content FROM review_submissions WHERE review = ? ORDER BY revision DESC LIMIT 1`
 	args := []any{reviewID}

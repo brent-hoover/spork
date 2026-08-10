@@ -349,6 +349,57 @@ func registerReviewFenceSteps(sc *godog.ScenarioContext, cw *closeWorld, rw *crW
 	sc.Step(`^the submission is refused as a conflict$`, func() error {
 		return iw.s.expectStatus(http.StatusConflict)
 	})
+
+	// --- a sha-256 repository's own commit is accepted
+	sc.Step(`^a git-backed project whose repository uses sha-256 object ids, and issue (SUT-\d+)$`, func(issueName string) error {
+		// Set before the repository is built: the format is chosen at
+		// init and cannot be changed after.
+		cw.objectFormat = "sha256"
+		if err := cw.ensureGitProject(); err != nil {
+			return err
+		}
+		_, err := iw.ensureIssue(issueName)
+		return err
+	})
+	sc.Step(`^an agent creates a review at a commit that repository actually holds$`, func() error {
+		sha, err := fw.rw.real("sha256-pin")
+		if err != nil {
+			return err
+		}
+		if len(sha) != 64 {
+			return fmt.Errorf("the repository minted a %d-digit id; the fixture is not sha-256", len(sha))
+		}
+		issueID, err := iw.ensureIssue("SUT-1")
+		if err != nil {
+			return err
+		}
+		author, err := iw.identity("claude")
+		if err != nil {
+			return err
+		}
+		return iw.s.call(http.MethodPost, "/reviews", map[string]any{
+			"issue": issueID, "author": author, "branch": "work", "commit": sha})
+	})
+	sc.Step(`^the review is created, pinned at that 64-digit id$`, func() error {
+		if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+			return err
+		}
+		var created struct {
+			Commit *string `json:"commit"`
+			State  string  `json:"state"`
+		}
+		if err := json.Unmarshal(iw.s.lastBody, &created); err != nil {
+			return err
+		}
+		want := fw.rw.sha["sha256-pin"]
+		if created.Commit == nil || *created.Commit != want {
+			return fmt.Errorf("review pinned at %v, want the submitted %q", created.Commit, want)
+		}
+		if created.State != "open" {
+			return fmt.Errorf("review is %q, want open", created.State)
+		}
+		return nil
+	})
 	sc.Step(`^the submission is refused as a bad request, naming the form$`, func() error {
 		if err := iw.s.expectStatus(http.StatusBadRequest); err != nil {
 			return err

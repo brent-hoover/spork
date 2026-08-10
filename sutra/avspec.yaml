@@ -253,6 +253,16 @@ requirements:
       - id: AC-review-commit-pin
         statement: A code deliverable's commit is accepted only as a full object id — the whole hash, at either width git's two object formats produce — because only a full id is an immutable pin; an abbreviation names whatever it currently disambiguates to and can come to name a second object, or none, as the repository grows. An id of any other form is refused as a bad request naming the form, which is a different refusal from a well-formed id that the project's repository does not hold — that one is a conflict.
         test: verification/REQ-code-review.feature#a deliverable is pinned only by a full object id
+      - id: AC-review-commit-width-accepted
+        statement: >-
+          The other half of "either width": a sha-256 object id the project's
+          own repository holds is ACCEPTED, and the review is created pinned
+          at the whole 64-digit id. Every wide id the refusal criterion
+          samples names no object anywhere, so those cases prove only that
+          the validator recognises the width — a submission path that
+          resolved or rendered nothing wider than sha-1 would satisfy them
+          all and still refuse every real sha-256 repository.
+        test: verification/REQ-code-review.feature#a sha-256 repository's own commit is accepted
       - id: AC-review-web
         statement: Opening a Review in the web UI shows the deliverable's content for reading.
         test: verification/REQ-code-review.feature#reviewer sees the deliverable
@@ -449,6 +459,15 @@ requirements:
       - id: AC-identity-canonical-casing
         statement: An identifier supplied to any API door is accepted only in the canonical lowercase form the contract declares. An existing id sent in another casing is refused for its form — a bad request naming what an identifier must look like — rather than passed down to the store, where it misses and comes back reported as an id that names no identity. Identifiers are compared as case-sensitive text at every layer, so a second accepted casing would let one entity be named by two values.
         test: verification/REQ-identities.feature#an identifier in non-canonical casing is refused for its form
+      - id: AC-identity-canonical-casing-roads
+        statement: >-
+          "Any door" is three roads and they are different code: a body
+          field, a path segment, and a query filter. Each refuses a
+          non-canonical identifier for its FORM, so the rule cannot hold on
+          one road and lapse on another — and the query road matters most,
+          because its lapse produces an empty listing that reads as a
+          legitimate answer rather than an error anyone would chase.
+        test: verification/REQ-identities.feature#every road into the server refuses a non-canonical identifier
   - id: REQ-notifications
     title: Event feed with cursor-based polling
     rationale: Poll-only by design — every subscriber today lives on the same machine; webhooks return only when a remote subscriber exists (delivery-only change, the Event stream already carries everything).
@@ -542,6 +561,14 @@ requirements:
           archived project is that project's read-only content and cannot be
           moved out of it.
         test: verification/REQ-thread-links.feature#an anchor is guarded at both ends
+      - id: AC-thread-anchor-destination-live
+        statement: >-
+          The arriving end of that guard, which the leaving end cannot stand
+          in for: a thread whose own project is live cannot be retargeted
+          INTO an archived one. The request is routed under a writable
+          project, so only a check on the destination refuses it, and the
+          thread keeps the anchor it had.
+        test: verification/REQ-thread-links.feature#a thread cannot be retargeted into an archived project
 
 apps:
   - id: APP-sutra

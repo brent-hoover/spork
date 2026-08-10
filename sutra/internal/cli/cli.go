@@ -451,8 +451,11 @@ func (c *client) generic(args []string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
+		// A refusal is not a result: stdout stays EMPTY so a pipeline
+		// downstream never reads an error document as the answer. The
+		// server's explanation still reaches a human, on stderr.
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		_, _ = fmt.Fprintln(c.env.Stdout, string(msg))
+		_, _ = fmt.Fprintln(c.env.Stderr, string(msg))
 		return fmt.Errorf("%s returned %d", args[0], resp.StatusCode)
 	}
 	if _, err := io.Copy(c.env.Stdout, resp.Body); err != nil {

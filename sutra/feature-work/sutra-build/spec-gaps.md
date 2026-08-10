@@ -1065,17 +1065,30 @@ timeout costs nothing and needs no exclusion — the right response is to read
 the site, confirm the panic is guard-manufactured, and move on. But the four
 minutes each one burns is not gremlins' doing: a handler panic should fail the
 acceptance suite immediately, and instead the run hangs until the *binary*
-timeout fires. `go test -timeout` is not honored here — something in godog's
-flag handling inside `TestMain` overrides it — so every panicking mutant costs
-the wall clock of a full binary timeout rather than a failed scenario. Both
-mechanisms that could plausibly wedge a real server were checked and are
-panic-safe (every `s.db.Begin()` is followed by a deferred rollback; the
-large-body slot is released by a deferred `release()`), so this is a harness
-property, not a production one.
+timeout fires. `go test -timeout` is not honored here, and godog's flags have
+nothing to do with it: `TestMain` runs `godog.TestSuite{…}.Run()` and exits on
+its status *before* it ever calls `m.Run()`, and the timeout watchdog is armed
+by `m.Run`. The whole acceptance suite therefore executes outside the runtime
+that enforces the flag. The remedy is to run godog through `m.Run` (a normal
+`Test…` function with `Options.TestingT` set) or to arm an explicit suite
+watchdog; both are harness changes.
 
-Left alone deliberately — restructuring the harness is not in scope for the
-build — but it is the thing to fix first if the mutation gate is ever to run in
-CI, and it belongs in whatever respecifies that gate.
+Review 1968 also caught a false claim here: this section used to assert that
+every `s.db.Begin()` was followed by a deferred rollback, and it was not. The
+review create and resubmit prepare stages opened a read transaction and
+released it through explicit `Rollback` calls on each exit — deliberately, so
+that no connection is held across the git work that follows — with no defer to
+cover a panic between them. Both panicking mutants land inside that window, so
+a mutated server leaked the transaction as well as hanging. Each prepare stage
+now defers a rollback immediately after `Begin`, keeping the explicit calls
+that do the real releasing; rolling back a finished transaction is a no-op, so
+the ordering the stage depends on is unchanged. With that fixed, the original
+conclusion holds: both wedge mechanisms (transaction, large-body slot) are
+panic-safe, and the hang is a harness property.
+
+The harness restructuring is left alone deliberately — it is not in scope for
+the build — but it is the thing to fix first if the mutation gate is ever to
+run in CI, and it belongs in whatever respecifies that gate.
 
 ## A guard duplicated at every call site, where the callee already knew
 

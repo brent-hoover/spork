@@ -564,6 +564,12 @@ func registerCLISteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if !strings.Contains(clw.lastErrOut, "createIssue returned 400") {
 			return fmt.Errorf("refusal did not name the status: %q", clw.lastErrOut)
 		}
+		// And the refusal is not a result: stdout carries nothing, so a
+		// pipeline reading this command sees an empty answer rather than
+		// an error document it may well decode as data.
+		if clw.lastOut != "" {
+			return fmt.Errorf("a refusal wrote to stdout: %q", clw.lastOut)
+		}
 		return nil
 	})
 

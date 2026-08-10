@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
+	"strings"
 
 	"sutra/internal/comments"
 	"sutra/internal/docs"
@@ -34,61 +36,67 @@ func New(db *sql.DB) (http.Handler, error) {
 	}
 	s := &server{db: db}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /identities", s.createIdentity)
-	mux.HandleFunc("GET /identities", s.listIdentities)
-	mux.HandleFunc("POST /projects", s.createProject)
-	mux.HandleFunc("GET /projects", s.listProjects)
-	mux.HandleFunc("GET /projects/{projectId}", s.getProject)
-	mux.HandleFunc("POST /projects/{projectId}/archive", s.archiveProject)
-	mux.HandleFunc("GET /events", s.listEvents)
-	mux.HandleFunc("POST /projects/{projectId}/issues", s.createIssue)
-	mux.HandleFunc("GET /projects/{projectId}/issues", s.listIssues)
-	mux.HandleFunc("GET /issues/{issueId}", s.getIssue)
-	mux.HandleFunc("PATCH /issues/{issueId}", s.updateIssue)
-	mux.HandleFunc("POST /issues/{issueId}/status", s.updateIssueStatus)
-	mux.HandleFunc("POST /issues/{issueId}/assign", s.assignIssue)
-	mux.HandleFunc("POST /identities/{identityId}/work-stack/pop", s.popWorkStack)
-	mux.HandleFunc("POST /issues/{issueId}/relations", s.addIssueRelation)
-	mux.HandleFunc("GET /issues/{issueId}/relations", s.listIssueRelations)
-	mux.HandleFunc("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation)
-	mux.HandleFunc("POST /reviews", s.createReview)
-	mux.HandleFunc("GET /reviews", s.listReviews)
-	mux.HandleFunc("GET /reviews/{reviewId}", s.getReview)
-	mux.HandleFunc("POST /reviews/{reviewId}/verdict", s.setReviewVerdict)
-	mux.HandleFunc("POST /reviews/{reviewId}/consume", s.consumeReviewApproval)
-	mux.HandleFunc("POST /reviews/{reviewId}/resubmit", s.resubmitReview)
-	mux.HandleFunc("GET /reviews/{reviewId}/deliverable", s.getReviewDeliverable)
-	mux.HandleFunc("POST /projects/{projectId}/documents", s.createDocument)
-	mux.HandleFunc("GET /projects/{projectId}/documents", s.listProjectDocuments)
-	mux.HandleFunc("GET /issues/{issueId}/documents", s.listIssueDocuments)
-	mux.HandleFunc("GET /issues/{issueId}/events", s.listIssueEvents)
-	mux.HandleFunc("POST /labels", s.createLabel)
-	mux.HandleFunc("POST /comments", s.createComment)
-	mux.HandleFunc("GET /comments", s.listComments)
-	mux.HandleFunc("GET /labels", s.listLabels)
-	mux.HandleFunc("POST /issues/{issueId}/labels", s.attachLabel)
-	mux.HandleFunc("DELETE /issues/{issueId}/labels/{labelId}", s.detachLabel)
-	mux.HandleFunc("POST /threads", s.importThread)
-	mux.HandleFunc("GET /threads/search", s.searchThreads)
-	mux.HandleFunc("GET /search", s.search)
-	mux.HandleFunc("GET /projects/{projectId}/export", s.exportProject)
-	mux.HandleFunc("POST /projects/import", s.importProject)
-	mux.HandleFunc("GET /threads/{threadId}", s.getThread)
-	mux.HandleFunc("POST /threads/{threadId}/anchor", s.setThreadAnchor)
-	mux.HandleFunc("GET /issues/{issueId}/threads", s.listIssueThreads)
-	mux.HandleFunc("GET /documents/{documentId}", s.getDocument)
-	mux.HandleFunc("POST /documents/{documentId}/versions", s.saveDocVersion)
-	mux.HandleFunc("GET /documents/{documentId}/meta", s.getDocumentMeta)
-	mux.HandleFunc("GET /documents/{documentId}/versions", s.listDocVersions)
-	mux.HandleFunc("GET /doc-versions/{docVersionId}", s.getDocVersion)
-	mux.HandleFunc("GET /documents/{documentId}/diff", s.diffDocVersions)
-	mux.HandleFunc("POST /documents/{documentId}/issue", s.linkDocumentToIssue)
-	mux.HandleFunc("DELETE /documents/{documentId}/issue", s.unlinkDocumentFromIssue)
-	mux.HandleFunc("POST /templates", s.createTemplate)
-	mux.HandleFunc("GET /templates", s.listTemplates)
-	mux.HandleFunc("GET /templates/{templateId}", s.getTemplate)
-	mux.HandleFunc("PUT /templates/{templateId}", s.updateTemplate)
-	mux.HandleFunc("DELETE /templates/{templateId}", s.deleteTemplate)
+	// Every route goes on through guardIdentifiers, so no handler can be
+	// added that reads an id from its path or query without the form
+	// check: registering it IS the check (AC-identity-canonical-casing).
+	handle := func(pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, guardIdentifiers(pattern, h))
+	}
+	handle("POST /identities", s.createIdentity)
+	handle("GET /identities", s.listIdentities)
+	handle("POST /projects", s.createProject)
+	handle("GET /projects", s.listProjects)
+	handle("GET /projects/{projectId}", s.getProject)
+	handle("POST /projects/{projectId}/archive", s.archiveProject)
+	handle("GET /events", s.listEvents)
+	handle("POST /projects/{projectId}/issues", s.createIssue)
+	handle("GET /projects/{projectId}/issues", s.listIssues)
+	handle("GET /issues/{issueId}", s.getIssue)
+	handle("PATCH /issues/{issueId}", s.updateIssue)
+	handle("POST /issues/{issueId}/status", s.updateIssueStatus)
+	handle("POST /issues/{issueId}/assign", s.assignIssue)
+	handle("POST /identities/{identityId}/work-stack/pop", s.popWorkStack)
+	handle("POST /issues/{issueId}/relations", s.addIssueRelation)
+	handle("GET /issues/{issueId}/relations", s.listIssueRelations)
+	handle("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation)
+	handle("POST /reviews", s.createReview)
+	handle("GET /reviews", s.listReviews)
+	handle("GET /reviews/{reviewId}", s.getReview)
+	handle("POST /reviews/{reviewId}/verdict", s.setReviewVerdict)
+	handle("POST /reviews/{reviewId}/consume", s.consumeReviewApproval)
+	handle("POST /reviews/{reviewId}/resubmit", s.resubmitReview)
+	handle("GET /reviews/{reviewId}/deliverable", s.getReviewDeliverable)
+	handle("POST /projects/{projectId}/documents", s.createDocument)
+	handle("GET /projects/{projectId}/documents", s.listProjectDocuments)
+	handle("GET /issues/{issueId}/documents", s.listIssueDocuments)
+	handle("GET /issues/{issueId}/events", s.listIssueEvents)
+	handle("POST /labels", s.createLabel)
+	handle("POST /comments", s.createComment)
+	handle("GET /comments", s.listComments)
+	handle("GET /labels", s.listLabels)
+	handle("POST /issues/{issueId}/labels", s.attachLabel)
+	handle("DELETE /issues/{issueId}/labels/{labelId}", s.detachLabel)
+	handle("POST /threads", s.importThread)
+	handle("GET /threads/search", s.searchThreads)
+	handle("GET /search", s.search)
+	handle("GET /projects/{projectId}/export", s.exportProject)
+	handle("POST /projects/import", s.importProject)
+	handle("GET /threads/{threadId}", s.getThread)
+	handle("POST /threads/{threadId}/anchor", s.setThreadAnchor)
+	handle("GET /issues/{issueId}/threads", s.listIssueThreads)
+	handle("GET /documents/{documentId}", s.getDocument)
+	handle("POST /documents/{documentId}/versions", s.saveDocVersion)
+	handle("GET /documents/{documentId}/meta", s.getDocumentMeta)
+	handle("GET /documents/{documentId}/versions", s.listDocVersions)
+	handle("GET /doc-versions/{docVersionId}", s.getDocVersion)
+	handle("GET /documents/{documentId}/diff", s.diffDocVersions)
+	handle("POST /documents/{documentId}/issue", s.linkDocumentToIssue)
+	handle("DELETE /documents/{documentId}/issue", s.unlinkDocumentFromIssue)
+	handle("POST /templates", s.createTemplate)
+	handle("GET /templates", s.listTemplates)
+	handle("GET /templates/{templateId}", s.getTemplate)
+	handle("PUT /templates/{templateId}", s.updateTemplate)
+	handle("DELETE /templates/{templateId}", s.deleteTemplate)
 	return mux, nil
 }
 
@@ -217,6 +225,122 @@ func decodeBody(r *http.Request, into any) *apiError {
 	}
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return &apiError{status: http.StatusBadRequest, code: "bad-request", message: "malformed request body: trailing data after JSON value"}
+	}
+	return guardIdentifierFields(into)
+}
+
+// identifierQueries names the query parameters the contract declares as
+// UUIDs. `session` is absent for the same reason it is absent below.
+var identifierQueries = map[string]string{
+	"actor":       "an identity uuid",
+	"assignee":    "an identity uuid",
+	"issue":       "a uuid",
+	"project":     "a uuid",
+	"review":      "a uuid",
+	"doc_version": "a uuid",
+	"thread":      "a uuid",
+}
+
+// guardIdentifiers wraps one route so the identifiers in its PATH and
+// QUERY are refused for their form before the handler runs. Path
+// parameters are read out of the registered pattern, so a new route is
+// covered by being registered; every path parameter in this contract is
+// an entity id.
+func guardIdentifiers(pattern string, h http.HandlerFunc) http.HandlerFunc {
+	var params []string
+	for rest := pattern; ; {
+		_, after, found := strings.Cut(rest, "{")
+		if !found {
+			break
+		}
+		name, tail, closed := strings.Cut(after, "}")
+		if !closed {
+			break
+		}
+		params = append(params, name)
+		rest = tail
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range params {
+			if v := r.PathValue(name); !isUUID(v) {
+				writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request",
+					message: fmt.Sprintf("%s must be a uuid", name)})
+				return
+			}
+		}
+		query := r.URL.Query()
+		for name, form := range identifierQueries {
+			v := query.Get(name)
+			if v == "" || isUUID(v) {
+				continue
+			}
+			writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request",
+				message: fmt.Sprintf("%s must be %s", name, form)})
+			return
+		}
+		h(w, r)
+	}
+}
+
+// identifierFields names every request field the contract declares as a
+// UUID, mapped to how a refusal says what it should have been. It is the
+// body half of AC-identity-canonical-casing: the same rule holds at the
+// path and query doors (guardIdentifiers), and the three of them are the
+// whole set of ways an identifier enters.
+//
+// `session` is deliberately absent — a session id is an agent's own
+// opaque string, not an entity key.
+var identifierFields = map[string]string{
+	"actor":                  "an identity uuid",
+	"author":                 "an identity uuid",
+	"assignee":               "an identity uuid",
+	"issue":                  "a uuid",
+	"project":                "a uuid",
+	"review":                 "a uuid",
+	"thread":                 "a uuid",
+	"document":               "a uuid",
+	"doc_version":            "a uuid",
+	"parent":                 "a uuid",
+	"to":                     "a uuid",
+	"expected_verdict_event": "a uuid",
+	"review_verdict_event":   "a uuid",
+}
+
+// guardIdentifierFields refuses a decoded body carrying an identifier in
+// any form but the canonical one, BEFORE the value reaches a store —
+// where a miss would come back as an id that names nothing, which is a
+// different claim and a false one. Absent fields are not this check's
+// business: requiredness belongs to the handler that knows it.
+func guardIdentifierFields(into any) *apiError {
+	v := reflect.ValueOf(into)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return nil
+	}
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	t := v.Type()
+	for i := range t.NumField() {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		form, declared := identifierFields[name]
+		if !declared {
+			continue
+		}
+		f := v.Field(i)
+		if f.Kind() == reflect.Pointer {
+			if f.IsNil() {
+				continue
+			}
+			f = f.Elem()
+		}
+		if f.Kind() != reflect.String || f.String() == "" {
+			continue
+		}
+		if !isUUID(f.String()) {
+			return &apiError{status: http.StatusBadRequest, code: "bad-request",
+				message: fmt.Sprintf("%s must be %s", name, form)}
+		}
 	}
 	return nil
 }

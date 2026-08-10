@@ -431,6 +431,29 @@ func registerThreadsSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return iw.s.call(http.MethodPost, "/threads/"+tw.threadID+"/anchor",
 			map[string]string{"project": tw.otherProject, "actor": actor})
 	})
+	sc.Step(`^the other project is archived and the thread is retargeted into it$`, func() error {
+		other, err := iw.createProjectKeyed("OTH")
+		if err != nil {
+			return err
+		}
+		tw.otherProject = other
+		actor, err := iw.identity("human-brent")
+		if err != nil {
+			return err
+		}
+		// Only the DESTINATION freezes. The thread's own project stays
+		// live, so the request is routed under a writable project and a
+		// guard that asked only about that one would let it through.
+		if err := iw.s.call(http.MethodPost, "/projects/"+other+"/archive",
+			map[string]string{"actor": actor}); err != nil {
+			return err
+		}
+		if err := iw.s.expectStatus(http.StatusOK); err != nil {
+			return err
+		}
+		return iw.s.call(http.MethodPost, "/threads/"+tw.threadID+"/anchor",
+			map[string]string{"project": other, "actor": actor})
+	})
 	sc.Step(`^the anchor is refused as a conflict and the thread still belongs to "SUT"$`, func() error {
 		if err := iw.s.expectStatus(http.StatusConflict); err != nil {
 			return err

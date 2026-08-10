@@ -17,12 +17,16 @@ import (
 // project, reviews created and approved through the API, and closes
 // naming review, revision, and verdict event.
 type closeWorld struct {
-	iw         *issueWorld
-	repoPath   string
-	commits    []string // feature commits, in order minted
-	reviews    map[string]reviewRef
-	tempDirs   []string
-	lastClosed string // issue name of the most recent close attempt
+	iw       *issueWorld
+	repoPath string
+	commits  []string // feature commits, in order minted
+	reviews  map[string]reviewRef
+	tempDirs []string
+	// objectFormat selects git's hash algorithm for the scenario's
+	// repository; empty means git's default (sha-1). A scenario sets it
+	// before the repository is built.
+	objectFormat string
+	lastClosed   string // issue name of the most recent close attempt
 }
 
 type reviewRef struct {
@@ -36,6 +40,7 @@ func (cw *closeWorld) reset() {
 	cw.cleanup()
 	cw.repoPath = ""
 	cw.commits = nil
+	cw.objectFormat = ""
 	cw.reviews = map[string]reviewRef{}
 }
 
@@ -68,7 +73,11 @@ func (cw *closeWorld) ensureRepo() error {
 		}
 		return nil
 	}
-	if err := run("init", "-b", "main"); err != nil {
+	init := []string{"init", "-b", "main"}
+	if cw.objectFormat != "" {
+		init = append(init, "--object-format="+cw.objectFormat)
+	}
+	if err := run(init...); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644); err != nil {

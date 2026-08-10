@@ -503,15 +503,27 @@ func registerSearchSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		if err := iw.s.expectStatus(http.StatusOK); err != nil {
 			return err
 		}
-		body := string(iw.s.lastBody)
-		for _, id := range append(append([]string{}, sw.sessionReviews...), sw.sessionThread) {
-			if strings.Contains(body, id) {
-				return fmt.Errorf("session content %s survived a scope its work never touched", id)
-			}
+		// "Nothing" means every collection, not just the ids this
+		// scenario seeded: naming those alone is equally satisfied by a
+		// scope filter that dropped them and returned the rest of the
+		// server.
+		var results struct {
+			Issues    []json.RawMessage `json:"issues"`
+			Documents []json.RawMessage `json:"documents"`
+			Threads   []json.RawMessage `json:"threads"`
+			Reviews   []json.RawMessage `json:"reviews"`
 		}
-		for _, id := range sw.sessionIssues {
-			if strings.Contains(body, id) {
-				return fmt.Errorf("issue %s survived a scope it does not belong to", id)
+		if err := json.Unmarshal(iw.s.lastBody, &results); err != nil {
+			return fmt.Errorf("decode search results: %w (%s)", err, iw.s.lastBody)
+		}
+		for kind, got := range map[string]int{
+			"issues":    len(results.Issues),
+			"documents": len(results.Documents),
+			"threads":   len(results.Threads),
+			"reviews":   len(results.Reviews),
+		} {
+			if got != 0 {
+				return fmt.Errorf("%s survived a scope the work never touched: %s", kind, iw.s.lastBody)
 			}
 		}
 		return nil

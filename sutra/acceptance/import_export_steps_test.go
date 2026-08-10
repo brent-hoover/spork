@@ -705,6 +705,40 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 				return fmt.Errorf("export missing %s", marker)
 			}
 		}
+		// Both verdict kinds, asserted on the EVENTS and not on the
+		// reviews: the changes-requested review carries its own id and
+		// its state, so a substring check for either is satisfied by the
+		// review record alone and an export that dropped every
+		// changes-requested event would still pass.
+		var payload struct {
+			Events []struct {
+				Kind    string `json:"kind"`
+				Payload struct {
+					Review string `json:"review"`
+				} `json:"payload"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(ie.exported, &payload); err != nil {
+			return fmt.Errorf("decode export: %w", err)
+		}
+		// A verdict event is subjected to its ISSUE; the review it
+		// judged is in the payload, which is where the check has to
+		// look.
+		for _, want := range []struct{ kind, review string }{
+			{"review.changes-requested", ie.recordIDs["doc-review"]},
+			{"review.approved", ie.recordIDs["review"]},
+		} {
+			found := false
+			for _, e := range payload.Events {
+				if e.Kind == want.kind && e.Payload.Review == want.review {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("export carries no %s event for review %s", want.kind, want.review)
+			}
+		}
 		return nil
 	})
 
@@ -1343,19 +1377,33 @@ func registerImportExportSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 		return nil
 	})
 	sc.Step(`^that server still holds only what it had$`, func() error {
-		status, body, err := ie.getFromTarget("/projects")
-		if err != nil {
-			return err
+		// Every collection the import would have written, compared by
+		// ID against what was seeded. A project count alone is
+		// satisfied by a seeded project REPLACED with the imported
+		// one, and says nothing about the identities and labels a
+		// partial write would have landed first.
+		seeded := map[string]string{
+			"/identities": ie.heldOnTarget[0],
+			"/projects":   ie.heldOnTarget[1],
+			"/labels":     ie.heldOnTarget[2],
 		}
-		if status != http.StatusOK {
-			return fmt.Errorf("list projects on target: %d %s", status, body)
-		}
-		var projects []any
-		if err := json.Unmarshal(body, &projects); err != nil {
-			return fmt.Errorf("decode projects: %w (%s)", err, body)
-		}
-		if len(projects) != 1 {
-			return fmt.Errorf("expected the one seeded project to remain, got %d: %s", len(projects), body)
+		for path, want := range seeded {
+			status, body, err := ie.getFromTarget(path)
+			if err != nil {
+				return err
+			}
+			if status != http.StatusOK {
+				return fmt.Errorf("list %s on target: %d %s", path, status, body)
+			}
+			var held []struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(body, &held); err != nil {
+				return fmt.Errorf("decode %s: %w (%s)", path, err, body)
+			}
+			if len(held) != 1 || held[0].ID != want {
+				return fmt.Errorf("%s holds %s; a rejected import must leave only %s", path, body, want)
+			}
 		}
 		return nil
 	})

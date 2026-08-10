@@ -31,6 +31,23 @@ Feature: Identities without auth
     Then the operation is rejected for the identifier's form, not as an unknown identity
     And nothing is created
 
+  # One rule, three roads. An identifier arrives in a body field, in a path
+  # segment, or in a query filter, and each road is different code: the
+  # scenario above only ever drove the first. A road that skips the check
+  # does not fail loudly — it answers about an entity that is not there,
+  # for an id that is, and a filter's version of that answer is an empty
+  # listing that looks like a legitimate result.
+  Scenario Outline: every road into the server refuses a non-canonical identifier
+    Given an existing identity id rendered in uppercase
+    When that id is supplied <road>
+    Then the request is refused for the identifier's form
+
+    Examples:
+      | road                                     |
+      | as the author of a new comment           |
+      | as the identity in a work-stack pop path |
+      | as the assignee filter on a listing      |
+
   Scenario Outline: uniqueness collisions name their colliding resource
     Given a request that would create <duplicate>
     When it is rejected with a conflict

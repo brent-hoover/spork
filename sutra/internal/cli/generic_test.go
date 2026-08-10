@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -71,5 +72,34 @@ func TestGenericSendsTheContractPath(t *testing.T) {
 				t.Errorf("request URI = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGenericSendsTheBodyVerbatim pins --body as BYTES. The acceptance
+// scenario reads the created issue back, which only shows that the body's
+// meaning survived; a decode-and-re-marshal would satisfy it exactly. The
+// two things it would silently destroy are here: whitespace a transcript
+// carries deliberately, and an integer past 2^53, which returns from
+// encoding/json's float64 as a different number.
+func TestGenericSendsTheBodyVerbatim(t *testing.T) {
+	const body = `{ "title" : "a",
+  "n" : 9007199254740993 }`
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := &client{
+		base:  srv.URL,
+		env:   Env{Stdout: &bytes.Buffer{}, Getenv: func(string) string { return "" }},
+		flags: map[string]string{"path.projectId": "p", "body": body},
+	}
+	if err := c.generic([]string{"createIssue"}); err != nil {
+		t.Fatalf("generic: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("body on the wire = %q, want %q", got, body)
 	}
 }

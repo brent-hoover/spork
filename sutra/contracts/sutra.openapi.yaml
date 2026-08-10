@@ -1229,7 +1229,10 @@ paths:
       description: >-
         Creates a Thread with title, session id, and import time; content is
         preserved verbatim (AC-thread-import). Ties to a project or an issue —
-        at least one is required (AC-thread-anchor).
+        at least one is required (AC-thread-anchor). Naming both is allowed
+        only when the issue belongs to the named project; a pair that
+        disagrees is refused as a bad request, and an anchor into an archived
+        project conflicts (AC-thread-anchor-guarded).
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1313,10 +1316,18 @@ paths:
         fields clear the corresponding side. At least one of project or issue
         must be set; both sides list the thread — listIssueThreads on the
         issue side, searchThreads (filtered by project) on the project side
-        (AC-thread-anchor). Emits a `thread.anchor-changed` event whose
-        subject is the NEW anchor's aggregation root — the issue if
-        retargeted to an issue, otherwise the project; the payload carries
-        both the old and new anchors.
+        (AC-thread-anchor). An anchor naming BOTH a project and an issue is
+        refused as a bad request unless the issue belongs to that project,
+        so its two halves can never disagree about which project governs the
+        thread. Retargeting is guarded at both ends and conflicts (409) if
+        either the project governing the anchor the thread leaves or the one
+        governing the anchor it arrives at is archived — a thread inside an
+        archived project is that project's read-only content and cannot be
+        moved out of it, and no thread can be moved into a frozen one
+        (AC-thread-anchor-guarded, AC-thread-anchor-destination-live). Emits
+        a `thread.anchor-changed` event whose subject is the NEW anchor's
+        aggregation root — the issue if retargeted to an issue, otherwise
+        the project; the payload carries both the old and new anchors.
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/ThreadIdPath'
@@ -1573,14 +1584,16 @@ paths:
         deliverable, the complete pinned diff/content — binary-capable,
         bounded by the server's 10 MiB deliverable limit (which submission
         already enforced), and never a summary in its place, so approval
-        never happens against a summary (AC-review-web). For code deliverables, content is resolved via the
-        project's repo_path as the diff between the resolved submission's
-        pinned `base_commit` and `commit` — never recomputed against the
-        project's current default branch, since `base_commit` was already
-        resolved once at submission time; doc deliverables read the stored
-        doc version. With `revision` omitted, resolves the latest
-        submission; a given `revision` resolves that submission's
-        deliverable instead.
+        never happens against a summary (AC-review-web). A code
+        deliverable is rendered ONCE, at submission, as the diff between
+        the submission's pinned `base_commit` and `commit`, and that
+        render is stored and served back verbatim — reading never runs
+        git, so no later repository state, configuration, or
+        reachability change can alter what approval covered. A doc
+        deliverable stores no copy: its immutable doc version is the
+        deliverable and is resolved at read time. With `revision`
+        omitted, resolves the latest submission; a given `revision`
+        resolves that submission's deliverable instead.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1601,8 +1614,11 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            The submission's pinned `commit` or `base_commit` could not be
-            resolved, or the project has no repo_path set.
+            The submission carries no content to serve: it predates stored
+            renders and is not a doc submission whose version could be
+            resolved instead. Git is not consulted here, so an
+            unresolvable commit or an unset repo_path is a submission-time
+            refusal, not a reading one.
           content:
             application/json:
               schema:
@@ -1699,12 +1715,18 @@ paths:
       summary: Search across issues, docs, and threads
       description: >-
         One query surface over issues, docs, and transcripts (AC-search-cross).
-        Filtering by session returns the work that instance produced — reviews
-        stamped with it, threads imported from it, and their linked issues
-        (AC-search-session); a session query matches a review whose ANY
-        ReviewSubmission.session equals the query, not just the latest
-        submission's session. With `q` omitted, returns all content in scope
-        of the other filters (project, session).
+        The filters INTERSECT, so each one omitted widens the scope rather
+        than narrowing it: `q` alone searches every project, `project` alone
+        returns that project's whole contents, and a request naming no filter
+        at all returns everything (AC-search-scope). Reviews are the one
+        asymmetry — a review carries no text of its own, so it enumerates
+        under a scope but never under a term. Filtering by session returns the
+        work that instance produced — reviews stamped with it, threads
+        imported from it, and their linked issues (AC-search-session); a
+        session query matches a review whose ANY ReviewSubmission.session
+        equals the query, not just the latest submission's session. A session
+        names work, not a place, so adding `project` narrows that work to the
+        named project.
       tags: [search]
       parameters:
         - name: q
@@ -2837,6 +2859,10 @@ components:
           description: Server-issued feed position captured atomically with the grouped results — present even when every group is empty, so consumers can reconcile the feed against exactly what this search reflected (AC-feed-watermark).
         issues:
           type: array
+          description: >-
+            Ordered so the order does not leak how a result was found: each
+            project's issues arrive together, ascending by issue number,
+            however many internal passes contributed them (AC-search-scope).
           items: { $ref: '#/components/schemas/Issue' }
         documents:
           type: array
