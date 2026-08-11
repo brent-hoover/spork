@@ -102,13 +102,23 @@ func OpenList(db *sql.DB, kind string) (*Cursor, error) {
 		query, args = `SELECT id, handle, kind, display_name FROM identities WHERE kind = ? ORDER BY handle`, []any{kind}
 	}
 	rows, err := db.Query(query, args...)
+	// The cursor takes the handle BEFORE the error is examined, so every
+	// exit from here closes what the query opened. Review 1989 read this
+	// as a branch nothing reaches — db.Query does yield nil rows with its
+	// error, and Close's nil case is what serves that path (the
+	// failed-query test drives it). The shape is not for that path. It is
+	// for an exit added here that returns without the handle: a leaked
+	// reader does not fail, it starves SQLite's writers, so the symptom
+	// is the suite hanging somewhere later. Removing the ownership made
+	// the mutation of this very line TIME OUT rather than die — the
+	// mutant returned early holding open rows, and the next scenario's
+	// write waited forever.
+	cursor := &Cursor{rows: rows}
 	if err != nil {
-		// db.Query returns nil rows on every error path, so a failed
-		// open holds nothing to release — the same shape the five
-		// sibling cursors use.
+		_ = cursor.Close()
 		return nil, fmt.Errorf("list identities: %w", err)
 	}
-	return &Cursor{rows: rows}, nil
+	return cursor, nil
 }
 
 func (c *Cursor) Each(fn func(Identity) error) error {
@@ -127,9 +137,16 @@ func (c *Cursor) Each(fn func(Identity) error) error {
 	return nil
 }
 
-// Close releases the cursor's rows, returning its connection to the
-// pool; a listing that is abandoned mid-stream would otherwise hold one.
-func (c *Cursor) Close() error { return c.rows.Close() }
+// Close releases the cursor's rows, returning its connection to the pool;
+// a listing abandoned mid-stream would otherwise hold one. A cursor whose
+// query failed holds no rows — OpenList closes one of those on every
+// failed open — so the nil case is a live path, not a defensive one.
+func (c *Cursor) Close() error {
+	if c.rows == nil {
+		return nil
+	}
+	return c.rows.Close()
+}
 
 // Lookup returns the identity an id names, or NotFoundError.
 func Lookup(tx *sql.Tx, id string) (Identity, error) {

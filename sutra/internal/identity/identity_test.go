@@ -162,3 +162,31 @@ func TestCursorCloseReleasesTheConnection(t *testing.T) {
 		t.Fatalf("Close did not release the connection, InUse=%d", got)
 	}
 }
+
+// TestOpenListReportsAFailedQuery drives the branch nothing else did. Every
+// other caller hands OpenList a migrated database, so its error path had no
+// input at all: the guard could be inverted and the only visible effect was
+// a cursor holding nil rows, which panics on the first Next() — a hang
+// rather than a failure, and gremlins reported it as a timeout rather than
+// a survivor.
+//
+// A database without the table is the smallest way to make db.Query fail
+// for a reason that is the store's, not the caller's.
+func TestOpenListReportsAFailedQuery(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.Name()+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cursor, err := identity.OpenList(db, "")
+	if err == nil {
+		t.Fatal("listing an unmigrated database must report the query's failure")
+	}
+	if cursor != nil {
+		t.Fatalf("a failed open must hand back no cursor, got %#v", cursor)
+	}
+	if !strings.Contains(err.Error(), "list identities") {
+		t.Fatalf("the error must name what failed, got %v", err)
+	}
+}
