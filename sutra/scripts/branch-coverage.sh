@@ -112,7 +112,29 @@ for subject in "${subjects[@]}"; do
 	echo "$root" >>"$roots"
 	module=$(find "$root" -maxdepth 1 -type d -name 'module-*' | head -1)
 
+	# gobco reports the arm total even with every test skipped, which
+	# makes it the authoritative denominator: the merged stats below must
+	# account for exactly this many arms. Missing or partial stats then
+	# fail the package instead of shrinking the thing being measured.
+	expected=$(sed -n 's/^Condition coverage: [0-9]*\/\([0-9]*\)$/\1/p' "$out" | tail -1)
+	if [ -z "$expected" ]; then
+		echo "FAIL $importpath: gobco printed no coverage summary"
+		failed=1
+		continue
+	fi
+	if [ "$expected" = "0" ]; then
+		printf '%-28s no conditions\n' "$importpath"
+		continue
+	fi
+
 	# Persist counters from test binaries that have their own TestMain.
+	# The ticker alone is not enough: a driver's TestMain ends in
+	# os.Exit, which kills the goroutine without a final flush and loses
+	# every hit since the last tick (measured: 6320 hits against
+	# -immediately's 6368 on identity). So os.Exit is also rerouted
+	# through gobco's own GobcoFinish, which persists synchronously.
+	# The ticker stays as the backstop for a driver that exits some
+	# other way, and the two together are checked against -immediately.
 	cat >"$module/$rel/gobco_flush.go" <<EOF
 package $pkgname
 
@@ -131,20 +153,67 @@ EOF
 	for t in "${targets[@]}"; do
 		grep -qxF "$importpath" "$work/deps-$(echo "$t" | tr / _)" || continue
 		drivers=$((drivers + 1))
-		(cd "$module" && GOBCO_STATS="$work/stats-$slug-$(echo "$t" | tr / _).json" \
-			go test -count=1 "$t" >/dev/null 2>&1) || true
+		tdir=$(cd "$module" && go list -f '{{.Dir}}' "$t")
+
+		# Reroute os.Exit in this driver's test files, then define the
+		# replacement. Written after the rewrite so its own os.Exit
+		# survives.
+		# The subject's own test binary needs no rewrite: gobco injects a
+		# TestMain there that already persists, and importing the subject
+		# from inside itself would not compile.
+		exitfile=$tdir/gobco_exit_test.go
+		if [ "$t" != "$importpath" ] && [ ! -f "$exitfile" ]; then
+			holder=$(grep -l 'os\.Exit(' "$tdir"/*_test.go 2>/dev/null | head -1 || true)
+			if [ -n "$holder" ]; then
+				driverpkg=$(sed -n 's/^package \([A-Za-z0-9_]*\).*/\1/p' "$holder" | head -1)
+				grep -l 'os\.Exit(' "$tdir"/*_test.go | while read -r f; do
+					perl -pi -e 's/os\.Exit\(/gobcoExit(/g' "$f"
+				done
+				cat >"$exitfile" <<EOF
+package $driverpkg
+
+import (
+	"os"
+
+	gobcosubject "$importpath"
+)
+
+// gobcoExit persists the instrumented package's counters before the
+// process goes away. GobcoFinish returns the code it was handed.
+func gobcoExit(code int) { os.Exit(gobcosubject.GobcoFinish(code)) }
+EOF
+			fi
+		fi
+
+		stats=$work/stats-$slug-$(echo "$t" | tr / _).json
+		if ! (cd "$module" && GOBCO_STATS="$stats" go test -count=1 "$t" \
+			>"$work/driver-$slug.log" 2>&1); then
+			echo "FAIL $importpath: driver $t did not pass"
+			sed -n '1,10p' "$work/driver-$slug.log"
+			failed=1
+			continue 2
+		fi
 	done
 
 	# Sum every driver's counts per condition; an arm is covered when
 	# some driver evaluated it at least once.
-	report=$(jq -s '
-		add // []
+	if ! report=$(jq -se '
+		add
 		| group_by(.Start)
 		| map({Start: .[0].Start, Code: .[0].Code,
 		       t: map(.TrueCount) | add, f: map(.FalseCount) | add})
-	' "$work"/stats-"$slug"-*.json 2>/dev/null || echo '[]')
+	' "$work"/stats-"$slug"-*.json 2>/dev/null); then
+		echo "FAIL $importpath: no usable coverage data from $drivers drivers"
+		failed=1
+		continue
+	fi
 
 	total=$(echo "$report" | jq 'length * 2')
+	if [ "$total" != "$expected" ]; then
+		echo "FAIL $importpath: stats cover $total arms, gobco instrumented $expected"
+		failed=1
+		continue
+	fi
 	covered=$(echo "$report" | jq '[.[] | (if .t > 0 then 1 else 0 end) + (if .f > 0 then 1 else 0 end)] | add // 0')
 	printf '%-28s %s/%s arms  (%s drivers)\n' "$importpath" "$covered" "$total" "$drivers"
 	echo "$report" | jq -r '.[] | select(.t == 0 or .f == 0)
