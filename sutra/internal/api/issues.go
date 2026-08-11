@@ -477,6 +477,12 @@ func (s *server) assignIssue(w http.ResponseWriter, r *http.Request) {
 		if string(assigneeRaw) != "null" && (req.Assignee == nil || !isUUID(*req.Assignee)) {
 			return nil, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "assignee must be an identity uuid or null"}
 		}
+		// The body arrived as a map, so decodeBody's walk had no fields
+		// to check; the typed form is what the guard can read, and
+		// `actor` reaches the store through it.
+		if apiErr := guardIdentifierFields(&req); apiErr != nil {
+			return nil, apiErr
+		}
 		return req, nil
 	}, func(tx *sql.Tx, prepped any) (int, any, *apiError) {
 		req := prepped.(assignRequest)

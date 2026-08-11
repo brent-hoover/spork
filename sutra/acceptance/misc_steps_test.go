@@ -378,8 +378,39 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			return iw.s.call(http.MethodPost, "/identities/"+mw.ghostID+"/work-stack/pop", map[string]any{})
 		case "as the assignee filter on a listing":
 			return iw.s.call(http.MethodGet, "/projects/"+iw.project+"/issues?assignee="+url.QueryEscape(mw.ghostID), nil)
+		case "as the actor of an assignment":
+			// This body decodes into a map first, so the typed form is
+			// the only thing the field walk can read.
+			return iw.s.call(http.MethodPost, "/issues/"+issueID+"/assign",
+				map[string]any{"assignee": nil, "actor": mw.ghostID})
+		case "as the doc version of a new review":
+			// doc_version sits in an EMBEDDED struct and arrives at the
+			// top level of the JSON, so the walk has to descend.
+			author, err := iw.identity("claude")
+			if err != nil {
+				return err
+			}
+			return iw.s.call(http.MethodPost, "/reviews",
+				map[string]any{"issue": issueID, "author": author, "doc_version": mw.ghostID})
+		case "as the template of a new document":
+			author, err := iw.identity("operator")
+			if err != nil {
+				return err
+			}
+			return iw.s.call(http.MethodPost, "/projects/"+iw.project+"/documents",
+				map[string]any{"title": "from a template", "template_id": mw.ghostID, "author": author})
+		case "as the label attached to an issue":
+			actor, err := iw.identity("operator")
+			if err != nil {
+				return err
+			}
+			return iw.s.call(http.MethodPost, "/issues/"+issueID+"/labels",
+				map[string]any{"label": mw.ghostID, "actor": actor})
 		}
 		return fmt.Errorf("unknown road %q", road)
+	})
+	sc.Step(`^reviews are listed with an empty issue filter$`, func() error {
+		return iw.s.call(http.MethodGet, "/reviews?issue=", nil)
 	})
 	sc.Step(`^the request is refused for the identifier's form$`, func() error {
 		if err := iw.s.expectStatus(http.StatusBadRequest); err != nil {

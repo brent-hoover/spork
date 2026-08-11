@@ -43,10 +43,22 @@ Feature: Identities without auth
     Then the request is refused for the identifier's form
 
     Examples:
-      | road                                     |
-      | as the author of a new comment           |
-      | as the identity in a work-stack pop path |
-      | as the assignee filter on a listing      |
+      | road                                       |
+      | as the author of a new comment             |
+      | as the identity in a work-stack pop path   |
+      | as the assignee filter on a listing        |
+      | as the actor of an assignment              |
+      | as the doc version of a new review         |
+      | as the template of a new document          |
+      | as the label attached to an issue          |
+
+  # An empty filter is not an absent one: `?issue=` supplied an identifier
+  # and it is not one. Read as absence, it widens the listing from one
+  # issue's reviews to every review on the server — and that is an answer,
+  # which nobody goes looking for the cause of.
+  Scenario: a supplied but empty identifier filter is refused
+    When reviews are listed with an empty issue filter
+    Then the request is refused for the identifier's form
 
   Scenario Outline: uniqueness collisions name their colliding resource
     Given a request that would create <duplicate>

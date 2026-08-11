@@ -37,10 +37,12 @@ func New(db *sql.DB) (http.Handler, error) {
 	s := &server{db: db}
 	mux := http.NewServeMux()
 	// Every route goes on through guardIdentifiers, so no handler can be
-	// added that reads an id from its path or query without the form
-	// check: registering it IS the check (AC-identity-canonical-casing).
-	handle := func(pattern string, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, guardIdentifiers(pattern, h))
+	// added that reads an id from its path without the form check:
+	// registering it IS the check (AC-identity-canonical-casing). The
+	// trailing names are the route's own uuid query parameters, as the
+	// contract declares them.
+	handle := func(pattern string, h http.HandlerFunc, uuidQueries ...string) {
+		mux.HandleFunc(pattern, guardIdentifiers(pattern, uuidQueries, h))
 	}
 	handle("POST /identities", s.createIdentity)
 	handle("GET /identities", s.listIdentities)
@@ -50,7 +52,7 @@ func New(db *sql.DB) (http.Handler, error) {
 	handle("POST /projects/{projectId}/archive", s.archiveProject)
 	handle("GET /events", s.listEvents)
 	handle("POST /projects/{projectId}/issues", s.createIssue)
-	handle("GET /projects/{projectId}/issues", s.listIssues)
+	handle("GET /projects/{projectId}/issues", s.listIssues, "assignee")
 	handle("GET /issues/{issueId}", s.getIssue)
 	handle("PATCH /issues/{issueId}", s.updateIssue)
 	handle("POST /issues/{issueId}/status", s.updateIssueStatus)
@@ -58,9 +60,9 @@ func New(db *sql.DB) (http.Handler, error) {
 	handle("POST /identities/{identityId}/work-stack/pop", s.popWorkStack)
 	handle("POST /issues/{issueId}/relations", s.addIssueRelation)
 	handle("GET /issues/{issueId}/relations", s.listIssueRelations)
-	handle("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation)
+	handle("DELETE /issues/{issueId}/relations/{relationId}", s.removeIssueRelation, "actor")
 	handle("POST /reviews", s.createReview)
-	handle("GET /reviews", s.listReviews)
+	handle("GET /reviews", s.listReviews, "issue")
 	handle("GET /reviews/{reviewId}", s.getReview)
 	handle("POST /reviews/{reviewId}/verdict", s.setReviewVerdict)
 	handle("POST /reviews/{reviewId}/consume", s.consumeReviewApproval)
@@ -72,13 +74,13 @@ func New(db *sql.DB) (http.Handler, error) {
 	handle("GET /issues/{issueId}/events", s.listIssueEvents)
 	handle("POST /labels", s.createLabel)
 	handle("POST /comments", s.createComment)
-	handle("GET /comments", s.listComments)
+	handle("GET /comments", s.listComments, "issue", "doc_version", "review")
 	handle("GET /labels", s.listLabels)
 	handle("POST /issues/{issueId}/labels", s.attachLabel)
-	handle("DELETE /issues/{issueId}/labels/{labelId}", s.detachLabel)
+	handle("DELETE /issues/{issueId}/labels/{labelId}", s.detachLabel, "actor")
 	handle("POST /threads", s.importThread)
-	handle("GET /threads/search", s.searchThreads)
-	handle("GET /search", s.search)
+	handle("GET /threads/search", s.searchThreads, "project")
+	handle("GET /search", s.search, "project")
 	handle("GET /projects/{projectId}/export", s.exportProject)
 	handle("POST /projects/import", s.importProject)
 	handle("GET /threads/{threadId}", s.getThread)
@@ -91,7 +93,7 @@ func New(db *sql.DB) (http.Handler, error) {
 	handle("GET /doc-versions/{docVersionId}", s.getDocVersion)
 	handle("GET /documents/{documentId}/diff", s.diffDocVersions)
 	handle("POST /documents/{documentId}/issue", s.linkDocumentToIssue)
-	handle("DELETE /documents/{documentId}/issue", s.unlinkDocumentFromIssue)
+	handle("DELETE /documents/{documentId}/issue", s.unlinkDocumentFromIssue, "actor")
 	handle("POST /templates", s.createTemplate)
 	handle("GET /templates", s.listTemplates)
 	handle("GET /templates/{templateId}", s.getTemplate)
@@ -229,24 +231,25 @@ func decodeBody(r *http.Request, into any) *apiError {
 	return guardIdentifierFields(into)
 }
 
-// identifierQueries names the query parameters the contract declares as
-// UUIDs. `session` is absent for the same reason it is absent below.
-var identifierQueries = map[string]string{
-	"actor":       "an identity uuid",
-	"assignee":    "an identity uuid",
-	"issue":       "a uuid",
-	"project":     "a uuid",
-	"review":      "a uuid",
-	"doc_version": "a uuid",
-	"thread":      "a uuid",
+// identifierForm says what a refusal should have received, so an
+// identity id is not described as an anonymous uuid.
+func identifierForm(name string) string {
+	if name == "actor" || name == "author" || name == "assignee" {
+		return "an identity uuid"
+	}
+	return "a uuid"
 }
 
-// guardIdentifiers wraps one route so the identifiers in its PATH and
-// QUERY are refused for their form before the handler runs. Path
-// parameters are read out of the registered pattern, so a new route is
-// covered by being registered; every path parameter in this contract is
-// an entity id.
-func guardIdentifiers(pattern string, h http.HandlerFunc) http.HandlerFunc {
+// guardIdentifiers wraps one route so the identifiers in its PATH and the
+// uuid query parameters IT DECLARES are refused for their form before the
+// handler runs. Path parameters are read out of the registered pattern,
+// so a new route is covered by being registered; every path parameter in
+// this contract is an entity id. Query parameters are per-route on
+// purpose: the same word is an entity id on one operation and a plain
+// filter on another — `label` names a label id in a body and a label NAME
+// in the issue listing — so a global list would refuse requests the
+// contract permits.
+func guardIdentifiers(pattern string, uuidQueries []string, h http.HandlerFunc) http.HandlerFunc {
 	var params []string
 	for rest := pattern; ; {
 		_, after, found := strings.Cut(rest, "{")
@@ -269,14 +272,19 @@ func guardIdentifiers(pattern string, h http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 		query := r.URL.Query()
-		for name, form := range identifierQueries {
-			v := query.Get(name)
-			if v == "" || isUUID(v) {
+		for _, name := range uuidQueries {
+			// Has, not Get: `?issue=` SUPPLIED an identifier and it is
+			// not one. Reading the empty string as absence would widen
+			// the listing to everything, which is an answer rather than
+			// a refusal.
+			if !query.Has(name) {
 				continue
 			}
-			writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request",
-				message: fmt.Sprintf("%s must be %s", name, form)})
-			return
+			if v := query.Get(name); !isUUID(v) {
+				writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request",
+					message: fmt.Sprintf("%s must be %s", name, identifierForm(name))})
+				return
+			}
 		}
 		h(w, r)
 	}
@@ -290,20 +298,22 @@ func guardIdentifiers(pattern string, h http.HandlerFunc) http.HandlerFunc {
 //
 // `session` is deliberately absent — a session id is an agent's own
 // opaque string, not an entity key.
-var identifierFields = map[string]string{
-	"actor":                  "an identity uuid",
-	"author":                 "an identity uuid",
-	"assignee":               "an identity uuid",
-	"issue":                  "a uuid",
-	"project":                "a uuid",
-	"review":                 "a uuid",
-	"thread":                 "a uuid",
-	"document":               "a uuid",
-	"doc_version":            "a uuid",
-	"parent":                 "a uuid",
-	"to":                     "a uuid",
-	"expected_verdict_event": "a uuid",
-	"review_verdict_event":   "a uuid",
+var identifierFields = map[string]bool{
+	"actor":                  true,
+	"author":                 true,
+	"assignee":               true,
+	"issue":                  true,
+	"project":                true,
+	"review":                 true,
+	"thread":                 true,
+	"document":               true,
+	"doc_version":            true,
+	"parent":                 true,
+	"to":                     true,
+	"label":                  true, // a label ID in a body; the issue listing's `label` query is a NAME
+	"template_id":            true,
+	"expected_verdict_event": true,
+	"review_verdict_event":   true,
 }
 
 // guardIdentifierFields refuses a decoded body carrying an identifier in
@@ -313,21 +323,39 @@ var identifierFields = map[string]string{
 // business: requiredness belongs to the handler that knows it.
 func guardIdentifierFields(into any) *apiError {
 	v := reflect.ValueOf(into)
-	if v.Kind() != reflect.Pointer || v.IsNil() {
-		return nil
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
 	}
-	v = v.Elem()
 	if v.Kind() != reflect.Struct {
+		// A body decoded into a map carries no field names to walk.
+		// Those handlers convert to their typed request and call this
+		// again on it — see assignIssue.
 		return nil
 	}
+	return guardIdentifierStruct(v)
+}
+
+func guardIdentifierStruct(v reflect.Value) *apiError {
 	t := v.Type()
 	for i := range t.NumField() {
-		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
-		form, declared := identifierFields[name]
-		if !declared {
+		f := v.Field(i)
+		// An embedded struct's fields are the OUTER body's fields to
+		// every client: `doc_version` sits inside deliverableFields and
+		// arrives at the top level of the JSON, so skipping it here
+		// would leave the review doors unguarded.
+		if t.Field(i).Anonymous && f.Kind() == reflect.Struct {
+			if apiErr := guardIdentifierStruct(f); apiErr != nil {
+				return apiErr
+			}
 			continue
 		}
-		f := v.Field(i)
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if !identifierFields[name] {
+			continue
+		}
 		if f.Kind() == reflect.Pointer {
 			if f.IsNil() {
 				continue
@@ -339,7 +367,7 @@ func guardIdentifierFields(into any) *apiError {
 		}
 		if !isUUID(f.String()) {
 			return &apiError{status: http.StatusBadRequest, code: "bad-request",
-				message: fmt.Sprintf("%s must be %s", name, form)}
+				message: fmt.Sprintf("%s must be %s", name, identifierForm(name))}
 		}
 	}
 	return nil

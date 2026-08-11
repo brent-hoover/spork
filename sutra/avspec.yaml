@@ -468,6 +468,14 @@ requirements:
           because its lapse produces an empty listing that reads as a
           legitimate answer rather than an error anyone would chase.
         test: verification/REQ-identities.feature#every road into the server refuses a non-canonical identifier
+      - id: AC-identity-empty-identifier-supplied
+        statement: >-
+          A filter that is present but empty SUPPLIED an identifier, and it
+          is not one, so it is refused like any other malformed id. Reading
+          it as absence is the costliest reading available: the scope
+          widens from one entity's rows to the whole server, and the result
+          is a plausible listing rather than an error anyone would chase.
+        test: verification/REQ-identities.feature#a supplied but empty identifier filter is refused
   - id: REQ-notifications
     title: Event feed with cursor-based polling
     rationale: Poll-only by design — every subscriber today lives on the same machine; webhooks return only when a remote subscriber exists (delivery-only change, the Event stream already carries everything).
