@@ -1979,15 +1979,21 @@ writes for you. A resource taken before the first branch cannot be dropped by a
 branch, which is exactly why the shape reads as pointless when you check only
 the paths that exist today.
 
-And the branch was not dead; it was untested. Nothing had ever driven
-`OpenList`'s error path — every caller hands it a migrated database — so the
-only visible consequence of inverting the guard was a cursor with nil rows,
-which panics on `Next()` and hangs rather than failing. A test that lists an
-unmigrated database (`TestOpenListReportsAFailedQuery`) makes the branch live
-and the mutant fast. Species 5 in this catalogue is "a dead guard no input
-reaches"; the correction is that "no input reaches it" and "no test writes one"
-look identical from inside the code, and only the second is a defect in the
-code rather than in the suite.
+And the branch was not dead; it was untested. The two paths come apart
+cleanly. On the SUCCESS path — the one every scenario takes — inverting the
+guard returns an error while abandoning rows that are open, and that leak is
+what hangs the suite. The nil-row cursor belongs to the other path, the failed
+query, which nothing had ever driven: every caller hands `OpenList` a migrated
+database. So the branch a review can see is exercised only by a test that makes
+the query fail, and until `TestOpenListReportsAFailedQuery` listed an
+unmigrated database, none existed — which is why the branch read as reachable
+from nowhere.
+
+Species 5 in this catalogue is "a dead guard no input reaches". The correction
+is that "no input reaches it" and "no test writes one" look identical from
+inside the code, and only the first is a defect in the code; the second is a
+defect in the suite, and deleting the guard to satisfy it removes the wrong
+thing.
 
 > **The generalisation:** a timeout is not a slow kill, it is a report that the
 > suite could not observe the difference. Before deleting a shape a review calls
