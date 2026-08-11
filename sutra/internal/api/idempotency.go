@@ -21,22 +21,8 @@ import (
 // import aggregates every issue, comment, doc version, and stored
 // review deliverable, and comment bodies are unbounded by the spec.
 // testBodyLimit lets tests exercise the oversize-settle path without
-// gigabyte fixtures.
+// gigabyte fixtures; set only via export_test.go.
 var testBodyLimit int64
-
-// SetBodyLimitForTest overrides every route's body bound; 0 restores
-// the real limits.
-//
-// It sits in production code rather than in an export_test.go because
-// the condition-coverage gate cannot see in-package test files: gobco
-// type-checks this package's EXTERNAL test package on its own,
-// resolving "sutra/internal/api" through the source importer, which
-// loads only non-test files. A setter reachable solely from
-// export_test.go is therefore undefined at that point and aborts the
-// gate for the whole package. The state it writes is already declared
-// above, so keeping the setter here widens the production surface by a
-// name, not by any behavior.
-func SetBodyLimitForTest(limit int64) { testBodyLimit = limit }
 
 // largeBodyThreshold divides ordinary mutations from large-content
 // ones; largeBodySlot admits ONE large body at a time, so concurrent

@@ -462,38 +462,6 @@ func VersionSizesOK(tx *sql.Tx, documentID string, from, to int64) error {
 // memory ~16x. 8M lines caps the header overhead at ~128 MiB.
 var maxDiffLines = int64(8 << 20)
 
-// The three ForTest accessors below live in production code for the
-// reason given on api.SetBodyLimitForTest: gobco type-checks the
-// external test package through the source importer, which cannot see
-// in-package test files, so a bound settable only from export_test.go
-// aborts the condition-coverage gate for this whole package.
-
-// SetMaxDiffLinesForTest overrides the line-density bound so tests
-// exercise the guard without newline-gigabyte fixtures. It returns the
-// bound it replaced: a test restores what it was handed rather than
-// re-stating the default, so changing the default above cannot leave
-// later tests in the package running against a stale value.
-func SetMaxDiffLinesForTest(n int64) int64 {
-	prev := maxDiffLines
-	maxDiffLines = n
-	return prev
-}
-
-// MaxDiffLinesForTest reports the bound in force, so a boundary test
-// asserts against the real value instead of a copy of it.
-func MaxDiffLinesForTest() int64 { return maxDiffLines }
-
-// SetMaxDiffCellsForTest overrides the LCS matrix bound so tests can
-// sit exactly ON it — the boundary is where the choice between a
-// minimal diff and the linear fallback is actually made, and reaching
-// it honestly costs two ~2048-line fixtures per assertion. Like the
-// line bound, it returns what it replaced.
-func SetMaxDiffCellsForTest(n int) int {
-	prev := maxDiffCells
-	maxDiffCells = n
-	return prev
-}
-
 // DiffTooDenseError reports versions whose combined line count exceeds
 // the documented diff bound.
 type DiffTooDenseError struct{ Lines int64 }

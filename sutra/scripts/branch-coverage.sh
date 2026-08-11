@@ -21,7 +21,20 @@
 #     `foo_test` packages separately, resolving the import through the
 #     source importer, which loads non-test files only. The classic
 #     export_test.go hook is therefore undefined at that point and
-#     aborts the whole package. See api.SetBodyLimitForTest.
+#     aborts the whole package.
+#
+#     This script works around that in a THROWAWAY COPY of the module,
+#     renaming export_test.go to a plain .go file so the source importer
+#     can see it. Moving those hooks into production code would have
+#     worked too, and was wrong: `deadcode` run without -test then
+#     reports them as unreachable from main, which is the honest verdict
+#     for a setter no production path calls. A measurement workaround
+#     belongs in the measuring tool, not in the code being measured.
+#     The constraint this places on export_test.go is that it holds
+#     accessors and no conditional logic — renaming makes gobco treat it
+#     as production code, so any condition in it would be counted as an
+#     arm to cover. Both current files satisfy that (api's arm total is
+#     2460 either way).
 #
 #  3. Attribution must cross package boundaries, because the suite that
 #     exercises these packages is the acceptance suite, driving them
@@ -48,11 +61,20 @@ GOBCO=github.com/rillig/gobco@v1.3.4
 work=$(mktemp -d)
 roots=$work/roots
 : >"$roots"
+
+# Everything below runs against a copy, never the real tree.
+cp -a . "$work/mod"
+rm -rf "$work/mod/scripts"
+for hook in "$work"/mod/*/*/export_test.go "$work"/mod/*/export_test.go; do
+	[ -f "$hook" ] || continue
+	mv "$hook" "${hook%export_test.go}export_gobco.go"
+done
 cleanup() {
 	while read -r r; do [ -n "$r" ] && rm -rf "$r"; done <"$roots"
 	rm -rf "$work"
 }
 trap cleanup EXIT
+cd "$work/mod"
 
 # Dependency closure per test binary, so each instrumented package is
 # driven only by the test packages that actually link it.
