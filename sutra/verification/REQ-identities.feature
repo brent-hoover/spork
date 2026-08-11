@@ -51,6 +51,7 @@ Feature: Identities without auth
       | as the doc version of a new review         |
       | as the template of a new document          |
       | as the label attached to an issue          |
+      | as the actor of a project import           |
 
   # An empty filter is not an absent one: `?issue=` supplied an identifier
   # and it is not one. Read as absence, it widens the listing from one

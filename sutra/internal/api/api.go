@@ -82,7 +82,7 @@ func New(db *sql.DB) (http.Handler, error) {
 	handle("GET /threads/search", s.searchThreads, "project")
 	handle("GET /search", s.search, "project")
 	handle("GET /projects/{projectId}/export", s.exportProject)
-	handle("POST /projects/import", s.importProject)
+	handle("POST /projects/import", s.importProject, "actor")
 	handle("GET /threads/{threadId}", s.getThread)
 	handle("POST /threads/{threadId}/anchor", s.setThreadAnchor)
 	handle("GET /issues/{issueId}/threads", s.listIssueThreads)

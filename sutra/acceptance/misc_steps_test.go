@@ -399,6 +399,13 @@ func registerMiscSteps(sc *godog.ScenarioContext, cw *closeWorld) {
 			}
 			return iw.s.call(http.MethodPost, "/projects/"+iw.project+"/documents",
 				map[string]any{"title": "from a template", "template_id": mw.ghostID, "author": author})
+		case "as the actor of a project import":
+			// The import's actor rides in the QUERY, and its own
+			// validation reports an actor the export does not contain —
+			// a malformed one would come back as that, which is a
+			// different complaint about a different thing.
+			return iw.s.call(http.MethodPost, "/projects/import?actor="+url.QueryEscape(mw.ghostID),
+				map[string]any{})
 		case "as the label attached to an issue":
 			actor, err := iw.identity("operator")
 			if err != nil {
