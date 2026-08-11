@@ -1952,3 +1952,44 @@ about seventeen seconds.
 > program depends on and no result-shaped assertion can reach. When a fix for
 > one survivor introduces a new guard, the new guard needs its own assertion,
 > or the hole has only moved.
+
+## A shape that looks dead is what makes a mutation die loudly
+
+`identity.OpenList` handed its rows to the cursor before examining the query's
+error, so a failed open closed a cursor holding nothing. Review 1989 read the
+resulting `c.rows == nil` branch as reachable only from the line three above it
+and asked for one of two things: revert to a plain error return, or apply the
+ownership to all six cursors and correct the comment. Its fact was right —
+`db.Query` yields nil rows with its error, so nothing leaks on that path — and
+the revert looked like the smaller change.
+
+The mutation gate disagreed. With the ownership gone, the mutation of
+`if err != nil` stopped being KILLED and became TIMED OUT: negated, the guard
+returns early on the SUCCESS path, where the rows are open, and an abandoned
+reader does not fail. It starves SQLite's writers, so the acceptance suite ran
+~97 steps and then hung. `internal/identity` measured 12 killed / 1 timed out
+in 1h23m; with the ownership restored, 14 killed / 0 lived / 0 timed out in
+1m02s.
+
+Two things worth keeping.
+
+The ownership was never for the error path. It is for an exit added at that
+site later that forgets the handle — including the one a mutation testing tool
+writes for you. A resource taken before the first branch cannot be dropped by a
+branch, which is exactly why the shape reads as pointless when you check only
+the paths that exist today.
+
+And the branch was not dead; it was untested. Nothing had ever driven
+`OpenList`'s error path — every caller hands it a migrated database — so the
+only visible consequence of inverting the guard was a cursor with nil rows,
+which panics on `Next()` and hangs rather than failing. A test that lists an
+unmigrated database (`TestOpenListReportsAFailedQuery`) makes the branch live
+and the mutant fast. Species 5 in this catalogue is "a dead guard no input
+reaches"; the correction is that "no input reaches it" and "no test writes one"
+look identical from inside the code, and only the second is a defect in the
+code rather than in the suite.
+
+> **The generalisation:** a timeout is not a slow kill, it is a report that the
+> suite could not observe the difference. Before deleting a shape a review calls
+> redundant, mutate the site: if the mutant hangs instead of dying, the shape
+> was converting a silent failure into a loud one.
