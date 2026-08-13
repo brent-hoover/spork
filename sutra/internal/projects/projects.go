@@ -131,8 +131,6 @@ func GetTx(tx *sql.Tx, id string) (Project, error) {
 	return p, err
 }
 
-// List returns projects; archived ones only when includeArchived
-// (AC-project-archive: hidden from default listings).
 // Cursor streams projects from an opened query. Opening is separate
 // from iterating so a caller can commit an HTTP status only once the
 // read has started, and names and descriptions — unconstrained by the
@@ -170,31 +168,6 @@ func (c *Cursor) Each(fn func(Project) error) error {
 }
 
 func (c *Cursor) Close() error { return c.rows.Close() }
-
-func List(db *sql.DB, includeArchived bool) ([]Project, error) {
-	query := `SELECT id, key, name, description, repo_path, default_branch, archived_at FROM projects`
-	if !includeArchived {
-		query += ` WHERE archived_at IS NULL`
-	}
-	query += ` ORDER BY key`
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("list projects: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []Project{}
-	for rows.Next() {
-		p, err := scanOne(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate projects: %w", err)
-	}
-	return out, nil
-}
 
 // Archive stamps archived_at exactly once. The conditional UPDATE is the
 // race authority: a second archive — concurrent or later — hits zero

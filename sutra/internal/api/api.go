@@ -116,8 +116,6 @@ type apiError struct {
 	conflicts []string // colliding resource ids (Error.conflicts)
 }
 
-func (e *apiError) Error() string { return e.message }
-
 func errorFrom(err error) *apiError {
 	var dupHandle *identity.DuplicateHandleError
 	if errors.As(err, &dupHandle) {

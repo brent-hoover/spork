@@ -25,6 +25,25 @@ func openDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// listAll drains the streaming cursor the API itself lists through, so
+// the archive-visibility assertions run over the production path rather
+// than a slurping sibling nothing else called (review 1996).
+func listAll(db *sql.DB, includeArchived bool) ([]projects.Project, error) {
+	cursor, err := projects.OpenList(db, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close() }()
+	out := []projects.Project{}
+	if err := cursor.Each(func(p projects.Project) error {
+		out = append(out, p)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func create(t *testing.T, db *sql.DB, key string) projects.Project {
 	t.Helper()
 	tx, err := db.Begin()
@@ -123,14 +142,14 @@ func TestArchiveHidesWithoutDeleting(t *testing.T) {
 		t.Fatal("archived_at not stamped")
 	}
 
-	visible, err := projects.List(db, false)
+	visible, err := listAll(db, false)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(visible) != 0 {
 		t.Fatalf("archived project still listed: %+v", visible)
 	}
-	all, err := projects.List(db, true)
+	all, err := listAll(db, true)
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
