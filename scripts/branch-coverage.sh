@@ -153,43 +153,40 @@ list() {
 	fi
 }
 
-# sep joins the two fields of a `go list` line. ASCII unit separator,
-# because a directory may legitimately contain any printable character —
-# a path holding the separator would corrupt the split and, worse, make a
-# real <pkg>_test package look like the synthetic one again (review 2058).
-sep=$(printf '\037')
-
-# normalise rewrites a `go list -deps` listing into plain import paths.
-# It expects each line as "IMPORTPATH<sep>DIR".
+# deps writes the import paths a test binary links, one per line, from
+# `go list -json` — which is parsed as JSON and never split on a delimiter.
+# There is no separator that a directory cannot contain (review 2062 is
+# right that unit separator and newline are both legal in a Unix path), so
+# the answer is not a better separator but no separator at all.
 #
-# Two different things wear the same "X [Y.test]" shape. `pkg [other.test]`
-# is a REAL package rebuilt for another package's test binary, and dropping
-# the suffix is right: the bare path is the only form it takes when the
-# subject transitively depends on the package under test, and matching only
-# the bare path lost the driver entirely. But `pkg_test [pkg.test]` MAY be
-# the SYNTHETIC external test package, which nobody can import — and
-# stripping its suffix invents a dependency on a real package of that name
-# (kriya review 2033).
+# Two different things share the "X [Y.test]" shape. `pkg [other.test]` is a
+# REAL package rebuilt for another package's test binary, and the bare path
+# is the only form it takes when the subject transitively depends on the
+# package under test — matching only the bare path lost such drivers
+# entirely. But `pkg_test [pkg.test]` MAY be the SYNTHETIC external test
+# package, which nobody can import, and treating it as real invents a
+# dependency on a package of that name (kriya review 2033).
 #
-# The two are told apart by DIRECTORY, not by name: the synthetic package
-# lives in the tested package's own directory, while a real sibling named
-# <pkg>_test has its own. Deciding on the name alone would drop a genuine
-# dependency imported only by internal tests (review 2054) — the mirror of
-# the bug it was fixing.
-normalise() {
-	awk -F"$sep" '
-		NR == FNR { if ($1 !~ / \[/) dir[$1] = $2; next }
-		{
-			i = index($1, " [")
-			if (i == 0) { print $1; next }
-			base = substr($1, 1, i - 1)
-			owner = substr($1, i + 2)
-			sub(/\]$/, "", owner)
-			sub(/\.test$/, "", owner)
-			if (base == owner "_test" && $2 == dir[owner]) next
-			print base
-		}
-	' "$1" "$1" | sort -u -o "$1"
+# They are told apart by DIRECTORY: the synthetic package lives in the
+# tested package's own directory, a real sibling in its own. Deciding on
+# the name alone drops a genuine dependency (review 2054).
+deps() {
+	local dest=$1 dir=$2
+	shift 2
+	if ! (cd "$dir" && go list -deps -test -json "$@") >"$work/deps.json" 2>"$work/list.err"; then
+		echo "branch-coverage: go list -deps -test $* in $dir failed — the module does not load, so nothing can be measured" >&2
+		sed -n '1,10p' "$work/list.err" >&2
+		exit 2
+	fi
+	jq -rs '
+		(map(select(.ForTest == null) | {key: .ImportPath, value: .Dir}) | from_entries) as $dirs
+		| map(
+			((.ImportPath | sub(" \\[.*\\]$"; "")) as $base
+			| select((.ForTest // "") == "" or $base != (.ForTest + "_test") or .Dir != ($dirs[.ForTest] // "\u0000"))
+			| $base)
+		)
+		| unique | .[]
+	' "$work/deps.json" >"$dest"
 }
 
 
@@ -201,9 +198,7 @@ targets=()
 while read -r importpath; do
 	[ -n "$importpath" ] || continue
 	targets+=("$importpath")
-	depfile=$work/deps-$(echo "$importpath" | tr / _)
-	list "$depfile" "$PWD" -deps -test -f "{{.ImportPath}}$sep{{.Dir}}" "$importpath"
-	normalise "$depfile"
+	deps "$work/deps-$(echo "$importpath" | tr / _)" "$PWD" "$importpath"
 done <"$work/drivers"
 
 # A package with no production .go files has no conditions to
@@ -289,8 +284,7 @@ EOF
 	fi
 
 	# The subject's own dependency closure, for the cycle check below.
-	list "$work/subjdeps" "$module" -deps -f "{{.ImportPath}}$sep{{.Dir}}" "$importpath"
-	normalise "$work/subjdeps"
+	deps "$work/subjdeps" "$module" "$importpath"
 
 	drivers=0
 	for t in "${targets[@]}"; do
@@ -375,6 +369,12 @@ EOF
 					[ -n "$injectinto" ] && [ "$importpath" != "${t}_test" ] || injectinto=$pkgname
 				fi
 			done <<<"$hook"
+
+			if [ "$anymain" = no ] && [ -z "$injectinto" ]; then
+				echo "FAIL $importpath: driver $t declares no TestMain and no test package of it can hold one — its counters would rest on the ticker alone"
+				failed=1
+				continue 2
+			fi
 
 			while read -r pkgname hasmain hasexits; do
 				[ -n "$pkgname" ] || continue
