@@ -180,9 +180,17 @@ list() {
 deps() {
 	local mode=$1 dest=$2 dir=$3
 	shift 3
-	local testflag=()
-	[ "$mode" = withtests ] && testflag=(-test)
-	if ! (cd "$dir" && go list -deps "${testflag[@]}" -json "$@") >"$work/deps.json" 2>"$work/list.err"; then
+	# Two explicit branches rather than an array of flags: stock macOS
+	# ships Bash 3.2, where expanding an EMPTY array under `set -u` is an
+	# unbound-variable error and would abort the gate outright (review
+	# 2070).
+	local st=0
+	if [ "$mode" = withtests ]; then
+		(cd "$dir" && go list -deps -test -json "$@") >"$work/deps.json" 2>"$work/list.err" || st=$?
+	else
+		(cd "$dir" && go list -deps -json "$@") >"$work/deps.json" 2>"$work/list.err" || st=$?
+	fi
+	if [ "$st" != 0 ]; then
 		echo "branch-coverage: go list -deps $* in $dir failed — the module does not load, so nothing can be measured" >&2
 		sed -n '1,10p' "$work/list.err" >&2
 		exit 2
@@ -232,7 +240,11 @@ else
 fi
 
 failed=0
-for subject in "${subjects[@]}"; do
+# ${arr[@]+...} throughout: stock macOS Bash 3.2 treats an EMPTY array as
+# unset under `set -u`, so a module with no packages, no test binaries, or a
+# driver with no active test files would abort the gate rather than report
+# on it (review 2070).
+for subject in ${subjects[@]+"${subjects[@]}"}; do
 	importpath=$(go list -f '{{.ImportPath}}' "$subject")
 	pkgname=$(go list -f '{{.Name}}' "$subject")
 	rel=${subject#./}
@@ -296,7 +308,7 @@ EOF
 	deps productiononly "$work/subjdeps" "$module" "$importpath"
 
 	drivers=0
-	for t in "${targets[@]}"; do
+	for t in ${targets[@]+"${targets[@]}"}; do
 		grep -qxF "$importpath" "$work/deps-$(echo "$t" | tr / _)" || continue
 		drivers=$((drivers + 1))
 		tdir=$(cd "$module" && go list -f '{{.Dir}}' "$t")
