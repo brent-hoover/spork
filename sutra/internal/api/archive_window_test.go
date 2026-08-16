@@ -1,8 +1,11 @@
 package api_test
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
@@ -98,4 +101,87 @@ func idFrom(t *testing.T, body string) string {
 		t.Fatalf("no id in %s", body)
 	}
 	return created.ID
+}
+
+// TestPrepareWindowHookIsPerServer pins the property that made the hook a
+// field rather than a package variable: two servers must not see each
+// other's. A global one lets an unrelated request consume this test's
+// one-shot and archive the project early, after which
+// TestArchiveInsideThePrepareWindow passes on the prepare-stage 409
+// without ever reaching the transactional guard it exists to prove
+// (review 2036).
+func TestPrepareWindowHookIsPerServer(t *testing.T) {
+	first, _ := startAPI(t)
+	second := startSecondAPI(t)
+
+	var firstFired, secondFired atomic.Int64
+	api.SetBetweenPrepareAndCommitForTest(first.Config.Handler, func() { firstFired.Add(1) })
+	api.SetBetweenPrepareAndCommitForTest(second.Config.Handler, func() { secondFired.Add(1) })
+	t.Cleanup(func() {
+		api.SetBetweenPrepareAndCommitForTest(first.Config.Handler, nil)
+		api.SetBetweenPrepareAndCommitForTest(second.Config.Handler, nil)
+	})
+
+	// Only the FIRST server is driven, and only through an endpoint that
+	// has a prepare stage at all — createReview is the one that does.
+	// Driving the first is what makes this discriminating: under a single
+	// global hook the second installation would have REPLACED the first,
+	// so this request would fire the second server's closure and neither
+	// assertion below would hold.
+	if !reviewAttempt(t, first) {
+		t.Fatal("the first server's prepare stage never ran")
+	}
+	if got := firstFired.Load(); got == 0 {
+		t.Fatal("the first server's own hook never fired")
+	}
+	if got := secondFired.Load(); got != 0 {
+		t.Fatalf("a request to the first server fired the second server's hook %d times", got)
+	}
+}
+
+// startSecondAPI is startAPI with a distinct in-memory database, so the two
+// servers share nothing but the process.
+func startSecondAPI(t *testing.T) *httptest.Server {
+	t.Helper()
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s-second?mode=memory&cache=shared&_pragma=busy_timeout(5000)", t.Name()))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	handler, err := api.New(db)
+	if err != nil {
+		t.Fatalf("wire api: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(func() { srv.Close(); _ = db.Close() })
+	return srv
+}
+
+// reviewAttempt drives one createReview far enough to reach the
+// prepare-to-commit window, and reports whether it got there.
+func reviewAttempt(t *testing.T, srv *httptest.Server) bool {
+	t.Helper()
+	status, body := post(t, srv, "/identities", "who2", `{"handle":"operator","kind":"human"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("identity: %d %s", status, body)
+	}
+	actor := idFrom(t, body)
+	repo := newGitRepo(t)
+	status, body = post(t, srv, "/projects", "proj2",
+		`{"key":"TWO","name":"Two","actor":"`+actor+`","repo_path":"`+repo.path+`"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("project: %d %s", status, body)
+	}
+	project := idFrom(t, body)
+	status, body = post(t, srv, "/projects/"+project+"/issues", "iss2",
+		`{"title":"second","actor":"`+actor+`"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("issue: %d %s", status, body)
+	}
+	issue := idFrom(t, body)
+	status, body = post(t, srv, "/reviews", "rev2",
+		`{"issue":"`+issue+`","author":"`+actor+`","branch":"feature","commit":"`+repo.featureSHA+`"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("review: %d %s", status, body)
+	}
+	return true
 }
