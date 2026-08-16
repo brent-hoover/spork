@@ -473,7 +473,27 @@ func TestPrefix(t *testing.T) {
 	}
 }
 EOF
-check "an internal package that cannot import the subject fails loudly" 1 'would be a cycle' ./subject
+check "an internal TestMain that cannot import the subject fails loudly" 1 'would be a cycle' ./subject
+
+# The other way an internal package needs a helper: no TestMain, but an
+# os.Exit that gets rewritten to gobcoExit. Distinct from the case above,
+# which combined both and so could not tell them apart (review 2038).
+cat >"$work/mod/harness/internal_test.go" <<'EOF'
+package harness
+
+import (
+	"os"
+	"testing"
+)
+
+func TestPrefix(t *testing.T) {
+	if Prefix() != "hi" {
+		t.Error("wrong")
+		os.Exit(1)
+	}
+}
+EOF
+check "an internal os.Exit that cannot import the subject fails loudly" 1 'would be a cycle' ./subject
 
 # An os.Exit outside TestMain, in a driver that declares no TestMain.
 # This one is about COMPILING: the rewrite turns the call into gobcoExit,

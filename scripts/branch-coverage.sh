@@ -264,6 +264,12 @@ EOF
 		grep -qxF "$importpath" "$work/deps-$(echo "$t" | tr / _)" || continue
 		drivers=$((drivers + 1))
 		tdir=$(cd "$module" && go list -f '{{.Dir}}' "$t")
+		# The driver's PRODUCTION package name. "external test package"
+		# means exactly <name>_test and nothing else: a production
+		# package may itself be named something_test, and treating it as
+		# external would skip the cycle check below and emit a helper
+		# that cannot compile (review 2038).
+		tname=$(cd "$module" && go list -f '{{.Name}}' "$t")
 
 		# Teach this driver to persist synchronously however it ends. The
 		# subject's own test binary needs no hook: gobco injects a
@@ -323,10 +329,11 @@ EOF
 			while read -r pkgname hasmain _; do
 				[ -n "$pkgname" ] || continue
 				[ "$hasmain" = testmain ] && anymain=yes
-				case $pkgname in
-				*_test) injectinto=$pkgname ;;
-				*) [ -z "$injectinto" ] && injectinto=$pkgname ;;
-				esac
+				if [ "$pkgname" = "${tname}_test" ]; then
+					injectinto=$pkgname
+				elif [ -z "$injectinto" ]; then
+					injectinto=$pkgname
+				fi
 			done <<<"$hook"
 
 			while read -r pkgname hasmain hasexits; do
@@ -352,16 +359,13 @@ EOF
 				# (review 2032) — an internal TestMain, or an os.Exit in
 				# an internal test file, still needs one. Refuse loudly
 				# rather than measure this package without it.
-				case $pkgname in
-				*_test) ;;
-				*)
+				if [ "$pkgname" != "${tname}_test" ]; then
 					if grep -qxF "$t" "$work/subjdeps"; then
 						echo "FAIL $importpath: driver $t needs a flush helper in its INTERNAL test package, but $importpath imports $t — the helper's import of the subject would be a cycle, so these counters cannot be persisted"
 						failed=1
 						continue 3
 					fi
-					;;
-				esac
+				fi
 
 				helper=$tdir/gobco_${pkgname}_test.go
 				{
