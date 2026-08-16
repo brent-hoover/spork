@@ -746,10 +746,19 @@ import (
 )
 
 func TestBoth(t *testing.T) {
-	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
-		t.Error("wrong")
+	// Goexit RUNS, on the success path, in a goroutine whose deferred
+	// close is what proves defers still fire — which is the whole reason
+	// it is safe and must not be refused. Both arms are evaluated inside
+	// that goroutine, so the hits exist only if the flush survives it.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+			t.Error("wrong")
+		}
 		runtime.Goexit()
-	}
+	}()
+	<-done
 }
 EOF
 check "a driver calling runtime.Goexit is measured, not refused" 0 'fixture/subject +2/2 arms' ./subject
@@ -811,6 +820,85 @@ func TestBoth(t *testing.T) {
 }
 EOF
 check "a real _test-suffixed package counts only its own driver" 0 'fixture/widget_test +2/2 arms  \(1 drivers\)' ./widget_test
+
+echo
+echo "== a REAL sibling package named <driver>_test is still a dependency =="
+# Review 2054, the mirror of 2033. When the driver has an INTERNAL test, its
+# dependents are rebuilt for the test binary, and a real sibling package
+# whose path is <driver>_test then renders EXACTLY like the synthetic
+# external test package:
+#
+#   fixture/widget_test [fixture/widget.test]|.../widget_test   <- real
+#   fixture/widget_test [fixture/widget.test]|.../widget        <- synthetic
+#
+# Only the directory separates them, which is why the rule cannot be by
+# name. Here fixture/widget_test is the SUBJECT, and fixture/widget's test
+# binary is a genuine driver covering the arm the subject's own test does
+# not — so dropping it by name loses that arm.
+reset
+mkdir -p "$work/mod/widget" "$work/mod/widget_test"
+cat >"$work/mod/widget/widget.go" <<'EOF'
+package widget
+
+func Name() string { return "widget" }
+EOF
+cat >"$work/mod/widget_test/subject.go" <<'EOF'
+package widgettest
+
+import "fixture/widget"
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI " + widget.Name()
+	}
+	return "hi " + widget.Name()
+}
+EOF
+cat >"$work/mod/widget_test/subject_test.go" <<'EOF'
+package widgettest
+
+import "testing"
+
+func TestQuiet(t *testing.T) {
+	if Greeting(false) != "hi widget" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+# The internal test is what forces dependents to be REBUILT, and so what
+# makes the two entries collide.
+cat >"$work/mod/widget/widget_internal_test.go" <<'EOF'
+package widget
+
+import "testing"
+
+func TestName(t *testing.T) {
+	if Name() != "widget" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/widget/widget_x_test.go" <<'EOF'
+package widget_test
+
+import (
+	"testing"
+
+	widgettest "fixture/widget_test"
+)
+
+func TestLoud(t *testing.T) {
+	if widgettest.Greeting(true) != "HI widget" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+# The driver IS kept now — the directory rule no longer drops it — and the
+# gate then meets a genuine impossibility: widget's external test package is
+# built as fixture/widget_test, which is the subject's own path, so a helper
+# there would import itself. Under the name-only rule the driver vanished
+# and the subject reported a smaller, quieter number instead.
+check "a real sibling driver is kept, and its impossibility is named" 1 'the subject.s own path' ./widget_test
 
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
