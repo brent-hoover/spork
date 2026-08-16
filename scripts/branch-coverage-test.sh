@@ -217,6 +217,91 @@ EOF
 check "the skip file removes it, and the rest still measures" 1 'fixture/subject +1/2 arms' ./subject
 
 echo
+echo "== the module root is a package like any other =="
+# Reviews 2007/2008: excluding $PWD skipped the root package entirely,
+# failing tests and all, in any module that keeps code there.
+reset
+cat >>"$work/mod/go.mod" <<'EOF'
+EOF
+cat >"$work/mod/root.go" <<'EOF'
+package fixture
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI"
+	}
+	return "hi"
+}
+EOF
+cat >"$work/mod/root_test.go" <<'EOF'
+package fixture
+
+import "testing"
+
+func TestQuiet(t *testing.T) {
+	if Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "a root package with an uncovered arm fails" 1 'never true'
+cat >>"$work/mod/root_test.go" <<'EOF'
+
+func TestLoud(t *testing.T) {
+	if Greeting(true) != "HI" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "a root package fully covered passes" 0 'fixture +2/2 arms'
+
+echo
+echo "== a skip file of nothing but comments is not an error =="
+reset
+subject
+cat >"$work/mod/subject/subject_test.go" <<'EOF'
+package subject
+
+import "testing"
+
+func TestBoth(t *testing.T) {
+	if Greeting(true) != "HI" || Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/branch-coverage-skip" <<'EOF'
+# Nothing to skip yet.
+
+EOF
+check "a comments-only skip file skips nothing and does not abort" 0 'fixture/subject +2/2 arms' ./subject
+
+echo
+echo "== exits the rewrite cannot see are refused, not ignored =="
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	stdos "os"
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestMain(m *testing.M) { stdos.Exit(m.Run()) }
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "an aliased os import fails loudly" 1 'imports .os. under an alias' ./subject
+
+echo
 echo "== export_test.go hooks are visible to the type checker =="
 reset
 subject

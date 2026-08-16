@@ -105,9 +105,12 @@ cleanup() {
 # takes its temporary directories with it.
 trap cleanup EXIT
 
+# awk, not a grep pipeline: a skip file holding nothing but the comments
+# it is documented to allow makes grep exit 1, and under `set -e` that
+# would abort the gate instead of skipping nothing.
 skiptests=
 if [ -f branch-coverage-skip ]; then
-	skiptests=$(sed 's/#.*//' branch-coverage-skip | tr -d '[:space:]' | grep -v '^$' | paste -sd '|' -)
+	skiptests=$(awk '{sub(/#.*/, ""); gsub(/[[:space:]]/, "")} $0 != "" {printf "%s%s", sep, $0; sep="|"}' branch-coverage-skip)
 fi
 
 # Everything below runs against a copy, never the real tree.
@@ -117,14 +120,34 @@ while read -r hook; do
 done < <(find "$work/mod" -name export_test.go -type f)
 cd "$work/mod"
 
+# Every `go list` below is materialised and its status checked BEFORE its
+# output is consumed. Reading one through process substitution hides its
+# failure from `set -e`, and a package that vanishes from either list is a
+# package the gate silently stops measuring — which is the whole failure
+# class this script exists to refuse.
+# list <dest> <dir> <go list args...> — the directory is explicit because
+# once a subject is instrumented the questions are about the STAGED copy,
+# not the tree the gate was invoked from.
+list() {
+	local dest=$1 dir=$2
+	shift 2
+	if ! (cd "$dir" && go list "$@") >"$dest" 2>"$work/list.err"; then
+		echo "branch-coverage: go list $* in $dir failed — the module does not load, so nothing can be measured" >&2
+		sed -n '1,10p' "$work/list.err" >&2
+		exit 2
+	fi
+}
+
 # Dependency closure per test binary, so each instrumented package is
 # driven only by the test packages that actually link it. A package with
 # no test files of its own builds no test binary and is not a driver.
+list "$work/drivers" "$PWD" -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...
 targets=()
 while read -r importpath; do
+	[ -n "$importpath" ] || continue
 	targets+=("$importpath")
-	go list -deps -test "$importpath" >"$work/deps-$(echo "$importpath" | tr / _)" 2>/dev/null || : >"$work/deps-$(echo "$importpath" | tr / _)"
-done < <(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+	list "$work/deps-$(echo "$importpath" | tr / _)" "$PWD" -deps -test "$importpath"
+done <"$work/drivers"
 
 # A package with no production .go files has no conditions to
 # instrument; gobco's generated file would become the directory's only
@@ -133,7 +156,18 @@ if [ "$#" -gt 0 ]; then
 	subjects=("$@")
 else
 	subjects=()
-	while read -r dir; do subjects+=("./${dir#"$PWD"/}"); done < <(go list -f '{{if .GoFiles}}{{.Dir}}{{end}}' ./... | grep -v "^$PWD$")
+	list "$work/subjects" "$PWD" -f '{{if .GoFiles}}{{.Dir}}{{end}}' ./...
+	while read -r dir; do
+		[ -n "$dir" ] || continue
+		# The module root is a package like any other. Excluding it —
+		# harmless in a module whose root holds no .go files, as it was
+		# when this script served one app — would silently skip an
+		# entire package, failing tests and all, in any module laid out
+		# the other way.
+		sub=${dir#"$PWD"}
+		sub=${sub#/}
+		if [ -z "$sub" ]; then subjects+=("."); else subjects+=("./$sub"); fi
+	done <"$work/subjects"
 fi
 
 failed=0
@@ -141,6 +175,7 @@ for subject in "${subjects[@]}"; do
 	importpath=$(go list -f '{{.ImportPath}}' "$subject")
 	pkgname=$(go list -f '{{.Name}}' "$subject")
 	rel=${subject#./}
+	[ "$rel" = "." ] && rel=
 	slug=$(echo "$importpath" | tr / _)
 
 	if [ -z "$(go list -f '{{if .GoFiles}}y{{end}}' "$subject")" ]; then
@@ -181,7 +216,7 @@ for subject in "${subjects[@]}"; do
 	conditions=$((expected / 2))
 
 	if [ "$flush" = 1 ]; then
-		cat >"$module/$rel/gobco_flush.go" <<EOF
+		cat >"$module${rel:+/$rel}/gobco_flush.go" <<EOF
 package $pkgname
 
 import "time"
@@ -207,11 +242,47 @@ EOF
 		# TestMain there that already persists, and importing the
 		# subject from inside itself would not compile.
 		if [ "$flush" = 1 ] && [ "$t" != "$importpath" ]; then
-			mainholder=$(grep -l 'func TestMain(' "$tdir"/*_test.go 2>/dev/null | head -1 || true)
+			# Only the files this build actually compiles. A *_test.go
+			# glob also matches files excluded by build constraints, and
+			# rewriting an inactive platform's TestMain would either
+			# reference a gobcoInnerTestMain that is never compiled or
+			# collide with the one that is.
+			list "$work/testfiles" "$module" -f "{{range .TestGoFiles}}{{\$.Dir}}/{{.}}
+{{end}}{{range .XTestGoFiles}}{{\$.Dir}}/{{.}}
+{{end}}" "$t"
+			active=()
+			while read -r f; do [ -n "$f" ] && active+=("$f"); done <"$work/testfiles"
+			if [ "${#active[@]}" = 0 ]; then
+				echo "FAIL $importpath: driver $t compiles no test files"
+				failed=1
+				continue 2
+			fi
+
+			# An exit this rewrite cannot see is a silent loss: it skips
+			# gobcoExit AND the wrapper's deferred flush, and the report
+			# still looks complete because the ticker filled in the
+			# condition list. So the shapes that could do that are
+			# refused loudly. (log.Fatal is NOT among them: it fires only
+			# on a path that fails the driver, and a failed driver
+			# already fails the package.)
+			for f in "${active[@]}"; do
+				if grep -qE '^\s*[A-Za-z_][A-Za-z0-9_]*\s+"os"' "$f"; then
+					echo "FAIL $importpath: driver $t imports \"os\" under an alias in $(basename "$f"); its exits cannot be rewritten"
+					failed=1
+					continue 3
+				fi
+				if grep -qE 'syscall\.Exit\(|runtime\.Goexit\(' "$f"; then
+					echo "FAIL $importpath: driver $t exits through syscall.Exit or runtime.Goexit in $(basename "$f"); counters cannot be flushed"
+					failed=1
+					continue 3
+				fi
+			done
+
+			mainholder=$(grep -l 'func TestMain(' "${active[@]}" 2>/dev/null | head -1 || true)
 			if [ -z "$mainholder" ]; then
 				# No TestMain: supply one. Go's generated main would
 				# otherwise exit without flushing.
-				driverpkg=$(sed -n 's/^package \([A-Za-z0-9_]*\).*/\1/p' "$(ls "$tdir"/*_test.go | head -1)" | head -1)
+				driverpkg=$(sed -n 's/^package \([A-Za-z0-9_]*\).*/\1/p' "${active[0]}" | head -1)
 				cat >"$tdir/gobco_main_test.go" <<EOF
 package $driverpkg
 
@@ -240,7 +311,7 @@ EOF
 				while read -r f; do
 					perl -pi -e 's/os\.Exit\(/gobcoExit(/g' "$f"
 					printf '\nvar _ = os.Exit\n' >>"$f"
-				done < <(grep -l 'os\.Exit(' "$tdir"/*_test.go || true)
+				done < <(grep -l 'os\.Exit(' "${active[@]}" || true)
 				perl -pi -e 's/\bfunc TestMain\(/func gobcoInnerTestMain(/' "$mainholder"
 				cat >"$tdir/gobco_exit_test.go" <<EOF
 package $driverpkg
