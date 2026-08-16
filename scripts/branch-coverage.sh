@@ -63,6 +63,14 @@
 #     rewritten, and its TestMain is wrapped so a plain return flushes
 #     too. Finding one os.Exit does not prove every path takes it.
 #
+#     That rewriting is done by gobco-hook.go, on the SYNTAX TREE. Doing
+#     it with grep and perl was wrong in five ways at once — an aliased
+#     import on one line or in a block, a dot import, an exit reached
+#     through a function value, syscall.Exit — and every one of them
+#     fails SILENTLY, because the ticker has already written a report
+#     carrying the complete condition list, so a stale result passes
+#     every check below. What cannot be rewritten is refused instead.
+#
 # The measured spread is the reason cross-package attribution matters:
 # one package's own unit tests reached 13/38 arms, the acceptance suite
 # 22/38.
@@ -87,6 +95,13 @@
 set -euo pipefail
 
 GOBCO=github.com/rillig/gobco@v1.3.4
+# Resolved before the staging cd, because it lives beside this script and
+# not inside whichever module is being measured.
+hookprog=$(cd "$(dirname "$0")" && pwd)/gobco-hook.go
+if [ ! -f "$hookprog" ]; then
+	echo "branch-coverage: $hookprog is missing; drivers cannot be hooked" >&2
+	exit 2
+fi
 
 if [ ! -f go.mod ]; then
 	echo "branch-coverage: no go.mod in $PWD — run this from a module root" >&2
@@ -258,31 +273,33 @@ EOF
 				continue 2
 			fi
 
-			# An exit this rewrite cannot see is a silent loss: it skips
-			# gobcoExit AND the wrapper's deferred flush, and the report
-			# still looks complete because the ticker filled in the
-			# condition list. So the shapes that could do that are
-			# refused loudly. (log.Fatal is NOT among them: it fires only
-			# on a path that fails the driver, and a failed driver
-			# already fails the package.)
-			for f in "${active[@]}"; do
-				if grep -qE '^\s*[A-Za-z_][A-Za-z0-9_]*\s+"os"' "$f"; then
-					echo "FAIL $importpath: driver $t imports \"os\" under an alias in $(basename "$f"); its exits cannot be rewritten"
-					failed=1
-					continue 3
-				fi
-				if grep -qE 'syscall\.Exit\(|runtime\.Goexit\(' "$f"; then
-					echo "FAIL $importpath: driver $t exits through syscall.Exit or runtime.Goexit in $(basename "$f"); counters cannot be flushed"
-					failed=1
-					continue 3
-				fi
-			done
+			# The rewrite is done on the SYNTAX TREE, not with grep and
+			# perl. Reviews 2013 and 2014 were right that a textual pass
+			# cannot see an aliased import (`stdos "os"`, on one line or
+			# in a block), a dot import, an exit reached through a
+			# function value (`exit := os.Exit`), or syscall.Exit — and
+			# each of those ends the process with no flush while the
+			# ticker has already written a full-shaped report, so the
+			# stale result passes every check made below. gobco-hook.go
+			# rewrites every os.Exit call under whatever name os carries,
+			# renames a TestMain so it can be wrapped, and REFUSES
+			# anything it cannot prove safe. (log.Fatal is deliberately
+			# allowed: it fires only on a path that fails the driver, and
+			# a failed driver already fails the package.)
+			if ! hook=$(go run "$hookprog" "$work/testfiles" 2>"$work/hook.err"); then
+				echo "FAIL $importpath: driver $t cannot be hooked to flush its counters"
+				sed -n '1,5p' "$work/hook.err"
+				failed=1
+				continue 2
+			fi
+			hadmain=$(echo "$hook" | sed -n 1p)
+			driverpkg=$(echo "$hook" | sed -n 2p)
 
-			mainholder=$(grep -l 'func TestMain(' "${active[@]}" 2>/dev/null | head -1 || true)
-			if [ -z "$mainholder" ]; then
+			if [ "$hadmain" = none ]; then
 				# No TestMain: supply one. Go's generated main would
-				# otherwise exit without flushing.
-				driverpkg=$(sed -n 's/^package \([A-Za-z0-9_]*\).*/\1/p' "${active[0]}" | head -1)
+				# otherwise exit without flushing. Any os.Exit a plain
+				# test called has already been rewritten to gobcoExit,
+				# which is defined below either way.
 				cat >"$tdir/gobco_main_test.go" <<EOF
 package $driverpkg
 
@@ -293,26 +310,20 @@ import (
 	gobcosubject "$importpath"
 )
 
-// TestMain persists the instrumented package's counters before the
+// gobcoExit persists the instrumented package's counters before the
 // process goes away. GobcoFinish returns the code it was handed.
-func TestMain(m *testing.M) { os.Exit(gobcosubject.GobcoFinish(m.Run())) }
+func gobcoExit(code int) { os.Exit(gobcosubject.GobcoFinish(code)) }
+
+// TestMain persists on the way out of the generated main.
+func TestMain(m *testing.M) { gobcoExit(m.Run()) }
 EOF
 			else
-				# Has a TestMain: cover BOTH ways out of it. Its
-				# os.Exit calls are rewritten to flush first, and it is
-				# renamed and wrapped so a plain return — or a
-				# conditional path that never reaches an os.Exit —
-				# flushes through the deferred call. Neither the exit
-				# code nor the generated main's handling of it changes.
-				# The trailing reference keeps "os" used: a file that
-				# imported it only to exit would otherwise stop
-				# compiling.
-				driverpkg=$(sed -n 's/^package \([A-Za-z0-9_]*\).*/\1/p' "$mainholder" | head -1)
-				while read -r f; do
-					perl -pi -e 's/os\.Exit\(/gobcoExit(/g' "$f"
-					printf '\nvar _ = os.Exit\n' >>"$f"
-				done < <(grep -l 'os\.Exit(' "${active[@]}" || true)
-				perl -pi -e 's/\bfunc TestMain\(/func gobcoInnerTestMain(/' "$mainholder"
+				# Has a TestMain: cover BOTH ways out. Its exits now go
+				# through gobcoExit, and it has been renamed so this
+				# wrapper can flush on the paths that RETURN — including
+				# a conditional path that never reaches an exit at all.
+				# Neither the exit code nor the generated main's handling
+				# of it changes.
 				cat >"$tdir/gobco_exit_test.go" <<EOF
 package $driverpkg
 
@@ -328,9 +339,9 @@ import (
 func gobcoExit(code int) { os.Exit(gobcosubject.GobcoFinish(code)) }
 
 // TestMain covers the other way out: a TestMain that RETURNS, on any
-// path, never reaches an os.Exit and would otherwise lose every hit
-// since the last tick. The deferred flush costs nothing on the exit
-// path, where it does not run at all.
+// path, never reaches an exit and would otherwise lose every hit since
+// the last tick. The deferred flush costs nothing on the exit path,
+// where it does not run at all.
 func TestMain(m *testing.M) {
 	defer gobcosubject.GobcoFinish(0)
 	gobcoInnerTestMain(m)
