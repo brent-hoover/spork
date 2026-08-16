@@ -154,28 +154,38 @@ list() {
 }
 
 # normalise rewrites a `go list -deps` listing into plain import paths.
+# It expects each line as "IMPORTPATH|DIR".
 #
 # Two different things wear the same "X [Y.test]" shape. `pkg [other.test]`
 # is a REAL package rebuilt for another package's test binary, and dropping
 # the suffix is right: the bare path is the only form it takes when the
 # subject transitively depends on the package under test, and matching only
-# the bare path lost the driver entirely. But `pkg_test [pkg.test]` is the
-# SYNTHETIC external test package, which is not a package anyone can import
-# — and stripping ITS suffix invents a dependency on a real package that
-# happens to be named pkg_test, so an unrelated test binary is counted as a
-# driver of it (kriya review 2033). Synthetic entries are dropped instead.
+# the bare path lost the driver entirely. But `pkg_test [pkg.test]` MAY be
+# the SYNTHETIC external test package, which nobody can import — and
+# stripping its suffix invents a dependency on a real package of that name
+# (kriya review 2033).
+#
+# The two are told apart by DIRECTORY, not by name: the synthetic package
+# lives in the tested package's own directory, while a real sibling named
+# <pkg>_test has its own. Deciding on the name alone would drop a genuine
+# dependency imported only by internal tests (review 2054) — the mirror of
+# the bug it was fixing.
 normalise() {
-	awk '{
-		i = index($0, " [")
-		if (i == 0) { print; next }
-		base = substr($0, 1, i - 1)
-		owner = substr($0, i + 2)
-		sub(/\]$/, "", owner)
-		sub(/\.test$/, "", owner)
-		if (base == owner "_test") next
-		print base
-	}' "$1" | sort -u -o "$1"
+	awk -F'|' '
+		NR == FNR { if ($1 !~ / \[/) dir[$1] = $2; next }
+		{
+			i = index($1, " [")
+			if (i == 0) { print $1; next }
+			base = substr($1, 1, i - 1)
+			owner = substr($1, i + 2)
+			sub(/\]$/, "", owner)
+			sub(/\.test$/, "", owner)
+			if (base == owner "_test" && $2 == dir[owner]) next
+			print base
+		}
+	' "$1" "$1" | sort -u -o "$1"
 }
+
 
 # Dependency closure per test binary, so each instrumented package is
 # driven only by the test packages that actually link it. A package with
@@ -186,7 +196,7 @@ while read -r importpath; do
 	[ -n "$importpath" ] || continue
 	targets+=("$importpath")
 	depfile=$work/deps-$(echo "$importpath" | tr / _)
-	list "$depfile" "$PWD" -deps -test "$importpath"
+	list "$depfile" "$PWD" -deps -test -f '{{.ImportPath}}|{{.Dir}}' "$importpath"
 	normalise "$depfile"
 done <"$work/drivers"
 
@@ -273,7 +283,7 @@ EOF
 	fi
 
 	# The subject's own dependency closure, for the cycle check below.
-	list "$work/subjdeps" "$module" -deps "$importpath"
+	list "$work/subjdeps" "$module" -deps -f '{{.ImportPath}}|{{.Dir}}' "$importpath"
 	normalise "$work/subjdeps"
 
 	drivers=0
@@ -376,6 +386,20 @@ EOF
 				# (review 2032) — an internal TestMain, or an os.Exit in
 				# an internal test file, still needs one. Refuse loudly
 				# rather than measure this package without it.
+				# Go builds a driver's external test package under the
+				# import path <driver>_test. If the SUBJECT's path is
+				# exactly that, the helper's `import "<subject>"` reads
+				# as the package importing itself and Go refuses it as a
+				# cycle — a real collision between a synthetic package
+				# name and a real one, which no placement resolves. Say
+				# so plainly rather than leave Go's message to explain a
+				# situation this gate created (review 2054).
+				if [ "$pkgname" = "${tname}_test" ] && [ "$importpath" = "${t}_test" ]; then
+					echo "FAIL $importpath: driver $t's external test package is built as $importpath, the subject's own path — a flush helper there would import itself, so these counters cannot be persisted"
+					failed=1
+					continue 3
+				fi
+
 				if [ "$pkgname" != "${tname}_test" ]; then
 					if grep -qxF "$t" "$work/subjdeps"; then
 						echo "FAIL $importpath: driver $t needs a flush helper in its INTERNAL test package, but $importpath imports $t — the helper's import of the subject would be a cycle, so these counters cannot be persisted"
