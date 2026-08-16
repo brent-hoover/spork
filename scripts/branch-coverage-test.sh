@@ -357,9 +357,11 @@ subject
 harness 'sx "syscall"' 'func TestMain(m *testing.M) { sx.Exit(m.Run()) }'
 check "an ALIASED syscall.Exit is refused" 1 'syscall.Exit' ./subject
 
-# A local named os must not be mistaken for the package. Nothing here
-# terminates anything, so rewriting its Exit method would be a change to
-# unrelated code — and would not compile, since gobcoExit takes an int.
+# A local named os must not be mistaken for the package. The file DOES
+# import os and use it, so the hook's import map holds an "os" entry and
+# only the binding check can tell the two apart — review 2025/2026 caught
+# the earlier fixture omitting the import, which made it pass under the
+# name-based implementation too and so prove nothing.
 reset
 subject
 mkdir -p "$work/mod/harness"
@@ -367,6 +369,7 @@ cat >"$work/mod/harness/harness_test.go" <<'EOF'
 package harness_test
 
 import (
+	"os"
 	"testing"
 
 	"fixture/subject"
@@ -377,6 +380,12 @@ type shadow struct{}
 func (shadow) Exit() string { return "not the package" }
 
 func TestBoth(t *testing.T) {
+	// The real os package, so the import is live and named "os".
+	if os.Getenv("GOBCO_NO_SUCH_VAR") != "" {
+		t.Fatal("impossible")
+	}
+	// And now a local of the same name. Rewriting THIS Exit would not
+	// even compile: gobcoExit takes an int and returns nothing.
 	os := shadow{}
 	if os.Exit() != "not the package" {
 		t.Fatal("shadow")
@@ -386,7 +395,62 @@ func TestBoth(t *testing.T) {
 	}
 }
 EOF
-check "a local shadowing the os import is left alone" 0 'fixture/subject +2/2 arms' ./subject
+check "a local shadowing a live os import is left alone" 0 'fixture/subject +2/2 arms' ./subject
+
+# The subject imports the driver's PRODUCTION package, and only the
+# driver's external tests import the subject — legal, and a cycle the
+# moment an injected TestMain adds driver -> subject. Neither package
+# declares a TestMain, so one is injected, and it must land on the
+# external side (reviews 2025/2026).
+reset
+mkdir -p "$work/mod/subject" "$work/mod/harness"
+cat >"$work/mod/harness/harness.go" <<'EOF'
+package harness
+
+func Prefix() string { return "hi" }
+EOF
+cat >"$work/mod/subject/subject.go" <<'EOF'
+package subject
+
+import "fixture/harness"
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI"
+	}
+	return harness.Prefix()
+}
+EOF
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+# An INTERNAL test file too, with no TestMain either, so the injection
+# has two packages to choose between. Sorted first is the internal one,
+# and that is the choice that closes the cycle.
+cat >"$work/mod/harness/internal_test.go" <<'EOF'
+package harness
+
+import "testing"
+
+func TestPrefix(t *testing.T) {
+	if Prefix() != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "an injected TestMain does not close an import cycle" 0 'fixture/subject +2/2 arms' ./subject
 
 # An os.Exit outside TestMain, in a driver that declares no TestMain.
 # This one is about COMPILING: the rewrite turns the call into gobcoExit,
