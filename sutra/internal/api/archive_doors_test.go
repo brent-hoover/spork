@@ -7,7 +7,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -35,8 +34,38 @@ import (
 // asserts coverage in both directions rather than a bijection.
 const doorTable = "../../verification/REQ-projects.feature"
 
+// knownSites is every guardWritable call site, named by the function that
+// holds it and its position within that function — stable when lines move,
+// changing only when a site is added, removed, or relocated.
+//
+// The inventory is here because the door mapping ALONE is not enough, and
+// reviews 2017/2018 caught why: several sites serve one door, so deleting
+// one of createReview's two guards leaves the door still claimed by the
+// other, and the acceptance request is still refused. Mapping proves each
+// door is exercised; the inventory proves no site quietly disappeared.
+// Neither substitutes for the other.
+var knownSites = map[string]int{
+	"createDocument":          1,
+	"saveDocVersion":          1,
+	"linkDocumentToIssue":     1,
+	"unlinkDocumentFromIssue": 1,
+	"resolveCommentAnchor":    3, // one per anchor kind
+	"mutateLabel":             1, // attach and detach share it
+	"createIssue":             1,
+	"updateIssue":             1,
+	"updateIssueStatus":       1,
+	"assignIssue":             1,
+	"addIssueRelation":        2, // both ends
+	"removeIssueRelation":     2, // both ends
+	"guardReviewProject":      1, // verdict, consume, and resubmit route through it
+	"createReview":            2, // prepare stage and transactional stage
+	"resubmitReview":          1,
+	"resolveAnchor":           2, // project anchor and issue anchor
+	"guardCurrentAnchor":      1, // the anchor being LEFT
+}
+
 func TestEveryArchiveGuardHasAScenario(t *testing.T) {
-	guarded, sites := doorsNamedByGuards(t)
+	guarded, byFunc := doorsNamedByGuards(t)
 	scenario := doorsNamedByFeature(t)
 
 	for door := range guarded {
@@ -52,8 +81,20 @@ func TestEveryArchiveGuardHasAScenario(t *testing.T) {
 				"Either the guard is missing, or its `// door:` comment is.", door)
 		}
 	}
-	if len(sites) == 0 {
-		t.Fatal("found no guardWritable call sites at all; this test is not looking where it thinks")
+
+	for fn, want := range knownSites {
+		if got := byFunc[fn]; got != want {
+			t.Errorf("%s holds %d guardWritable calls, expected %d.\n"+
+				"A guard was added or removed. If removed, check FIRST whether another site "+
+				"still refuses the same door — that is what makes the loss invisible to the "+
+				"scenario. Then update knownSites.", fn, got, want)
+		}
+	}
+	for fn, got := range byFunc {
+		if _, known := knownSites[fn]; !known {
+			t.Errorf("%s holds %d guardWritable calls and is not in knownSites; "+
+				"add it, with the door its guards enforce", fn, got)
+		}
 	}
 }
 
@@ -61,14 +102,14 @@ func TestEveryArchiveGuardHasAScenario(t *testing.T) {
 // calls and reads the `// door:` comment immediately above each. A site
 // without one fails: an unannotated guard is a guard nothing has been
 // shown to exercise.
-func doorsNamedByGuards(t *testing.T) (map[string]bool, []string) {
+func doorsNamedByGuards(t *testing.T) (map[string]bool, map[string]int) {
 	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
 	doors := map[string]bool{}
-	var sites []string
+	byFunc := map[string]int{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -85,44 +126,51 @@ func doorsNamedByGuards(t *testing.T) (map[string]bool, []string) {
 		for _, group := range file.Comments {
 			above[fset.Position(group.End()).Line] = group.Text()
 		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
+		// Walk per function, so each site is attributed to the function
+		// that holds it rather than to the file.
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
 			if !ok {
-				return true
+				continue
 			}
-			id, ok := call.Fun.(*ast.Ident)
-			if !ok || id.Name != "guardWritable" {
-				return true
-			}
-			pos := fset.Position(call.Pos())
-			sites = append(sites, pos.String())
-			text, ok := above[pos.Line-1]
-			if !ok {
-				t.Errorf("%s: guardWritable call has no `// door:` comment above it; "+
-					"name the door it enforces so the archived-project scenario can be checked against it", pos)
-				return true
-			}
-			named := false
-			for _, line := range strings.Split(text, "\n") {
-				rest, found := strings.CutPrefix(strings.TrimSpace(line), "door:")
-				if !found {
-					continue
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
 				}
-				for _, d := range strings.Split(rest, ",") {
-					if d = strings.TrimSpace(d); d != "" {
-						doors[d] = true
-						named = true
+				id, ok := call.Fun.(*ast.Ident)
+				if !ok || id.Name != "guardWritable" {
+					return true
+				}
+				pos := fset.Position(call.Pos())
+				byFunc[fn.Name.Name]++
+				text, ok := above[pos.Line-1]
+				if !ok {
+					t.Errorf("%s: guardWritable call has no `// door:` comment above it; "+
+						"name the door it enforces so the archived-project scenario can be checked against it", pos)
+					return true
+				}
+				named := false
+				for _, line := range strings.Split(text, "\n") {
+					rest, found := strings.CutPrefix(strings.TrimSpace(line), "door:")
+					if !found {
+						continue
+					}
+					for _, d := range strings.Split(rest, ",") {
+						if d = strings.TrimSpace(d); d != "" {
+							doors[d] = true
+							named = true
+						}
 					}
 				}
-			}
-			if !named {
-				t.Errorf("%s: the comment above guardWritable names no door", pos)
-			}
-			return true
-		})
+				if !named {
+					t.Errorf("%s: the comment above guardWritable names no door", pos)
+				}
+				return true
+			})
+		}
 	}
-	sort.Strings(sites)
-	return doors, sites
+	return doors, byFunc
 }
 
 // doorsNamedByFeature reads the door column out of the archived-project

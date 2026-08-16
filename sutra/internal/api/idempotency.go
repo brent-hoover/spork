@@ -24,6 +24,12 @@ import (
 // gigabyte fixtures; set only via export_test.go.
 var testBodyLimit int64
 
+// testBetweenPrepareAndCommit runs after the out-of-transaction prepare
+// stage and before the write transaction opens, so a test can change the
+// world in exactly the window the transactional re-checks exist to
+// cover. Nil in production; set only via export_test.go.
+var testBetweenPrepareAndCommit func()
+
 // largeBodyThreshold divides ordinary mutations from large-content
 // ones; largeBodySlot admits ONE large body at a time, so concurrent
 // contract-valid large requests serialize instead of multiplying
@@ -290,6 +296,18 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 			writeError(w, apiErr)
 			return
 		}
+	}
+
+	// The window this hook opens is the reason the transactional stage
+	// re-checks what prepare already checked. Prepare reads OUTSIDE the
+	// write transaction — deliberately, so git and oversized bodies never
+	// hold a database connection — so anything it validated can change
+	// before the commit runs, and only the check inside the transaction
+	// is authoritative. Nil in production; a test sets it to make that
+	// window deterministic instead of a race nobody can trigger on
+	// purpose (reviews 2017/2018).
+	if testBetweenPrepareAndCommit != nil {
+		testBetweenPrepareAndCommit()
 	}
 
 	status, raw, apiErr := s.attempt(operation, key, func(tx *sql.Tx) (int, any, *apiError) { return fn(tx, prepped) })

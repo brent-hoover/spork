@@ -1069,9 +1069,32 @@ ever ran live→archived, which never reaches the guard on the anchor being LEFT
 Both now use asymmetric fixtures — a relation with one end live, and a re-anchor
 in each direction.
 
-The general lesson: when an AC names a set, find the mechanism that ENUMERATES
-the set and assert a MAPPING against it, not a tally. And check that each member
-is exercised by a request that could only fail for that member's reason.
+Reviews 2017/2018 then caught that the mapping had QUIETLY REGRESSED what the
+tally protected. Several sites serve one door — `createReview` guards in both
+its prepare stage and its transactional stage — so deleting one of the two
+leaves the door still claimed by the other, and the acceptance request is still
+refused by the survivor. Demonstrated: with the transactional guard neutralised,
+all 195 scenarios pass. Both mechanisms are now kept, because neither implies
+the other. The mapping proves every door is exercised; a per-function site
+inventory proves no site vanished.
+
+That pair exposed the last gap, which is a different kind: the scenario can only
+ever reach the guard that answers FIRST. It archives the project up front, so
+prepare refuses and the transactional check is never consulted — and the
+transactional check is the one that matters, because prepare reads outside the
+write transaction and its verdict is stale by the time the commit runs.
+`TestArchiveInsideThePrepareWindow` closes it by archiving the project exactly
+in that window, through a hook that runs between the two stages. Removing the
+transactional guard now fails that test, where it failed nothing before.
+
+The general lessons:
+
+1. When an AC names a set, find the mechanism that ENUMERATES the set and assert
+   a MAPPING against it, not a tally — but keep the tally too, because a mapping
+   collapses several members onto one name and stops noticing when one leaves.
+2. Check that each member is exercised by a request that could only fail for
+   that member's reason. Two guards in series mean the second is untested by
+   construction until the first is made to pass.
 
 ## A shape rule the fixtures could never break
 
