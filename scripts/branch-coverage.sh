@@ -255,6 +255,10 @@ func init() {
 EOF
 	fi
 
+	# The subject's own dependency closure, for the cycle check below.
+	list "$work/subjdeps" "$module" -deps "$importpath"
+	sed -i.bak 's/ \[.*\]$//' "$work/subjdeps" && rm -f "$work/subjdeps.bak"
+
 	drivers=0
 	for t in "${targets[@]}"; do
 		grep -qxF "$importpath" "$work/deps-$(echo "$t" | tr / _)" || continue
@@ -339,6 +343,25 @@ EOF
 					needexit=yes
 				fi
 				[ "$needexit" = no ] && [ "$needmain" = no ] && continue
+
+				# A helper must import the subject to reach GobcoFinish.
+				# For an INTERNAL test package that is impossible when the
+				# subject imports the package under test: Go refuses the
+				# cycle, and no flush can be installed there. Preferring
+				# the external package covers only the injected case
+				# (review 2032) — an internal TestMain, or an os.Exit in
+				# an internal test file, still needs one. Refuse loudly
+				# rather than measure this package without it.
+				case $pkgname in
+				*_test) ;;
+				*)
+					if grep -qxF "$t" "$work/subjdeps"; then
+						echo "FAIL $importpath: driver $t needs a flush helper in its INTERNAL test package, but $importpath imports $t — the helper's import of the subject would be a cycle, so these counters cannot be persisted"
+						failed=1
+						continue 3
+					fi
+					;;
+				esac
 
 				helper=$tdir/gobco_${pkgname}_test.go
 				{
