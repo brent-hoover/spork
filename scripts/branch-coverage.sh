@@ -170,11 +170,20 @@ list() {
 # They are told apart by DIRECTORY: the synthetic package lives in the
 # tested package's own directory, a real sibling in its own. Deciding on
 # the name alone drops a genuine dependency (review 2054).
+# The first argument selects whether TEST dependencies count. They do for a
+# driver, whose whole point is what its test binary links. They must NOT for
+# the subject's own closure, which exists to answer "would a helper importing
+# the subject cycle?" — a question about PRODUCTION imports, since an
+# imported package never brings its own tests. Folding both into one -test
+# call falsely rejected a valid reciprocal arrangement where the subject's
+# tests import the driver (reviews 2066/2067).
 deps() {
-	local dest=$1 dir=$2
-	shift 2
-	if ! (cd "$dir" && go list -deps -test -json "$@") >"$work/deps.json" 2>"$work/list.err"; then
-		echo "branch-coverage: go list -deps -test $* in $dir failed — the module does not load, so nothing can be measured" >&2
+	local mode=$1 dest=$2 dir=$3
+	shift 3
+	local testflag=()
+	[ "$mode" = withtests ] && testflag=(-test)
+	if ! (cd "$dir" && go list -deps "${testflag[@]}" -json "$@") >"$work/deps.json" 2>"$work/list.err"; then
+		echo "branch-coverage: go list -deps $* in $dir failed — the module does not load, so nothing can be measured" >&2
 		sed -n '1,10p' "$work/list.err" >&2
 		exit 2
 	fi
@@ -198,7 +207,7 @@ targets=()
 while read -r importpath; do
 	[ -n "$importpath" ] || continue
 	targets+=("$importpath")
-	deps "$work/deps-$(echo "$importpath" | tr / _)" "$PWD" "$importpath"
+	deps withtests "$work/deps-$(echo "$importpath" | tr / _)" "$PWD" "$importpath"
 done <"$work/drivers"
 
 # A package with no production .go files has no conditions to
@@ -284,7 +293,7 @@ EOF
 	fi
 
 	# The subject's own dependency closure, for the cycle check below.
-	deps "$work/subjdeps" "$module" "$importpath"
+	deps productiononly "$work/subjdeps" "$module" "$importpath"
 
 	drivers=0
 	for t in "${targets[@]}"; do
