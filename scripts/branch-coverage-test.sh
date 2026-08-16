@@ -30,6 +30,7 @@ check() {
 	local out status
 	out=$(cd "$work/mod" && "$gate" "$@" 2>&1)
 	status=$?
+	[ -n "${BCDEBUG:-}" ] && printf '%s\n' "$out" >&2
 	if [ "$status" != "$wantexit" ]; then
 		printf 'FAIL %s: exit %s, wanted %s\n%s\n' "$name" "$status" "$wantexit" "$out"
 		fail=$((fail + 1))
@@ -351,8 +352,53 @@ subject
 harness '. "os"' 'func TestMain(m *testing.M) { Exit(m.Run()) }'
 check "a dot import of os is refused" 1 'dot-imports' ./subject
 
-# A plain test — no TestMain at all — that exits directly. The injected
-# TestMain cannot help, so the exit itself has to be rewritten.
+reset
+subject
+harness 'sx "syscall"' 'func TestMain(m *testing.M) { sx.Exit(m.Run()) }'
+check "an ALIASED syscall.Exit is refused" 1 'syscall.Exit' ./subject
+
+# A local named os must not be mistaken for the package. Nothing here
+# terminates anything, so rewriting its Exit method would be a change to
+# unrelated code — and would not compile, since gobcoExit takes an int.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+type shadow struct{}
+
+func (shadow) Exit() string { return "not the package" }
+
+func TestBoth(t *testing.T) {
+	os := shadow{}
+	if os.Exit() != "not the package" {
+		t.Fatal("shadow")
+	}
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "a local shadowing the os import is left alone" 0 'fixture/subject +2/2 arms' ./subject
+
+# An os.Exit outside TestMain, in a driver that declares no TestMain.
+# This one is about COMPILING: the rewrite turns the call into gobcoExit,
+# so the helper must be emitted into this package even though the exit is
+# on a path no run takes.
+#
+# Review 2019 was right that the earlier fixture was vacuous, and wrong
+# about the remedy: an unconditional exit cannot be written, because Go's
+# testing framework panics on "unexpected call to os.Exit during test".
+# The RUNTIME property — that a rewritten exit still flushes — is proved
+# by "a foreign driver whose TestMain exits is attributed", which fails
+# when the rewrite is disabled. Checked, not assumed.
 reset
 subject
 mkdir -p "$work/mod/harness"
@@ -373,7 +419,52 @@ func TestBoth(t *testing.T) {
 	}
 }
 EOF
-check "os.Exit in a plain test, with no TestMain, is rewritten" 0 'fixture/subject +2/2 arms' ./subject
+check "a rewritten exit outside TestMain still compiles and measures" 0 'fixture/subject +2/2 arms' ./subject
+
+# Both test packages in one directory. A helper emitted into only one of
+# them leaves the other's rewritten exit undefined, and a wrapper on the
+# wrong side cannot see gobcoInnerTestMain (reviews 2019/2020).
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness.go" <<'EOF'
+package harness
+
+func Nothing() {}
+EOF
+cat >"$work/mod/harness/internal_test.go" <<'EOF'
+package harness
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+func TestInternal(t *testing.T) {}
+EOF
+cat >"$work/mod/harness/external_test.go" <<'EOF'
+package harness_test
+
+import (
+	"os"
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestExternal(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Error("wrong")
+		// Rewritten to gobcoExit, so that helper must exist in THIS
+		// package — the TestMain above is in the other one, and a
+		// helper emitted only there leaves this call undefined.
+		os.Exit(1)
+	}
+}
+EOF
+check "internal and external test packages are hooked separately" 0 'fixture/subject +2/2 arms' ./subject
 
 echo
 echo "== a module that does not load is fatal, not smaller =="
