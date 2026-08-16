@@ -381,9 +381,9 @@ func (shadow) Exit() string { return "not the package" }
 
 func TestBoth(t *testing.T) {
 	// The real os package, so the import is live and named "os".
-	if os.Getenv("GOBCO_NO_SUCH_VAR") != "" {
-		t.Fatal("impossible")
-	}
+	// Nothing is asserted about the value: the suite must not depend on
+	// the caller's environment (reviews 2031/2032).
+	_ = os.Getenv("GOBCO_NO_SUCH_VAR")
 	// And now a local of the same name. Rewriting THIS Exit would not
 	// even compile: gobcoExit takes an int and returns nothing.
 	os := shadow{}
@@ -451,6 +451,29 @@ func TestPrefix(t *testing.T) {
 }
 EOF
 check "an injected TestMain does not close an import cycle" 0 'fixture/subject +2/2 arms' ./subject
+
+# The same layout, but now the INTERNAL test package needs a helper of its
+# own — it declares a TestMain. Preferring the external package cannot help
+# here: the helper must import the subject to reach GobcoFinish, and the
+# subject imports this package. No flush can be installed, so the gate must
+# say so rather than measure without one (review 2032).
+cat >"$work/mod/harness/internal_test.go" <<'EOF'
+package harness
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+func TestPrefix(t *testing.T) {
+	if Prefix() != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "an internal package that cannot import the subject fails loudly" 1 'would be a cycle' ./subject
 
 # An os.Exit outside TestMain, in a driver that declares no TestMain.
 # This one is about COMPILING: the rewrite turns the call into gobcoExit,
