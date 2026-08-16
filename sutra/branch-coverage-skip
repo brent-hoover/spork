@@ -1,0 +1,12 @@
+# Tests that measure the BUILD rather than behavior, and so cannot pass
+# against an instrumented one. See ../scripts/branch-coverage.sh.
+#
+# Every entry needs its reason. A skipped test's arms simply go
+# uncovered, so this file can only ever UNDERSTATE coverage.
+
+# Asserts a 1 MiB allocation ceiling while scanning a 64 MiB value.
+# gobco's per-condition counters in the byte lexer push it to ~3 MiB —
+# still ~20x under the ~64 MiB a value-materializing tokenizer would
+# cost, which is the failure mode the guard exists to catch. The
+# property holds under instrumentation; only the slack does not.
+^TestScanDuplicateKeysStreamsValues$
