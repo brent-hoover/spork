@@ -277,19 +277,49 @@ EOF
 check "a comments-only skip file skips nothing and does not abort" 0 'fixture/subject +2/2 arms' ./subject
 
 echo
-echo "== exits the rewrite cannot see are refused, not ignored =="
+echo "== exits are found through the syntax tree, not through grep =="
+# Reviews 2013/2014: a textual rewrite of `os.Exit(` misses every one of
+# these. The first two are legitimate and must be HANDLED; the last two
+# cannot be rewritten and must be REFUSED, because a missed exit loses
+# the final hits behind a report that still looks complete.
+harness() {
+	mkdir -p "$work/mod/harness"
+	cat >"$work/mod/harness/harness_test.go" <<EOF
+package harness_test
+
+import (
+	$1
+	"testing"
+
+	"fixture/subject"
+)
+
+$2
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+}
+
+reset
+subject
+harness 'stdos "os"' 'func TestMain(m *testing.M) { stdos.Exit(m.Run()) }'
+check "an aliased os import in a block is handled" 0 'fixture/subject +2/2 arms' ./subject
+
 reset
 subject
 mkdir -p "$work/mod/harness"
 cat >"$work/mod/harness/harness_test.go" <<'EOF'
 package harness_test
 
-import (
-	stdos "os"
-	"testing"
+import stdos "os"
 
-	"fixture/subject"
-)
+import "testing"
+
+import "fixture/subject"
 
 func TestMain(m *testing.M) { stdos.Exit(m.Run()) }
 
@@ -299,7 +329,119 @@ func TestBoth(t *testing.T) {
 	}
 }
 EOF
-check "an aliased os import fails loudly" 1 'imports .os. under an alias' ./subject
+check "a single-line aliased import is handled" 0 'fixture/subject +2/2 arms' ./subject
+
+reset
+subject
+harness '"os"' 'func TestMain(m *testing.M) {
+	exit := os.Exit
+	exit(m.Run())
+}'
+check "an exit taken as a function value is refused" 1 'as a value' ./subject
+
+reset
+subject
+harness '"syscall"' 'func TestMain(m *testing.M) {
+	syscall.Exit(m.Run())
+}'
+check "syscall.Exit is refused" 1 'syscall.Exit' ./subject
+
+reset
+subject
+harness '. "os"' 'func TestMain(m *testing.M) { Exit(m.Run()) }'
+check "a dot import of os is refused" 1 'dot-imports' ./subject
+
+# A plain test — no TestMain at all — that exits directly. The injected
+# TestMain cannot help, so the exit itself has to be rewritten.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"os"
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Error("wrong")
+		os.Exit(1)
+	}
+}
+EOF
+check "os.Exit in a plain test, with no TestMain, is rewritten" 0 'fixture/subject +2/2 arms' ./subject
+
+echo
+echo "== a module that does not load is fatal, not smaller =="
+# Review 2013: a go list failure used to vanish — through process
+# substitution, where set -e cannot see it, and by converting a failed
+# dependency listing into an empty file. Either one drops a driver, and
+# the survivors then satisfy a check that never knew one was missing.
+reset
+subject
+mkdir -p "$work/mod/broken"
+cat >"$work/mod/broken/broken_test.go" <<'EOF'
+package broken
+
+import "fixture/nonexistent"
+
+func init() { _ = nonexistent.Nothing }
+EOF
+check "an unloadable test package aborts the run" 2 'go list' ./subject
+
+echo
+echo "== only the test files this build compiles are rewritten =="
+# Review 2007: a *_test.go glob also matches files excluded by build
+# constraints. Rewriting an inactive platform's TestMain would reference
+# a gobcoInnerTestMain that is never compiled, or collide with the active
+# one. Both files below declare TestMain; exactly one is ever built.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/harness/main_never_test.go" <<'EOF'
+//go:build gobco_never
+
+package harness_test
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) { os.Exit(m.Run()) }
+EOF
+cat >"$work/mod/harness/main_always_test.go" <<'EOF'
+//go:build !gobco_never
+
+package harness_test
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) { os.Exit(m.Run()) }
+EOF
+check "a build-excluded TestMain is left alone" 0 'fixture/subject +2/2 arms' ./subject
 
 echo
 echo "== export_test.go hooks are visible to the type checker =="
