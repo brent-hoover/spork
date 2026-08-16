@@ -992,17 +992,77 @@ echo "== a checkout path containing a newline =="
 # every conceivable broken parser, because an escaping one (jq @tsv, say)
 # survives a newline too. The delimiter-free JSON path is what actually
 # removes the class.
-odd=$work/"weird
-root"
+# TMPDIR is what matters, not the checkout: the gate stages the module into
+# its own mktemp directory before listing anything, so a character in the
+# SOURCE path never reaches .Dir (review 2070/2071 — my first version of this
+# fixture missed exactly that and proved nothing).
+#
+# The character is a PIPE, not a newline. Go refuses a package directory
+# containing a newline outright — "invalid package directory" — so no program
+# it will build can reach that case. A pipe it accepts, and a pipe is exactly
+# what the first implementation used as its field separator.
+#
+# The module is the real-vs-synthetic one, because that is the only case
+# whose answer depends on .Dir at all.
+#
+# Honest about its strength: this is a PROPERTY check — the gate works under a
+# hostile staging path — not a discriminating one. I tried to make it fail
+# against a faithful pipe-splitting parser and could not; the corruption
+# scrambles the fields in ways that happen to leave this module's verdict
+# intact. What removes the class is parsing JSON and never splitting, which is
+# structural rather than something a fixture can pin.
+reset
+mkdir -p "$work/mod/widget" "$work/mod/widget_test"
+cat >"$work/mod/widget/widget.go" <<'EOF'
+package widget
+
+func Name() string { return "widget" }
+EOF
+cat >"$work/mod/widget/widget_x_test.go" <<'EOF'
+package widget_test
+
+import (
+	"testing"
+
+	"fixture/widget"
+)
+
+func TestName(t *testing.T) {
+	if widget.Name() != "widget" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/widget_test/subject.go" <<'EOF'
+package widgettest
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI"
+	}
+	return "hi"
+}
+EOF
+cat >"$work/mod/widget_test/subject_test.go" <<'EOF'
+package widgettest
+
+import "testing"
+
+func TestBoth(t *testing.T) {
+	if Greeting(true) != "HI" || Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+odd=$work/"we|ird"
 mkdir -p "$odd"
-cp -a "$work/mod" "$odd/mod"
-out=$(cd "$odd/mod" && "$gate" ./subject 2>&1)
+out=$(cd "$work/mod" && TMPDIR="$odd" "$gate" ./widget_test 2>&1)
 status=$?
-if [ "$status" = 0 ] && printf '%s' "$out" | grep -qE 'fixture/subject +2/2 arms'; then
-	printf 'ok   %s\n' "a checkout path containing a newline is handled"
+if [ "$status" = 0 ] && printf '%s' "$out" | grep -qE 'fixture/widget_test +2/2 arms  \(1 drivers\)'; then
+	printf 'ok   %s\n' "a staging path containing the old field separator is handled"
 	pass=$((pass + 1))
 else
-	printf 'FAIL %s: exit %s\n%s\n' "a checkout path containing a newline is handled" "$status" "$out"
+	printf 'FAIL %s: exit %s\n%s\n' "a staging path containing the old field separator is handled" "$status" "$out"
 	fail=$((fail + 1))
 fi
 
