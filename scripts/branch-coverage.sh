@@ -153,6 +153,30 @@ list() {
 	fi
 }
 
+# normalise rewrites a `go list -deps` listing into plain import paths.
+#
+# Two different things wear the same "X [Y.test]" shape. `pkg [other.test]`
+# is a REAL package rebuilt for another package's test binary, and dropping
+# the suffix is right: the bare path is the only form it takes when the
+# subject transitively depends on the package under test, and matching only
+# the bare path lost the driver entirely. But `pkg_test [pkg.test]` is the
+# SYNTHETIC external test package, which is not a package anyone can import
+# — and stripping ITS suffix invents a dependency on a real package that
+# happens to be named pkg_test, so an unrelated test binary is counted as a
+# driver of it (kriya review 2033). Synthetic entries are dropped instead.
+normalise() {
+	awk '{
+		i = index($0, " [")
+		if (i == 0) { print; next }
+		base = substr($0, 1, i - 1)
+		owner = substr($0, i + 2)
+		sub(/\]$/, "", owner)
+		sub(/\.test$/, "", owner)
+		if (base == owner "_test") next
+		print base
+	}' "$1" | sort -u -o "$1"
+}
+
 # Dependency closure per test binary, so each instrumented package is
 # driven only by the test packages that actually link it. A package with
 # no test files of its own builds no test binary and is not a driver.
@@ -163,14 +187,7 @@ while read -r importpath; do
 	targets+=("$importpath")
 	depfile=$work/deps-$(echo "$importpath" | tr / _)
 	list "$depfile" "$PWD" -deps -test "$importpath"
-	# `go list -deps -test` names a package REBUILT for a test binary as
-	# "pkg [pkg.test]", and that is the only form it takes when the
-	# subject transitively depends on the package under test. Matching
-	# the bare path alone therefore drops such a driver entirely and the
-	# subject reports zero drivers — measuring nothing while looking
-	# ordinary. Found by building the fixture review 2025 asked for.
-	sed -i.bak 's/ \[.*\]$//' "$depfile" && rm -f "$depfile.bak"
-	sort -u -o "$depfile" "$depfile"
+	normalise "$depfile"
 done <"$work/drivers"
 
 # A package with no production .go files has no conditions to
@@ -257,7 +274,7 @@ EOF
 
 	# The subject's own dependency closure, for the cycle check below.
 	list "$work/subjdeps" "$module" -deps "$importpath"
-	sed -i.bak 's/ \[.*\]$//' "$work/subjdeps" && rm -f "$work/subjdeps.bak"
+	normalise "$work/subjdeps"
 
 	drivers=0
 	for t in "${targets[@]}"; do

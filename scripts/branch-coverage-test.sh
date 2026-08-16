@@ -727,5 +727,91 @@ EOF
 check "a production package named *_test is still classified as internal" 1 'would be a cycle' ./subject
 
 echo
+echo "== runtime.Goexit is ordinary, not a terminator =="
+# Kriya reviews 2027/2028: Goexit runs the goroutine's deferred functions
+# and ends only that goroutine, so the wrapper's deferred flush still
+# happens. Refusing it rejected valid suites — and it is how t.FailNow
+# works, so it is entirely ordinary in a test.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"runtime"
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Error("wrong")
+		runtime.Goexit()
+	}
+}
+EOF
+check "a driver calling runtime.Goexit is measured, not refused" 0 'fixture/subject +2/2 arms' ./subject
+
+echo
+echo "== a synthetic external test package is not a real dependency =="
+# Kriya review 2033: `go list -deps -test` writes the synthetic external
+# test package as "pkg_test [pkg.test]". Stripping that suffix invents a
+# dependency on a REAL package of the same name, so an unrelated test
+# binary is counted as a driver of it — and the helper then imports the
+# subject, crediting whatever its package initialisation touches.
+#
+# Here fixture/widget_test is a real package and the subject; fixture/widget
+# has its own tests and does not import it. Only the subject's own test
+# binary may count as a driver.
+reset
+mkdir -p "$work/mod/widget" "$work/mod/widget_test"
+cat >"$work/mod/widget/widget.go" <<'EOF'
+package widget
+
+func Name() string { return "widget" }
+EOF
+# An EXTERNAL test package here is what makes go list synthesise the
+# "fixture/widget_test [fixture/widget.test]" entry in the first place.
+cat >"$work/mod/widget/widget_x_test.go" <<'EOF'
+package widget_test
+
+import (
+	"testing"
+
+	"fixture/widget"
+)
+
+func TestName(t *testing.T) {
+	if widget.Name() != "widget" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/widget_test/subject.go" <<'EOF'
+package widgettest
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI"
+	}
+	return "hi"
+}
+EOF
+cat >"$work/mod/widget_test/subject_test.go" <<'EOF'
+package widgettest
+
+import "testing"
+
+func TestBoth(t *testing.T) {
+	if Greeting(true) != "HI" || Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "a real _test-suffixed package counts only its own driver" 0 'fixture/widget_test +2/2 arms  \(1 drivers\)' ./widget_test
+
+echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

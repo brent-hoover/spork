@@ -16,7 +16,7 @@
 //   - a TestMain is renamed to gobcoInnerTestMain so the caller can wrap
 //     it and flush on the paths that RETURN;
 //   - anything whose termination cannot be proven safe — an exit used as
-//     a value, a dot import, syscall.Exit or runtime.Goexit under ANY
+//     a value, a dot import, or syscall.Exit under ANY
 //     alias — is REFUSED, because measuring less must never be quiet.
 //
 // Two things make the analysis binding-aware rather than name-matching,
@@ -61,7 +61,13 @@ import (
 
 // terminators are the packages whose exits cannot be preceded by a flush.
 // os is handled separately: its Exit is rewritten rather than refused.
-var terminators = map[string]string{"syscall": "Exit", "runtime": "Goexit"}
+//
+// runtime.Goexit is deliberately ABSENT. It runs the goroutine's deferred
+// functions and ends only that goroutine — the process survives, so the
+// wrapper's deferred flush still happens and nothing is lost. Refusing it
+// rejected valid suites for no gain (kriya reviews 2027/2028); it is also
+// how t.FailNow works, which makes it entirely ordinary in a test.
+var terminators = map[string]string{"syscall": "Exit"}
 
 type pkgState struct {
 	hasTestMain bool
@@ -114,7 +120,7 @@ func main() {
 			if err != nil {
 				continue
 			}
-			if p != "os" && p != "syscall" && p != "runtime" {
+			if p != "os" && p != "syscall" {
 				continue
 			}
 			name := p[strings.LastIndex(p, "/")+1:]
