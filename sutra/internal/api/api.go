@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"sutra/internal/comments"
 	"sutra/internal/docs"
@@ -99,11 +100,29 @@ func New(db *sql.DB) (http.Handler, error) {
 	handle("GET /templates/{templateId}", s.getTemplate)
 	handle("PUT /templates/{templateId}", s.updateTemplate)
 	handle("DELETE /templates/{templateId}", s.deleteTemplate)
-	return mux, nil
+	// The mux is wrapped so the server behind it stays reachable from a
+	// test in this package without becoming public API. Everything a
+	// test may reach that way is per-INSTANCE state; the alternative was
+	// a package global, which lets one server's request fire another
+	// server's hook (reviews 2029/2030).
+	return handler{Handler: mux, server: s}, nil
+}
+
+// handler is New's return: the mux, plus the server it dispatches to.
+type handler struct {
+	http.Handler
+	server *server
 }
 
 type server struct {
 	db *sql.DB
+
+	// betweenPrepareAndCommit runs after the out-of-transaction prepare
+	// stage and before the write transaction opens, so a test can change
+	// the world in exactly the window the transactional re-checks exist
+	// to cover. Unset in production; set only via export_test.go, and
+	// per instance so concurrent tests cannot reach each other.
+	betweenPrepareAndCommit atomic.Pointer[func()]
 }
 
 // apiError is a handler-produced rejection carrying the contract's

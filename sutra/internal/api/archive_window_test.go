@@ -62,7 +62,7 @@ func TestArchiveInsideThePrepareWindow(t *testing.T) {
 	// because the hook, its nested request, and this test are three
 	// different goroutines (review 2024).
 	var archived atomic.Bool
-	api.SetBetweenPrepareAndCommitForTest(func() {
+	api.SetBetweenPrepareAndCommitForTest(srv.Config.Handler, func() {
 		if !archived.CompareAndSwap(false, true) {
 			return
 		}
@@ -71,7 +71,7 @@ func TestArchiveInsideThePrepareWindow(t *testing.T) {
 			t.Errorf("archive inside the window: %d %s", st, b)
 		}
 	})
-	t.Cleanup(func() { api.SetBetweenPrepareAndCommitForTest(nil) })
+	t.Cleanup(func() { api.SetBetweenPrepareAndCommitForTest(srv.Config.Handler, nil) })
 
 	status, body = post(t, srv, "/reviews", "rev",
 		`{"issue":"`+issue+`","author":"`+actor+`","branch":"feature","commit":"`+repo.featureSHA+`"}`)

@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"sutra/internal/identity"
@@ -24,17 +23,6 @@ import (
 // testBodyLimit lets tests exercise the oversize-settle path without
 // gigabyte fixtures; set only via export_test.go.
 var testBodyLimit int64
-
-// testBetweenPrepareAndCommit runs after the out-of-transaction prepare
-// stage and before the write transaction opens, so a test can change the
-// world in exactly the window the transactional re-checks exist to
-// cover. Unset in production; set only via export_test.go.
-//
-// Atomic because handlers read it from their own goroutines while the
-// test that installs it runs on another, and the hook itself issues a
-// nested request — so a plain variable is a data race, not merely an
-// untidy one (review 2024).
-var testBetweenPrepareAndCommit atomic.Pointer[func()]
 
 // largeBodyThreshold divides ordinary mutations from large-content
 // ones; largeBodySlot admits ONE large body at a time, so concurrent
@@ -312,7 +300,7 @@ func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prep
 	// is authoritative. Nil in production; a test sets it to make that
 	// window deterministic instead of a race nobody can trigger on
 	// purpose (reviews 2017/2018).
-	if hook := testBetweenPrepareAndCommit.Load(); hook != nil {
+	if hook := s.betweenPrepareAndCommit.Load(); hook != nil {
 		(*hook)()
 	}
 
