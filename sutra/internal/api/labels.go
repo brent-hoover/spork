@@ -75,6 +75,7 @@ func (s *server) mutateLabel(tx *sql.Tx, issueID, actor, eventKind string, op fu
 	if err != nil {
 		return 0, nil, issueErrorFrom(err)
 	}
+	// door: attach a label, detach a label
 	if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 		return 0, nil, apiErr
 	}

@@ -563,27 +563,48 @@ The fix is to delete the check and keep the accumulation. That edit was
 bounds check as weakening a limit. It is left in place, and the gate will
 keep reporting it. Flagged for the operator rather than forced.
 
-DONE 2026-08-16. The accumulation stays and the comparison is gone. Two things
-were established before touching it, because species 11 says a shape a review
-calls redundant may not be:
+RESOLVED 2026-08-16, but NOT the way the entry above expects, and the detour is
+the most useful thing here. **The check is not dead. I deleted it, and reviews
+2011 and 2012 caught that it was a real bound.**
 
-- The arm was booby-trapped with a panic and the ENTIRE suite run — including
-  the test that overshoots the budget 2.4× — and nothing reached it.
-- An adversarial probe then tried to construct input that could: every
-  combination of key count and escape ratio, driving the decoded-to-raw ratio to
-  its extreme. Nothing reached it either. The inequality is why — `str(true)`
-  refuses the moment `keyBytes+len(raw)` would exceed the cap, and the decoded
-  key is shorter than its raw form by the two quote bytes at minimum and five
-  more per `\uXXXX`, so `keyBytes+len(key)` is strictly below a bound already
-  enforced. Unreachable by construction, not by test omission — which is the
-  distinction species 5 says looks identical from inside, and here it was
-  settled rather than assumed.
+`encoding/json` does not reject invalid UTF-8 — it substitutes U+FFFD, three
+bytes for every bad byte. So a decoded name can be nearly THREE TIMES its raw
+form, and `str()`'s raw-byte cap does not imply the decoded one. Measured after
+the fact: a 1,044,480-byte raw name decoded to 3,133,440 bytes and was admitted
+with the check absent. The check is restored, and it now carries the test that
+kills it (`TestScanDuplicateKeysBudgetCountsDecodedBytes`). What looked like an
+unkillable survivor was an untested reachable guard the whole time. `str()`
+bounds what is READ; this bounds what is RETAINED, and only the second is the
+promise `maxKeyMemory` makes.
 
-Framed as the species 4 correction demands: this was not "delete a survivor" but
-"collapse a duplicated cap so ONE place enforces it". The surviving check in
-`str()` was then hand-mutated to `if false` and the suite failed
-(`TestScanDuplicateKeysBudgetStraddlesTheLimit`), so what remains is falsifiable.
-An unkillable mutant and a live one became one live one.
+**Why the wrong conclusion survived two checks.** Both were run, and both were
+weaker than they looked:
+
+- The arm was booby-trapped with a panic and the ENTIRE suite run, including the
+  test that overshoots the budget 2.4×. Nothing reached it. But that is the
+  suite's opinion, and the suite had no invalid-UTF-8 fixture — species 9
+  exactly: **a rule the fixtures are structurally incapable of violating.** Every
+  property name in every test was well-formed text, because every name a person
+  writes is.
+- An "adversarial" probe was then written to construct input that could, across
+  key counts and escape ratios. It found nothing — and it was BROKEN: its
+  escaped and unescaped branches built byte-identical ASCII strings, so the
+  ratio it claimed to drive to an extreme was always 1. A probe whose negative
+  result is the evidence must itself be checked, and a negative result cannot
+  check it. The one that would have worked is trivial in hindsight: assert the
+  probe reaches the state it is probing for at least once.
+
+The deeper error was arguing from an inequality (`len(key) < len(raw)`) instead
+of testing it. The inequality is true for every input anyone would think to
+write and false for the one class nobody does. **Species 5's warning — that
+"no input reaches this guard" and "no test writes one" look identical from
+inside — applies to reasoning as well as to test runs, and a proof sketch is
+just a test you cannot run.**
+
+The general lesson, and the correction to the species 4 note: before concluding
+a guard is unreachable, find the input class the fixtures never produce and try
+THAT. "I could not construct a counterexample" is worth very little when the
+suite's whole vocabulary is well-formed data.
 
 It is also a finding about the gate itself, and belongs with the mutation
 gate respecification: **a 100%-efficacy threshold is unsatisfiable over
@@ -1029,12 +1050,28 @@ Three things this exposed that a one-door scenario could not:
    the new one. The other 194 passed. That is the measure of what the sampling
    was hiding.
 
-The set claim is now enforced rather than described: `TestEveryArchiveGuardHasAScenario`
-walks the api package's AST, counts `guardWritable` call sites, and fails when
-the count moves. Adding a guarded door without a scenario is a red suite, so this
-species cannot recur here silently. The general lesson: when an AC names a set,
-find the mechanism that ENUMERATES the set and assert against it — a scenario per
-member is necessary but decays, an enumeration check does not.
+The set claim is now enforced rather than described. The first attempt merely
+COUNTED `guardWritable` call sites, and review 2012 rejected it correctly: a
+count says the number has not moved, not that anything is tested. So every guard
+site carries a `// door:` comment naming what it enforces, and
+`TestEveryArchiveGuardHasAScenario` requires a three-way match — every site
+annotated, every door it names present in the feature table, every door in the
+table claimed by at least one site — while the acceptance step closes the loop
+from the other end by failing if the table and its step registry disagree. The
+relation is many-to-many on purpose: `guardReviewProject` serves three doors,
+`createReview` is guarded at two sites.
+
+Review 2012 also caught two doors that were masked rather than tested, which is
+species 8 recurring INSIDE the fix for species 1: removing a relation whose two
+ends are both archived is refused by the source guard before the destination
+guard is consulted, so that door proved nothing; and re-anchoring a thread only
+ever ran live→archived, which never reaches the guard on the anchor being LEFT.
+Both now use asymmetric fixtures — a relation with one end live, and a re-anchor
+in each direction.
+
+The general lesson: when an AC names a set, find the mechanism that ENUMERATES
+the set and assert a MAPPING against it, not a tally. And check that each member
+is exercised by a request that could only fail for that member's reason.
 
 ## A shape rule the fixtures could never break
 

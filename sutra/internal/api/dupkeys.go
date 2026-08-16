@@ -190,15 +190,20 @@ func (l *jsonLexer) object() error {
 		if seen[key] {
 			return &duplicateKeyError{key: key}
 		}
-		// Accumulate only. The cap is enforced in ONE place, str(), which
-		// refuses the moment keyBytes+len(raw) would exceed it — and the
-		// decoded key is always shorter than its raw form, by the two
-		// quote bytes at minimum and by five more per \uXXXX escape. So
-		// keyBytes+len(key) is strictly below a bound already enforced,
-		// and a second comparison here could never be true. It used to be
-		// here anyway, and the mutation sweep correctly reported it as an
-		// unkillable survivor.
-		l.keyBytes += len(key)
+		// The post-decode check is NOT redundant with str()'s, which
+		// counts RAW bytes. Decoding usually shrinks a name — two quote
+		// bytes at minimum, five more per \uXXXX — and that reasoning is
+		// what made this look unkillable. It is wrong for invalid UTF-8:
+		// encoding/json replaces every bad byte with U+FFFD, three bytes
+		// each, so a name comfortably inside the raw cap can decode to
+		// nearly three times it. Measured: a 1044480-byte raw name
+		// decoded to 3133440 bytes and was admitted while this check was
+		// absent (reviews 2011/2012). str() bounds what is READ; this
+		// bounds what is RETAINED, and only the second is the promise
+		// maxKeyMemory makes.
+		if l.keyBytes += len(key); l.keyBytes > maxKeyMemory {
+			return fmt.Errorf("property names exceed the %d-byte scan budget", maxKeyMemory)
+		}
 		held += len(key)
 		seen[key] = true
 		if c, err = l.next(); err != nil {

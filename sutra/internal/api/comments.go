@@ -50,6 +50,7 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 		if err != nil {
 			return "", issueErrorFrom(err)
 		}
+		// door: comment on an issue
 		if apiErr := guardWritable(tx, target.Project); apiErr != nil {
 			return "", apiErr
 		}
@@ -70,6 +71,7 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 		if err != nil {
 			return "", docErrorFrom(err)
 		}
+		// door: comment on a document version
 		if apiErr := guardWritable(tx, doc.Project); apiErr != nil {
 			return "", apiErr
 		}
@@ -90,6 +92,7 @@ func (s *server) resolveCommentAnchor(tx *sql.Tx, issue, docVersion, reviewID *s
 		if err != nil {
 			return "", issueErrorFrom(err)
 		}
+		// door: comment on a review
 		if apiErr := guardWritable(tx, target.Project); apiErr != nil {
 			return "", apiErr
 		}

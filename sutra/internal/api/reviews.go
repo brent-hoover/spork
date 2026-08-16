@@ -49,6 +49,7 @@ func guardReviewProject(tx *sql.Tx, rev review.Review) *apiError {
 	if err != nil {
 		return issueErrorFrom(err)
 	}
+	// door: record a review verdict, consume a review approval, resubmit a review
 	return guardWritable(tx, issue.Project)
 }
 
@@ -425,6 +426,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 			_ = read.Rollback()
 			return nil, issueErrorFrom(err)
 		}
+		// door: open a review
 		if apiErr := guardWritable(read, issue.Project); apiErr != nil {
 			_ = read.Rollback()
 			return nil, apiErr
@@ -494,6 +496,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
+		// door: open a review
 		if apiErr := guardWritable(tx, issue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -813,6 +816,7 @@ func (s *server) resubmitReview(w http.ResponseWriter, r *http.Request) {
 			_ = read.Rollback()
 			return nil, issueErrorFrom(err)
 		}
+		// door: resubmit a review
 		if apiErr := guardWritable(read, issue.Project); apiErr != nil {
 			_ = read.Rollback()
 			return nil, apiErr

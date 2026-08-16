@@ -39,6 +39,7 @@ func resolveAnchor(tx *sql.Tx, project, issue *string) (threads.Anchor, string, 
 		if project != nil && *project != iss.Project {
 			return threads.Anchor{}, "", &apiError{status: http.StatusBadRequest, code: "bad-request", message: "issue does not belong to the given project"}
 		}
+		// door: import an issue-anchored thread, re-anchor a thread into the archived project
 		if apiErr := guardWritable(tx, iss.Project); apiErr != nil {
 			return threads.Anchor{}, "", apiErr
 		}
@@ -47,6 +48,7 @@ func resolveAnchor(tx *sql.Tx, project, issue *string) (threads.Anchor, string, 
 		if _, err := projects.GetTx(tx, *project); err != nil {
 			return threads.Anchor{}, "", errorFrom(err)
 		}
+		// door: import a project-anchored thread
 		if apiErr := guardWritable(tx, *project); apiErr != nil {
 			return threads.Anchor{}, "", apiErr
 		}
@@ -231,6 +233,7 @@ func (s *server) guardCurrentAnchor(tx *sql.Tx, t threads.Thread) *apiError {
 	if project == "" {
 		return nil
 	}
+	// door: re-anchor a thread out of the archived project
 	return guardWritable(tx, project)
 }
 

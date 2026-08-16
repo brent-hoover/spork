@@ -94,6 +94,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if apiErr := requireActor(tx, req.Actor); apiErr != nil {
 			return 0, nil, apiErr
 		}
+		// door: create an issue
 		if apiErr := guardWritable(tx, project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -203,6 +204,7 @@ func (s *server) updateIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
+		// door: update an issue
 		if apiErr := guardWritable(tx, current.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -376,6 +378,7 @@ func (s *server) updateIssueStatus(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
+		// door: change an issue's status
 		if apiErr := guardWritable(tx, current.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -493,6 +496,7 @@ func (s *server) assignIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
+		// door: assign an issue
 		if apiErr := guardWritable(tx, current.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -628,6 +632,7 @@ func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
+		// door: add a relation from an archived issue
 		if apiErr := guardWritable(tx, fromIssue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -647,6 +652,7 @@ func (s *server) addIssueRelation(w http.ResponseWriter, r *http.Request) {
 				return 0, nil, &apiError{status: http.StatusBadRequest, code: "bad-request",
 					message: "parent_of relations must stay within one project"}
 			}
+			// door: add a relation to an archived issue
 			if apiErr := guardWritable(tx, toIssue.Project); apiErr != nil {
 				return 0, nil, apiErr
 			}
@@ -739,6 +745,7 @@ func (s *server) removeIssueRelation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, issueErrorFrom(err)
 		}
+		// door: remove a relation from an archived issue
 		if apiErr := guardWritable(tx, fromIssue.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -747,6 +754,7 @@ func (s *server) removeIssueRelation(w http.ResponseWriter, r *http.Request) {
 			return 0, nil, issueErrorFrom(err)
 		}
 		if toIssue.Project != fromIssue.Project {
+			// door: remove a relation to an archived issue
 			if apiErr := guardWritable(tx, toIssue.Project); apiErr != nil {
 				return 0, nil, apiErr
 			}

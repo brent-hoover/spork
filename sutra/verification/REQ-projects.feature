@@ -76,4 +76,5 @@ Feature: Repo-anchored projects
       | import a project-anchored thread            |
       | import an issue-anchored thread             |
       | re-anchor a thread into the archived project|
+      | re-anchor a thread out of the archived project |
     And every read of "OTH" still works

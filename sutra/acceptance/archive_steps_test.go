@@ -27,14 +27,18 @@ type archiveWorld struct {
 	issueB     string
 	issueC     string
 	relationAB string
-	label      string
-	document   string
-	docVersion string
-	thread     string
-	liveThread string // anchored outside, so re-anchoring aims INTO the freeze
-	actor      string
-	reviewer   string
-	commit     string
+	// A relation with ONE end archived, so removing it from the live end
+	// reaches the destination guard instead of being turned away by the
+	// source guard first.
+	crossRelation string
+	label         string
+	document      string
+	docVersion    string
+	thread        string
+	liveThread    string // anchored outside, so re-anchoring aims INTO the freeze
+	actor         string
+	reviewer      string
+	commit        string
 
 	// Three reviews, because the verdict, consume, and resubmit doors
 	// each demand a DIFFERENT state and no single review can be pending,
@@ -98,9 +102,13 @@ var doors = map[string]door{
 		func(aw *archiveWorld) string {
 			return "/issues/" + aw.issueA + "/relations/" + aw.relationAB + "?actor=" + aw.actor
 		}, noBody},
+	// Deleted from the LIVE side of a relation that crosses the boundary.
+	// Aiming this at a relation with both ends archived would be refused
+	// by the source guard before the destination guard was reached — the
+	// same masking the whole scenario exists to end (review 2012).
 	"remove a relation to an archived issue": {http.MethodDelete,
 		func(aw *archiveWorld) string {
-			return "/issues/" + aw.issueB + "/relations/" + aw.relationAB + "?actor=" + aw.actor
+			return "/issues/" + aw.liveIssue + "/relations/" + aw.crossRelation + "?actor=" + aw.actor
 		}, noBody},
 
 	"attach a label": {http.MethodPost,
@@ -187,6 +195,12 @@ var doors = map[string]door{
 	"re-anchor a thread into the archived project": {http.MethodPost,
 		func(aw *archiveWorld) string { return "/threads/" + aw.liveThread + "/anchor" },
 		func(aw *archiveWorld) any { return map[string]any{"issue": aw.issueA, "actor": aw.actor} }},
+	// The other direction, which is a different guard: moving a thread
+	// OUT checks the anchor being left, not the one being joined. Only
+	// this door reaches guardCurrentAnchor (review 2012).
+	"re-anchor a thread out of the archived project": {http.MethodPost,
+		func(aw *archiveWorld) string { return "/threads/" + aw.thread + "/anchor" },
+		func(aw *archiveWorld) any { return map[string]any{"issue": aw.liveIssue, "actor": aw.actor} }},
 }
 
 func registerArchiveSteps(sc *godog.ScenarioContext, cw *closeWorld) {
@@ -350,6 +364,22 @@ func (aw *archiveWorld) populateThenFreeze() error {
 	}
 	if aw.relationAB = rel.Relation.ID; aw.relationAB == "" {
 		return fmt.Errorf("relation response carries no id: %s", iw.s.lastBody)
+	}
+
+	// A second relation crossing the boundary, minted from the live side
+	// while both ends are still writable.
+	if err := iw.s.call(http.MethodPost, "/issues/"+aw.liveIssue+"/relations",
+		map[string]string{"kind": "blocks", "to": aw.issueC, "actor": actor}); err != nil {
+		return err
+	}
+	if err := iw.s.expectStatus(http.StatusCreated); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(iw.s.lastBody, &rel); err != nil {
+		return fmt.Errorf("decode cross relation: %w", err)
+	}
+	if aw.crossRelation = rel.Relation.ID; aw.crossRelation == "" {
+		return fmt.Errorf("cross relation response carries no id: %s", iw.s.lastBody)
 	}
 
 	if err := iw.s.call(http.MethodPost, "/labels", map[string]string{"name": "frozen"}); err != nil {

@@ -73,6 +73,7 @@ func (s *server) createDocument(w http.ResponseWriter, r *http.Request) {
 		if apiErr := requireActor(tx, req.Author); apiErr != nil {
 			return 0, nil, apiErr
 		}
+		// door: create a document
 		if apiErr := guardWritable(tx, project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -232,6 +233,7 @@ func (s *server) saveDocVersion(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}
+		// door: save a document version
 		if apiErr := guardWritable(tx, doc.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -375,6 +377,7 @@ func (s *server) linkDocumentToIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}
+		// door: link a document to an issue
 		if apiErr := guardWritable(tx, doc.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}
@@ -419,6 +422,7 @@ func (s *server) unlinkDocumentFromIssue(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			return 0, nil, docErrorFrom(err)
 		}
+		// door: unlink a document from an issue
 		if apiErr := guardWritable(tx, doc.Project); apiErr != nil {
 			return 0, nil, apiErr
 		}

@@ -294,6 +294,36 @@ func TestScanDuplicateKeysBudgetStraddlesTheLimit(t *testing.T) {
 	}
 }
 
+// TestScanDuplicateKeysBudgetCountsDecodedBytes is the test that makes
+// object()'s post-decode budget check killable, and the reason it exists
+// is a mistake worth recording. The check looked redundant with str()'s,
+// which counts RAW bytes: decoding normally SHRINKS a name, by its two
+// quotes at minimum and five more per \uXXXX, so keyBytes+len(key) can
+// never exceed a cap already enforced on keyBytes+len(raw). The mutation
+// sweep called it an unkillable survivor and the reasoning agreed.
+//
+// Both were wrong, for invalid UTF-8. encoding/json does not reject it —
+// it substitutes U+FFFD, three bytes for each bad byte — so a name well
+// inside the raw cap decodes to nearly three times it. Below, a name
+// 4 KiB under the budget in raw bytes decodes to about 3 MiB, and with
+// only str()'s check in place it was ADMITTED (reviews 2011/2012).
+//
+// str() bounds what is READ. This bounds what is RETAINED, and only the
+// second is the promise maxKeyMemory makes.
+func TestScanDuplicateKeysBudgetCountsDecodedBytes(t *testing.T) {
+	// Every byte here is invalid UTF-8 and decodes to a 3-byte U+FFFD.
+	raw := maxKeyMemory - 4096
+	body := `{"` + strings.Repeat("\xff", raw) + `":1}`
+	apiErr := scanDuplicateKeys(context.Background(), strings.NewReader(body))
+	if apiErr == nil {
+		t.Fatalf("a %d-byte raw name decoding to ~%d bytes was accepted; the budget counts raw bytes only",
+			raw, raw*3)
+	}
+	if !strings.Contains(apiErr.message, "scan budget") {
+		t.Fatalf("expected a budget rejection, got %q", apiErr.message)
+	}
+}
+
 // TestScanDuplicateKeysNamesTrailingData pins that data after the value
 // is reported as trailing data rather than as a read failure. The two
 // arms of that check are a byte apart in the source and produce
