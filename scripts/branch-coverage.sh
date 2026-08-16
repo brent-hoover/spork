@@ -161,7 +161,16 @@ targets=()
 while read -r importpath; do
 	[ -n "$importpath" ] || continue
 	targets+=("$importpath")
-	list "$work/deps-$(echo "$importpath" | tr / _)" "$PWD" -deps -test "$importpath"
+	depfile=$work/deps-$(echo "$importpath" | tr / _)
+	list "$depfile" "$PWD" -deps -test "$importpath"
+	# `go list -deps -test` names a package REBUILT for a test binary as
+	# "pkg [pkg.test]", and that is the only form it takes when the
+	# subject transitively depends on the package under test. Matching
+	# the bare path alone therefore drops such a driver entirely and the
+	# subject reports zero drivers — measuring nothing while looking
+	# ordinary. Found by building the fixture review 2025 asked for.
+	sed -i.bak 's/ \[.*\]$//' "$depfile" && rm -f "$depfile.bak"
+	sort -u -o "$depfile" "$depfile"
 done <"$work/drivers"
 
 # A package with no production .go files has no conditions to
@@ -297,12 +306,25 @@ EOF
 			# invisible to the other — so a rewritten exit over there
 			# would not compile, and a wrapper placed on the wrong side
 			# could not see gobcoInnerTestMain (review 2019/2020).
+			# Where an injected TestMain should go, when no package
+			# declares one. The EXTERNAL package is preferred, because the
+			# injected helper imports the instrumented subject and the
+			# subject may legitimately import the driver's production
+			# package — an arrangement that works precisely because only
+			# the external tests reach the subject. Injecting into the
+			# internal package would close that into an import cycle
+			# (reviews 2025/2026).
 			anymain=no
+			injectinto=
 			while read -r pkgname hasmain _; do
+				[ -n "$pkgname" ] || continue
 				[ "$hasmain" = testmain ] && anymain=yes
+				case $pkgname in
+				*_test) injectinto=$pkgname ;;
+				*) [ -z "$injectinto" ] && injectinto=$pkgname ;;
+				esac
 			done <<<"$hook"
 
-			first=yes
 			while read -r pkgname hasmain hasexits; do
 				[ -n "$pkgname" ] || continue
 				needexit=no
@@ -310,13 +332,12 @@ EOF
 				[ "$hasexits" = exits ] && needexit=yes
 				if [ "$hasmain" = testmain ]; then
 					needmain=wrap
-				elif [ "$anymain" = no ] && [ "$first" = yes ]; then
+				elif [ "$anymain" = no ] && [ "$pkgname" = "$injectinto" ]; then
 					# Nobody declares TestMain, so one is supplied. Go's
 					# generated main would otherwise exit without flushing.
 					needmain=inject
 					needexit=yes
 				fi
-				first=no
 				[ "$needexit" = no ] && [ "$needmain" = no ] && continue
 
 				helper=$tdir/gobco_${pkgname}_test.go
