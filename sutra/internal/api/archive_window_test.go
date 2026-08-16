@@ -137,6 +137,20 @@ func TestPrepareWindowHookIsPerServer(t *testing.T) {
 	if got := secondFired.Load(); got != 0 {
 		t.Fatalf("a request to the first server fired the second server's hook %d times", got)
 	}
+
+	// And symmetrically, so that an implementation which simply IGNORED
+	// the second installation cannot pass by never being asked about it
+	// (review 2041).
+	firstBefore := firstFired.Load()
+	if !reviewAttempt(t, second) {
+		t.Fatal("the second server's prepare stage never ran")
+	}
+	if got := secondFired.Load(); got == 0 {
+		t.Fatal("the second server's own hook never fired")
+	}
+	if got := firstFired.Load(); got != firstBefore {
+		t.Fatalf("a request to the second server fired the first server's hook (%d -> %d)", firstBefore, got)
+	}
 }
 
 // startSecondAPI is startAPI with a distinct in-memory database, so the two
