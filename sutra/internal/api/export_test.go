@@ -8,4 +8,10 @@ func SetBodyLimitForTest(limit int64) { testBodyLimit = limit }
 // out-of-transaction prepare stage and before the write transaction, so
 // a test can make the prepare-to-commit window deterministic. nil clears
 // it. Compiled only into test binaries.
-func SetBetweenPrepareAndCommitForTest(hook func()) { testBetweenPrepareAndCommit = hook }
+func SetBetweenPrepareAndCommitForTest(hook func()) {
+	if hook == nil {
+		testBetweenPrepareAndCommit.Store(nil)
+		return
+	}
+	testBetweenPrepareAndCommit.Store(&hook)
+}

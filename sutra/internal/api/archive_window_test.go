@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"sutra/internal/api"
@@ -51,12 +52,20 @@ func TestArchiveInsideThePrepareWindow(t *testing.T) {
 
 	// The project is still live, so prepare will pass. It is archived
 	// after prepare and before the transaction — the window itself.
-	archived := false
+	//
+	// The one-shot is a compare-and-swap, not a sync.Once, and the
+	// difference is a deadlock. The hook's own archive request goes
+	// through the same handler path and re-enters the hook, so a
+	// primitive that BLOCKS the second caller blocks it behind the first
+	// — which is waiting on that very request. CAS lets the re-entrant
+	// call fall straight through. Atomic rather than a plain bool
+	// because the hook, its nested request, and this test are three
+	// different goroutines (review 2024).
+	var archived atomic.Bool
 	api.SetBetweenPrepareAndCommitForTest(func() {
-		if archived {
+		if !archived.CompareAndSwap(false, true) {
 			return
 		}
-		archived = true
 		if st, b := post(t, srv, "/projects/"+project+"/archive", "arch",
 			`{"actor":"`+actor+`"}`); st != http.StatusOK {
 			t.Errorf("archive inside the window: %d %s", st, b)
@@ -66,7 +75,7 @@ func TestArchiveInsideThePrepareWindow(t *testing.T) {
 
 	status, body = post(t, srv, "/reviews", "rev",
 		`{"issue":"`+issue+`","author":"`+actor+`","branch":"feature","commit":"`+repo.featureSHA+`"}`)
-	if !archived {
+	if !archived.Load() {
 		t.Fatal("the hook never ran; the window this test aims at was not opened")
 	}
 	if status == http.StatusCreated {
