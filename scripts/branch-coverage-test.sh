@@ -114,7 +114,9 @@ func TestBoth(t *testing.T) {
 	}
 }
 EOF
-check "a package with no production code is skipped" 0 'no production code' ./harness
+# Naming ONLY a test-only package leaves nothing measured, which is a
+# refusal now rather than a quiet success (review 2079).
+check "naming only a test-only package refuses" 2 'none of the named packages' ./harness
 
 echo
 echo "== cross-package attribution, every way a driver can end =="

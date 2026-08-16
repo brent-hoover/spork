@@ -240,6 +240,7 @@ else
 fi
 
 failed=0
+measured=0
 # ${arr[@]+...} throughout: stock macOS Bash 3.2 treats an EMPTY array as
 # unset under `set -u`, so a module with no packages, no test binaries, or a
 # driver with no active test files would abort the gate rather than report
@@ -524,6 +525,7 @@ EOF
 	done
 
 	if [ "$flush" = 0 ]; then
+		measured=$((measured + 1))
 		printf '%-32s no conditions  (%s drivers)\n' "$importpath" "$drivers"
 		continue
 	fi
@@ -554,11 +556,25 @@ EOF
 		failed=1
 		continue
 	fi
+	measured=$((measured + 1))
 	covered=$(echo "$report" | jq '[.[] | (if .t > 0 then 1 else 0 end) + (if .f > 0 then 1 else 0 end)] | add // 0')
 	printf '%-32s %s/%s arms  (%s drivers)\n' "$importpath" "$covered" "$total" "$drivers"
 	echo "$report" | jq -r '.[] | select(.t == 0 or .f == 0)
 		| "    \(.Start): \(.Code) never \(if .t == 0 and .f == 0 then "evaluated" elif .t == 0 then "true" else "false" end)"'
 	[ "$covered" = "$total" ] || failed=1
 done
+
+# The same invariant as the discovery check above, but it has to hold for
+# EXPLICIT arguments too: naming only test-only packages left the loop with
+# nothing to do and still exited 0 (review 2079). Measuring nothing is not
+# success, however the subjects were chosen.
+#
+# Guarded on $failed as well, because a package that FAILED was attempted —
+# the gate did its job and said so, and that is an ordinary failure (1), not
+# "there was nothing here" (2).
+if [ "$measured" = 0 ] && [ "$failed" = 0 ]; then
+	echo "branch-coverage: none of the named packages had anything to instrument" >&2
+	exit 2
+fi
 
 exit "$failed"
