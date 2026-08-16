@@ -667,6 +667,65 @@ func TestThroughHook(t *testing.T) {
 EOF
 check "an external test package reaching an export_test hook works" 0 'fixture/subject +2/2 arms' ./subject
 
+
+echo
+echo "== a production package whose own name ends in _test =="
+# Reviews 2043/2044: the internal/external split used to be a *_test glob,
+# which reads THIS production package as external, skips the cycle check,
+# and emits a helper that cannot compile instead of the diagnostic. The
+# fix resolves the driver's real package name; this is what proves it.
+reset
+mkdir -p "$work/mod/subject" "$work/mod/harnesstest"
+cat >"$work/mod/harnesstest/harness.go" <<'EOF'
+package harness_test
+
+func Prefix() string { return "hi" }
+EOF
+cat >"$work/mod/subject/subject.go" <<'EOF'
+package subject
+
+import harness "fixture/harnesstest"
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI"
+	}
+	return harness.Prefix()
+}
+EOF
+cat >"$work/mod/harnesstest/internal_test.go" <<'EOF'
+package harness_test
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+func TestPrefix(t *testing.T) {
+	if Prefix() != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/harnesstest/external_test.go" <<'EOF'
+package harness_test_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestBoth(t *testing.T) {
+	if subject.Greeting(true) != "HI" || subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "a production package named *_test is still classified as internal" 1 'would be a cycle' ./subject
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
