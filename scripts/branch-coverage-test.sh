@@ -924,6 +924,88 @@ echo
 # refusing outright was wrong on the merits; it is untested because the
 # toolchain cannot produce the input.
 
+echo "== a reciprocal TEST-only import is not a cycle =="
+# Reviews 2066/2067: the subject's closure must be its PRODUCTION imports.
+# Here the subject's TESTS import the driver and the driver's internal tests
+# import the subject — legal, because an imported package never brings its
+# own tests with it. Counting test imports in the subject's closure rejects
+# this as a cycle that does not exist.
+reset
+mkdir -p "$work/mod/subject" "$work/mod/helper"
+cat >"$work/mod/subject/subject.go" <<'EOF'
+package subject
+
+func Greeting(loud bool) string {
+	if loud {
+		return "HI"
+	}
+	return "hi"
+}
+EOF
+cat >"$work/mod/subject/subject_test.go" <<'EOF'
+package subject
+
+import (
+	"testing"
+
+	"fixture/helper"
+)
+
+func TestQuiet(t *testing.T) {
+	if Greeting(false) != "hi" || helper.Name() != "helper" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+cat >"$work/mod/helper/helper.go" <<'EOF'
+package helper
+
+func Name() string { return "helper" }
+EOF
+cat >"$work/mod/helper/helper_test.go" <<'EOF'
+package helper
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestLoud(t *testing.T) {
+	if subject.Greeting(true) != "HI" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "the subject's test-only imports do not make a cycle" 0 'fixture/subject +2/2 arms  \(2 drivers\)' ./subject
+
+echo
+echo "== a checkout path containing a newline =="
+# Review 2062's Low: any delimiter can occur in a directory, so the listing
+# is parsed as JSON. Inside a module the question is narrow — Go rejects
+# import paths with spaces — but the checkout ROOT is unconstrained, and it
+# is the root that .Dir carries.
+#
+# Honest about what this proves: it is a PROPERTY check, not a discriminating
+# one. It shows the gate works under a hostile path, and it would have caught
+# the original raw `{{.ImportPath}}|{{.Dir}}` output; it does not fail against
+# every conceivable broken parser, because an escaping one (jq @tsv, say)
+# survives a newline too. The delimiter-free JSON path is what actually
+# removes the class.
+odd=$work/"weird
+root"
+mkdir -p "$odd"
+cp -a "$work/mod" "$odd/mod"
+out=$(cd "$odd/mod" && "$gate" ./subject 2>&1)
+status=$?
+if [ "$status" = 0 ] && printf '%s' "$out" | grep -qE 'fixture/subject +2/2 arms'; then
+	printf 'ok   %s\n' "a checkout path containing a newline is handled"
+	pass=$((pass + 1))
+else
+	printf 'FAIL %s: exit %s\n%s\n' "a checkout path containing a newline is handled" "$status" "$out"
+	fail=$((fail + 1))
+fi
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
