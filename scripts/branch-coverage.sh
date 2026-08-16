@@ -153,8 +153,14 @@ list() {
 	fi
 }
 
+# sep joins the two fields of a `go list` line. ASCII unit separator,
+# because a directory may legitimately contain any printable character —
+# a path holding the separator would corrupt the split and, worse, make a
+# real <pkg>_test package look like the synthetic one again (review 2058).
+sep=$(printf '\037')
+
 # normalise rewrites a `go list -deps` listing into plain import paths.
-# It expects each line as "IMPORTPATH|DIR".
+# It expects each line as "IMPORTPATH<sep>DIR".
 #
 # Two different things wear the same "X [Y.test]" shape. `pkg [other.test]`
 # is a REAL package rebuilt for another package's test binary, and dropping
@@ -171,7 +177,7 @@ list() {
 # dependency imported only by internal tests (review 2054) — the mirror of
 # the bug it was fixing.
 normalise() {
-	awk -F'|' '
+	awk -F"$sep" '
 		NR == FNR { if ($1 !~ / \[/) dir[$1] = $2; next }
 		{
 			i = index($1, " [")
@@ -196,7 +202,7 @@ while read -r importpath; do
 	[ -n "$importpath" ] || continue
 	targets+=("$importpath")
 	depfile=$work/deps-$(echo "$importpath" | tr / _)
-	list "$depfile" "$PWD" -deps -test -f '{{.ImportPath}}|{{.Dir}}' "$importpath"
+	list "$depfile" "$PWD" -deps -test -f "{{.ImportPath}}$sep{{.Dir}}" "$importpath"
 	normalise "$depfile"
 done <"$work/drivers"
 
@@ -283,7 +289,7 @@ EOF
 	fi
 
 	# The subject's own dependency closure, for the cycle check below.
-	list "$work/subjdeps" "$module" -deps -f '{{.ImportPath}}|{{.Dir}}' "$importpath"
+	list "$work/subjdeps" "$module" -deps -f "{{.ImportPath}}$sep{{.Dir}}" "$importpath"
 	normalise "$work/subjdeps"
 
 	drivers=0
@@ -357,9 +363,16 @@ EOF
 				[ -n "$pkgname" ] || continue
 				[ "$hasmain" = testmain ] && anymain=yes
 				if [ "$pkgname" = "${tname}_test" ]; then
-					injectinto=$pkgname
-				elif [ -z "$injectinto" ]; then
-					injectinto=$pkgname
+					# Preferred — unless a helper cannot live there,
+					# because the external test package is built under
+					# the subject's own import path. Then the internal
+					# package is tried instead, which is legal whenever
+					# the subject does not import the driver (review
+					# 2058); if that cycles too, the emission loop below
+					# refuses and says which way it failed.
+					[ "$importpath" = "${t}_test" ] || injectinto=$pkgname
+				elif [ -z "$injectinto" ] || [ "$injectinto" = "${tname}_test" ]; then
+					[ -n "$injectinto" ] && [ "$importpath" != "${t}_test" ] || injectinto=$pkgname
 				fi
 			done <<<"$hook"
 

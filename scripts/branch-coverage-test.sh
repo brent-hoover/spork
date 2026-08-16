@@ -898,7 +898,31 @@ EOF
 # built as fixture/widget_test, which is the subject's own path, so a helper
 # there would import itself. Under the name-only rule the driver vanished
 # and the subject reported a smaller, quieter number instead.
-check "a real sibling driver is kept, and its impossibility is named" 1 'the subject.s own path' ./widget_test
+# Both placements cycle here — external is the subject's own path, internal
+# is imported BY the subject — so the gate refuses and names which. Under
+# the name-only rule the driver simply vanished: 1/2 arms from 1 driver.
+check "a real sibling driver is kept, and its impossibility is named" 1 'would be a cycle' ./widget_test
+
+echo
+# NO FIXTURE for the internal-package fallback, and the reason is worth
+# recording rather than leaving as a gap.
+#
+# The fallback (branch-coverage.sh) only fires when the driver's EXTERNAL
+# test package is unusable, which happens on exactly one shape: the subject's
+# import path is <driver>_test. Review 2058 is right that such a subject need
+# not import the driver, leaving the internal package free — but that program
+# cannot be built at all. On go1.26.5, plain `go test ./...` on it, with no
+# instrumentation of any kind, dies with:
+#
+#   internal compiler error: package "fixture/widget_test" has name
+#   "widget_test", but want "widgettest"
+#
+# The synthetic external test package of fixture/widget collides with the
+# real fixture/widget_test, and the compiler cannot hold both. So the
+# fallback is unreachable in any program Go will compile today. It is kept
+# because it is the correct behaviour if that is ever fixed, and because
+# refusing outright was wrong on the merits; it is untested because the
+# toolchain cannot produce the input.
 
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
