@@ -292,62 +292,76 @@ EOF
 				failed=1
 				continue 2
 			fi
-			hadmain=$(echo "$hook" | sed -n 1p)
-			driverpkg=$(echo "$hook" | sed -n 2p)
+			# One helper per PACKAGE, because a test directory can hold
+			# both `foo` and `foo_test` and a helper emitted into one is
+			# invisible to the other — so a rewritten exit over there
+			# would not compile, and a wrapper placed on the wrong side
+			# could not see gobcoInnerTestMain (review 2019/2020).
+			anymain=no
+			while read -r pkgname hasmain _; do
+				[ "$hasmain" = testmain ] && anymain=yes
+			done <<<"$hook"
 
-			if [ "$hadmain" = none ]; then
-				# No TestMain: supply one. Go's generated main would
-				# otherwise exit without flushing. Any os.Exit a plain
-				# test called has already been rewritten to gobcoExit,
-				# which is defined below either way.
-				cat >"$tdir/gobco_main_test.go" <<EOF
-package $driverpkg
+			first=yes
+			while read -r pkgname hasmain hasexits; do
+				[ -n "$pkgname" ] || continue
+				needexit=no
+				needmain=no
+				[ "$hasexits" = exits ] && needexit=yes
+				if [ "$hasmain" = testmain ]; then
+					needmain=wrap
+				elif [ "$anymain" = no ] && [ "$first" = yes ]; then
+					# Nobody declares TestMain, so one is supplied. Go's
+					# generated main would otherwise exit without flushing.
+					needmain=inject
+					needexit=yes
+				fi
+				first=no
+				[ "$needexit" = no ] && [ "$needmain" = no ] && continue
 
-import (
-	"os"
-	"testing"
-
-	gobcosubject "$importpath"
-)
+				helper=$tdir/gobco_${pkgname}_test.go
+				{
+					echo "package $pkgname"
+					echo
+					echo "import ("
+					[ "$needexit" = yes ] && echo '	"os"'
+					[ "$needmain" != no ] && echo '	"testing"'
+					echo
+					echo "	gobcosubject \"$importpath\""
+					echo ")"
+				} >"$helper"
+				if [ "$needexit" = yes ]; then
+					cat >>"$helper" <<EOF
 
 // gobcoExit persists the instrumented package's counters before the
 // process goes away. GobcoFinish returns the code it was handed.
 func gobcoExit(code int) { os.Exit(gobcosubject.GobcoFinish(code)) }
+EOF
+				fi
+				case $needmain in
+				inject)
+					cat >>"$helper" <<EOF
 
 // TestMain persists on the way out of the generated main.
 func TestMain(m *testing.M) { gobcoExit(m.Run()) }
 EOF
-			else
-				# Has a TestMain: cover BOTH ways out. Its exits now go
-				# through gobcoExit, and it has been renamed so this
-				# wrapper can flush on the paths that RETURN — including
-				# a conditional path that never reaches an exit at all.
-				# Neither the exit code nor the generated main's handling
-				# of it changes.
-				cat >"$tdir/gobco_exit_test.go" <<EOF
-package $driverpkg
+					;;
+				wrap)
+					# Covers the other way out: a TestMain that RETURNS, on
+					# any path, never reaches an exit and would otherwise
+					# lose every hit since the last tick. The deferred flush
+					# costs nothing on the exit path, where it does not run.
+					cat >>"$helper" <<EOF
 
-import (
-	"os"
-	"testing"
-
-	gobcosubject "$importpath"
-)
-
-// gobcoExit persists the instrumented package's counters before the
-// process goes away. GobcoFinish returns the code it was handed.
-func gobcoExit(code int) { os.Exit(gobcosubject.GobcoFinish(code)) }
-
-// TestMain covers the other way out: a TestMain that RETURNS, on any
-// path, never reaches an exit and would otherwise lose every hit since
-// the last tick. The deferred flush costs nothing on the exit path,
-// where it does not run at all.
 func TestMain(m *testing.M) {
 	defer gobcosubject.GobcoFinish(0)
 	gobcoInnerTestMain(m)
 }
 EOF
-			fi
+					;;
+				esac
+			done <<<"$hook"
+			unset pkgname hasmain hasexits
 		fi
 
 		stats=$work/stats-$slug-$(echo "$t" | tr / _).json
