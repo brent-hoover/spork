@@ -244,6 +244,14 @@ failed=0
 # unset under `set -u`, so a module with no packages, no test binaries, or a
 # driver with no active test files would abort the gate rather than report
 # on it (review 2070).
+# Nothing to measure is not success. Everything else here refuses to report
+# a number it did not earn; reporting NO number and exiting 0 is the same
+# fault with the volume turned down (review 2075's fixture found this).
+if [ "${#subjects[@]}" = 0 ]; then
+	echo "branch-coverage: no package in $module_root has production code to instrument" >&2
+	exit 2
+fi
+
 for subject in ${subjects[@]+"${subjects[@]}"}; do
 	importpath=$(go list -f '{{.ImportPath}}' "$subject")
 	pkgname=$(go list -f '{{.Name}}' "$subject")

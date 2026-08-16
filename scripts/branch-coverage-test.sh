@@ -980,18 +980,9 @@ EOF
 check "the subject's test-only imports do not make a cycle" 0 'fixture/subject +2/2 arms  \(2 drivers\)' ./subject
 
 echo
-echo "== a checkout path containing a newline =="
+echo "== a staging path containing the old field separator =="
 # Review 2062's Low: any delimiter can occur in a directory, so the listing
-# is parsed as JSON. Inside a module the question is narrow — Go rejects
-# import paths with spaces — but the checkout ROOT is unconstrained, and it
-# is the root that .Dir carries.
-#
-# Honest about what this proves: it is a PROPERTY check, not a discriminating
-# one. It shows the gate works under a hostile path, and it would have caught
-# the original raw `{{.ImportPath}}|{{.Dir}}` output; it does not fail against
-# every conceivable broken parser, because an escaping one (jq @tsv, say)
-# survives a newline too. The delimiter-free JSON path is what actually
-# removes the class.
+# is parsed as JSON rather than split on anything.
 # TMPDIR is what matters, not the checkout: the gate stages the module into
 # its own mktemp directory before listing anything, so a character in the
 # SOURCE path never reaches .Dir (review 2070/2071 — my first version of this
@@ -1065,6 +1056,52 @@ else
 	printf 'FAIL %s: exit %s\n%s\n' "a staging path containing the old field separator is handled" "$status" "$out"
 	fail=$((fail + 1))
 fi
+
+echo
+echo "== empty arrays, which stock Bash 3.2 treats as unset =="
+# Review 2075: the guards added for Bash 3.2 had no cases that could notice
+# them being removed. Each of these leaves one array empty. Run under
+# /bin/bash explicitly where it is 3.2, since the gate's own shebang picks
+# whichever bash is first on PATH.
+stock=/bin/bash
+[ -x "$stock" ] || stock=$(command -v bash)
+
+emptycheck() {
+	local name=$1 wantexit=$2 wantout=$3
+	shift 3
+	local out status
+	out=$(cd "$work/mod" && "$stock" "$gate" "$@" 2>&1)
+	status=$?
+	if [ "$status" != "$wantexit" ]; then
+		printf 'FAIL %s: exit %s, wanted %s\n%s\n' "$name" "$status" "$wantexit" "$out"
+		fail=$((fail + 1))
+		return
+	fi
+	if ! printf '%s' "$out" | grep -qE "$wantout"; then
+		printf 'FAIL %s: output did not match /%s/\n%s\n' "$name" "$wantout" "$out"
+		fail=$((fail + 1))
+		return
+	fi
+	printf 'ok   %s (%s)\n' "$name" "$("$stock" --version | head -1 | sed 's/.*version \([0-9.]*\).*/\1/')"
+	pass=$((pass + 1))
+}
+
+# subjects empty: a module whose only package has no production .go files.
+reset
+mkdir -p "$work/mod/onlytests"
+cat >"$work/mod/onlytests/only_test.go" <<'EOF'
+package onlytests
+
+import "testing"
+
+func TestNothing(t *testing.T) {}
+EOF
+emptycheck "a module with nothing to instrument refuses" 2 'no package .* has production code'
+
+# targets empty: production code, no test binary anywhere in the module.
+reset
+subject
+emptycheck "a module with no test binary at all completes" 1 'no usable coverage data from 0 drivers' ./subject
 
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
