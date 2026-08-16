@@ -36,3 +36,44 @@ Feature: Repo-anchored projects
     Then default project listings hold "SUT" and "WEB", and not "OTH"
     And writing to "OTH" is rejected
     And reading "OTH"'s content still works
+
+  # "Read-only" is a claim about EVERY door, and the scenario above samples
+  # one of them — creating an issue. That is the shape catalogued as defect
+  # species 1: an AC naming a set, discharged by a scenario exercising one
+  # member. Twenty-three call sites enforce the freeze and nineteen distinct
+  # operations reach them, including the far side of a relation, the second
+  # anchor of a thread, and each of a comment's three anchors — every one a
+  # place where a check could be missing and nothing else would notice,
+  # because a laxer door's failure mode is also a refusal.
+  #
+  # The project is fully populated BEFORE it freezes: each door needs a real
+  # target to aim at, and a door that 404s has not been shown to refuse.
+  Scenario: every door into an archived project refuses the write
+    Given archived project "OTH" holds an issue, a relation, a label, a document, a review, and a thread
+    Then every write into "OTH" is refused
+      | door                                        |
+      | create an issue                             |
+      | update an issue                             |
+      | change an issue's status                    |
+      | assign an issue                             |
+      | add a relation from an archived issue       |
+      | add a relation to an archived issue         |
+      | remove a relation from an archived issue    |
+      | remove a relation to an archived issue      |
+      | attach a label                              |
+      | detach a label                              |
+      | create a document                           |
+      | save a document version                     |
+      | link a document to an issue                 |
+      | unlink a document from an issue             |
+      | comment on an issue                         |
+      | comment on a document version               |
+      | comment on a review                         |
+      | open a review                               |
+      | record a review verdict                     |
+      | consume a review approval                   |
+      | resubmit a review                           |
+      | import a project-anchored thread            |
+      | import an issue-anchored thread             |
+      | re-anchor a thread into the archived project|
+    And every read of "OTH" still works

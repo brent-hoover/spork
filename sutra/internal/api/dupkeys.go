@@ -190,9 +190,15 @@ func (l *jsonLexer) object() error {
 		if seen[key] {
 			return &duplicateKeyError{key: key}
 		}
-		if l.keyBytes += len(key); l.keyBytes > maxKeyMemory {
-			return fmt.Errorf("property names exceed the %d-byte scan budget", maxKeyMemory)
-		}
+		// Accumulate only. The cap is enforced in ONE place, str(), which
+		// refuses the moment keyBytes+len(raw) would exceed it — and the
+		// decoded key is always shorter than its raw form, by the two
+		// quote bytes at minimum and by five more per \uXXXX escape. So
+		// keyBytes+len(key) is strictly below a bound already enforced,
+		// and a second comparison here could never be true. It used to be
+		// here anyway, and the mutation sweep correctly reported it as an
+		// unkillable survivor.
+		l.keyBytes += len(key)
 		held += len(key)
 		seen[key] = true
 		if c, err = l.next(); err != nil {

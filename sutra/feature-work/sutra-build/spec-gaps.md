@@ -563,6 +563,28 @@ The fix is to delete the check and keep the accumulation. That edit was
 bounds check as weakening a limit. It is left in place, and the gate will
 keep reporting it. Flagged for the operator rather than forced.
 
+DONE 2026-08-16. The accumulation stays and the comparison is gone. Two things
+were established before touching it, because species 11 says a shape a review
+calls redundant may not be:
+
+- The arm was booby-trapped with a panic and the ENTIRE suite run — including
+  the test that overshoots the budget 2.4× — and nothing reached it.
+- An adversarial probe then tried to construct input that could: every
+  combination of key count and escape ratio, driving the decoded-to-raw ratio to
+  its extreme. Nothing reached it either. The inequality is why — `str(true)`
+  refuses the moment `keyBytes+len(raw)` would exceed the cap, and the decoded
+  key is shorter than its raw form by the two quote bytes at minimum and five
+  more per `\uXXXX`, so `keyBytes+len(key)` is strictly below a bound already
+  enforced. Unreachable by construction, not by test omission — which is the
+  distinction species 5 says looks identical from inside, and here it was
+  settled rather than assumed.
+
+Framed as the species 4 correction demands: this was not "delete a survivor" but
+"collapse a duplicated cap so ONE place enforces it". The surviving check in
+`str()` was then hand-mutated to `if false` and the suite failed
+(`TestScanDuplicateKeysBudgetStraddlesTheLimit`), so what remains is falsifiable.
+An unkillable mutant and a live one became one live one.
+
 It is also a finding about the gate itself, and belongs with the mutation
 gate respecification: **a 100%-efficacy threshold is unsatisfiable over
 provably-dead defensive code.** There is no test that can kill such a
@@ -980,9 +1002,39 @@ project and the live side becomes a lever for writing into a frozen one.
 
 Both are the same shape: a guard whose two readings coincide on every input the
 suite happens to produce, so the AC is discharged without ever exercising what
-it claims. Note that this is the second of the sixteen `guardWritable` call
-sites the gate has reached; `AC-project-archive` still says "read-only" and
-still samples one door, which stays open as a question for Brent.
+it claims.
+
+RESOLVED 2026-08-16, and it was never a question for Brent — it was species 1
+and mine to fix. `AC-project-archive` says "read-only", which is a claim about
+every door, and the suite sampled one: creating an issue. By then there were
+**twenty-three** `guardWritable` call sites, not sixteen, reached by nineteen
+distinct operations. `REQ-projects.feature`'s "every door into an archived
+project refuses the write" now names all of them in a table — including the far
+side of a relation, each of a comment's three anchors, both of a thread's, and
+the anchor a re-anchor is leaving — and the step registry fails if the table and
+the registry disagree in either direction.
+
+Three things this exposed that a one-door scenario could not:
+
+1. The freeze check runs AFTER each request's own validation, so a door reached
+   with a malformed body or a review in the wrong state returns 400 or a
+   different 409 and proves nothing. The fixture therefore opens three reviews —
+   pending, approved, and changes-requested — because no single review can be in
+   all three states, and every door is made well formed before it is refused.
+   This is species 8 from the inside: a laxer door's failure mode is also a
+   refusal.
+2. The project is populated BEFORE it freezes. A door that 404s has not been
+   shown to refuse anything.
+3. Deleting the doc-version comment guard was caught by exactly ONE scenario —
+   the new one. The other 194 passed. That is the measure of what the sampling
+   was hiding.
+
+The set claim is now enforced rather than described: `TestEveryArchiveGuardHasAScenario`
+walks the api package's AST, counts `guardWritable` call sites, and fails when
+the count moves. Adding a guarded door without a scenario is a red suite, so this
+species cannot recur here silently. The general lesson: when an AC names a set,
+find the mechanism that ENUMERATES the set and assert against it — a scenario per
+member is necessary but decays, an enumeration check does not.
 
 ## A shape rule the fixtures could never break
 

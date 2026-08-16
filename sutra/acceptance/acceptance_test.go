@@ -248,6 +248,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerSearchSteps(sc, cw)
 	registerImportExportSteps(sc, cw)
 	registerMiscSteps(sc, cw)
+	registerArchiveSteps(sc, cw)
 	// The browser world registers BEFORE the review steps: scenarios
 	// that put a reviewer in front of a page drive that page, so the
 	// review steps need the UI the web steps own.
