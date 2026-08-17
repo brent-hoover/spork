@@ -1,0 +1,592 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"slices"
+
+	"sutra/internal/comments"
+	"sutra/internal/docs"
+	"sutra/internal/events"
+	"sutra/internal/identity"
+	"sutra/internal/issues"
+	"sutra/internal/projects"
+	"sutra/internal/review"
+	"sutra/internal/threads"
+)
+
+// exportMeta is the ONLY part of ProjectExport that marshals up front:
+// one project record. Every group — identities, labels, relations,
+// documents, and the content-bearing ones — streams row by row at
+// serving time, because the contract leaves display names, label names
+// and colors, and document titles as unconstrained as content
+// (review 1920). Export memory is one record regardless of project size.
+type exportMeta struct {
+	Project projects.Project `json:"project"`
+}
+
+// documentExport mirrors the contract's DocumentExport; import decodes
+// into it.
+type documentExport struct {
+	Document docs.Document  `json:"document"`
+	Versions []docs.Version `json:"versions"`
+}
+
+// exportPlan carries the id lists the streaming writer walks.
+type exportPlan struct {
+	meta        exportMeta
+	identityIDs []string
+	labelIDs    []string
+	relations   []issues.Relation // bounded: kind plus three uuids
+	issueIDs    []string
+	docIDs      []string
+	versionIDs  []string
+	reviewIDs   []string // ids only; each review loads at write time
+	threadIDs   []string
+}
+
+// assembleExportPlan collects id lists and identity references in one
+// read transaction (AC-export-full) WITHOUT loading unbounded content —
+// issue bodies, event payload sets, and every content group stream at
+// write time.
+// Cross-project blocks relations cannot round-trip through a
+// single-project export and are excluded — normative on the
+// exportProject contract description and logged in spec-gaps.md.
+func assembleExportPlan(ctx context.Context, tx *sql.Tx, projectID string) (exportPlan, error) {
+	var plan exportPlan
+	var err error
+	if plan.meta.Project, err = projects.GetTx(tx, projectID); err != nil {
+		return plan, err
+	}
+	issueIDSet := map[string]bool{}
+	identityIDs := map[string]bool{}
+	irows, err := tx.QueryContext(ctx, `SELECT id, assignee FROM issues WHERE project = ? ORDER BY number`, projectID)
+	if err != nil {
+		return plan, err
+	}
+	for irows.Next() {
+		var id string
+		var assignee *string
+		if err := irows.Scan(&id, &assignee); err != nil {
+			_ = irows.Close()
+			return plan, err
+		}
+		issueIDSet[id] = true
+		plan.issueIDs = append(plan.issueIDs, id) // number order for streaming
+		if assignee != nil {
+			identityIDs[*assignee] = true
+		}
+	}
+	if err := irows.Err(); err != nil {
+		_ = irows.Close()
+		return plan, err
+	}
+	_ = irows.Close()
+	// Label IDS in name order — SQL does the ordering, so the names
+	// being ordered by are never held (review 1920).
+	if plan.labelIDs, err = issues.LabelIDsForProject(tx, projectID); err != nil {
+		return plan, err
+	}
+
+	plan.relations = []issues.Relation{}
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, from_issue, to_issue FROM issue_relations`)
+	if err != nil {
+		return plan, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var rel issues.Relation
+		if err := rows.Scan(&rel.ID, &rel.Kind, &rel.From, &rel.To); err != nil {
+			return plan, err
+		}
+		if issueIDSet[rel.From] && issueIDSet[rel.To] {
+			plan.relations = append(plan.relations, rel)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return plan, err
+	}
+
+	// Documents: IDS in title order, plus per-version (id, author) —
+	// titles and content both stay in the store until the writer
+	// streams each record.
+	if plan.docIDs, err = docs.IDsByProject(tx, projectID); err != nil {
+		return plan, err
+	}
+	for _, docID := range plan.docIDs {
+		vrows, err := tx.QueryContext(ctx, `SELECT id, author FROM doc_versions WHERE document = ? ORDER BY number`, docID)
+		if err != nil {
+			return plan, err
+		}
+		for vrows.Next() {
+			var id, author string
+			if err := vrows.Scan(&id, &author); err != nil {
+				_ = vrows.Close()
+				return plan, err
+			}
+			plan.versionIDs = append(plan.versionIDs, id)
+			identityIDs[author] = true
+		}
+		if err := vrows.Err(); err != nil {
+			_ = vrows.Close()
+			return plan, err
+		}
+		_ = vrows.Close()
+	}
+
+	// Reviews: IDS ONLY. Summaries are unbounded, so the plan keeps no
+	// review records — each loads at write time, one at a time, exactly
+	// like every other content-bearing group (review 1902).
+	for _, id := range plan.issueIDs {
+		if err := review.EachRef(tx, id, "", "", func(r review.Ref) error {
+			identityIDs[r.Author] = true
+			plan.reviewIDs = append(plan.reviewIDs, r.ID)
+			return nil
+		}); err != nil {
+			return plan, err
+		}
+	}
+
+	// Comment authors, via metadata-only scans per anchor.
+	reviewIDs := plan.reviewIDs
+	for _, group := range []struct {
+		column string
+		ids    []string
+	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", reviewIDs}} {
+		for _, id := range group.ids {
+			arows, err := tx.QueryContext(ctx, `SELECT DISTINCT author FROM comments WHERE `+group.column+` = ?`, id)
+			if err != nil {
+				return plan, err
+			}
+			for arows.Next() {
+				var author string
+				if err := arows.Scan(&author); err != nil {
+					_ = arows.Close()
+					return plan, err
+				}
+				identityIDs[author] = true
+			}
+			if err := arows.Err(); err != nil {
+				_ = arows.Close()
+				return plan, err
+			}
+			_ = arows.Close()
+		}
+	}
+
+	// Threads by id, deduplicated: an anchor may name BOTH the project
+	// and one of its issues, and a twice-exported id would collide
+	// with itself at import.
+	seenThreads := map[string]bool{}
+	collect := func(t threads.Ref) error {
+		if !seenThreads[t.ID] {
+			seenThreads[t.ID] = true
+			plan.threadIDs = append(plan.threadIDs, t.ID)
+		}
+		return nil
+	}
+	if err := threads.SearchRefsEach(tx, nil, nil, &projectID, collect); err != nil {
+		return plan, err
+	}
+	for _, id := range plan.issueIDs {
+		if err := threads.RefsByIssueEach(tx, id, collect); err != nil {
+			return plan, err
+		}
+	}
+
+	// Event actors, collected without materializing event rows; the
+	// rows themselves stream in feed order at write time. The project
+	// predicate lives in the query, so only in-scope events are read —
+	// no global actor scan, no per-actor probe (review 1898).
+	arows, err := tx.QueryContext(ctx, `SELECT DISTINCT actor FROM events
+		WHERE subject = ?1 OR subject IN (SELECT id FROM issues WHERE project = ?1)`, projectID)
+	if err != nil {
+		return plan, err
+	}
+	for arows.Next() {
+		var actor string
+		if err := arows.Scan(&actor); err != nil {
+			_ = arows.Close()
+			return plan, err
+		}
+		identityIDs[actor] = true
+	}
+	if err := arows.Err(); err != nil {
+		_ = arows.Close()
+		return plan, err
+	}
+	_ = arows.Close()
+
+	// Identity IDS only; each record loads at write time.
+	plan.identityIDs = sortedKeys(identityIDs)
+	return plan, nil
+}
+
+// sortedKeys makes export assembly deterministic — map iteration order
+// must never shape the payload.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// writeState is the response's SINGLE failure flag. Nested array
+// writers share it with their parent, and every framing byte goes
+// through the writer, so a disconnect noticed while streaming one
+// document's versions stops the outer document loop too instead of
+// loading another version first (review 1900).
+type writeState struct{ err error }
+
+// jsonArrayWriter streams a JSON array element by element.
+type jsonArrayWriter struct {
+	w     http.ResponseWriter
+	first bool
+	st    *writeState
+}
+
+func newArrayWriter(w http.ResponseWriter) *jsonArrayWriter {
+	return &jsonArrayWriter{w: w, st: &writeState{}}
+}
+
+// nested opens an inner array sharing this writer's failure state.
+func (a *jsonArrayWriter) nested() *jsonArrayWriter {
+	return &jsonArrayWriter{w: a.w, first: true, st: a.st}
+}
+
+func (a *jsonArrayWriter) write(b []byte) {
+	if a.st.err != nil {
+		return
+	}
+	if _, err := a.w.Write(b); err != nil {
+		a.st.err = err
+	}
+}
+
+// comma emits the separator before an element unless it is the first.
+func (a *jsonArrayWriter) comma() {
+	if !a.first {
+		a.write([]byte{','})
+	}
+	a.first = false
+}
+
+func (a *jsonArrayWriter) open(name string) {
+	a.write([]byte(`,"` + name + `":[`))
+	a.first = true
+}
+
+func (a *jsonArrayWriter) elem(raw []byte) {
+	a.comma()
+	a.write(raw)
+}
+
+func (a *jsonArrayWriter) marshalElem(v any) error {
+	if a.st.err != nil {
+		return a.st.err
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	a.elem(raw)
+	return a.st.err
+}
+
+func (a *jsonArrayWriter) close() { a.write([]byte{']'}) }
+
+// failed reports whether the client stopped reading — a disconnect
+// must abort the scan rather than let it run to completion holding a
+// read transaction and pinning the WAL (review 1889).
+func (a *jsonArrayWriter) failed() bool { return a.st.err != nil }
+
+// reviewMetaShadow is review.Review minus submissions, so the writer
+// can splice streamed full-content submissions into its place.
+type reviewMetaShadow struct {
+	ID                 string  `json:"id"`
+	Issue              string  `json:"issue"`
+	Branch             *string `json:"branch,omitempty"`
+	Commit             *string `json:"commit,omitempty"`
+	DocVersion         *string `json:"doc_version,omitempty"`
+	Session            *string `json:"session,omitempty"`
+	Summary            *string `json:"summary,omitempty"`
+	Author             string  `json:"author"`
+	State              string  `json:"state"`
+	Revision           int64   `json:"revision"`
+	LatestVerdictEvent *string `json:"latest_verdict_event,omitempty"`
+	Consumed           *string `json:"consumed,omitempty"`
+	ConsumedRevision   *int64  `json:"consumed_revision,omitempty"`
+	CloseUsed          *string `json:"close_used,omitempty"`
+	Created            string  `json:"created"`
+}
+
+// exportProject streams the full export (AC-export-full): the bounded
+// metadata envelope marshals once; comments, doc versions, review
+// submissions, and transcripts — all unbounded per AC-comment-no-cap
+// and the store's physical limits — stream one row at a time. After
+// the first byte the status is committed; a mid-stream failure can
+// only truncate.
+func (s *server) exportProject(w http.ResponseWriter, r *http.Request) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	plan, err := assembleExportPlan(r.Context(), tx, r.PathValue("projectId"))
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	raw, err := json.Marshal(plan.meta)
+	if err != nil {
+		writeError(w, errorFrom(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	arr := newArrayWriter(w)
+	arr.write(raw[:len(raw)-1])
+
+	// Identities and labels carry unconstrained display names, label
+	// names and colors, so they stream by id like every other group.
+	arr.open("identities")
+	for _, id := range plan.identityIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
+		ident, err := identity.Get(tx, id)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		if err := arr.marshalElem(ident); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	arr.open("labels")
+	for _, id := range plan.labelIDs {
+		if arr.failed() {
+			return
+		}
+		label, err := issues.GetLabel(tx, id)
+		if err != nil {
+			return
+		}
+		if err := arr.marshalElem(label); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	// Relations are bounded — a kind and three uuids — so the plan
+	// carries the records themselves.
+	arr.open("issue_relations")
+	for _, rel := range plan.relations {
+		if err := arr.marshalElem(rel); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	// Issues stream one row at a time — bodies are unbounded strings.
+	arr.open("issues")
+	for _, id := range plan.issueIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
+		issue, err := issues.Get(tx, id)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		if err := arr.marshalElem(issue); err != nil {
+			return
+		}
+	}
+	arr.close()
+
+	// Events stream in feed order; the project's subjects are selected
+	// in SQL, so one ordered pass serves any number of them.
+	arr.open("events")
+	if err := streamProjectEvents(r.Context(), tx, plan.meta.Project.ID, arr); err != nil {
+		return
+	}
+	arr.close()
+
+	arr.open("comments")
+	for _, group := range []struct {
+		column string
+		ids    []string
+	}{{"issue", plan.issueIDs}, {"doc_version", plan.versionIDs}, {"review", plan.reviewIDs}} {
+		for _, id := range group.ids {
+			if arr.failed() {
+				return // the client stopped reading; abandon the scan
+			}
+			if err := comments.EachByAnchor(tx, group.column, id, func(c comments.Comment) error {
+				return arr.marshalElem(c)
+			}); err != nil {
+				return // status committed; truncation is the only signal
+			}
+		}
+	}
+	arr.close()
+
+	arr.open("documents")
+	for _, docID := range plan.docIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
+		d, err := docs.Get(tx, docID)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		docRaw, err := json.Marshal(d)
+		if err != nil {
+			return
+		}
+		arr.comma()
+		arr.write([]byte(`{"document":`))
+		arr.write(docRaw)
+		arr.write([]byte(`,"versions":[`))
+		inner := arr.nested()
+		if err := docs.VersionsEach(tx, docID, func(v docs.Version) error {
+			return inner.marshalElem(v)
+		}); err != nil {
+			return
+		}
+		arr.write([]byte(`]}`))
+	}
+	arr.close()
+
+	arr.open("reviews")
+	for _, reviewID := range plan.reviewIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
+		// Metadata only: the submissions stream row by row just below,
+		// so Get's accumulated history would be held twice (1908).
+		rv, err := review.GetMeta(tx, reviewID)
+		if err != nil {
+			return // status committed; truncation is the only signal
+		}
+		shadow := reviewMetaShadow{
+			ID: rv.ID, Issue: rv.Issue, Branch: rv.Branch, Commit: rv.Commit,
+			DocVersion: rv.DocVersion, Session: rv.Session, Summary: rv.Summary,
+			Author: rv.Author, State: rv.State, Revision: rv.Revision,
+			LatestVerdictEvent: rv.LatestVerdictEvent, Consumed: rv.Consumed,
+			ConsumedRevision: rv.ConsumedRevision, CloseUsed: rv.CloseUsed, Created: rv.Created,
+		}
+		metaRaw, err := json.Marshal(shadow)
+		if err != nil {
+			return
+		}
+		arr.comma()
+		arr.write(metaRaw[:len(metaRaw)-1])
+		arr.write([]byte(`,"submissions":[`))
+		inner := arr.nested()
+		if err := eachSubmission(tx, rv.ID, func(sub review.Submission) error {
+			return inner.marshalElem(sub)
+		}); err != nil {
+			return
+		}
+		arr.write([]byte(`]}`))
+	}
+	arr.close()
+
+	arr.open("threads")
+	for _, id := range plan.threadIDs {
+		if arr.failed() {
+			return // the client stopped reading; abandon the scan
+		}
+		t, err := threads.Get(tx, id)
+		if err != nil {
+			return
+		}
+		arr.comma()
+		// Transcript bytes go straight to the wire — no aggregate
+		// buffer sized to them (review 1885).
+		if apiErr := writeThreadJSON(w, t); apiErr != nil {
+			return
+		}
+	}
+	arr.close()
+	arr.write([]byte{'}'})
+}
+
+// streamProjectEvents walks the project's slice of the feed in order,
+// emitting events whose subject is the project or one of its issues.
+// The scope is a SQL predicate, not a Go-side skip: the global event
+// table is never scanned for rows this export cannot emit (review 1897).
+// The request context carries into the query itself: the between-rows
+// failure checks only observe write errors, so a disconnect during
+// SQLite's own scan or sort needs the driver to abandon it (review 1898).
+func streamProjectEvents(ctx context.Context, tx *sql.Tx, projectID string, arr *jsonArrayWriter) error {
+	if arr.failed() {
+		return fmt.Errorf("client stopped reading")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, subject, operation, actor, payload, created FROM events
+		WHERE subject = ?1 OR subject IN (SELECT id FROM issues WHERE project = ?1)
+		ORDER BY seq`, projectID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if arr.failed() {
+			return fmt.Errorf("client stopped reading")
+		}
+		var e events.Event
+		var payload sql.NullString
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Subject, &e.Operation, &e.Actor, &payload, &e.Created); err != nil {
+			return err
+		}
+		// Payload bytes splice VERBATIM around the marshaled metadata —
+		// json.Marshal would compact them, and imports promise the
+		// original bytes back.
+		shadow := e
+		shadow.Payload = nil
+		raw, err := json.Marshal(shadow)
+		if err != nil {
+			return err
+		}
+		if payload.Valid {
+			raw = append(raw[:len(raw)-1], []byte(`,"payload":`)...)
+			raw = append(raw, payload.String...)
+			raw = append(raw, '}')
+		}
+		arr.elem(raw)
+		if arr.failed() {
+			return fmt.Errorf("client stopped reading")
+		}
+	}
+	return rows.Err()
+}
+
+// eachSubmission streams a review's full submission history including
+// stored content, ordered by revision.
+func eachSubmission(tx *sql.Tx, reviewID string, fn func(review.Submission) error) error {
+	rows, err := tx.Query(`
+		SELECT id, review, revision, branch, commit_sha, base_commit, doc_version, session, content, created
+		FROM review_submissions WHERE review = ? ORDER BY revision`, reviewID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var sub review.Submission
+		if err := rows.Scan(&sub.ID, &sub.Review, &sub.Revision, &sub.Branch, &sub.Commit,
+			&sub.BaseCommit, &sub.DocVersion, &sub.Session, &sub.Content, &sub.Created); err != nil {
+			return err
+		}
+		if err := fn(sub); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}

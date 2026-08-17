@@ -14,10 +14,16 @@ Feature: Agent work stack
     When two instances of "claude" pop concurrently
     Then one instance receives SUT-1 and the other receives SUT-2
 
+  # Both issues exist before either is assigned, and the second one created
+  # is assigned first — otherwise assignment order and issue-number order
+  # are the same sequence, and a stack ordered by number alone (one that
+  # never stamped an assignment time at all) satisfies this scenario just
+  # as well as one ordered by assignment time.
   Scenario: oldest issue comes first
-    Given issue SUT-1 was assigned to "claude" before issue SUT-2
+    Given issues SUT-1 and SUT-2 exist
+    And issue SUT-2 was assigned to "claude" before issue SUT-1
     When "claude" pops its work stack
-    Then it receives SUT-1
+    Then it receives SUT-2
 
   Scenario: blocker is worked first
     Given issue SUT-1 is assigned to "claude"

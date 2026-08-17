@@ -1,7 +1,31 @@
 openapi: 3.0.3
 info:
   title: sutra
-  description: The single API surface — CLI, web UI, and external agents all speak this contract.
+  description: >-
+    The single API surface — CLI, web UI, and external agents all speak this
+    contract.
+
+
+    REQUEST BODIES: a JSON object must not repeat a property name at any
+    depth. Duplicate properties are ambiguous — a decoder keeping the last
+    value and one keeping the first read the same bytes differently — and
+    thread transcripts and event payloads are stored VERBATIM and re-served,
+    so the ambiguity would outlive the request. Repeats are rejected with
+    400 bad-request on every mutating operation, which is what makes an
+    accepted transcript re-importable. Detecting them costs memory
+    proportional to the property names of the objects simultaneously open;
+    that is bounded at 1 MiB, and a body exceeding it is rejected with the
+    same status. Only hand-built adversarial JSON approaches the bound —
+    real records carry a handful of short names.
+
+
+    IDENTIFIERS: every `format: uuid` value is the CANONICAL LOWERCASE form
+    (RFC 9562 §4). Identifiers are compared as text at every layer — storage,
+    collision detection, reference resolution — so two casings of one uuid
+    would name one entity while behaving as two. Sutra only ever mints the
+    lowercase form; import rejects any other casing rather than rewriting it,
+    because event payloads are stored verbatim and carry identifiers inside
+    their bytes, where a rewrite of the surrounding columns could not reach.
   version: 0.2.0
 
 paths:
@@ -112,7 +136,11 @@ paths:
       description: >-
         Captures identities, issues, comments, labels, relations, docs with all
         versions, threads, reviews, and events — enough to reconstruct the
-        project (AC-export-full).
+        project (AC-export-full). Relations are carried only when BOTH ends
+        are the project's issues: a blocks relation crossing into another
+        project has no representable foreign endpoint in a single-project
+        export and is omitted — importing such an export reconstructs the
+        project without its cross-project blocks.
       tags: [projects]
       parameters:
         - $ref: '#/components/parameters/ProjectIdPath'
@@ -132,7 +160,9 @@ paths:
       summary: Import a project export
       description: >-
         Reconstructs a project from a previous export with UUIDs preserved
-        (AC-import-round-trip). Identities referenced by the export's records are
+        (AC-import-round-trip). Identifiers must be in the canonical lowercase
+        form declared in the API description; any other casing is rejected as
+        malformed rather than normalized. Identities referenced by the export's records are
         recreated from the export itself — never invented — so every actor and
         assignee resolves after import. Exported records are canonical
         serializations — read-time decorations like feed_watermark are never
@@ -217,6 +247,8 @@ paths:
                 $ref: '#/components/schemas/IssueRead'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
     get:
@@ -566,6 +598,8 @@ paths:
                     type: string
                     format: uuid
                     description: The server transaction id this mutation ran under — the same id every event it emitted carries, cascades included, so the caller (and its idempotent replay, which returns this original response) can correlate the attachment's cascade directly.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -789,6 +823,11 @@ paths:
     get:
       operationId: listComments
       summary: List comments anchored to an issue, doc version, or review
+      description: >-
+        EXACTLY ONE of issue, doc_version, or review must be given: a
+        comment listing is always scoped to one anchor target, and an
+        unscoped or multiply-scoped request rejects 400. (Cross-anchor
+        listings would have no meaningful order and no bound.)
       tags: [comments]
       parameters:
         - name: issue
@@ -808,6 +847,9 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Comment' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
 
   # -------------------------------------------------------------- documents
   /projects/{projectId}/documents:
@@ -845,6 +887,23 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listProjectDocuments
+      summary: List a project's documents
+      description: Documents file under their project (AC-doc-create) — the project-side listing the doc database scenarios read back.
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          description: The project's documents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Document' }
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /documents/{documentId}:
     get:
@@ -865,6 +924,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{documentId}/meta:
+    get:
+      operationId: getDocumentMeta
+      summary: Get a document and its current version's metadata, without content
+      description: >-
+        The bounded projection of getDocument: the document itself (already
+        bounded) plus the current DocVersion minus its content. Clients that
+        need a document's project or its current version number — the web
+        view's scope guards, and the live-refresh signal of AC-docweb-live
+        polling every few seconds — must not pay an unbounded read for either.
+      tags: [documents]
+      parameters:
+        - $ref: '#/components/parameters/DocumentIdPath'
+      responses:
+        '200':
+          description: The document and its current version's metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentMeta'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -893,6 +977,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -912,6 +998,8 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/DocVersion' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -933,6 +1021,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -940,7 +1030,14 @@ paths:
     get:
       operationId: diffDocVersions
       summary: Diff two versions of a document
-      description: Any two versions can be diffed (AC-doc-history).
+      description: >-
+        Any two versions can be diffed (AC-doc-history). Diffing
+        materializes both versions and the rendered output, so the
+        server bounds the COMBINED version size it will diff at 64 MiB
+        (measured in bytes, both sides counted even when from equals to)
+        and the combined line count at 8 million — beyond either bound
+        the request rejects 400 with the bound named; version content
+        itself remains readable at any size the store accepts.
       tags: [documents]
       parameters:
         - $ref: '#/components/parameters/DocumentIdPath'
@@ -959,6 +1056,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocDiff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -991,6 +1090,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1015,6 +1116,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1042,6 +1145,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocTemplate'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '409':
           $ref: '#/components/responses/Conflict'
     get:
@@ -1071,6 +1176,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocTemplate'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
     put:
@@ -1093,6 +1200,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocTemplate'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1107,6 +1216,8 @@ paths:
       responses:
         '204':
           description: Template removed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1118,7 +1229,10 @@ paths:
       description: >-
         Creates a Thread with title, session id, and import time; content is
         preserved verbatim (AC-thread-import). Ties to a project or an issue —
-        at least one is required (AC-thread-anchor).
+        at least one is required (AC-thread-anchor). Naming both is allowed
+        only when the issue belongs to the named project; a pair that
+        disagrees is refused as a bad request, and an anchor into an archived
+        project conflicts (AC-thread-anchor-guarded).
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1202,10 +1316,18 @@ paths:
         fields clear the corresponding side. At least one of project or issue
         must be set; both sides list the thread — listIssueThreads on the
         issue side, searchThreads (filtered by project) on the project side
-        (AC-thread-anchor). Emits a `thread.anchor-changed` event whose
-        subject is the NEW anchor's aggregation root — the issue if
-        retargeted to an issue, otherwise the project; the payload carries
-        both the old and new anchors.
+        (AC-thread-anchor). An anchor naming BOTH a project and an issue is
+        refused as a bad request unless the issue belongs to that project,
+        so its two halves can never disagree about which project governs the
+        thread. Retargeting is guarded at both ends and conflicts (409) if
+        either the project governing the anchor the thread leaves or the one
+        governing the anchor it arrives at is archived — a thread inside an
+        archived project is that project's read-only content and cannot be
+        moved out of it, and no thread can be moved into a frozen one
+        (AC-thread-anchor-guarded, AC-thread-anchor-destination-live). Emits
+        a `thread.anchor-changed` event whose subject is the NEW anchor's
+        aggregation root — the issue if retargeted to an issue, otherwise
+        the project; the payload carries both the old and new anchors.
       tags: [threads]
       parameters:
         - $ref: '#/components/parameters/ThreadIdPath'
@@ -1244,8 +1366,10 @@ paths:
         client-supplied, so the rendered diff never shifts as the default
         branch moves. A code deliverable with an unset project `repo_path`
         or an unresolvable `commit`/`base_commit` is rejected 409 at
-        submission time. A supplied `session` is recorded on the
-        submission.
+        submission time — as is one whose pinned diff cannot be rendered
+        within the server's 10 MiB deliverable limit, so every accepted
+        review's content is openable by a reviewer. A supplied `session`
+        is recorded on the submission.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
@@ -1457,16 +1581,19 @@ paths:
       summary: Get a review's deliverable content, resolved for rendering
       description: >-
         For a doc deliverable, the doc version's content; for a code
-        deliverable, the complete pinned diff/content — never a summary in
-        its place, so approval never happens against a summary
-        (AC-review-web). For code deliverables, content is resolved via the
-        project's repo_path as the diff between the resolved submission's
-        pinned `base_commit` and `commit` — never recomputed against the
-        project's current default branch, since `base_commit` was already
-        resolved once at submission time; doc deliverables read the stored
-        doc version. With `revision` omitted, resolves the latest
-        submission; a given `revision` resolves that submission's
-        deliverable instead.
+        deliverable, the complete pinned diff/content — binary-capable,
+        bounded by the server's 10 MiB deliverable limit (which submission
+        already enforced), and never a summary in its place, so approval
+        never happens against a summary (AC-review-web). A code
+        deliverable is rendered ONCE, at submission, as the diff between
+        the submission's pinned `base_commit` and `commit`, and that
+        render is stored and served back verbatim — reading never runs
+        git, so no later repository state, configuration, or
+        reachability change can alter what approval covered. A doc
+        deliverable stores no copy: its immutable doc version is the
+        deliverable and is resolved at read time. With `revision`
+        omitted, resolves the latest submission; a given `revision`
+        resolves that submission's deliverable instead.
       tags: [reviews]
       parameters:
         - $ref: '#/components/parameters/ReviewIdPath'
@@ -1481,12 +1608,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResolvedDeliverable'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            The submission's pinned `commit` or `base_commit` could not be
-            resolved, or the project has no repo_path set.
+            The submission carries no content to serve: it predates stored
+            renders and is not a doc submission whose version could be
+            resolved instead. Git is not consulted here, so an
+            unresolvable commit or an unset repo_path is a submission-time
+            refusal, not a reading one.
           content:
             application/json:
               schema:
@@ -1528,6 +1660,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
 
   # -------------------------------------------------------------- identities
   /identities:
@@ -1553,6 +1687,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Identity'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '409':
           $ref: '#/components/responses/Conflict'
     get:
@@ -1579,12 +1715,18 @@ paths:
       summary: Search across issues, docs, and threads
       description: >-
         One query surface over issues, docs, and transcripts (AC-search-cross).
-        Filtering by session returns the work that instance produced — reviews
-        stamped with it, threads imported from it, and their linked issues
-        (AC-search-session); a session query matches a review whose ANY
-        ReviewSubmission.session equals the query, not just the latest
-        submission's session. With `q` omitted, returns all content in scope
-        of the other filters (project, session).
+        The filters INTERSECT, so each one omitted widens the scope rather
+        than narrowing it: `q` alone searches every project, `project` alone
+        returns that project's whole contents, and a request naming no filter
+        at all returns everything (AC-search-scope). Reviews are the one
+        asymmetry — a review carries no text of its own, so it enumerates
+        under a scope but never under a term. Filtering by session returns the
+        work that instance produced — reviews stamped with it, threads
+        imported from it, and their linked issues (AC-search-session); a
+        session query matches a review whose ANY ReviewSubmission.session
+        equals the query, not just the latest submission's session. A session
+        names work, not a place, so adding `project` narrows that work to the
+        named project.
       tags: [search]
       parameters:
         - name: q
@@ -1724,7 +1866,7 @@ components:
             - type: object
               required: [conflicts]
               properties:
-                conflicts: { type: array, minItems: 1 }
+                conflicts: { type: array, minItems: 1, items: {} }
           description: A unique-violation always names at least one colliding resource in conflicts — a schema-valid response can never omit what clients need to act on the collision.
       properties:
         message:
@@ -1846,6 +1988,7 @@ components:
 
     Label:
       type: object
+      additionalProperties: false
       required: [id, name]
       properties:
         id: { type: string, format: uuid }
@@ -1861,6 +2004,7 @@ components:
 
     IssueRelation:
       type: object
+      additionalProperties: false
       required: [id, from, to, kind]
       properties:
         id: { type: string, format: uuid }
@@ -1878,6 +2022,7 @@ components:
 
     Comment:
       type: object
+      additionalProperties: false
       description: >-
         Polymorphic and threaded — anchors to exactly one of issue, doc_version,
         or review, with review_revision required exactly when review is set.
@@ -1964,12 +2109,24 @@ components:
               - required: [issue]
               - required: [doc_version]
 
+    ProjectKey:
+      type: string
+      minLength: 1
+      description: >-
+        Any non-empty string except the dot segments "." and ".." —
+        those make the declared /p/:key web routes unreachable under
+        URL canonicalization, so creation and import reject them.
+        (Expressed prose-normatively: the exclusion needs a negative
+        lookahead, which the validation stack's RE2 patterns cannot
+        encode.)
+
     Project:
       type: object
+      additionalProperties: false
       required: [id, key, name]
       properties:
         id: { type: string, format: uuid }
-        key: { type: string }
+        key: { $ref: '#/components/schemas/ProjectKey' }
         name: { type: string }
         description: { type: string, nullable: true }
         repo_path: { type: string, nullable: true }
@@ -1989,7 +2146,7 @@ components:
       type: object
       required: [key, name, actor]
       properties:
-        key: { type: string }
+        key: { $ref: '#/components/schemas/ProjectKey' }
         name: { type: string }
         description: { type: string }
         repo_path: { type: string }
@@ -2004,6 +2161,7 @@ components:
 
     Document:
       type: object
+      additionalProperties: false
       required: [id, project, title]
       properties:
         id: { type: string, format: uuid }
@@ -2013,13 +2171,23 @@ components:
         current_version: { type: string, format: uuid, nullable: true }
 
     DocumentView:
-      description: A document together with its resolved version's content (latest by default).
-      allOf:
-        - $ref: '#/components/schemas/Document'
-        - type: object
-          required: [version]
-          properties:
-            version: { $ref: '#/components/schemas/DocVersion' }
+      description: >-
+        A document together with its resolved version's content (latest
+        by default). Its properties are spelled out rather than composed
+        from Document via allOf: composition would force Document to stay
+        open (additionalProperties cannot see sibling allOf members), and
+        Document must be CLOSED so import-carried documents reject unknown
+        fields exactly as the importer does.
+      type: object
+      additionalProperties: false
+      required: [id, project, title, version]
+      properties:
+        id: { type: string, format: uuid }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid, nullable: true }
+        title: { type: string }
+        current_version: { type: string, format: uuid, nullable: true }
+        version: { $ref: '#/components/schemas/DocVersion' }
 
     NewDocument:
       type: object
@@ -2051,12 +2219,42 @@ components:
 
     DocVersion:
       type: object
+      additionalProperties: false
       required: [id, document, number, content, author, created]
       properties:
         id: { type: string, format: uuid }
         document: { type: string, format: uuid }
         number: { type: integer }
         content: { type: string }
+        author: { type: string, format: uuid }
+        created: { type: string, format: date-time }
+
+    DocumentMeta:
+      description: >-
+        The FIXED-SIZE facts about a document: identity, ownership, and its
+        current version's metadata. Every field is a uuid, an integer, or a
+        timestamp — the title is omitted deliberately, being as unbounded as
+        the content, and a polling client must not pay for either.
+      type: object
+      additionalProperties: false
+      required: [id, project, version]
+      properties:
+        id: { type: string, format: uuid }
+        project: { type: string, format: uuid }
+        issue: { type: string, format: uuid, nullable: true }
+        current_version: { type: string, format: uuid, nullable: true }
+        version:
+          $ref: '#/components/schemas/DocVersionMeta'
+
+    DocVersionMeta:
+      description: A DocVersion without its content — the bounded projection.
+      type: object
+      additionalProperties: false
+      required: [id, document, number, author, created]
+      properties:
+        id: { type: string, format: uuid }
+        document: { type: string, format: uuid }
+        number: { type: integer }
         author: { type: string, format: uuid }
         created: { type: string, format: date-time }
 
@@ -2100,6 +2298,7 @@ components:
 
     Thread:
       type: object
+      additionalProperties: false
       description: >-
         An imported agent transcript, tied to a project or an issue. At
         least one of project or issue is always set — the invariant is
@@ -2160,6 +2359,7 @@ components:
 
     Identity:
       type: object
+      additionalProperties: false
       required: [id, handle, kind]
       properties:
         id: { type: string, format: uuid }
@@ -2248,8 +2448,8 @@ components:
       properties:
         relation: { type: string, format: uuid }
         kind: { $ref: '#/components/schemas/RelationKind' }
-        from: { type: string, format: uuid, description: The former source — for parent_of, the former parent. }
-        to: { type: string, format: uuid, description: The former destination — for parent_of, the detached child. }
+        from: { type: string, format: uuid, description: "The former source — for parent_of, the former parent." }
+        to: { type: string, format: uuid, description: "The former destination — for parent_of, the detached child." }
 
     EventPage:
       type: object
@@ -2373,10 +2573,28 @@ components:
         issue: { type: string, format: uuid }
         expected_base_commit:
           type: string
-          description: Code deliverables only — the merge base the caller expects. Validated atomically against the resolved base_commit BEFORE the review is created; a mismatch rejects 409 and no review, submission, or event exists.
+          description: >-
+            Code deliverables only — the merge base the caller expects.
+            Validated against the base_commit resolved at submission time;
+            a mismatch rejects 409 and no review, submission, or event
+            exists. The fence catches STALE CALLER KNOWLEDGE — the
+            repository is an external store no tracker transaction can
+            lock, so validation is against the ref as observed at
+            submission (bounded staleness), and the pinned base_commit
+            remains authoritative for what approval covers regardless of
+            concurrent branch movement.
         expected_default_head:
           type: string
-          description: Code deliverables only — the default-branch head the caller expects. Validated atomically against the CURRENT default-branch ref while the review is created; a mismatch rejects 409 with nothing created. The head, not the merge base, is the real movement fence — a fast-forwarded default branch keeps the old merge base.
+          description: >-
+            Code deliverables only — the default-branch head the caller
+            expects. Validated against the ref as observed at submission
+            time; a mismatch rejects 409 with nothing created. The head,
+            not the merge base, is the real movement fence — a
+            fast-forwarded default branch keeps the old merge base. As
+            with expected_base_commit, the repository is external: the
+            fence rejects stale caller observations; it does not — and
+            cannot — serialize against pushes concurrent with the
+            submission transaction.
         branch: { type: string }
         commit:
           type: string
@@ -2430,6 +2648,16 @@ components:
           description: >-
             The submitting instance's session id, preserved per revision;
             Review.session mirrors the latest submission's value.
+        content:
+          type: string
+          description: >-
+            The deliverable exactly as validated and rendered at
+            submission time — the DURABLE copy served by the deliverable
+            endpoint and the only one once the referenced git objects go
+            unreachable. Omitted from ordinary review metadata responses;
+            present in export payloads so review content round-trips
+            through export/import losslessly, and accepted verbatim on
+            import.
         created: { type: string, format: date-time }
       oneOf:
         - required: [branch, commit, base_commit]
@@ -2441,6 +2669,40 @@ components:
               - required: [branch]
               - required: [commit]
               - required: [base_commit]
+
+    ReviewSubmissionExport:
+      description: >-
+        A ReviewSubmission as carried by export payloads: code
+        submissions MUST include content — the durable deliverable copy
+        is the only one once git objects go unreachable, so a
+        contract-valid export can never omit it. Doc submissions carry
+        their doc_version reference as usual.
+      allOf:
+        - $ref: '#/components/schemas/ReviewSubmission'
+        - anyOf:
+            - required: [content]
+            - required: [doc_version]
+
+    ReviewExport:
+      description: >-
+        A Review as carried by ProjectExport: identical to Review with
+        submissions strengthened to ReviewSubmissionExport and required
+        to be NON-EMPTY, so exported review content always round-trips
+        losslessly. importProject additionally validates — rejecting the
+        payload as malformed on violation — that submission revisions
+        are complete and contiguous from 1 through the review's current
+        revision, and that the latest submission's deliverable matches
+        the review's top-level deliverable fields, so no contract-valid
+        export can smuggle a content-free or history-torn code review.
+      allOf:
+        - $ref: '#/components/schemas/Review'
+        - type: object
+          required: [submissions]
+          properties:
+            submissions:
+              type: array
+              minItems: 1
+              items: { $ref: '#/components/schemas/ReviewSubmissionExport' }
 
     ResubmitReview:
       type: object
@@ -2456,10 +2718,10 @@ components:
           description: The changes-requested verdict event this rework answers; rejected with a conflict if it is no longer the review's latest — stale rework can never replace a deliverable without addressing the latest feedback.
         expected_base_commit:
           type: string
-          description: Code deliverables only — validated atomically against the newly resolved base_commit before the resubmission lands; mismatch rejects 409 with no mutation.
+          description: Code deliverables only — validated against the base_commit resolved at resubmission time; mismatch rejects 409 with no mutation. Observed-at-submission semantics — see NewReview.expected_base_commit.
         expected_default_head:
           type: string
-          description: Code deliverables only — validated atomically against the current default-branch ref before the resubmission lands; mismatch rejects 409 with no mutation.
+          description: Code deliverables only — validated against the default-branch ref as observed at resubmission time; mismatch rejects 409 with no mutation. Observed-at-submission semantics — see NewReview.expected_default_head.
         expected_revision:
           type: integer
           description: The current revision the caller believes it is replacing; the resubmission is rejected with a conflict if the review's revision differs — a delayed request can never apply stale content to a newer revision.
@@ -2551,6 +2813,7 @@ components:
 
     ProjectExport:
       type: object
+      additionalProperties: false
       required:
         [project, identities, issues, comments, labels, issue_relations, documents, threads, reviews, events]
       properties:
@@ -2582,7 +2845,7 @@ components:
           items: { $ref: '#/components/schemas/Thread' }
         reviews:
           type: array
-          items: { $ref: '#/components/schemas/Review' }
+          items: { $ref: '#/components/schemas/ReviewExport' }
         events:
           type: array
           items: { $ref: '#/components/schemas/Event' }
@@ -2596,6 +2859,10 @@ components:
           description: Server-issued feed position captured atomically with the grouped results — present even when every group is empty, so consumers can reconcile the feed against exactly what this search reflected (AC-feed-watermark).
         issues:
           type: array
+          description: >-
+            Ordered so the order does not leak how a result was found: each
+            project's issues arrive together, ascending by issue number,
+            however many internal passes contributed them (AC-search-scope).
           items: { $ref: '#/components/schemas/Issue' }
         documents:
           type: array

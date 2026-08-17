@@ -12,6 +12,23 @@
 # "**.issues.**") — add descendant patterns only if subpackages appear.
 version: 1
 dependenciesRules:
+  # Acceptance harness — test-only package that boots the API over
+  # httptest and drives it through HTTP; api.New is its only internal
+  # import. Not an avspec module (same spec gap as the composition root).
+  - package: "**.acceptance"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.api"
+  # Composition root — not a declared avspec module; it wires the declared
+  # surface modules together and may import only them (spec gap logged in
+  # feature-work/sutra-build/spec-gaps.md: avspec has no composition-root
+  # concept, yet arch-go requires 100% package coverage).
+  - package: "**.sutra"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.issues"
     shouldOnlyDependsOn:
       internal:
@@ -68,6 +85,22 @@ dependenciesRules:
         - "**.api"
         - "**.cli"
         - "**.web"
+  # Comments — polymorphic storage (ENT-comment); anchor-target
+  # validation lives in the API layer, so the package imports no
+  # sibling modules.
+  - package: "**.comments"
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.events"
+        - "**.review"
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.review"
     shouldOnlyDependsOn:
       internal:
@@ -76,6 +109,7 @@ dependenciesRules:
   - package: "**.api"
     shouldOnlyDependsOn:
       internal:
+        - "**.comments"
         - "**.issues"
         - "**.projects"
         - "**.docs"

@@ -8,7 +8,7 @@ project:
     with, not requirements to test.
   status: ready
   stack:
-    languages: [{ name: go, version: "1.23" }]
+    languages: [{ name: go, version: "1.25" }]  # bumped from 1.23 during sutra-build: 1.23 is out of security support and current deps floor at 1.25 (spec-gaps.md 2026-08-06)
     package_manager: go
     frameworks: [net/http, htmx]
     bdd: godog
@@ -16,11 +16,11 @@ project:
     commands:
       install: go mod download  # gate tools need no install — coverage and mutation invoke exact pinned versions via `go run pkg@version`, immune to PATH and preinstalled binaries
       test: go test ./...
-      lint: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run  # pinned via go run like the other gates — no unmanaged PATH binary, clean environments included
+      lint: out=$(mktemp); out2=$(mktemp); trap 'rm -f "$out" "$out2"' EXIT; go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run && go run golang.org/x/tools/cmd/deadcode@v0.48.0 -test ./... > "$out" && cat "$out" && test ! -s "$out" && go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./... > "$out" && cat "$out" && allow='^internal/cli/cli\.go:[0-9]+:[0-9]+:[[:space:]]unreachable func:[[:space:]]OperationMapping$' && test "$(grep -cE "$allow" "$out")" = 1 && { grep -vE "$allow" "$out" > "$out2" || true; } && test ! -s "$out2"  # pinned via go run like the other gates — no unmanaged PATH binary, clean environments included. deadcode rides along because Commands forbids extra keys (spec-gaps.md): staticcheck's `unused` EXEMPTS exported identifiers, and that exemption is transitive, so ten dead functions survived 102 review rounds. deadcode does reachability from real entry points and exits 0 while printing findings, hence the empty-output test. BOTH PASSES ARE REQUIRED (review 1996): -test makes every test binary a reachability root, so production code only tests reach reports clean — that pass catches dead test helpers, and the second, WITHOUT -test, catches production code unreachable from main. Run both 2026-08-13 it named three: projects.List (a slurping sibling of the streaming OpenList the API actually lists through — deleted, its archive-visibility test moved onto the production path) and apiError.Error (a method nothing ever called through the error interface — deleted). ALLOWLIST, one entry: cli.OperationMapping is production API consumed only by acceptance/cli_steps_test.go, a DIFFERENT package, so the export_test.go idiom cannot hide it and deleting it would delete the contract-parity scenario's only handle on the operation table (review 1924). An allowlist entry is a standing claim that a name is reached from tests alone and must stay; anything else is deleted, not listed. It matches the FULL diagnostic — file, position, and symbol — and the gate requires EXACTLY ONE hit (reviews 2003/2004): a bare substring would also swallow an unrelated OperationMappingLegacy, and demanding the hit means an entry that stops applying — the symbol deleted, or made reachable from main — fails the gate instead of quietly covering for the next dead function. The regex writes its spaces as [[:space:]] because a literal colon-space is illegal inside a YAML plain scalar
       typecheck: go vet ./...
       arch: go run github.com/arch-go/arch-go@v1.7.0  # declared may_import boundaries mirrored in arch-go.yml and checked against real imports; exits nonzero on any violation (spiked 2026-08-06: v1.6.4 does not exist; empty-allowlist modules need explicit-complement shouldNotDependsOn rules — an empty shouldOnlyDependsOn passes silently)
-      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go run github.com/rillig/gobco@v1.3.4 ./... > "$out" && awk '{print} /^Condition coverage:/ {seen=1; split($3,a,"/"); if (a[1] != a[2]) bad=1} END {exit (bad || !seen)}' "$out"  # mktemp + trap cleanup, POSIX sh, spike-validated: covered=0; uncovered, tool-failure, missing-summary all nonzero (kriya R3, retired 2026-08-04)
-      mutation: go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --threshold-efficacy 100 --threshold-mcover 100  # documented to exit nonzero below thresholds; 100 is the declared bar — the gate proves the tests test
+      coverage: out=$(mktemp); trap 'rm -f "$out"' EXIT; go test -coverpkg=./... -coverprofile="$out" ./... && go tool cover -func="$out" | awk '/^total:/ {seen=1; pct=$NF; sub(/%/,"",pct); print; if (pct+0 < 65) bad=1} END {exit (bad || !seen)}'  # CORRECTED 2026-08-13. The claim this comment used to carry — that gobco cannot gate a multi-package module — was FALSE, and it was three invocation bugs, not a tool limit. (a) gobco takes DIRECTORIES: it os.Open()s its argument, so `sutra/internal/api` is a missing path, which is what every "panic" actually was, and `./...` instruments nothing because the module root holds no .go files. (b) The export_test.go panic is ours: gobco type-checks `api` and `api_test` separately through the SOURCE importer, which loads non-test files only, so a hook reachable only from an in-package test file is undefined. (c) Cross-package attribution DOES work — gobco stages the whole module, so the acceptance suite can drive an instrumented package. ../scripts/branch-coverage.sh implements all three (renames export_test.go in a THROWAWAY copy — the workaround belongs in the measuring tool, since moving those setters into production code makes deadcode correctly call them unreachable — and persists foreign drivers' counters through gobco's own GobcoFinish). Measured whole-module 2026-08-13: 2664/4066 arms = 65.5%. So REQ-gate-branch-coverage's per-arm bar is now MEASURABLE but not MET, and what blocks it is not tooling: the uncovered arms are overwhelmingly `err != nil` never-true on database calls, unreachable without fault injection. That is the open decision — drive to 100% arms, or keep a floor — and until it is made the GATE stays -coverpkg at a percentage, because a gate that cannot pass is not a gate. Go's own cover counts STATEMENTS (`if a && b` scores covered whichever way it went), so this number is a REGRESSION FLOOR, not a quality proof — the mutation gate is what proves the tests test. Run ../scripts/branch-coverage.sh for the arm-level truth. Guard shape revalidated: below-floor and missing-summary both exit nonzero
+      mutation: out=$(mktemp); trap 'rm -f "$out"' EXIT; for p in comments docs events identity issues projects review threads; do echo "== $p"; if ! go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --coverpkg ./... -i --timeout-coefficient 300 "./internal/$p/" > "$out" 2>&1; then cat "$out"; echo "gremlins itself failed for $p"; exit 1; fi; cat "$out"; awk '/^Killed:/ {k=1; n=$4; sub(/,/,"",n); if (n+0 > 0) bad=1} /^Timed out:/ {t=1; n=$3; sub(/,/,"",n); if (n+0 > 0) bad=1} END {exit (bad || !k || !t)}' "$out" || { echo "mutation gate failed for $p"; exit 1; }; done  # A TIMEOUT FAILS THE GATE. Efficacy is killed/(killed+lived), so a timed-out mutant is excluded from the denominator and cannot lower the score — a run scores better the more it fails to decide, and the mutants likeliest to time out are the ones that make the suite work hardest. Measured 2026-08-09 on internal/review, same code, two runs: a busy machine gave 73 killed / 1 lived / 29 TIMED OUT and 98.65% efficacy; a quiet one gave 97 / 6 / 0 and 94.17%. Five of those 29 timeouts were real survivors, including two cursor truncations and a boundary. The gate is therefore load-sensitive by design: a timeout means the run measured less than it claims, and re-running it is the only honest response. The gate PARSES the summary because gremlins v0.5.0 accepts --threshold-efficacy/--threshold-mcover and ignores them: measured 2026-08-09, internal/docs reported 97.11% efficacy and 96.65% mutator coverage under `--threshold-efficacy 100 --threshold-mcover 100` and still exited 0, as did a dry run at 66.67% coverage. The flags are removed rather than left decorative — a flag that does nothing is a claim the gate cannot honour. Efficacy is the enforced number; mutator coverage is REPORTED ONLY, because gremlins mislabels `case` conditions in tagless `switch` blocks as NOT COVERED — all 15 such verdicts in the 2026-08-09 run were hand-reproduced and every probe was KILLED by the suite (issues.go:701 and identity.go:165 verified individually), so a 100% mcover threshold is unreachable while those switches exist and would recreate the gate-that-cannot-pass failure. SURVIVORS ARE COUNTED, NOT INFERRED (review 2005): the gate reads the exact `Lived` count and requires zero, because a large enough run can round `Test efficacy` to 100.00% while a mutant is still alive, and "any surviving mutant fails" is the rule. `!k || !t` fails the gate when gremlins prints no summary at all. AND ITS EXIT STATUS IS NOW CHECKED (review 2006): the earlier `| tee` discarded it, so a gremlins that printed a parseable summary and THEN failed passed the gate. SCOPED to the domain core 2026-08-09 (spec-gaps.md). Whole-module measured 88.74% efficacy over ~1678 mutants in 15h48m — the wire layers (api, cli, web) carry 147 of the 189 survivors and most of the runtime, and their real test is the acceptance suite end-to-end, not a mutant-by-mutant proof. The domain core is 522 mutants where the rule being mutated IS the behavior under spec. `-i --coverpkg ./...` is mandatory: without them each package is measured against only its own unit tests and scores ~59% mutator coverage, because the acceptance suite is what actually exercises these packages. --timeout-coefficient 300 because the timeout is derived from the COVERAGE-GATHERING run, which for a scoped path is ~0.56s, while -i then executes the whole ~55s suite per mutant: any small coefficient times out 100% of mutants in a third of a second each (measured: coefficient 4 gave a 2.2s budget and 211/211 timeouts across six packages; 300 gives 2m49s and real verdicts). Timeouts also LEAK a spinning orphan test binary that starves the next run — 6 leaked over the whole-module run, one burning a core for 12h. One path per invocation: `unleash` accepts at most 1 arg
 
 constitution:
   - id: CON-test-first
@@ -50,6 +50,9 @@ requirements:
       - id: AC-issue-labels
         statement: Labels attach and detach; an issue lists its current labels.
         test: verification/REQ-core-issues.feature#labels attach and detach
+      - id: AC-label-catalog
+        statement: Labels are a catalog with unique names, and the catalog is listable in name order — a client offers the labels that already exist rather than minting near-duplicates of them.
+        test: verification/REQ-core-issues.feature#the label catalog is listable
       - id: AC-issue-assign
         statement: An issue can be assigned to any identity, human or agent, and unassigned; assignment feeds the agent work stack.
         test: verification/REQ-core-issues.feature#assignment to any identity
@@ -63,6 +66,35 @@ requirements:
       - id: AC-parity-remote
         statement: With --server pointing at any sutra instance, every CLI command behaves identically to loopback — the CLI has no private path to daemon internals.
         test: verification/REQ-cli-parity.feature#remote server behaves like loopback
+      - id: AC-cli-issue-reference
+        statement: >-
+          An issue is named on the command line by its display alias,
+          KEY-N, and the alias splits at the LAST hyphen — a project key
+          may contain hyphens of its own, so MY-PROJ-42 is issue 42 of
+          project MY-PROJ and not issue 42 of project MY.
+        test: verification/REQ-cli-parity.feature#an issue reference splits at the last hyphen
+      - id: AC-cli-reference-shape
+        statement: >-
+          A reference that cannot name an issue is refused on its shape
+          alone, before any project is looked up, and the refusal names the
+          reference and the form it must take: a key must precede the
+          hyphen, something must follow it, and what follows must be a
+          positive whole number. Otherwise a malformed reference reaches
+          the lookup and comes back as a complaint about a project the
+          caller never typed.
+        test: verification/REQ-cli-parity.feature#a reference that cannot name an issue is refused on its shape
+      - id: AC-cli-generic-invoker
+        statement: >-
+          `sutra api <operationId>` is what makes the coverage above real
+          for every operation with no bespoke wrapper, so it carries the
+          WHOLE request: path parameters substituted, query parameters
+          appended, and --body sent verbatim as the request body. A
+          response the server refused is a failure and not a result — the
+          command exits nonzero and reports the status, rather than
+          printing the error document as though it were the answer. What
+          it does print is a complete line, terminated by a newline, so
+          the output composes in a pipeline.
+        test: verification/REQ-cli-parity.feature#the generic invoker carries the whole request
   - id: REQ-doc-database
     title: Doc database — planning docs filed under project and issue, with versioning
     rationale: Planning artifacts live with the work they describe, not in a separate wiki.
@@ -172,12 +204,21 @@ requirements:
       - id: AC-block-no-cycles
         statement: A blocking relationship that would create a cycle, directly or transitively, is rejected.
         test: verification/REQ-issue-blocking.feature#cycles are rejected
+      - id: AC-block-cross-project
+        statement: A blocks relation may span two projects — it never cascades, so no walk leaves one project for the other; parent_of may not, because its reopen cascade and subtree-revision walk would reach across the boundary. Every write to a spanning relation is guarded at BOTH ends, adding and removing alike, so archiving either project freezes the relation even when the request is routed under an issue in the project still live. The single-endpoint check and the both-endpoint check agree on every same-project input, so only a spanning relation distinguishes them.
+        test: verification/REQ-issue-blocking.feature#a cross-project block is guarded at both ends
+      - id: AC-block-remove-endpoint
+        statement: Relation removal is routed under an issue, and the path issue must be one of the relation's two ends. Either end may remove it — the blocking issue or the blocked one — and an issue that is neither is refused as not found, naming both the relation and the issue it does not involve, with the relation left intact. Without that, any issue id in the path would remove any relation in the system.
+        test: verification/REQ-issue-blocking.feature#a relation is removed from either end, and from nowhere else
   - id: REQ-doc-issue-links
     title: Documents can be tied to issues
     acceptance:
       - id: AC-doc-link
         statement: An existing document can be tied to an issue and untied after creation.
         test: verification/REQ-doc-issue-links.feature#link and unlink after creation
+      - id: AC-doc-relink
+        statement: Tying a document that is already tied elsewhere is a move, not an overwrite — the issue losing it records the departure alongside the arrival, so a document never silently vanishes from an issue's history.
+        test: verification/REQ-doc-issue-links.feature#relinking to another issue records the departure
       - id: AC-doc-list-by-issue
         statement: An issue lists its currently tied documents; a document shows its issue.
         test: verification/REQ-doc-issue-links.feature#both sides see the link
@@ -209,9 +250,25 @@ requirements:
       - id: AC-review-create
         statement: An agent creates a Review naming an issue and exactly one deliverable — a code deliverable pinned at an immutable commit (branch is display metadata) or a doc version — optionally stamped with its session id; it exists in state open and is visible to reviewers.
         test: verification/REQ-code-review.feature#agent submits a review
+      - id: AC-review-commit-pin
+        statement: A code deliverable's commit is accepted only as a full object id — the whole hash, at either width git's two object formats produce — because only a full id is an immutable pin; an abbreviation names whatever it currently disambiguates to and can come to name a second object, or none, as the repository grows. An id of any other form is refused as a bad request naming the form, which is a different refusal from a well-formed id that the project's repository does not hold — that one is a conflict.
+        test: verification/REQ-code-review.feature#a deliverable is pinned only by a full object id
+      - id: AC-review-commit-width-accepted
+        statement: >-
+          The other half of "either width": a sha-256 object id the project's
+          own repository holds is ACCEPTED, and the review is created pinned
+          at the whole 64-digit id. Every wide id the refusal criterion
+          samples names no object anywhere, so those cases prove only that
+          the validator recognises the width — a submission path that
+          resolved or rendered nothing wider than sha-1 would satisfy them
+          all and still refuse every real sha-256 repository.
+        test: verification/REQ-code-review.feature#a sha-256 repository's own commit is accepted
       - id: AC-review-web
         statement: Opening a Review in the web UI shows the deliverable's content for reading.
         test: verification/REQ-code-review.feature#reviewer sees the deliverable
+      - id: AC-review-doc-deliverable-resolves
+        statement: A doc deliverable is stored as a reference to an immutable document version and never as a copy of its text; reading the deliverable resolves that version at read time and serves its own content, identified as a doc. A code deliverable's render is stored at submission, so the two kinds reach the reader by different routes and only the doc route has nothing stored to fall back on.
+        test: verification/REQ-code-review.feature#a doc deliverable resolves from its version, not a stored copy
       - id: AC-review-pinned-base
         statement: For a code deliverable, the stored base_commit and the rendered diff are fixed at submission time; the project's default branch moving afterward changes neither.
         test: verification/REQ-code-review.feature#pinned base survives default branch movement
@@ -234,10 +291,10 @@ requirements:
         statement: A review comment carrying a superseded revision is rejected and no comment is created.
         test: verification/REQ-code-review.feature#stale comments are rejected
       - id: AC-review-resolution-guard
-        statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission; a supplied expected base commit that differs from the resolved base, or a supplied expected default head that differs from the current default-branch ref, is rejected the same way, atomically, before any review, submission, or event exists.
+        statement: A code deliverable whose repository, commit, or merge base cannot be resolved is rejected at submission time and creates no submission; a supplied expected base commit that differs from the base resolved at submission, or a supplied expected default head that differs from the ref as observed at submission, is rejected the same way before any review, submission, or event exists — the fences reject stale caller observations of an external store no tracker transaction can lock.
         test: verification/REQ-code-review.feature#unresolvable repository rejects submission
       - id: AC-review-submission-fence
-        statement: A code submission or resubmission carrying expected_base_commit or expected_default_head is validated atomically against the resolved merge base and the current default-branch ref; a mismatch on either rejects with a conflict and creates no review, submission, or event.
+        statement: A code submission or resubmission carrying expected_base_commit or expected_default_head is validated against the merge base and default-branch ref as observed at submission time; a mismatch on either rejects with a conflict and creates no review, submission, or event. The repository is external — the fence catches stale caller knowledge and the pinned base_commit stays authoritative for what approval covers; nothing serializes against pushes concurrent with the submission.
         test: verification/REQ-code-review.feature#both fences guard creation and resubmission
       - id: AC-review-reverdict
         statement: A verdict carrying the current revision always applies, including reversing an earlier verdict, UNTIL the approval is consumed; the latest verdict for the current revision is authoritative and every verdict is recorded, and a verdict on a consumed review is rejected with no mutation.
@@ -269,6 +326,9 @@ requirements:
       - id: AC-comment-no-cap
         statement: No limit on comment count or body length beyond the store's physical limits; large volumes on one issue succeed.
         test: verification/REQ-comments.feature#no artificial caps
+      - id: AC-comment-in-browser
+        statement: A reader viewing an issue in the web UI comments from that page, and the comment lands on that issue and appears in its discussion — the browser is a way to comment, not only a way to read comments made elsewhere.
+        test: verification/REQ-comments.feature#a reader comments from the issue page
   - id: REQ-cli-output-formats
     title: Issues can be output as JSON or YAML from the CLI
     rationale: Agent-consumable output is a first-class contract, not a scrape.
@@ -282,6 +342,17 @@ requirements:
       - id: AC-cli-stable-shape
         statement: JSON/YAML field names match the API contract's schema, so one parser handles HTTP and stdout alike.
         test: verification/REQ-cli-output-formats.feature#output shape matches the api contract
+      - id: AC-cli-flag-grammar
+        statement: >-
+          A flag reaches the command the same way wherever it sits on the
+          line. --json and --yaml select a format and never consume the
+          argument after them, so a format flag written ahead of its
+          positional leaves that positional alone. Every other flag takes
+          the next argument as its value, and takes one only when there is
+          one to take: a flag written last, with nothing following it, is
+          set to "true" and the parser stops at the end of the line rather
+          than reaching past it.
+        test: verification/REQ-cli-output-formats.feature#flags read the same wherever they sit on the line
   - id: REQ-status-workflow
     title: "Issue statuses: open, in-progress, blocked, deferred, complete"
     acceptance:
@@ -330,14 +401,38 @@ requirements:
       - id: AC-search-cross
         statement: Search spans docs and threads as well — one query surface over issues, docs, and transcripts.
         test: verification/REQ-search.feature#one surface over all content
+      - id: AC-search-scope
+        statement: >-
+          Search filters intersect, so each one omitted widens the scope
+          instead of narrowing it — a term alone searches every project, a
+          project alone returns that project's whole contents, and a query
+          naming no filter at all returns everything in the database.
+          Reviews are the one asymmetry: a review carries no text of its
+          own, so it enumerates under a scope but never under a term.
+          Results carry a stable order that does not leak how they were
+          found: each project's issues arrive together, ascending by issue
+          number, however many internal passes contributed them.
+        test: verification/REQ-search.feature#each filter omitted widens the scope
       - id: AC-search-session
-        statement: Searching by session id returns the work that instance produced — reviews stamped with it, threads imported from it, and their linked issues, including reviews where any historical submission carries the session.
+        statement: >-
+          Searching by session id returns the work that instance produced —
+          reviews stamped with it, threads imported from it, and their linked
+          issues, including reviews where any historical submission carries
+          the session. A session names work, not a place: adding a project
+          narrows that work to the named project rather than letting the
+          session's own reach decide what is in scope.
         test: verification/REQ-search.feature#session id joins an instance's work
   - id: REQ-projects
     title: Projects as first-class containers for issues and docs
     acceptance:
       - id: AC-project-init
-        statement: Running `sutra init` in a repository creates the project via the public API, records the repo path, and writes a local marker linking the directory to the project.
+        statement: >-
+          Running `sutra init` in a repository creates the project via the
+          public API, records the repo path, and writes a local marker
+          linking the directory to the project. It then reports the key
+          and the project it created — the report comes after the marker
+          is on disk, so a directory the marker could not be written into
+          is never announced as initialized.
         test: verification/REQ-projects.feature#init anchors a project to a repo
       - id: AC-project-context
         statement: CLI commands inside an initialized repo default to that repo's project; outside one, project-scoped commands require an explicit project flag.
@@ -361,6 +456,26 @@ requirements:
       - id: AC-identity-referenced
         statement: At the API, actor and assignee fields are identity ids, not handles — handle-to-id resolution is the CLI's job; unknown ids are rejected, never silently created.
         test: verification/REQ-identities.feature#unknown identity ids are rejected
+      - id: AC-identity-canonical-casing
+        statement: An identifier supplied to any API door is accepted only in the canonical lowercase form the contract declares. An existing id sent in another casing is refused for its form — a bad request naming what an identifier must look like — rather than passed down to the store, where it misses and comes back reported as an id that names no identity. Identifiers are compared as case-sensitive text at every layer, so a second accepted casing would let one entity be named by two values.
+        test: verification/REQ-identities.feature#an identifier in non-canonical casing is refused for its form
+      - id: AC-identity-canonical-casing-roads
+        statement: >-
+          "Any door" is three roads and they are different code: a body
+          field, a path segment, and a query filter. Each refuses a
+          non-canonical identifier for its FORM, so the rule cannot hold on
+          one road and lapse on another — and the query road matters most,
+          because its lapse produces an empty listing that reads as a
+          legitimate answer rather than an error anyone would chase.
+        test: verification/REQ-identities.feature#every road into the server refuses a non-canonical identifier
+      - id: AC-identity-empty-identifier-supplied
+        statement: >-
+          A filter that is present but empty SUPPLIED an identifier, and it
+          is not one, so it is refused like any other malformed id. Reading
+          it as absence is the costliest reading available: the scope
+          widens from one entity's rows to the whole server, and the result
+          is a plausible listing rather than an error anyone would chase.
+        test: verification/REQ-identities.feature#a supplied but empty identifier filter is refused
   - id: REQ-notifications
     title: Event feed with cursor-based polling
     rationale: Poll-only by design — every subscriber today lives on the same machine; webhooks return only when a remote subscriber exists (delivery-only change, the Event stream already carries everything).
@@ -393,10 +508,16 @@ requirements:
     title: Import and export of tracker data
     acceptance:
       - id: AC-export-full
-        statement: A project export captures identities, issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project.
+        statement: A project export captures identities, issues, comments, labels, relations, docs with all versions, threads, reviews, and events — enough to reconstruct the project. Where a record type has kinds or states, the export carries more than one of each — both relation kinds, both verdicts, a thread anchored to a project and one anchored to an issue, a review whose approval was consumed and one carrying changes requested. A check that only asks whether a collection is present is satisfied by an empty one.
         test: verification/REQ-import-export.feature#export captures the whole project
+      - id: AC-import-unique-violation
+        statement: An import whose project key, identity handle, or label name is already held by a record the receiving server minted itself — sharing no UUID with the payload, so the uuid-collision check passes — is rejected with code unique-violation naming every existing holder, and nothing is written. All three record types are checked; the walk does not stop at the first one that comes back clean.
+        test: verification/REQ-import-export.feature#an import colliding on keys but not on ids names every holder
       - id: AC-import-round-trip
         statement: Importing an export into an empty server reconstructs the project with UUIDs preserved; re-export matching excludes the import audit event itself.
+        test: verification/REQ-import-export.feature#import round-trips losslessly
+      - id: AC-import-foreign-block-removal
+        statement: An export carrying the removal of a cross-project block imports intact — only blocks may cross a project boundary and the live edge has no representable foreign endpoint, but its removal event is exported because export scopes events by subject, so import must accept a relation-removed snapshot whose destination the payload does not carry, for a blocks removal and only for one.
         test: verification/REQ-import-export.feature#import round-trips losslessly
       - id: AC-import-collision
         statement: Importing an export whose UUIDs already exist is rejected as a whole, naming the conflict; no partial imports.
@@ -404,12 +525,58 @@ requirements:
       - id: AC-import-actor
         statement: The import actor must be an identity contained in the export; an unknown actor rejects the import whole.
         test: verification/REQ-import-export.feature#unknown import actor is rejected
+      - id: AC-no-ambiguous-bodies
+        statement: A mutating request whose body repeats a property name at any depth is rejected as a bad request naming the property, and nothing is written — transcripts and payloads are stored verbatim, so an ambiguity accepted at the door would outlive the request and re-export differently than it arrived.
+        test: verification/REQ-import-export.feature#an ambiguous body never enters the system
+      - id: AC-import-document-element
+        statement: An import payload carrying an incomplete documents element is rejected as malformed and nothing is written, whether it omits its versions array or carries neither half. A document's content lives entirely in its versions and creating one mints v1 in the same breath, so no other door produces a document that renders nothing; and an element carrying nothing at all is invisible to every later check, which reads it as one document fewer rather than as a fault.
+        test: verification/REQ-import-export.feature#an incomplete documents element is rejected at import
+      - id: AC-import-thread-transcript
+        statement: An import payload carrying a thread without its transcript is rejected as malformed and nothing is written — a thread IS its transcript, and a catalogue entry with nothing behind it could never be exported back.
+        test: verification/REQ-import-export.feature#a thread without its transcript is rejected at import
+      - id: AC-import-malformed-anywhere
+        statement: An import payload carrying a malformed identifier or timestamp is rejected as malformed and nothing is written, wherever the fault sits — in the payload's first record or its last, in a field the payload was free to omit, at the top level or inside an event's snapshot; validation does not stop at the first record it finds well-formed.
+        test: verification/REQ-import-export.feature#a malformed value is rejected wherever it sits in the payload
+      - id: AC-import-relation-cycle
+        statement: An import payload whose relations form a cycle is rejected as malformed and nothing is written — the API builds the graph one edge at a time and refuses the closing one, so import is the only door a cycle can enter by, and a cycle in the parent_of tree makes every ancestor walk below it non-terminating.
+        test: verification/REQ-import-export.feature#a relation cycle is rejected at import
+      - id: AC-import-archived-round-trip
+        statement: An export taken of an archived project imports still archived — the archive stamp is what makes a project read-only, so a round trip that drops it hands back a project the API will accept writes on.
+        test: verification/REQ-import-export.feature#an archived project imports still archived
+      - id: AC-import-comment-revision
+        statement: An import payload whose comment names a review revision that review never had is rejected as malformed and nothing is written — the API pins a review comment to the revision it was written against, and an import must not seat one on work that never existed.
+        test: verification/REQ-import-export.feature#a comment naming a nonexistent review revision is rejected at import
+      - id: AC-import-queue-order
+        statement: An imported assignee keeps its place in the work stack — issues pop in the order they were assigned on the source, not in issue-number order.
+        test: verification/REQ-import-export.feature#an imported work stack pops in its original order
+      - id: AC-import-number-sequence
+        statement: After an import, the project's display-number sequence continues past the highest imported number — an issue created next gets a number no imported issue already holds.
+        test: verification/REQ-import-export.feature#issue numbering continues past an import
   - id: REQ-thread-links
     title: Threads can be tied to either projects or issues
     acceptance:
       - id: AC-thread-anchor
         statement: Every thread is anchored from import onward — to a project or an issue, at least one, retargetable later; both sides list it.
         test: verification/REQ-thread-links.feature#threads anchor to their work
+      - id: AC-thread-anchor-guarded
+        statement: >-
+          An anchor naming both a project and an issue is refused unless the
+          issue belongs to that project, so the two halves can never disagree
+          about which project governs the thread. Retargeting is guarded at
+          BOTH ends: the project governing the anchor the thread leaves and
+          the project governing the one it arrives at must each be live, so
+          archiving either freezes the move — a thread anchored inside an
+          archived project is that project's read-only content and cannot be
+          moved out of it.
+        test: verification/REQ-thread-links.feature#an anchor is guarded at both ends
+      - id: AC-thread-anchor-destination-live
+        statement: >-
+          The arriving end of that guard, which the leaving end cannot stand
+          in for: a thread whose own project is live cannot be retargeted
+          INTO an archived one. The request is routed under a writable
+          project, so only a check on the destination refuses it, and the
+          thread keeps the anchor it had.
+        test: verification/REQ-thread-links.feature#a thread cannot be retargeted into an archived project
 
 apps:
   - id: APP-sutra

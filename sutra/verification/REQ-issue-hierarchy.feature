@@ -7,6 +7,10 @@ Feature: Issue hierarchy
     And SUT-2 shows SUT-1 as its parent
     And an "issue.relation-added" event with actor "human-brent" and a timestamp is recorded for SUT-1
     And making SUT-1 a child of SUT-2 is rejected as a cycle
+    # The criterion has three clauses and the cycle rule is only one of
+    # them. "At most one parent" is not a cycle — SUT-3 is unrelated to
+    # both — so nothing above it reaches the guard that enforces it.
+    And giving SUT-2 a second parent is rejected, naming SUT-1 as the one it has
 
   Scenario: parent rolls up child progress
     Given SUT-1 has five children of which three are complete

@@ -9,6 +9,49 @@ Feature: Review lifecycle
     Then the review exists in state "open"
     And it is listed for reviewers
 
+  # A review pins its deliverable to an immutable commit, and only a full
+  # object id is one: an abbreviation names whatever it currently
+  # disambiguates to, and a repository that grows can make that prefix name
+  # a second object, or none. Git runs two object formats, so "full" is two
+  # widths, and the pair is the whole rule — sample one and a check for
+  # either width reads exactly like a check for that one. The two refusals
+  # are what carry the distinction outward: a bad request means the id is
+  # not an id, a conflict means it is one and this repository has no such
+  # object.
+  Scenario Outline: a deliverable is pinned only by a full object id
+    Given a git-backed project and issue SUT-1
+    When an agent creates a review pinned at <commit>
+    Then the submission is <outcome>
+
+    Examples:
+      | commit                                  | outcome                            |
+      | an unknown object id of the other width | refused as a conflict              |
+      | a real object id cut to twelve digits   | refused as a bad request, naming the form |
+      | a full-width string that is not hex     | refused as a bad request, naming the form |
+
+  # Every id above that was 64 digits wide was also an id no repository
+  # held, so the outline proves only that the validator RECOGNISES the
+  # second width — a submission path that refused every real sha-256
+  # commit, at resolution or at render, would still pass it. Accepting one
+  # is the other half of "either width", and it takes a repository built
+  # that way.
+  Scenario: a sha-256 repository's own commit is accepted
+    Given a git-backed project whose repository uses sha-256 object ids, and issue SUT-1
+    When an agent creates a review at a commit that repository actually holds
+    Then the review is created, pinned at that 64-digit id
+
+  # A doc review keeps no copy of what it reviews: the immutable version
+  # IS the deliverable, and reading one resolves it from that version.
+  # Code deliverables render at submission and store the render, so every
+  # other scenario that reads a deliverable reads a stored one — and a
+  # handler that could only serve stored content would behave identically
+  # right up until the one kind that has none is asked for, at which
+  # point it reports the submission as predating its own content.
+  Scenario: a doc deliverable resolves from its version, not a stored copy
+    Given issue SUT-1 has a review whose deliverable is a document version
+    When the deliverable of that review is read
+    Then it is served as a doc, carrying the version's own text
+
   Scenario: reviewer sees the deliverable
     Given an open review with deliverable branch "sut-1-fix" pinned at commit "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
     When a human opens it in the web UI
@@ -68,6 +111,14 @@ Feature: Review lifecycle
     And the earlier comment remains associated with revision 1
     And revision 1's submission still exists and resolves to its original deliverable
     And revision 2's submission exists and carries the deliverable pinned at commit "e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1e4f5a6b1"
+    # Every read above names a revision the review HAS, and the response
+    # carries no submission identity — only kind and content, and the
+    # content is fetched by revision number rather than from the submission
+    # the search returned. So a search that hands back the WRONG submission
+    # is invisible on the happy path. The only place the search is
+    # observable is a revision that matches nothing, where finding
+    # something is the entire error.
+    And reading a revision the review never had is refused as not found
 
   Scenario: stale feedback is rejected
     Given a review at revision 1 open in a reviewer's browser

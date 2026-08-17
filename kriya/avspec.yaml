@@ -11,7 +11,7 @@ project:
     approval. Loops until the app is complete. Kriya: Sanskrit, a
     deliberate, practiced sequence of actions.
   stack:
-    languages: [{ name: go, version: "1.23" }]
+    languages: [{ name: go, version: "1.25" }]  # bumped from 1.23 during sutra-build: 1.23 is out of security support and current deps floor at 1.25 (spec-gaps.md 2026-08-06)
     package_manager: go
     frameworks: [bubbletea]  # TUI (REQ-tui); bubbles/lipgloss ride along
     bdd: godog

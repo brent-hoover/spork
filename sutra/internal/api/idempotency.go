@@ -1,0 +1,466 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"time"
+
+	"sutra/internal/identity"
+)
+
+// bodyLimit returns the request-body bound for a route pattern. The
+// 1 MiB default fits every entity mutation; endpoints whose contracts
+// promise large payloads carry their own bounds — a full-project
+// import aggregates every issue, comment, doc version, and stored
+// review deliverable, and comment bodies are unbounded by the spec.
+// testBodyLimit lets tests exercise the oversize-settle path without
+// gigabyte fixtures; set only via export_test.go.
+var testBodyLimit int64
+
+// largeBodyThreshold divides ordinary mutations from large-content
+// ones; largeBodySlot admits ONE large body at a time, so concurrent
+// contract-valid large requests serialize instead of multiplying
+// gigabyte buffers — AC-comment-no-cap keeps its physical-limit
+// semantics while memory stays bounded by one large payload plus
+// small-request noise. Duration is already bounded by ReadTimeout.
+const largeBodyThreshold = 4 << 20
+
+var largeBodySlot = make(chan struct{}, 1)
+
+// admitLargeBody takes the single large-body slot, honouring
+// cancellation both while queued and at the instant of acquisition.
+// When the wait and the release become ready together Go picks a case
+// at random, so winning the slot does not prove the client is still
+// here — the recheck decides that, and hands the slot straight to the
+// next waiter rather than reading a body nobody will receive (1898).
+// A false return means the caller must abandon the request: there is
+// nobody left to send a status to, so releasing the goroutine IS the
+// handling, and nothing settles under the key.
+func admitLargeBody(ctx context.Context) (release func(), admitted bool) {
+	select {
+	case largeBodySlot <- struct{}{}:
+		if ctx.Err() != nil {
+			<-largeBodySlot
+			return nil, false
+		}
+		return func() { <-largeBodySlot }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// capturedBody is a rewindable request body: RAM below
+// largeBodyThreshold, an unlinked spool file above it (or when length
+// is unknown). The unlink means nothing leaks even on a crash; close
+// releases the disk space.
+type capturedBody struct {
+	buf  []byte
+	file *os.File
+}
+
+// spoolError tags server-side spool failures (temp-file creation,
+// disk writes) so the caller returns an UNSETTLED 5xx: binding an
+// idempotency key to an infrastructure failure would poison a request
+// that succeeds after recovery. Client-side failures (oversize,
+// malformed transfer) settle as keyed 400s.
+type spoolError struct{ err error }
+
+func (e *spoolError) Error() string { return fmt.Sprintf("spool request body: %v", e.err) }
+
+// spoolWriter wraps the temp file so a failed disk write is
+// distinguishable from a failed client read inside io.Copy.
+type spoolWriter struct{ f *os.File }
+
+func (w *spoolWriter) Write(p []byte) (int, error) {
+	n, err := w.f.Write(p)
+	if err != nil {
+		return n, &spoolError{err: err}
+	}
+	return n, nil
+}
+
+func captureBody(w http.ResponseWriter, r *http.Request, limit int64) (*capturedBody, error) {
+	bounded := http.MaxBytesReader(w, r.Body, limit)
+	if r.ContentLength >= 0 && r.ContentLength <= largeBodyThreshold {
+		raw, err := io.ReadAll(bounded)
+		if err != nil {
+			return nil, err
+		}
+		return &capturedBody{buf: raw}, nil
+	}
+	f, err := os.CreateTemp("", "sutra-body-*")
+	if err != nil {
+		return nil, &spoolError{err: err}
+	}
+	_ = os.Remove(f.Name())
+	if _, err := io.Copy(&spoolWriter{f: f}, bounded); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &capturedBody{file: f}, nil
+}
+
+// rewind points r.Body at the start of the captured bytes so the next
+// consumer (prepare, then the handler's streaming decode) reads the
+// whole body again.
+func (b *capturedBody) rewind(r *http.Request) *apiError {
+	if b.file != nil {
+		if _, err := b.file.Seek(0, io.SeekStart); err != nil {
+			return &apiError{status: http.StatusInternalServerError, code: "internal", message: fmt.Sprintf("rewind spooled body: %v", err)}
+		}
+		r.Body = seekableBody{b.file}
+		return nil
+	}
+	r.Body = seekableBody{bytes.NewReader(b.buf)}
+	return nil
+}
+
+// seekableBody exposes the captured body's Seeker to consumers that
+// make two passes over it (rejectExplicitNulls) — RAM or spool alike —
+// with a no-op Close: the wrapper owns the underlying lifetime.
+type seekableBody struct{ io.ReadSeeker }
+
+func (seekableBody) Close() error { return nil }
+
+func (b *capturedBody) close() {
+	if b.file != nil {
+		_ = b.file.Close()
+	}
+}
+
+func bodyLimit(operation string) int64 {
+	if testBodyLimit != 0 {
+		return testBodyLimit
+	}
+	switch operation {
+	case "POST /projects/import":
+		// Whole-project payloads aggregate every record including
+		// stored deliverables, and a valid export has no aggregate
+		// bound — many records may each approach SQLite's per-value
+		// limit. The body spools to disk (captureBody), so the bound
+		// is effectively the disk: 1 TiB is a backstop against runaway
+		// streams, not a policy cap a real export could hit.
+		return 1 << 40
+	default:
+		// The contract leaves content-bearing strings (doc versions,
+		// templates, issue bodies, comments — AC-comment-no-cap)
+		// unconstrained, so the only honest bound is SQLite's own
+		// maximum value length (1e9 bytes): a physical constraint,
+		// never a policy cap below the contract. Bodies buffer BEFORE
+		// any transaction opens, so size never holds the database.
+		return 1_000_000_000
+	}
+}
+
+// migrateIdempotency creates the replay table. The stored response is
+// the whole idempotency contract (CON-idempotent-mutations): replaying
+// a key returns the original response verbatim — success or rejection —
+// and has no second effect. Keys are scoped per operation — the
+// contract never requires client keys to be globally unique across
+// endpoints, so the same key on two operations is two records.
+func migrateIdempotency(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS idempotency_keys (
+			operation TEXT NOT NULL,
+			key       TEXT NOT NULL,
+			status    INTEGER NOT NULL,
+			body      TEXT NOT NULL,
+			PRIMARY KEY (operation, key)
+		)`)
+	if err != nil {
+		return fmt.Errorf("migrate idempotency_keys: %w", err)
+	}
+	return nil
+}
+
+// idempotent runs a mutating handler under the request's Idempotency-Key,
+// scoped by the matched route pattern. A replayed (operation, key) pair
+// returns the recorded response without invoking fn. A fresh pair runs fn
+// inside one transaction; the response record commits atomically with the
+// mutation, so a crash can never apply an effect whose response was not
+// recorded, or vice versa. Handler rejections (4xx) are recorded and
+// replayed the same way — the original response, verbatim. Concurrent
+// requests with the same pair race on the primary key: the loser's
+// transaction rolls back its duplicate work and the winner's committed
+// response is replayed to both callers.
+func (s *server) idempotent(w http.ResponseWriter, r *http.Request, fn func(tx *sql.Tx) (int, any, *apiError)) {
+	s.idempotentPrepared(w, r, nil, func(tx *sql.Tx, _ any) (int, any, *apiError) { return fn(tx) })
+}
+
+// idempotentPrepared adds a prepare stage running after the replay
+// check but BEFORE any transaction opens — the home for bounded
+// external I/O (git resolution) that must never run under SQLite's
+// write lock. A prepare rejection settles the (operation, key) pair
+// exactly like an in-transaction 4xx.
+func (s *server) idempotentPrepared(w http.ResponseWriter, r *http.Request, prepare func(*http.Request) (any, *apiError), fn func(tx *sql.Tx, prepped any) (int, any, *apiError)) {
+	key := r.Header.Get("Idempotency-Key")
+	if key == "" {
+		writeError(w, &apiError{status: http.StatusBadRequest, code: "bad-request", message: "Idempotency-Key header is required"})
+		return
+	}
+	operation := r.Pattern
+
+	if s.replayed(w, operation, key) {
+		return
+	}
+
+	// Capture the body — bounded per endpoint — BEFORE any transaction
+	// opens, so a slow or oversized upload can never hold a database
+	// connection. Small bodies buffer in RAM; large ones (or unknown
+	// lengths) take the single large-body slot and spool to an
+	// unlinked temp file, so the raw bytes of a gigabyte payload never
+	// sit in memory — handlers stream their JSON decode straight from
+	// disk and only the decoded values materialize, serialized to one
+	// request at a time by the slot. A read failure (oversize
+	// included) is a settled 400: it records under the pair and
+	// replays like any other keyed rejection.
+	if r.ContentLength > largeBodyThreshold || r.ContentLength < 0 {
+		// Waiting for the slot honours cancellation: a client that hangs
+		// up or times out releases its handler goroutine and connection
+		// immediately instead of queueing behind every earlier large
+		// request (review 1897). The abandoned attempt settles nothing,
+		// so the key stays fresh for a retry.
+		release, admitted := admitLargeBody(r.Context())
+		if !admitted {
+			return
+		}
+		defer release()
+	}
+	body, err := captureBody(w, r, bodyLimit(operation))
+	if err != nil {
+		var spool *spoolError
+		if errors.As(err, &spool) {
+			// Server-side I/O failure: unsettled 5xx — the key stays
+			// fresh and a retry after recovery can succeed.
+			writeError(w, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: err.Error()})
+			return
+		}
+		s.settleRejection(w, operation, key, &apiError{status: http.StatusBadRequest, code: "bad-request", message: fmt.Sprintf("read request body: %v", err)})
+		return
+	}
+	defer body.close()
+	if apiErr := body.rewind(r); apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+
+	// No ambiguous JSON enters the system. A repeated property at any
+	// depth is rejected here, before any handler decodes and before the
+	// reservation takes the write lock, so a verbatim-stored transcript
+	// or payload can never carry an ambiguity that a later export would
+	// have to reproduce — and what this API accepts always re-imports
+	// (review 1902). Streaming scan: it costs one pass over the already
+	// captured body, not memory. Rejection settles the key like any
+	// other malformed body.
+	if apiErr := scanDuplicateKeys(r.Context(), r.Body); apiErr != nil {
+		if r.Context().Err() != nil {
+			// The scan stopped because the client left, not because the
+			// body was bad: settle nothing, and release the admission
+			// slot on the way out so the next large mutation proceeds.
+			return
+		}
+		s.settleRejection(w, operation, key, apiErr)
+		return
+	}
+	if apiErr := rewindBody(r); apiErr != nil {
+		writeError(w, apiErr)
+		return
+	}
+
+	var prepped any
+	if prepare != nil {
+		var apiErr *apiError
+		prepped, apiErr = prepare(r)
+		if apiErr != nil {
+			if apiErr.status >= http.StatusInternalServerError {
+				writeError(w, apiErr)
+				return
+			}
+			s.settleRejection(w, operation, key, apiErr)
+			return
+		}
+		if apiErr := body.rewind(r); apiErr != nil {
+			writeError(w, apiErr)
+			return
+		}
+	}
+
+	// The window this hook opens is the reason the transactional stage
+	// re-checks what prepare already checked. Prepare reads OUTSIDE the
+	// write transaction — deliberately, so git and oversized bodies never
+	// hold a database connection — so anything it validated can change
+	// before the commit runs, and only the check inside the transaction
+	// is authoritative. Nil in production; a test sets it to make that
+	// window deterministic instead of a race nobody can trigger on
+	// purpose (reviews 2017/2018).
+	if hook := s.betweenPrepareAndCommit.Load(); hook != nil {
+		(*hook)()
+	}
+
+	status, raw, apiErr := s.attempt(operation, key, func(tx *sql.Tx) (int, any, *apiError) { return fn(tx, prepped) })
+	if apiErr != nil && apiErr.status >= http.StatusInternalServerError {
+		writeError(w, apiErr)
+		return
+	}
+	if raw == nil {
+		// Lost the same-key race: the winner's response is committed
+		// (or about to be) — replay it.
+		s.awaitReplay(w, operation, key)
+		return
+	}
+	writeRecorded(w, status, raw)
+}
+
+// writeRecorded writes a settled response; a 204 carries no body.
+func writeRecorded(w http.ResponseWriter, status int, raw []byte) {
+	if status == http.StatusNoContent {
+		w.WriteHeader(status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(raw)
+}
+
+// settleRejection records a pre-handler 400 under the pair — first
+// writer wins, and a lost race replays the winner's response.
+func (s *server) settleRejection(w http.ResponseWriter, operation, key string, apiErr *apiError) {
+	raw, err := json.Marshal(errorEnvelope(apiErr))
+	if err != nil {
+		writeError(w, apiErr)
+		return
+	}
+	if err := s.recordSettled(operation, key, apiErr.status, raw); err != nil {
+		if identity.IsUniqueViolation(err) {
+			s.awaitReplay(w, operation, key)
+			return
+		}
+		// The key is NOT settled; returning the 400 would let a retry
+		// mutate. An unsettled 500 keeps the pair fresh, like attempt.
+		writeError(w, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record idempotency key: %v", err)})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(apiErr.status)
+	_, _ = w.Write(raw)
+}
+
+// replayed writes the recorded response for (operation, key) if one
+// exists, reporting whether it did.
+func (s *server) replayed(w http.ResponseWriter, operation, key string) bool {
+	var status int
+	var body []byte
+	err := s.db.QueryRow(`SELECT status, body FROM idempotency_keys WHERE operation = ? AND key = ?`, operation, key).Scan(&status, &body)
+	if err != nil {
+		return false
+	}
+	writeRecorded(w, status, body)
+	return true
+}
+
+// attempt executes fn and records its settled response. It returns
+// (0, nil, nil) when a concurrent request already settled the pair.
+// The pair is RESERVED as the transaction's first statement: the insert
+// takes SQLite's write lock immediately — no deferred-read lock to
+// upgrade, so concurrent mutations serialize instead of failing BUSY —
+// and a same-key race is detected before any work runs. The reservation
+// commits only with the mutation; a crash leaves nothing behind.
+func (s *server) attempt(operation, key string, fn func(tx *sql.Tx) (int, any, *apiError)) (int, []byte, *apiError) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("begin: %v", err)}
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, 0, '')`, operation, key); err != nil {
+		if identity.IsUniqueViolation(err) {
+			return 0, nil, nil
+		}
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("reserve idempotency key: %v", err)}
+	}
+
+	// Handler work runs inside a savepoint: a 4xx rolls back only the
+	// mutation's partial work while the reservation stays held, so no
+	// concurrent same-key request can slip in a different outcome
+	// between a rejection and its record.
+	if _, err := tx.Exec(`SAVEPOINT handler`); err != nil {
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("savepoint: %v", err)}
+	}
+
+	status, body, apiErr := fn(tx)
+	if apiErr != nil && apiErr.status >= http.StatusInternalServerError {
+		// A 5xx is not a settled outcome — nothing is recorded, the
+		// pair stays fresh, and a retry re-attempts the mutation.
+		return 0, nil, apiErr
+	}
+
+	var raw []byte
+	if apiErr != nil {
+		status = apiErr.status
+		raw, err = json.Marshal(errorEnvelope(apiErr))
+	} else if rm, ok := body.(json.RawMessage); ok {
+		// Pre-assembled responses (verbatim transcripts) are recorded
+		// and served byte-for-byte; json.Marshal would compact them.
+		raw = rm
+	} else if body != nil {
+		raw, err = json.Marshal(body)
+	} else {
+		raw = []byte{}
+	}
+	if err != nil {
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("encode response: %v", err)}
+	}
+
+	if apiErr != nil {
+		// Rejections settle the pair but must not keep the mutation's
+		// partial work: unwind to the savepoint — the reservation
+		// survives — then record the 4xx and commit atomically.
+		if _, err := tx.Exec(`ROLLBACK TO handler`); err != nil {
+			return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("rollback to savepoint: %v", err)}
+		}
+	}
+
+	if _, err := tx.Exec(`UPDATE idempotency_keys SET status = ?, body = ? WHERE operation = ? AND key = ?`,
+		status, raw, operation, key); err != nil {
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("record idempotency key: %v", err)}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: fmt.Sprintf("commit: %v", err)}
+	}
+	return status, raw, nil
+}
+
+func (s *server) recordSettled(operation, key string, status int, raw []byte) error {
+	_, err := s.db.Exec(`INSERT INTO idempotency_keys (operation, key, status, body) VALUES (?, ?, ?, ?)`,
+		operation, key, status, raw)
+	return err
+}
+
+// awaitReplay returns the response committed by the request that won the
+// (operation, key) race. The winner records its response atomically with
+// its mutation, so the row is visible at, or momentarily after, the
+// loser's constraint failure.
+func (s *server) awaitReplay(w http.ResponseWriter, operation, key string) {
+	for range 50 {
+		if s.replayed(w, operation, key) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	writeError(w, &apiError{status: http.StatusInternalServerError, code: "bad-request", message: "idempotent replay unavailable"})
+}
+
+func errorEnvelope(e *apiError) map[string]any {
+	body := map[string]any{"code": e.code, "message": e.message}
+	if len(e.conflicts) > 0 {
+		body["conflicts"] = e.conflicts
+	}
+	return body
+}

@@ -33,13 +33,24 @@ the backlog of record.)
 6. **`UI_UNDECLARED`-class rule.** A module whose responsibility implies a
    user surface but declares no `ui:` block passes silently (MOD-web slid
    through the dry run until manually caught).
+7. **Entities-as-schema.** Extend the `entities` block until it can serve
+   as the verifiable logical schema: composite/derived unique keys (today
+   prose comments, e.g. CompletionAdvance's variant-keyed advance_key),
+   relation cardinality and on-delete semantics on `ref` fields (subsumes
+   item 5's `shows:` gap), and index declarations (FTS5 search is pinned
+   only in prose). Pair with a DDL-conformance check so a build's actual
+   tables are mechanically verified against the declared entities —
+   logical altitude in the spec, storage stays the stack's business.
+   Motivating case: sutra-build derives SQLite DDL from entities by
+   convention (2026-08-06); its spec-gaps.md logs every expressiveness
+   miss as evidence for this design.
 
 ## Later slices
 
-7. **Code-level boundary enforcement.** `avspec verify` (or a sibling
+8. **Code-level boundary enforcement.** `avspec verify` (or a sibling
    command) runs `stack.commands.arch` so declared boundaries are checked
    against real imports. Slice 1 deliberately verifies the spec only.
-8. **Cleanup batch.** `templates/` still speaks the 0.1 format;
+9. **Cleanup batch.** `templates/` still speaks the 0.1 format;
    `verification/architecture-rules.yaml` still uses `CMP-` vocabulary;
    wellformed unit tests assert codes but not severities.
 
@@ -57,14 +68,14 @@ stays optional; no reviewer-side read-tracking for now.
 
 ## Sutra contract polish (non-blocking, from the final review rounds)
 
-9. 400-response enumeration is asymmetric across mutations that take
+10. 400-response enumeration is asymmetric across mutations that take
    identity refs (some declare it, most rely on the shared BadRequest).
-10. Mixed nullability conventions: `Thread.session` and
+11. Mixed nullability conventions: `Thread.session` and
     `Document.current_version` are `nullable` while sibling fields use
     omit-when-absent.
-11. `searchThreads` carries a sentence about review-session matching that
+12. `searchThreads` carries a sentence about review-session matching that
     belongs on `listReviews`/`/search` only.
-12. Risk/spike representation: kriya's risk-first planning needs risk items
+13. Risk/spike representation: kriya's risk-first planning needs risk items
     and spike tickets visible in sutra. Convention for now — a `risk` /
     `spike` label plus blocks-relations making risky items block their
     dependents; promote to a first-class field only if the convention

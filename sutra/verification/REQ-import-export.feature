@@ -1,7 +1,7 @@
 Feature: Import and export
 
   Scenario: export captures the whole project
-    Given project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval — and events
+    Given project "SUT" has identities, issues, comments, docs with versions, threads, reviews — including one with a consumed approval and one with changes requested — and events
     When "SUT" is exported
     Then the export contains every one of those records
 
@@ -22,6 +22,11 @@ Feature: Import and export
     When it is imported
     Then the import is rejected as malformed — consumption fences the verdict, in imports as in the API
     Given an export payload whose consumed review's consumed revision lags its current revision
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+  Scenario: a resubmission-superseded verdict is rejected at import
+    Given an export payload whose review carries a verdict superseded by a later resubmission
     When it is imported
     Then the import is rejected as malformed and nothing is created
 
@@ -52,6 +57,131 @@ Feature: Import and export
     When the same export is imported again
     Then the import is rejected naming the conflicting records
     And no records were partially written
+
+  # A colliding UUID and a colliding key are different doors, and re-importing
+  # an export only ever reaches the first: same records, same ids, rejected
+  # before the uniqueness preflight runs at all. Two servers that independently
+  # minted a project with the same key, an identity with the same handle, and a
+  # label with the same name share none of their UUIDs, so only the second door
+  # can catch them — and it has to keep walking past each record type that
+  # comes back clean, or the collision behind it fails mid-insert as a
+  # constraint error instead of naming what already holds the key.
+  Scenario: an import colliding on keys but not on ids names every holder
+    Given an export of project "SUT"
+    And a server that independently holds the same project key, identity handle, and label name
+    When the export is imported there
+    Then the import is rejected with code "unique-violation" naming every holder
+    And that server still holds only what it had
+
+  # A repeated property is the one input that could store content no
+  # export could faithfully reproduce: a decoder keeping the last value
+  # and one keeping the first read the same bytes differently. Depth
+  # matters as much as the top level — a transcript is stored exactly
+  # as it arrived, so an ambiguity buried in it is served back forever.
+  Scenario Outline: an ambiguous body never enters the system
+    When a thread transcript repeating "<property>" <where> is imported
+    Then the import is rejected as malformed, naming "<property>"
+    And no thread was created
+
+    Examples:
+      | property | where                         |
+      | speaker  | at the transcript's top level |
+      | speaker  | inside a nested object        |
+      | speaker  | inside an object in an array  |
+
+  # A document's content lives entirely in its versions — creating one mints
+  # v1 in the same breath, and no API call produces a document without them.
+  # Import writes both halves of the element from one payload, so it is the
+  # only door an incomplete one can arrive through. The two flaws fail
+  # differently: an element without its versions seats a document that renders
+  # nothing, while an element carrying nothing at all is invisible to every
+  # later check, which reads it as simply one document fewer — so only the
+  # element's own walk can refuse it.
+  Scenario Outline: an incomplete documents element is rejected at import
+    Given an export payload with a documents element that <flaw>
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+    Examples:
+      | flaw               |
+      | omits its versions |
+      | is empty           |
+
+  # The POST /threads door already refuses a thread with no transcript;
+  # import must refuse the same thing, or the one path that writes
+  # threads without going through that door becomes the way around it.
+  Scenario: a thread without its transcript is rejected at import
+    Given an export payload whose thread carries no transcript
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+  # Identifiers and timestamps are written verbatim and re-exported
+  # forever, so a malformed one is permanent. The shape pass walks record
+  # types in a fixed order and returns on the first fault it finds, which
+  # means a check that stops early is indistinguishable from one that
+  # passes: only a fault planted at the far end of the walk, or inside a
+  # payload the walk has to descend into, can tell the two apart.
+  Scenario Outline: a malformed value is rejected wherever it sits in the payload
+    Given an export payload whose <where> is malformed
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+    Examples:
+      | where                                                |
+      | project id, the first record in the payload          |
+      | archive stamp on a project the export left unarchived |
+      | event timestamp, the last record in the payload      |
+      | identifier inside a removed relation's snapshot      |
+
+  # The API can never build a relation cycle — it attaches one edge at a
+  # time and refuses the one that closes the loop. Import writes the whole
+  # graph at once, so it is the only door a cycle can come through, and a
+  # cycle in the parent_of tree makes every ancestor walk below it
+  # non-terminating: the reopen cascade, the subtree revision, the
+  # completion check.
+  Scenario: a relation cycle is rejected at import
+    Given an export payload whose parent_of relations form a cycle
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+  # Archiving is what makes a project read-only, and the stamp that says
+  # so is a nullable field the round trip can silently drop: every record
+  # comes back, the import reports success, and the project is writable
+  # again on the other side.
+  Scenario: an archived project imports still archived
+    Given an export of project "SUT", archived before it was exported
+    When it is imported into an empty server
+    Then the imported project is still archived
+
+  # A review comment is pinned to the revision it was written against —
+  # the API refuses to anchor one to any other. Import writes comments
+  # and reviews from the same payload, so nothing outside it constrains
+  # that pin: unchecked, an import can seat a comment on a revision the
+  # review never had, and it renders forever against work never written.
+  Scenario: a comment naming a nonexistent review revision is rejected at import
+    Given an export payload whose comment names a review revision the review never had
+    When it is imported
+    Then the import is rejected as malformed and nothing is created
+
+  # A work stack's order is internal state the export never carries as a
+  # field of its own, so import has to reconstruct each assignee's queue
+  # position. Reconstruct it wrong and the queue silently falls back to
+  # issue-number order: every record round-trips intact, the import
+  # reports success, and the next agent to pop gets the wrong issue.
+  Scenario: an imported work stack pops in its original order
+    Given an export of project "SUT" whose work stack was filled against issue-number order
+    When it is imported into an empty server
+    Then the imported work stack pops in the order the issues were assigned
+
+  # Display numbers are project-scoped and unique. Import writes them
+  # verbatim but they are minted from a sequence the payload never
+  # carries, so unless that sequence is carried over too, the next
+  # create restarts at 1 and collides with an issue the import wrote.
+  Scenario: issue numbering continues past an import
+    Given an export of project "SUT"
+    When it is imported into an empty server
+    And an issue is created on the imported project
+    Then it gets a number no imported issue already holds
 
   Scenario: unknown import actor is rejected
     Given an export of project "SUT"
