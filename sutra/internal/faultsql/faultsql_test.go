@@ -358,3 +358,30 @@ func TestBadRowSelectsAResultSetNotARow(t *testing.T) {
 		t.Fatalf("the third query should have been untouched again: %v", err)
 	}
 }
+
+// TestRowsAffectedCanFail covers the mode that exists for one reason:
+// database/sql's Result contract allows RowsAffected to return an error and
+// SQLite never does, so every `err != nil` after it is unreachable without
+// help. Deleting those checks instead would leave a real driver's failure
+// silently ignored.
+func TestRowsAffectedCanFail(t *testing.T) {
+	db := open(t, "fault_op=rowsaffected&fault_after=1")
+	// The Exec itself succeeds — only the question about it fails, which is
+	// the shape the guarded code has to cope with.
+	res, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`)
+	if err != nil {
+		t.Fatalf("the exec itself should have succeeded: %v", err)
+	}
+	if _, err := res.RowsAffected(); err == nil {
+		t.Fatal("RowsAffected was expected to fail")
+	}
+	// And the next one is unaffected, so it is one call rather than a
+	// broken database.
+	res2, err := db.Exec(`INSERT INTO t (id) VALUES (1)`)
+	if err != nil {
+		t.Fatalf("the second exec should have succeeded: %v", err)
+	}
+	if n, err := res2.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("the second RowsAffected should have been untouched: n=%d err=%v", n, err)
+	}
+}

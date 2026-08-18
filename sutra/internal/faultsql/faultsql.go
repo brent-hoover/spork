@@ -24,6 +24,10 @@
 //	fault_op=KIND   which operations count toward N and get to fail:
 //	                any (default), query, exec, begin, commit, prepare,
 //	                next (the cursor breaks mid-iteration), close,
+//	                rowsaffected (the Nth Exec's Result reports a failure
+//	                when asked how many rows it changed — database/sql's
+//	                Result contract allows that, and SQLite never does it,
+//	                so the branches guarding it are otherwise unreachable),
 //	                badrow (the Nth QUERY's rows arrive unscannable —
 //	                a whole result set, not one row: the column mismatch
 //	                that makes Scan fail is settled by Columns() before
@@ -115,7 +119,7 @@ func parseDSN(dsn string) (*plan, string, error) {
 			p.after = int64(n)
 		case "fault_op":
 			switch v {
-			case "any", "query", "exec", "begin", "commit", "prepare", "next", "close", "badrow":
+			case "any", "query", "exec", "begin", "commit", "prepare", "next", "close", "badrow", "rowsaffected":
 				p.op = v
 			default:
 				return nil, "", fmt.Errorf("faultsql: unknown fault_op %q", v)
@@ -258,7 +262,29 @@ func (c *faultConn) ExecContext(ctx context.Context, query string, args []driver
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	return inner.ExecContext(ctx, query, args)
+	res, err := inner.ExecContext(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	return maybeFaultyResult(res, c.plan), nil
+}
+
+// faultResult answers RowsAffected with an error. database/sql's Result
+// contract permits it and SQLite never does, so the `err != nil` after
+// RowsAffected is unreachable without this — and deleting that check
+// instead would leave a real driver's failure silently ignored.
+type faultResult struct {
+	driver.Result
+	plan *plan
+}
+
+func (r faultResult) RowsAffected() (int64, error) { return 0, r.plan.err("rowsaffected") }
+
+func maybeFaultyResult(res driver.Result, p *plan) driver.Result {
+	if p.trip("rowsaffected") {
+		return faultResult{Result: res, plan: p}
+	}
+	return res
 }
 
 type faultTx struct {
@@ -315,7 +341,11 @@ func (s *faultStmt) Exec(args []driver.Value) (driver.Result, error) { //nolint:
 	if s.plan.trip("exec") {
 		return nil, s.plan.err("exec")
 	}
-	return s.Stmt.Exec(args) //nolint:staticcheck // delegating the deprecated path
+	res, err := s.Stmt.Exec(args) //nolint:staticcheck // delegating the deprecated path
+	if err != nil {
+		return nil, err
+	}
+	return maybeFaultyResult(res, s.plan), nil
 }
 
 func (s *faultStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
@@ -326,7 +356,11 @@ func (s *faultStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	return inner.ExecContext(ctx, args)
+	res, err := inner.ExecContext(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return maybeFaultyResult(res, s.plan), nil
 }
 
 // faultRows is what reaches the `rows.Err()` and mid-iteration scan
