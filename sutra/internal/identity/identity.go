@@ -82,9 +82,17 @@ func IsUniqueViolation(err error) bool {
 func NewUUIDv7() string {
 	var b [16]byte
 	binary.BigEndian.PutUint64(b[:8], uint64(time.Now().UnixMilli())<<16) //nolint:gosec // UnixMilli is non-negative for all realistic clocks
-	if _, err := rand.Read(b[6:]); err != nil {
-		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
-	}
+	// crypto/rand.Read cannot return an error, so there is nothing here to
+	// check. Established three ways rather than taken from the doc comment,
+	// which is the mistake dupkeys.go cost a round on: the documentation
+	// says "It never returns an error"; the implementation routes every
+	// failure through fatal() followed by panic("unreachable") BEFORE any
+	// non-nil return (crypto/rand/rand.go:63-66); and replacing
+	// rand.Reader with a failing one in a test produced a process-level
+	// fatal, not a returned error. The guard that used to be here panicked
+	// on a condition the standard library already crashes on, with a worse
+	// message than its own.
+	_, _ = rand.Read(b[6:])
 	b[6] = (b[6] & 0x0f) | 0x70
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
