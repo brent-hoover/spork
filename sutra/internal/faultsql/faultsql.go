@@ -24,13 +24,21 @@
 //	fault_op=KIND   which operations count toward N and get to fail:
 //	                any (default), query, exec, begin, commit, prepare,
 //	                next (the cursor breaks mid-iteration), close,
-//	                badrow (the Nth row arrives unscannable).
+//	                badrow (the Nth QUERY's rows arrive unscannable —
+//	                a whole result set, not one row: the column mismatch
+//	                that makes Scan fail is settled by Columns() before
+//	                the first Next, so per-row granularity is not
+//	                available through it).
 //	fault_repeat=1  keep failing every matching operation from the Nth
 //	                on, rather than only the Nth.
 //	fault_msg=TEXT  the error text (default "injected fault").
 //
-// The counter is per *sql.DB, not global, so parallel tests with their own
-// handles cannot disturb each other.
+// The counter is per CONNECTOR — one per sql.Open — not per connection and
+// not global. That distinction is the whole reliability of fault_after:
+// driver.Open runs once per physical connection, so a plan built there
+// would give each pooled connection its own counter and "the second query"
+// would mean whichever connection happened to serve it (review 2090).
+// DriverContext is implemented for exactly that reason.
 package faultsql
 
 import (
@@ -130,17 +138,42 @@ func parseDSN(dsn string) (*plan, string, error) {
 
 type faultDriver struct{}
 
-func (d *faultDriver) Open(dsn string) (driver.Conn, error) {
+// OpenConnector is what database/sql prefers, and what makes one plan serve
+// every connection in the pool.
+func (d *faultDriver) OpenConnector(dsn string) (driver.Connector, error) {
 	p, real, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
 	}
-	c, err := (&sqlite.Driver{}).Open(real)
+	return &faultConnector{drv: d, plan: p, dsn: real}, nil
+}
+
+// Open remains for callers that reach the driver directly. It builds its own
+// plan, which is correct for a single connection and is why sql.Open must go
+// through OpenConnector instead.
+func (d *faultDriver) Open(dsn string) (driver.Conn, error) {
+	c, err := d.OpenConnector(dsn)
 	if err != nil {
 		return nil, err
 	}
-	return &faultConn{Conn: c, plan: p}, nil
+	return c.Connect(context.Background())
 }
+
+type faultConnector struct {
+	drv  *faultDriver
+	plan *plan
+	dsn  string
+}
+
+func (c *faultConnector) Connect(context.Context) (driver.Conn, error) {
+	inner, err := (&sqlite.Driver{}).Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	return &faultConn{Conn: inner, plan: c.plan}, nil
+}
+
+func (c *faultConnector) Driver() driver.Driver { return c.drv }
 
 // faultConn wraps the real connection. Every method either fails on cue or
 // delegates; nothing is reimplemented, so the semantics under test are the
@@ -235,6 +268,13 @@ type faultTx struct {
 
 func (t *faultTx) Commit() error {
 	if t.plan.trip("commit") {
+		// Roll the real transaction back before reporting the failure.
+		// database/sql treats a failed Commit as final and hands the
+		// connection back to the pool; leaving SQLite inside a
+		// transaction would then lock out the next writer, and a leaked
+		// SQLite reader starving writers is a HANG rather than a failure
+		// (the identity.OpenList lesson). Review 2090 caught it here.
+		_ = t.Tx.Rollback()
 		return t.plan.err("commit")
 	}
 	return t.Tx.Commit()
@@ -332,6 +372,9 @@ func (r *faultRows) Columns() []string {
 
 func (r *faultRows) Close() error {
 	if r.plan.trip("close") {
+		// Close the real cursor anyway, for the same reason: the caller
+		// is told the close failed, and database/sql will not try again.
+		_ = r.Rows.Close()
 		return r.plan.err("close")
 	}
 	return r.Rows.Close()

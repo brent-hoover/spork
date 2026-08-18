@@ -3,6 +3,8 @@ package faultsql
 import (
 	"database/sql"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -204,5 +206,155 @@ func TestBadRowMakesScanFail(t *testing.T) {
 	var name string
 	if err := rows.Scan(&id, &name); err == nil {
 		t.Fatal("Scan was expected to fail on the unscannable row")
+	}
+}
+
+// TestOnePlanServesTheWholePool is the property review 2090 found missing.
+// driver.Open runs once per PHYSICAL connection, so a plan built there gives
+// every pooled connection its own counter and "the second query" becomes
+// whichever connection happened to serve it. With several connections open
+// concurrently, exactly one query must fail — not one per connection, and
+// not zero.
+func TestOnePlanServesTheWholePool(t *testing.T) {
+	db := open(t, "fault_op=query&fault_after=3")
+	db.SetMaxOpenConns(4)
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// CONCURRENT queries, because a serialised loop reuses one idle
+	// connection and would never open a second — which is exactly why the
+	// original bug hid. Four connections' worth of contention means a
+	// per-connection plan either fails several times or never reaches its
+	// ordinal at all; a shared one fails exactly once.
+	var wg sync.WaitGroup
+	var failures atomic.Int64
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&n); err != nil {
+				failures.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := failures.Load(); got != 1 {
+		t.Fatalf("expected exactly one failing query across the pool, got %d", got)
+	}
+}
+
+// TestInjectedCommitLeavesNoOpenTransaction covers the other half of the
+// same review: database/sql treats a failed Commit as final and returns the
+// connection to the pool, so an injected failure that skipped the real
+// rollback would leave SQLite inside a transaction and lock out the next
+// writer. That is a HANG, not a failure, which is the worst kind.
+func TestInjectedCommitLeavesNoOpenTransaction(t *testing.T) {
+	db := open(t, "fault_op=commit&fault_after=1")
+	db.SetMaxOpenConns(1) // force the next write onto the same connection
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO t (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tx.Commit(); err == nil {
+		t.Fatal("the commit was expected to fail")
+	}
+	// The write that proves the lock was released. Before the fix this
+	// blocked until busy_timeout expired.
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (2)`); err != nil {
+		t.Fatalf("the connection was left inside a transaction: %v", err)
+	}
+	// And the rolled-back row must be gone, which is what makes it a
+	// rollback rather than a silent commit.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM t WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("the failed commit left its row behind")
+	}
+}
+
+// TestInjectedCloseStillReleasesTheCursor is the same hazard on the read
+// side: a cursor the caller was told failed to close, but which really is
+// still open, holds a reader and starves writers.
+//
+// Honest about its strength: this is a PROPERTY check, not a discriminating
+// one. Removing the real Close from the injected path does not make it fail,
+// because SQLite permits a write while a read statement is open on the SAME
+// connection, and a single-connection pool is the only way to force the
+// write onto the cursor's connection. I could not construct a case that
+// fails, so the fix stands on the reasoning — database/sql will not retry a
+// Close it was told failed — rather than on this test.
+func TestInjectedCloseStillReleasesTheCursor(t *testing.T) {
+	db := open(t, "fault_op=close&fault_after=1")
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1), (2), (3)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := db.Query(`SELECT id FROM t ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	// Abandon the cursor with rows still pending. A drained cursor has
+	// already released its statement, which is why draining it proved
+	// nothing; an abandoned one is still holding the read.
+	if !rows.Next() {
+		t.Fatalf("expected a row; rows.Err=%v", rows.Err())
+	}
+	_ = rows.Close()
+
+	// The write that proves the read was released. With one connection in
+	// the pool and a cursor still open on it, this blocks.
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (4)`); err != nil {
+		t.Fatalf("the cursor was left open: %v", err)
+	}
+}
+
+// TestBadRowSelectsAResultSetNotARow pins the semantics review 2090 caught
+// the documentation overstating. The column mismatch that makes Scan fail is
+// settled by Columns() before the first Next, so badrow can only select a
+// QUERY: with fault_after=2, the first query's rows read fine and the
+// second's do not.
+func TestBadRowSelectsAResultSetNotARow(t *testing.T) {
+	db := open(t, "fault_op=badrow&fault_after=2")
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1), (2)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	scanAll := func() error {
+		rows, err := db.Query(`SELECT id FROM t ORDER BY id`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id int
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
+	}
+	if err := scanAll(); err != nil {
+		t.Fatalf("the first query should have been untouched: %v", err)
+	}
+	if err := scanAll(); err == nil {
+		t.Fatal("the second query's rows should have been unscannable")
+	}
+	if err := scanAll(); err != nil {
+		t.Fatalf("the third query should have been untouched again: %v", err)
 	}
 }
