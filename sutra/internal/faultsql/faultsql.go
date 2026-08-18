@@ -300,8 +300,12 @@ func (t *faultTx) Commit() error {
 		// transaction would then lock out the next writer, and a leaked
 		// SQLite reader starving writers is a HANG rather than a failure
 		// (the identity.OpenList lesson). Review 2090 caught it here.
-		_ = t.Tx.Rollback()
-		return t.plan.err("commit")
+		// The rollback's own error is JOINED rather than dropped. If it
+		// is driver.ErrBadConn, database/sql has to see it to discard the
+		// connection; swallowing it would hand a broken connection back
+		// to the pool, which is the hazard this path exists to avoid
+		// (review 2094).
+		return errors.Join(t.plan.err("commit"), t.Tx.Rollback())
 	}
 	return t.Tx.Commit()
 }
@@ -408,8 +412,9 @@ func (r *faultRows) Close() error {
 	if r.plan.trip("close") {
 		// Close the real cursor anyway, for the same reason: the caller
 		// is told the close failed, and database/sql will not try again.
-		_ = r.Rows.Close()
-		return r.plan.err("close")
+		// Joined for the same reason as the commit path: a
+		// driver.ErrBadConn from the real Close must stay visible.
+		return errors.Join(r.plan.err("close"), r.Rows.Close())
 	}
 	return r.Rows.Close()
 }

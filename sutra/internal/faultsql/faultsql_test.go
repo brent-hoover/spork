@@ -1,10 +1,9 @@
 package faultsql
 
 import (
+	"context"
 	"database/sql"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -222,26 +221,36 @@ func TestOnePlanServesTheWholePool(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// CONCURRENT queries, because a serialised loop reuses one idle
-	// connection and would never open a second — which is exactly why the
-	// original bug hid. Four connections' worth of contention means a
-	// per-connection plan either fails several times or never reaches its
-	// ordinal at all; a shared one fails exactly once.
-	var wg sync.WaitGroup
-	var failures atomic.Int64
-	for range 12 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var n int
-			if err := db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&n); err != nil {
-				failures.Add(1)
-			}
-		}()
+	// Four connections HELD at once, rather than concurrent queries that
+	// might all reuse one. Review 2094 was right that the concurrent
+	// version only made several connections likely; holding *sql.Conn
+	// values makes it certain, which is what the assertion needs.
+	ctx := context.Background()
+	conns := make([]*sql.Conn, 4)
+	for i := range conns {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		conns[i] = c
+		defer func() { _ = c.Close() }() //nolint:revive // held for the test's duration on purpose
 	}
-	wg.Wait()
-	if got := failures.Load(); got != 1 {
-		t.Fatalf("expected exactly one failing query across the pool, got %d", got)
+
+	// Two queries down each connection. A shared counter fails exactly one
+	// of the eight; four independent counters would each need three, so
+	// none of them would reach it.
+	var failures int
+	for round := range 2 {
+		for i, c := range conns {
+			var n int
+			if err := c.QueryRowContext(ctx, `SELECT COUNT(*) FROM t`).Scan(&n); err != nil {
+				failures++
+				t.Logf("round %d, connection %d took the fault", round, i)
+			}
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("expected exactly one failing query across four held connections, got %d", failures)
 	}
 }
 
