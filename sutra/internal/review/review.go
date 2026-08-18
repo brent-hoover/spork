@@ -750,9 +750,12 @@ func SubmissionAt(r Review, revision int64) (Submission, bool) {
 func newUUIDv7() string {
 	var b [16]byte
 	binary.BigEndian.PutUint64(b[:8], uint64(time.Now().UnixMilli())<<16) //nolint:gosec // UnixMilli is non-negative for all realistic clocks
-	if _, err := rand.Read(b[6:]); err != nil {
-		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
-	}
+	// crypto/rand.Read cannot return an error — see the note in
+	// internal/identity for the three-way proof (documented contract,
+	// fatal() before any non-nil return at crypto/rand/rand.go:63-66, and
+	// a failing rand.Reader producing a process fatal rather than an
+	// error). The guard that stood here was dead in nine places at once.
+	_, _ = rand.Read(b[6:])
 	b[6] = (b[6] & 0x0f) | 0x70
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
