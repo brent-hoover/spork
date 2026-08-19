@@ -358,8 +358,24 @@ func (s *server) replayed(w http.ResponseWriter, operation, key string) bool {
 	var status int
 	var body []byte
 	err := s.db.QueryRow(`SELECT status, body FROM idempotency_keys WHERE operation = ? AND key = ?`, operation, key).Scan(&status, &body)
-	if err != nil {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// A fresh pair: nothing to replay, carry on.
 		return false
+	case err != nil:
+		// A FAILED lookup is not a fresh key, and treating it as one used
+		// to be this function's entire error handling. The reservation in
+		// attempt() contains the damage — its INSERT would hit the primary
+		// key and replay the recorded response — but the failure itself
+		// vanished: no 5xx, no signal, the code proceeding on a premise it
+		// had not established. Exactly the absence-versus-failure
+		// confusion that IsArchived and Exists carried in the store
+		// packages, and it sat on the first database call every mutation
+		// makes. Reported as an unsettled 5xx now, so a retry can still
+		// complete.
+		writeError(w, &apiError{status: http.StatusInternalServerError, code: "bad-request",
+			message: fmt.Sprintf("read idempotency record: %v", err)})
+		return true
 	}
 	writeRecorded(w, status, body)
 	return true

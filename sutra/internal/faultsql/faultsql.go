@@ -40,6 +40,14 @@
 //	fault_repeat=1  keep failing every matching operation from the Nth
 //	                on, rather than only the Nth.
 //	fault_msg=TEXT  the error text (default "injected fault").
+//	fault_arm_on=T  hold the counter DISABLED until a statement whose text
+//	                contains T is seen, then start counting. Without it the
+//	                counter is live from the first operation, which is
+//	                wrong whenever setup runs on the same handle as the
+//	                code under test: wiring an HTTP server runs its
+//	                migrations, and those would eat the ordinals. The test
+//	                issues a marker statement — SELECT 1 /* arm */ — once
+//	                setup is done, and everything after it is counted.
 //
 // The counter is per CONNECTOR — one per sql.Open — not per connection and
 // not global. That distinction is the whole reliability of fault_after:
@@ -72,18 +80,39 @@ type plan struct {
 	op     string
 	repeat bool
 	msg    string
+	armOn  string
+	armed  atomic.Bool
 	seen   atomic.Int64
 }
+
+// arm starts the counter once the marker statement goes by, and reports
+// whether THIS statement is the marker — the caller skips the fault check
+// for it, so the statement that turns counting on is never itself the
+// fault. Without that the first ordinal would always land on the marker.
+func (p *plan) arm(query string) bool {
+	if p == nil || p.armOn == "" || !strings.Contains(query, p.armOn) {
+		return false
+	}
+	p.armed.Store(true)
+	return true
+}
+
+// synthetic names the modes that simulate conditions this driver never
+// produces on its own. They fire ONLY when asked for by name, and "any"
+// must not spend its ordinals on them — every Exec consults two of them, so
+// counting those made "the third operation" mean the first, and a sweep
+// walking ordinals measured a third of what it thought.
+var synthetic = map[string]bool{"badrow": true, "rowsaffected": true, "zerorows": true}
 
 // trip reports whether this operation is the one that should fail, and
 // counts it. Operations of other kinds do not advance the counter, so
 // fault_op=exec&fault_after=2 means "the second Exec", not "the second
 // call, if it happens to be an Exec".
 func (p *plan) trip(kind string) bool {
-	if p == nil || p.after <= 0 {
+	if p == nil || p.after <= 0 || !p.armed.Load() {
 		return false
 	}
-	if p.op != "any" && p.op != kind {
+	if p.op != kind && (p.op != "any" || synthetic[kind]) {
 		return false
 	}
 	n := p.seen.Add(1)
@@ -109,6 +138,7 @@ func parseDSN(dsn string) (*plan, string, error) {
 		return nil, "", fmt.Errorf("faultsql: parse DSN query: %w", err)
 	}
 	p := &plan{op: "any", msg: "injected fault"}
+	p.armed.Store(true) // armed by default; fault_arm_on defers it
 	for key, vals := range values {
 		if !strings.HasPrefix(key, "fault_") {
 			continue
@@ -132,10 +162,15 @@ func parseDSN(dsn string) (*plan, string, error) {
 			p.repeat = v == "1" || v == "true"
 		case "fault_msg":
 			p.msg = v
+		case "fault_arm_on":
+			p.armOn = v
 		default:
 			return nil, "", fmt.Errorf("faultsql: unknown parameter %q", key)
 		}
 		delete(values, key)
+	}
+	if p.armOn != "" {
+		p.armed.Store(false)
 	}
 	rest := values.Encode()
 	if rest == "" {
@@ -218,7 +253,7 @@ func (c *faultConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 }
 
 func (c *faultConn) Prepare(query string) (driver.Stmt, error) {
-	if c.plan.trip("prepare") {
+	if !c.plan.arm(query) && c.plan.trip("prepare") {
 		return nil, c.plan.err("prepare")
 	}
 	st, err := c.Conn.Prepare(query)
@@ -229,7 +264,7 @@ func (c *faultConn) Prepare(query string) (driver.Stmt, error) {
 }
 
 func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	if c.plan.trip("prepare") {
+	if !c.plan.arm(query) && c.plan.trip("prepare") {
 		return nil, c.plan.err("prepare")
 	}
 	inner, ok := c.Conn.(driver.ConnPrepareContext)
@@ -244,7 +279,7 @@ func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.St
 }
 
 func (c *faultConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if c.plan.trip("query") {
+	if !c.plan.arm(query) && c.plan.trip("query") {
 		return nil, c.plan.err("query")
 	}
 	inner, ok := c.Conn.(driver.QueryerContext)
@@ -259,7 +294,8 @@ func (c *faultConn) QueryContext(ctx context.Context, query string, args []drive
 }
 
 func (c *faultConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if c.plan.trip("exec") {
+	marker := c.plan.arm(query)
+	if !marker && c.plan.trip("exec") {
 		return nil, c.plan.err("exec")
 	}
 	inner, ok := c.Conn.(driver.ExecerContext)
@@ -269,6 +305,11 @@ func (c *faultConn) ExecContext(ctx context.Context, query string, args []driver
 	res, err := inner.ExecContext(ctx, query, args)
 	if err != nil {
 		return nil, err
+	}
+	if marker {
+		// The statement that ARMS the counter must not spend an ordinal,
+		// through its Result or otherwise.
+		return res, nil
 	}
 	return maybeFaultyResult(res, c.plan), nil
 }

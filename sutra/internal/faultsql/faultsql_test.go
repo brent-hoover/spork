@@ -426,3 +426,68 @@ func TestZeroRowsReportsNoChange(t *testing.T) {
 		t.Fatalf("the insert should still have happened, found %d rows", count)
 	}
 }
+
+// TestArmOnDefersTheCounter covers the mechanism that makes the HTTP-level
+// sweep possible: setup and the code under test share a handle, so the
+// counter has to start after setup rather than at the first operation.
+func TestArmOnDefersTheCounter(t *testing.T) {
+	db := open(t, "fault_op=exec&fault_after=1&fault_arm_on=ARMED")
+	// Setup, all of it uncounted.
+	for _, stmt := range []string{
+		`CREATE TABLE t (id INTEGER PRIMARY KEY)`,
+		`INSERT INTO t (id) VALUES (1)`,
+		`INSERT INTO t (id) VALUES (2)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup %q should be uncounted and unfaulted: %v", stmt, err)
+		}
+	}
+	// The marker itself is checked, never counted, so it must not fail.
+	if _, err := db.Exec(`SELECT 1 /* ARMED */`); err != nil {
+		t.Fatalf("the marker statement must not be the fault: %v", err)
+	}
+	// And now the very next exec is ordinal one.
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (3)`); err == nil {
+		t.Fatal("the first exec after arming should have failed")
+	}
+}
+
+// TestAnyDoesNotSpendOrdinalsOnSyntheticModes pins a bug the HTTP-level
+// sweep found in this driver. Every Exec consults the two Result modes, so
+// counting them under fault_op=any made each exec spend THREE ordinals:
+// "the third operation" meant the first, and a sweep walking ordinals
+// measured a third of what it believed. The synthetic modes fire only when
+// named.
+func TestAnyDoesNotSpendOrdinalsOnSyntheticModes(t *testing.T) {
+	db := open(t, "fault_op=any&fault_after=3")
+	// begin, exec, exec — three real operations, so the third fails and
+	// the first two do not.
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin is operation one and must succeed: %v", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("operation two must succeed: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO t (id) VALUES (1)`); err == nil {
+		t.Fatal("operation three should have failed")
+	}
+	_ = tx.Rollback()
+}
+
+// TestArmMarkerSpendsNoOrdinal is the other half: the marker statement arms
+// the counter and must not consume the first ordinal itself — not through
+// the fault check, and not through its Result either.
+func TestArmMarkerSpendsNoOrdinal(t *testing.T) {
+	db := open(t, "fault_op=any&fault_after=1&fault_arm_on=MARK")
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("setup is uncounted: %v", err)
+	}
+	if _, err := db.Exec(`SELECT 1 /* MARK */`); err != nil {
+		t.Fatalf("the marker must not fail: %v", err)
+	}
+	// Begin is now ordinal one.
+	if _, err := db.Begin(); err == nil {
+		t.Fatal("the first operation after the marker should have failed")
+	}
+}
