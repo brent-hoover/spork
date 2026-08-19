@@ -735,7 +735,15 @@ func (w *blockerWalk) resolve(candidate walkRef) (walkResult, error) {
 					bestID, bestDepth = sub.claimID, sub.depth
 				}
 			}
-			if !poisoned && bestID != "" {
+			// `bestID != ""` used to guard this too, and it was redundant:
+			// this branch only runs with at least one blocker, so the loop
+			// above always executes, and an unpoisoned pass means every
+			// sub-claim was non-empty. Verified rather than argued — with
+			// the conjunct dropped the whole suite stays green, while
+			// ignoring `poisoned` fails
+			// TestAPoisonedCandidateYieldsToTheOlderFallback. Finding that
+			// out is what exposed the two gaps that test now fills.
+			if !poisoned {
 				result = walkResult{claimID: bestID, depth: bestDepth + 1}
 			}
 		}
