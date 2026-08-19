@@ -24,6 +24,10 @@
 //	fault_op=KIND   which operations count toward N and get to fail:
 //	                any (default), query, exec, begin, commit, prepare,
 //	                next (the cursor breaks mid-iteration), close,
+//	                zerorows (the Nth Exec's Result reports that it changed
+//	                NOTHING, with no error — a conditional UPDATE whose
+//	                WHERE matched no row, which is how every compare-and-set
+//	                here detects a lost race),
 //	                rowsaffected (the Nth Exec's Result reports a failure
 //	                when asked how many rows it changed — database/sql's
 //	                Result contract allows that, and SQLite never does it,
@@ -119,7 +123,7 @@ func parseDSN(dsn string) (*plan, string, error) {
 			p.after = int64(n)
 		case "fault_op":
 			switch v {
-			case "any", "query", "exec", "begin", "commit", "prepare", "next", "close", "badrow", "rowsaffected":
+			case "any", "query", "exec", "begin", "commit", "prepare", "next", "close", "badrow", "rowsaffected", "zerorows":
 				p.op = v
 			default:
 				return nil, "", fmt.Errorf("faultsql: unknown fault_op %q", v)
@@ -280,9 +284,20 @@ type faultResult struct {
 
 func (r faultResult) RowsAffected() (int64, error) { return 0, r.plan.err("rowsaffected") }
 
+// zeroResult reports a successful statement that changed nothing. Every
+// compare-and-set in this codebase reads a zero row count as "someone else
+// got there first", and that branch is otherwise reachable only by winning
+// a real race against yourself.
+type zeroResult struct{ driver.Result }
+
+func (zeroResult) RowsAffected() (int64, error) { return 0, nil }
+
 func maybeFaultyResult(res driver.Result, p *plan) driver.Result {
 	if p.trip("rowsaffected") {
 		return faultResult{Result: res, plan: p}
+	}
+	if p.trip("zerorows") {
+		return zeroResult{Result: res}
 	}
 	return res
 }

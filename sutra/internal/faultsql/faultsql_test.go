@@ -394,3 +394,35 @@ func TestRowsAffectedCanFail(t *testing.T) {
 		t.Fatalf("the second RowsAffected should have been untouched: n=%d err=%v", n, err)
 	}
 }
+
+// TestZeroRowsReportsNoChange covers the mode that exists for the
+// compare-and-set branches: a statement that succeeded and changed nothing,
+// which every CAS here reads as a lost race. Winning a real race against
+// yourself is not a test one can write.
+func TestZeroRowsReportsNoChange(t *testing.T) {
+	// The CREATE is the first exec, so the INSERT under test is the second.
+	db := open(t, "fault_op=zerorows&fault_after=2")
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	res, err := db.Exec(`INSERT INTO t (id) VALUES (1)`)
+	if err != nil {
+		t.Fatalf("the exec itself should have succeeded: %v", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("zerorows must not report an error, only a zero: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected zero rows affected, got %d", n)
+	}
+	// The row really was inserted — the lie is only in the count, which is
+	// what makes this a race simulation rather than a broken write.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("the insert should still have happened, found %d rows", count)
+	}
+}
