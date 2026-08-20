@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -164,6 +165,8 @@ type sweepWorld struct {
 	changesRev    int64
 	changesEvent  string
 	assignedIssue string // open and assigned, so popping CLAIMS something
+	importDoc     string // a full, valid export with every id rewritten
+	importActor   string // w.actor's rewritten id, which that document contains
 }
 
 // prepare fills a database through the CLEAN server and returns the ids.
@@ -271,6 +274,22 @@ func prepare(t *testing.T, clean *httptest.Server) sweepWorld {
 	prepPost(t, clean, next(), "/issues/"+w.assignedIssue+"/assign",
 		`{"assignee":"`+w.actor+`","actor":"`+w.actor+`"}`)
 
+	// The import payload is this project's OWN export, with every uuid
+	// rewritten. Hand-writing a rich one means hand-satisfying every
+	// referential rule the importer checks, which is the thing under test;
+	// a round-trip payload is valid by construction. Rewriting is
+	// consistent — the same id always maps to the same new id — so every
+	// cross-reference inside the document still resolves, while nothing
+	// collides with the rows already present.
+	var renamed map[string]string
+	w.importDoc, renamed = rewriteIdentifiers(t, exportProject(t, clean, w.project))
+	// The import's actor must be an identity the DOCUMENT contains, and the
+	// document's identities were rewritten along with everything else.
+	w.importActor = renamed[w.actor]
+	if w.importActor == "" {
+		t.Fatalf("the export did not contain the actor %s", w.actor)
+	}
+
 	changes := prepPost(t, clean, next(), "/reviews/"+w.changesRvw+"/verdict",
 		`{"verdict":"changes-requested","actor":"`+w.actor+`","revision":`+strconv.FormatInt(w.changesRev, 10)+`}`)
 	w.changesEvent, _ = changes["latest_verdict_event"].(string)
@@ -278,6 +297,102 @@ func prepare(t *testing.T, clean *httptest.Server) sweepWorld {
 		t.Fatalf("prepare: the changes verdict carried no latest_verdict_event: %v", changes)
 	}
 	return w
+}
+
+// exportProject reads a project's export document.
+func exportProject(t *testing.T, srv *httptest.Server, project string) string {
+	t.Helper()
+	status, body := do(t, srv, http.MethodGet, "/projects/"+project+"/export", "", "")
+	if status != http.StatusOK {
+		t.Fatalf("export %s: %d %s", project, status, body)
+	}
+	return body
+}
+
+// uuidPattern matches the canonical form the contract uses everywhere.
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// rewriteIdentifiers maps every uuid in the document to a fresh one, the
+// same way every time it appears, so every cross-reference inside still
+// resolves while nothing collides with the rows already present.
+//
+// Uuids are not the only unique keys. A project's key, its identities'
+// handles and its labels' names are all UNIQUE too, and a re-import into the
+// same database collides on every one of them — a 409 that has nothing to do
+// with any injected fault. Those three are suffixed by name rather than by
+// pattern, because "name" belongs to several object kinds here and only the
+// label's is constrained.
+func rewriteIdentifiers(t *testing.T, doc string) (string, map[string]string) {
+	t.Helper()
+	seen := map[string]string{}
+	next := 0
+	out := uuidPattern.ReplaceAllStringFunc(doc, func(id string) string {
+		if fresh, ok := seen[id]; ok {
+			return fresh
+		}
+		next++
+		// A version 7 shape, since the contract validates it.
+		fresh := fmt.Sprintf("0190ffff-%04x-7000-8000-%012x", next, next)
+		seen[id] = fresh
+		return fresh
+	})
+	if len(seen) == 0 {
+		t.Fatalf("the export carried no identifiers at all: %s", doc)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode the export: %v", err)
+	}
+	if project, ok := decoded["project"].(map[string]any); ok {
+		project["key"] = "IMP"
+	}
+	suffix := func(collection, field string) {
+		items, ok := decoded[collection].([]any)
+		if !ok {
+			t.Fatalf("the export carried no %s array", collection)
+		}
+		if len(items) == 0 {
+			t.Fatalf("the export's %s array is empty; the import would not reach its %s rules", collection, collection)
+		}
+		for _, item := range items {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if was, ok := obj[field].(string); ok {
+				obj[field] = was + "-imported"
+			}
+		}
+	}
+	suffix("identities", "handle")
+	suffix("labels", "name")
+	// Issues embed a label SNAPSHOT that the importer requires to match the
+	// labels array exactly, so renaming one without the other is a
+	// divergent-snapshot rejection rather than a collision.
+	for _, item := range decoded["issues"].([]any) {
+		issue, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		embedded, ok := issue["labels"].([]any)
+		if !ok {
+			continue
+		}
+		for _, l := range embedded {
+			if obj, ok := l.(map[string]any); ok {
+				if was, ok := obj["name"].(string); ok {
+					obj["name"] = was + "-imported"
+				}
+			}
+		}
+	}
+
+	rewritten, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("re-encode the export: %v", err)
+	}
+	return string(rewritten), seen
 }
 
 // prepPost issues one prepared request and returns the decoded body. create only
@@ -425,6 +540,12 @@ func sweepOperations() []sweepOp {
 					`","review_revision":` + strconv.FormatInt(w.approvedRev, 10) +
 					`,"review_verdict_event":"` + w.verdictEvent + `"}`
 			}},
+		// The import path is a third of internal/api's uncovered arms, and
+		// almost all of them are ordinary database failures — it was
+		// missing from this table, not beyond its reach.
+		{"import project", http.MethodPost,
+			func(w sweepWorld) string { return "/projects/import?actor=" + w.importActor },
+			func(w sweepWorld) string { return w.importDoc }},
 		{"pop work stack", http.MethodPost,
 			func(w sweepWorld) string { return "/identities/" + w.actor + "/work-stack/pop" },
 			func(w sweepWorld) string { return `{"actor":"` + w.actor + `"}` }},
