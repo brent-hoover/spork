@@ -268,14 +268,22 @@ func (c *faultConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 }
 
 func (c *faultConn) Prepare(query string) (driver.Stmt, error) {
-	if !c.plan.arm(query) && c.plan.trip("prepare") {
+	marker := c.plan.arm(query)
+	if !marker && c.plan.trip("prepare") {
 		return nil, c.plan.err("prepare")
 	}
+	return c.prepared(query, marker)
+}
+
+// prepared takes the marker rather than recomputing it. PrepareContext falls
+// back here when the underlying connection has no contextual Prepare, and
+// arming a second time would spend the prepare ordinal twice (review 2112).
+func (c *faultConn) prepared(query string, marker bool) (driver.Stmt, error) {
 	st, err := c.Conn.Prepare(query)
 	if err != nil {
 		return nil, err
 	}
-	return &faultStmt{Stmt: st, plan: c.plan}, nil
+	return &faultStmt{Stmt: st, plan: c.plan, marker: marker}, nil
 }
 
 func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -285,7 +293,7 @@ func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.St
 	}
 	inner, ok := c.Conn.(driver.ConnPrepareContext)
 	if !ok {
-		return c.Prepare(query)
+		return c.prepared(query, marker)
 	}
 	st, err := inner.PrepareContext(ctx, query)
 	if err != nil {

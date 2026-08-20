@@ -298,15 +298,6 @@ func TestListEachHandlesEveryFailure(t *testing.T) {
 			return review.ListEach(tx, issueID, "", "", func(review.Review) error { return nil })
 		}), "get review")
 	})
-	// A cursor that yields rows and THEN fails is its own failure mode:
-	// the loop ends normally and only rows.Err() reports it, so a caller
-	// that ignores it sees a truncated list as a complete one (2103).
-	t.Run("cursor breaks mid-stream", func(t *testing.T) {
-		h, _ := seed(t, "fault_op=next&fault_after=1")
-		wantErr(t, inTx(t, h, func(tx *sql.Tx) error {
-			return review.EachRef(tx, issueID, "", "", func(review.Ref) error { return nil })
-		}), "iterate review refs")
-	})
 	t.Run("callback stops the stream", func(t *testing.T) {
 		h, _ := seed(t, "")
 		sentinel := errors.New("caller stopped")

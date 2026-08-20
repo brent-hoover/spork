@@ -363,7 +363,11 @@ func sweepRepo(t *testing.T) (path, head string) {
 // specifically). The property is the same as the main sweep's.
 func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
 	const maxOrdinals = 12
-	for _, op := range sweepOperations() {
+	ops := sweepOperations()
+	var inert []string
+	exercised := 0
+	for _, op := range ops {
+		hit := false
 		t.Run(op.name, func(t *testing.T) {
 			for ordinal := 1; ordinal <= maxOrdinals; ordinal++ {
 				armed, clean, armedDB := faultPairMode(t, "rowsaffected", ordinal)
@@ -373,14 +377,28 @@ func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
 
 				status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
 				fired := faultsFired(t, armedDB)
-				if fired == 0 {
-					// This operation reads fewer than `ordinal` row counts.
+
+				if status < 400 {
+					if fired > 0 {
+						t.Fatalf("ordinal %d: an unreadable row count was swallowed and the handler answered %d.\nbody: %s",
+							ordinal, status, body)
+					}
+					// Nothing fired AND the request succeeded: this
+					// operation reads fewer than `ordinal` row counts, so
+					// the walk is done.
 					return
 				}
-				if status < 400 {
-					t.Fatalf("ordinal %d: an unreadable row count was swallowed and the handler answered %d.\nbody: %s",
-						ordinal, status, body)
+				// A failure with nothing fired is not row-count coverage.
+				// Returning here (as this sweep first did) let a broken
+				// fixture or an unrelated handler regression end the walk
+				// at ordinal 1, reporting a pass for an operation that had
+				// never reached RowsAffected at all (review 2109).
+				if fired == 0 {
+					t.Fatalf("ordinal %d answered %d without any fault firing — the failure has another "+
+						"cause and this sweep is measuring the wrong thing.\nbody: %s", ordinal, status, body)
 				}
+				hit = true
+
 				if status < 500 {
 					t.Fatalf("ordinal %d answered %d — an UNKNOWN row count reported as a definite domain answer. "+
 						"The statement ran; only its count is unavailable, so a 404 or 409 here settles a lie.\nbody: %s",
@@ -392,6 +410,20 @@ func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
 						ordinal, retryStatus, retryBody)
 				}
 			}
+			t.Fatalf("still failing at ordinal %d; raise maxOrdinals or the operation is looping", maxOrdinals)
 		})
+		if hit {
+			exercised++
+		} else {
+			inert = append(inert, op.name)
+		}
+	}
+	// Named rather than left silent: an operation that reads no row count is
+	// a legitimate outcome here, but "the sweep covered everything" and "the
+	// sweep found nothing to cover" must not look alike.
+	t.Logf("row-count faults reached %d of %d operations; %d read no row count: %v",
+		exercised, len(ops), len(inert), inert)
+	if exercised == 0 {
+		t.Fatal("no operation read a row count; this sweep measured nothing")
 	}
 }

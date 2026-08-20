@@ -676,3 +676,70 @@ func TestMarkerSpendsNoOrdinalThroughAnyDoor(t *testing.T) {
 		})
 	}
 }
+
+// legacyConn implements ONLY driver.Conn — no ConnPrepareContext. SQLite's
+// driver has the contextual method, so database/sql never reaches the
+// deprecated Prepare path through a real handle; a connection that lacks it
+// is the only way to drive that door.
+type legacyConn struct {
+	prepared []string
+}
+
+func (c *legacyConn) Prepare(query string) (driver.Stmt, error) {
+	c.prepared = append(c.prepared, query)
+	return legacyStmt{}, nil
+}
+func (c *legacyConn) Close() error              { return nil }
+func (c *legacyConn) Begin() (driver.Tx, error) { return nil, io.EOF }
+
+type legacyStmt struct{}
+
+func (legacyStmt) Close() error  { return nil }
+func (legacyStmt) NumInput() int { return 0 }
+func (legacyStmt) Exec(args []driver.Value) (driver.Result, error) {
+	return driver.RowsAffected(1), nil
+}
+func (legacyStmt) Query(args []driver.Value) (driver.Rows, error) {
+	return &recordingRows{}, nil
+}
+
+// TestMarkerSurvivesTheLegacyPrepareDoor is review 2112. Fixing the marker on
+// PrepareContext left the deprecated Prepare — and PrepareContext's own
+// fallback into it — still building a faultStmt that did not know it held the
+// marker, so executing it injected the fault it exists to schedule.
+func TestMarkerSurvivesTheLegacyPrepareDoor(t *testing.T) {
+	p := &plan{after: 1, op: "any", msg: "injected fault", armOn: "ARMNOW"}
+	c := &faultConn{Conn: &legacyConn{}, plan: p}
+
+	// Straight through the deprecated door.
+	st, err := c.Prepare(`SELECT 1 /* ARMNOW */`)
+	if err != nil {
+		t.Fatalf("prepare marker: %v", err)
+	}
+	if _, err := st.Exec(nil); err != nil { //nolint:staticcheck // exercising the deprecated path on purpose
+		t.Fatalf("the marker injected its own fault: %v", err)
+	}
+	if got := p.fired.Load(); got != 0 {
+		t.Fatalf("the marker fired %d faults through Prepare; it must fire none", got)
+	}
+}
+
+// TestPrepareContextFallbackArmsOnce covers the same door reached the other
+// way. PrepareContext arms, finds no contextual Prepare, and delegates — and
+// delegating to the public Prepare armed and counted a SECOND time, so
+// fault_op=prepare&fault_after=2 fired on the first statement.
+func TestPrepareContextFallbackArmsOnce(t *testing.T) {
+	p := &plan{after: 2, op: "prepare", msg: "injected fault"}
+	p.armed.Store(true)
+	c := &faultConn{Conn: &legacyConn{}, plan: p}
+
+	if _, err := c.PrepareContext(context.Background(), `SELECT 1`); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	if got := p.seen.Load(); got != 1 {
+		t.Fatalf("one prepare must spend one ordinal, spent %d", got)
+	}
+	if _, err := c.PrepareContext(context.Background(), `SELECT 2`); err == nil {
+		t.Fatal("the SECOND prepare should have failed")
+	}
+}
