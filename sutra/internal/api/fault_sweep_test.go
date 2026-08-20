@@ -105,6 +105,18 @@ func faultsFired(t *testing.T, armedDB *sql.DB) int64 {
 	return n
 }
 
+// faultsTripped is how many ordinals MATCHED, which is not the same as how
+// many manifested. A walk needs it to tell "past the end" from "selected
+// something that turned out to be empty".
+func faultsTripped(t *testing.T, armedDB *sql.DB) int64 {
+	t.Helper()
+	var n int64
+	if err := armedDB.QueryRow(`SELECT faultsql_tripped()`).Scan(&n); err != nil {
+		t.Fatalf("read trip count: %v", err)
+	}
+	return n
+}
+
 func armFaults(t *testing.T, armedDB *sql.DB) {
 	t.Helper()
 	if _, err := armedDB.Exec(`SELECT 1 /* ` + armMarker + ` */`); err != nil {
@@ -167,6 +179,7 @@ type sweepWorld struct {
 	assignedIssue string // open and assigned, so popping CLAIMS something
 	importDoc     string // a full, valid export with every id rewritten
 	importActor   string // w.actor's rewritten id, which that document contains
+	issueThread   string // a thread anchored to w.issue, so that listing is not empty
 }
 
 // prepare fills a database through the CLEAN server and returns the ids.
@@ -205,18 +218,34 @@ func prepare(t *testing.T, clean *httptest.Server) sweepWorld {
 	w.commit = head
 	w.project = create("/projects",
 		`{"key":"SWP","name":"Sweep","actor":"`+w.actor+`","repo_path":"`+repo+`"}`)
+	// "findable marker" is seeded across issues, documents, comments and
+	// threads so a single search term reaches EVERY result group. With it
+	// only in the thread, the unified search swept one group's loading path
+	// and none of the others (review 2120).
 	w.issue = create("/projects/"+w.project+"/issues",
-		`{"title":"first","actor":"`+w.actor+`"}`)
+		`{"title":"first findable marker","actor":"`+w.actor+`"}`)
 	w.otherIssue = create("/projects/"+w.project+"/issues",
 		`{"title":"second","actor":"`+w.actor+`"}`)
 	w.doc = create("/projects/"+w.project+"/documents",
-		`{"title":"doc","content":"body","author":"`+w.actor+`"}`)
+		`{"title":"doc findable marker","content":"body findable marker","author":"`+w.actor+`"}`)
+	// A comment on w.issue and a thread anchored to it. Without them the
+	// comment listing, the issue-thread listing and the import's own
+	// comments array are all EMPTY, so those sweeps never reach a failure
+	// after a row has been emitted (reviews 2119, 2120).
+	create("/comments", `{"issue":"`+w.issue+`","author":"`+w.actor+`","body":"findable marker"}`)
+
 	// A SECOND version, so diffing the document has two revisions to
 	// compare; with only the created one, every diff is a 400.
 	create("/documents/"+w.doc+"/versions", `{"content":"second","author":"`+w.actor+`"}`)
 	w.label = create("/labels", `{"name":"sweep"}`)
 	w.thread = create("/threads",
-		`{"title":"t","project":"`+w.project+`","actor":"`+w.actor+`","transcript":[{"speaker":"claude","text":"x"}]}`)
+		`{"title":"t","project":"`+w.project+`","actor":"`+w.actor+`","transcript":[{"speaker":"claude","text":"findable marker"}]}`)
+	// Anchored to the issue, so the issue-thread listing is not empty.
+	w.issueThread = create("/threads",
+		`{"title":"anchored findable marker","project":"`+w.project+`","actor":"`+w.actor+
+			`","transcript":[{"speaker":"claude","text":"findable marker"}]}`)
+	prepPost(t, clean, next(), "/threads/"+w.issueThread+"/anchor",
+		`{"issue":"`+w.issue+`","actor":"`+w.actor+`"}`)
 	w.review = create("/reviews",
 		`{"issue":"`+w.issue+`","author":"`+w.actor+`","branch":"work","commit":"`+head+`"}`)
 
@@ -570,56 +599,68 @@ func TestStoreFailuresAreUnsettled5xx(t *testing.T) {
 		t.Run(op.name, func(t *testing.T) {
 			faults := 0
 			for ordinal := 1; ordinal <= maxOrdinals; ordinal++ {
-				armed, clean, armedDB := faultPair(t, ordinal)
-				w := prepare(t, clean)
-				armFaults(t, armedDB)
-				key := fmt.Sprintf("%s-%d", op.name, ordinal)
+				// Own scope per ordinal, so each fixture pair is released
+				// as the walk advances rather than all at the end (2120).
+				past := false
+				t.Run(fmt.Sprintf("ordinal-%d", ordinal), func(t *testing.T) {
+					armed, clean, armedDB := faultPair(t, ordinal)
+					w := prepare(t, clean)
+					armFaults(t, armedDB)
+					key := fmt.Sprintf("%s-%d", op.name, ordinal)
 
-				status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
-				fired := faultsFired(t, armedDB)
+					status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
+					fired := faultsFired(t, armedDB)
 
-				if status < 400 {
-					if fired > 0 {
-						t.Fatalf("ordinal %d: the fault FIRED and the handler answered %d anyway — "+
-							"a store failure was swallowed.\nbody: %s", ordinal, status, body)
+					if status < 400 {
+						if fired > 0 {
+							t.Fatalf("ordinal %d: the fault FIRED and the handler answered %d anyway — "+
+								"a store failure was swallowed.\nbody: %s", ordinal, status, body)
+						}
+						// The fault never fired: this operation performs
+						// fewer than `ordinal` database operations, so the
+						// walk is done. Only the driver can say that.
+						if ordinal == 1 {
+							t.Fatal("the first fault did not fire; the sweep measured nothing")
+						}
+						past = true
+						return
 					}
-					// The fault never fired: this operation performs fewer
-					// than `ordinal` database operations, so the walk is
-					// done. Only the driver can say that.
-					if ordinal == 1 {
-						t.Fatal("the first fault did not fire; the sweep measured nothing")
+					if fired == 0 {
+						t.Fatalf("ordinal %d answered %d without any fault firing — the failure has "+
+							"another cause and this sweep is measuring the wrong thing.\nbody: %s",
+							ordinal, status, body)
 					}
-					depth[op.name] = faults
+					faults++
+
+					if status < 500 {
+						t.Fatalf("ordinal %d answered %d — a store failure reported as a domain answer.\n"+
+							"That is a broken database mistaken for a real refusal, which is how a guard fails open.\nbody: %s",
+							ordinal, status, body)
+					}
+					var envelope struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					}
+					if err := json.Unmarshal([]byte(body), &envelope); err != nil || envelope.Code == "" {
+						t.Fatalf("ordinal %d: a 5xx must still carry the contract's Error envelope, got: %s", ordinal, body)
+					}
+
+					// The other half: the key must be fresh, so the same
+					// request through a clean server succeeds. A settled
+					// 5xx would replay the failure forever.
+					retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
+					if retryStatus >= 400 {
+						t.Fatalf("ordinal %d: the retry under the same key answered %d, so the failure was SETTLED — "+
+							"the key is poisoned and no recovery can complete it.\nbody: %s",
+							ordinal, retryStatus, retryBody)
+					}
+				})
+				if t.Failed() {
 					return
 				}
-				if fired == 0 {
-					t.Fatalf("ordinal %d answered %d without any fault firing — the failure has "+
-						"another cause and this sweep is measuring the wrong thing.\nbody: %s",
-						ordinal, status, body)
-				}
-				faults++
-
-				if status < 500 {
-					t.Fatalf("ordinal %d answered %d — a store failure reported as a domain answer.\n"+
-						"That is a broken database mistaken for a real refusal, which is how a guard fails open.\nbody: %s",
-						ordinal, status, body)
-				}
-				var envelope struct {
-					Code    string `json:"code"`
-					Message string `json:"message"`
-				}
-				if err := json.Unmarshal([]byte(body), &envelope); err != nil || envelope.Code == "" {
-					t.Fatalf("ordinal %d: a 5xx must still carry the contract's Error envelope, got: %s", ordinal, body)
-				}
-
-				// The other half: the key must be fresh, so the same request
-				// through a clean server succeeds. A settled 5xx would
-				// replay the failure forever.
-				retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
-				if retryStatus >= 400 {
-					t.Fatalf("ordinal %d: the retry under the same key answered %d, so the failure was SETTLED — "+
-						"the key is poisoned and no recovery can complete it.\nbody: %s",
-						ordinal, retryStatus, retryBody)
+				if past {
+					depth[op.name] = faults
+					return
 				}
 			}
 			t.Fatalf("still failing at ordinal %d; raise maxOrdinals or the operation is looping", maxOrdinals)
@@ -660,44 +701,55 @@ func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
 		hit := false
 		t.Run(op.name, func(t *testing.T) {
 			for ordinal := 1; ordinal <= maxOrdinals; ordinal++ {
-				armed, clean, armedDB := faultPairMode(t, "rowsaffected", ordinal)
-				w := prepare(t, clean)
-				armFaults(t, armedDB)
-				key := fmt.Sprintf("rows-%s-%d", op.name, ordinal)
+				past := false
+				t.Run(fmt.Sprintf("ordinal-%d", ordinal), func(t *testing.T) {
+					armed, clean, armedDB := faultPairMode(t, "rowsaffected", ordinal)
+					w := prepare(t, clean)
+					armFaults(t, armedDB)
+					key := fmt.Sprintf("rows-%s-%d", op.name, ordinal)
 
-				status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
-				fired := faultsFired(t, armedDB)
+					status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
+					fired := faultsFired(t, armedDB)
 
-				if status < 400 {
-					if fired > 0 {
-						t.Fatalf("ordinal %d: an unreadable row count was swallowed and the handler answered %d.\nbody: %s",
+					if status < 400 {
+						if fired > 0 {
+							t.Fatalf("ordinal %d: an unreadable row count was swallowed and the handler answered %d.\nbody: %s",
+								ordinal, status, body)
+						}
+						// Nothing fired AND the request succeeded: this
+						// operation reads fewer than `ordinal` row counts,
+						// so the walk is done.
+						past = true
+						return
+					}
+					// A failure with nothing fired is not row-count
+					// coverage. Returning here (as this sweep first did)
+					// let a broken fixture or an unrelated handler
+					// regression end the walk at ordinal 1, reporting a
+					// pass for an operation that had never reached
+					// RowsAffected at all (review 2109).
+					if fired == 0 {
+						t.Fatalf("ordinal %d answered %d without any fault firing — the failure has another "+
+							"cause and this sweep is measuring the wrong thing.\nbody: %s", ordinal, status, body)
+					}
+					hit = true
+
+					if status < 500 {
+						t.Fatalf("ordinal %d answered %d — an UNKNOWN row count reported as a definite domain answer. "+
+							"The statement ran; only its count is unavailable, so a 404 or 409 here settles a lie.\nbody: %s",
 							ordinal, status, body)
 					}
-					// Nothing fired AND the request succeeded: this
-					// operation reads fewer than `ordinal` row counts, so
-					// the walk is done.
+					retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
+					if retryStatus >= 400 {
+						t.Fatalf("ordinal %d: the retry under the same key answered %d — the failure was settled.\nbody: %s",
+							ordinal, retryStatus, retryBody)
+					}
+				})
+				if t.Failed() {
 					return
 				}
-				// A failure with nothing fired is not row-count coverage.
-				// Returning here (as this sweep first did) let a broken
-				// fixture or an unrelated handler regression end the walk
-				// at ordinal 1, reporting a pass for an operation that had
-				// never reached RowsAffected at all (review 2109).
-				if fired == 0 {
-					t.Fatalf("ordinal %d answered %d without any fault firing — the failure has another "+
-						"cause and this sweep is measuring the wrong thing.\nbody: %s", ordinal, status, body)
-				}
-				hit = true
-
-				if status < 500 {
-					t.Fatalf("ordinal %d answered %d — an UNKNOWN row count reported as a definite domain answer. "+
-						"The statement ran; only its count is unavailable, so a 404 or 409 here settles a lie.\nbody: %s",
-						ordinal, status, body)
-				}
-				retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
-				if retryStatus >= 400 {
-					t.Fatalf("ordinal %d: the retry under the same key answered %d — the failure was settled.\nbody: %s",
-						ordinal, retryStatus, retryBody)
+				if past {
+					return
 				}
 			}
 			t.Fatalf("still failing at ordinal %d; raise maxOrdinals or the operation is looping", maxOrdinals)

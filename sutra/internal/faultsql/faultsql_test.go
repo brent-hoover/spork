@@ -743,3 +743,73 @@ func TestPrepareContextFallbackArmsOnce(t *testing.T) {
 		t.Fatal("the SECOND prepare should have failed")
 	}
 }
+
+// TestBadRowOverAnEmptyCursorSelectsButDoesNotFire pins the distinction the
+// events feed exposed. badrow corrupts ROWS, so a cursor with none delivers
+// nothing to corrupt — but the ordinal still matched. Reporting that as a
+// fired fault made an HTTP sweep conclude the handler had swallowed a
+// failure that was never injected.
+func TestBadRowOverAnEmptyCursorSelectsButDoesNotFire(t *testing.T) {
+	db := open(t, "fault_op=badrow&fault_after=1")
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A query that matches nothing. The cursor opens, the ordinal is spent.
+	rows, err := db.Query(`SELECT id FROM t WHERE id = 999`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for rows.Next() {
+		t.Fatal("the fixture is wrong: this query must return no rows")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	var fired, tripped int64
+	if err := db.QueryRow(`SELECT faultsql_fired()`).Scan(&fired); err != nil {
+		t.Fatalf("read fired: %v", err)
+	}
+	if err := db.QueryRow(`SELECT faultsql_tripped()`).Scan(&tripped); err != nil {
+		t.Fatalf("read tripped: %v", err)
+	}
+	if tripped != 1 {
+		t.Fatalf("the ordinal must have matched exactly once, matched %d", tripped)
+	}
+	if fired != 0 {
+		t.Fatalf("nothing was corrupted, so nothing fired; got %d", fired)
+	}
+}
+
+// TestBadRowOverARealCursorFires is the other half: with rows to corrupt,
+// the fault manifests and both counters move.
+func TestBadRowOverARealCursorFires(t *testing.T) {
+	db := open(t, "fault_op=badrow&fault_after=1")
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := db.Query(`SELECT id FROM t`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	scanned := false
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err == nil {
+			scanned = true
+		}
+	}
+	_ = rows.Close()
+	if scanned {
+		t.Fatal("the corrupted row scanned cleanly")
+	}
+	var fired int64
+	if err := db.QueryRow(`SELECT faultsql_fired()`).Scan(&fired); err != nil {
+		t.Fatalf("read fired: %v", err)
+	}
+	if fired == 0 {
+		t.Fatal("a corrupted row reached the caller but nothing was counted")
+	}
+}

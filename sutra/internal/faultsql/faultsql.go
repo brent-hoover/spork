@@ -86,14 +86,15 @@ func init() { sql.Register("sqlite-fault", &faultDriver{}) }
 // plan is the fault a DSN asked for, plus the running count of matching
 // operations. One plan per Open, so it is per-handle state.
 type plan struct {
-	after  int64
-	op     string
-	repeat bool
-	msg    string
-	armOn  string
-	armed  atomic.Bool
-	seen   atomic.Int64
-	fired  atomic.Int64
+	after   int64
+	op      string
+	repeat  bool
+	msg     string
+	armOn   string
+	armed   atomic.Bool
+	seen    atomic.Int64
+	fired   atomic.Int64
+	tripped atomic.Int64
 }
 
 // arm starts the counter once the marker statement goes by, and reports
@@ -128,7 +129,16 @@ func (p *plan) trip(kind string) bool {
 	}
 	n := p.seen.Add(1)
 	if n == p.after || (p.repeat && n > p.after) {
-		p.fired.Add(1)
+		p.tripped.Add(1)
+		// badrow is SELECTED here but does not MANIFEST here: it corrupts
+		// rows, and a cursor over an empty result set delivers none. The
+		// events feed opens a LIMIT 0 bounds probe, so an ordinal landing
+		// there injected nothing while still reporting a fault — a sweep
+		// reading that as "the handler swallowed it" is measuring the
+		// driver, not the handler. It is counted in Next instead.
+		if kind != "badrow" {
+			p.fired.Add(1)
+		}
 		return true
 	}
 	return false
@@ -306,13 +316,21 @@ func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.St
 	return &faultStmt{Stmt: st, plan: c.plan, marker: marker}, nil
 }
 
-// firedQuery is the text a caller uses to ask how many faults have fired.
+// firedQuery is the text a caller uses to ask how many faults have MANIFESTED.
 const firedQuery = "faultsql_fired()"
+
+// trippedQuery asks how many times an ordinal MATCHED, which is not the same
+// number: a walk needs it to tell "this ordinal ran past the end" from "this
+// ordinal selected a cursor that turned out to be empty".
+const trippedQuery = "faultsql_tripped()"
 
 func (c *faultConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if strings.Contains(query, firedQuery) {
 		// Answered here, never passed to SQLite, and never counted.
 		return &firedRows{n: c.plan.fired.Load()}, nil
+	}
+	if strings.Contains(query, trippedQuery) {
+		return &firedRows{n: c.plan.tripped.Load()}, nil
 	}
 	marker := c.plan.arm(query)
 	if !marker && c.plan.trip("query") {
@@ -528,6 +546,9 @@ func (r *faultRows) Next(dest []driver.Value) error {
 		if err := r.Rows.Next(dest[:len(dest)-1]); err != nil {
 			return err
 		}
+		// A row actually reached the caller unscannable: this is where
+		// badrow manifests, and so where it is counted.
+		r.plan.fired.Add(1)
 		dest[len(dest)-1] = nil
 		return nil
 	}
