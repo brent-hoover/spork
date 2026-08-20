@@ -211,6 +211,9 @@ func prepare(t *testing.T, clean *httptest.Server) sweepWorld {
 		`{"title":"second","actor":"`+w.actor+`"}`)
 	w.doc = create("/projects/"+w.project+"/documents",
 		`{"title":"doc","content":"body","author":"`+w.actor+`"}`)
+	// A SECOND version, so diffing the document has two revisions to
+	// compare; with only the created one, every diff is a 400.
+	create("/documents/"+w.doc+"/versions", `{"content":"second","author":"`+w.actor+`"}`)
 	w.label = create("/labels", `{"name":"sweep"}`)
 	w.thread = create("/threads",
 		`{"title":"t","project":"`+w.project+`","actor":"`+w.actor+`","transcript":[{"speaker":"claude","text":"x"}]}`)
