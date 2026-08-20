@@ -557,7 +557,14 @@ func SetStatus(tx *sql.Tx, id, status string) error {
 	if err != nil {
 		return fmt.Errorf("set status of %s: %w", id, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	// An unreadable count is not an absent issue. DetachLabel and
+	// projects.Archive already made this distinction; these four sites did
+	// not, and a transient failure became a settled 404.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set status of %s: row count unavailable: %w", id, err)
+	}
+	if n == 0 {
 		return &NotFoundError{ID: id}
 	}
 	return nil

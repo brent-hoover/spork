@@ -40,6 +40,15 @@
 //	fault_repeat=1  keep failing every matching operation from the Nth
 //	                on, rather than only the Nth.
 //	fault_msg=TEXT  the error text (default "injected fault").
+//
+// OBSERVATION. `SELECT faultsql_fired()` returns how many times a fault has
+// actually fired on this connector. A sweep that walks ordinals needs it:
+// without it, "the request succeeded" is ambiguous between "the ordinal was
+// past the end" and "the fault fired and the code SWALLOWED it" — and the
+// second is the regression such a sweep exists to catch, so it would stop
+// early and pass (review 2108). Answered through SQL like everything else
+// here, so the package still exports nothing for deadcode to flag.
+//
 //	fault_arm_on=T  hold the counter DISABLED until a statement whose text
 //	                contains T is seen, then start counting. Without it the
 //	                counter is live from the first operation, which is
@@ -63,6 +72,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -83,6 +93,7 @@ type plan struct {
 	armOn  string
 	armed  atomic.Bool
 	seen   atomic.Int64
+	fired  atomic.Int64
 }
 
 // arm starts the counter once the marker statement goes by, and reports
@@ -116,7 +127,11 @@ func (p *plan) trip(kind string) bool {
 		return false
 	}
 	n := p.seen.Add(1)
-	return n == p.after || (p.repeat && n > p.after)
+	if n == p.after || (p.repeat && n > p.after) {
+		p.fired.Add(1)
+		return true
+	}
+	return false
 }
 
 func (p *plan) err(kind string) error {
@@ -278,7 +293,14 @@ func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.St
 	return &faultStmt{Stmt: st, plan: c.plan}, nil
 }
 
+// firedQuery is the text a caller uses to ask how many faults have fired.
+const firedQuery = "faultsql_fired()"
+
 func (c *faultConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(query, firedQuery) {
+		// Answered here, never passed to SQLite, and never counted.
+		return &firedRows{n: c.plan.fired.Load()}, nil
+	}
 	if !c.plan.arm(query) && c.plan.trip("query") {
 		return nil, c.plan.err("query")
 	}
@@ -314,33 +336,58 @@ func (c *faultConn) ExecContext(ctx context.Context, query string, args []driver
 	return maybeFaultyResult(res, c.plan), nil
 }
 
-// faultResult answers RowsAffected with an error. database/sql's Result
-// contract permits it and SQLite never does, so the `err != nil` after
-// RowsAffected is unreachable without this — and deleting that check
-// instead would leave a real driver's failure silently ignored.
+// firedRows is the one-row, one-column answer to SELECT faultsql_fired().
+type firedRows struct {
+	n    int64
+	done bool
+}
+
+func (r *firedRows) Columns() []string { return []string{"fired"} }
+func (r *firedRows) Close() error      { return nil }
+func (r *firedRows) Next(dest []driver.Value) error {
+	if r.done {
+		return io.EOF
+	}
+	r.done = true
+	dest[0] = r.n
+	return nil
+}
+
+// faultResult defers both Result modes to the moment the count is actually
+// ASKED FOR. Tripping when Exec returns was wrong twice over (reviews 2096,
+// 2108): it spent an ordinal on results nobody reads — the idempotency
+// reservation ignores its own — so "the second row count" meant "the second
+// Exec", and a sweep aimed at row-count failures landed on statements whose
+// counts are never consulted.
+//
+// rowsaffected answers with an error: database/sql's Result contract permits
+// it and SQLite never does it, so the branches guarding it are otherwise
+// unreachable — and deleting those instead would leave a real driver's
+// failure silently ignored.
+//
+// zerorows answers a successful zero: every compare-and-set here reads that
+// as "someone else got there first", and winning a real race against
+// yourself is not a test one can write.
 type faultResult struct {
 	driver.Result
 	plan *plan
 }
 
-func (r faultResult) RowsAffected() (int64, error) { return 0, r.plan.err("rowsaffected") }
+func (r faultResult) RowsAffected() (int64, error) {
+	if r.plan.trip("rowsaffected") {
+		return 0, r.plan.err("rowsaffected")
+	}
+	if r.plan.trip("zerorows") {
+		return 0, nil
+	}
+	return r.Result.RowsAffected()
+}
 
-// zeroResult reports a successful statement that changed nothing. Every
-// compare-and-set in this codebase reads a zero row count as "someone else
-// got there first", and that branch is otherwise reachable only by winning
-// a real race against yourself.
-type zeroResult struct{ driver.Result }
-
-func (zeroResult) RowsAffected() (int64, error) { return 0, nil }
-
+// maybeFaultyResult wraps unconditionally and counts nothing. The wrapper is
+// inert unless one of the Result modes was asked for by name, because trip
+// filters on the plan's op.
 func maybeFaultyResult(res driver.Result, p *plan) driver.Result {
-	if p.trip("rowsaffected") {
-		return faultResult{Result: res, plan: p}
-	}
-	if p.trip("zerorows") {
-		return zeroResult{Result: res}
-	}
-	return res
+	return faultResult{Result: res, plan: p}
 }
 
 type faultTx struct {

@@ -550,7 +550,9 @@ func TestDeleteTemplateReportsNotFoundForBothHalves(t *testing.T) {
 			t.Fatalf("expected TemplateNotFoundError, got: %v", err)
 		}
 	})
-	t.Run("row count unavailable", func(t *testing.T) {
+	t.Run("an unreadable row count is not an absent template", func(t *testing.T) {
+		// Corrected per review 2104: reporting 404 for a row that may well
+		// have been deleted settles a lie against the idempotency key.
 		h, fx := seed(t, "fault_op=rowsaffected&fault_after=1")
 		tx, err := h.Begin()
 		if err != nil {
@@ -559,8 +561,11 @@ func TestDeleteTemplateReportsNotFoundForBothHalves(t *testing.T) {
 		defer func() { _ = tx.Rollback() }()
 		err = docs.DeleteTemplate(tx, fx.template)
 		var nf *docs.TemplateNotFoundError
-		if !errors.As(err, &nf) {
-			t.Fatalf("expected TemplateNotFoundError, got: %v", err)
+		if errors.As(err, &nf) {
+			t.Fatalf("an unknown row count must not settle as not-found: %v", err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "row count unavailable") {
+			t.Fatalf("expected the row-count failure, got: %v", err)
 		}
 	})
 }

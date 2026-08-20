@@ -494,7 +494,16 @@ func Consume(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent
 	if err != nil {
 		return Review{}, fmt.Errorf("consume %s: %w", id, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	// An unreadable row count is UNKNOWN, not zero. Folding it into the
+	// raced-conflict answer made a transient database failure a SETTLED
+	// 409, recorded against the idempotency key forever — so an approval
+	// that was never consumed became permanently unconsumable. The count
+	// failing is a 5xx a retry can complete; only a genuine zero is a race.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Review{}, fmt.Errorf("consume %s: row count unavailable: %w", id, err)
+	}
+	if n == 0 {
 		return Review{}, &ConflictError{Code: "review-consumed", Message: fmt.Sprintf("review %s consumption raced", id)}
 	}
 	return Get(tx, id)
@@ -586,7 +595,13 @@ func SpendForClose(tx *sql.Tx, id, issue string, revision int64, verdictEvent st
 	if err != nil {
 		return Review{}, fmt.Errorf("spend %s for close: %w", id, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	// Same distinction as Consume: an unknown count must not settle as a
+	// close-used conflict, which would strand the close permanently.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Review{}, fmt.Errorf("spend %s for close: row count unavailable: %w", id, err)
+	}
+	if n == 0 {
 		return Review{}, &ConflictError{Code: "review-close-used", Message: fmt.Sprintf("review %s close raced", id)}
 	}
 	return Get(tx, id)

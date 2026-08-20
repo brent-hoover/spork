@@ -695,7 +695,13 @@ func DeleteTemplate(tx *sql.Tx, id string) error {
 	if err != nil {
 		return fmt.Errorf("delete template %s: %w", id, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	// An unreadable count is not an absent template: reporting 404 for a
+	// row that may well have been deleted settles a lie.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete template %s: row count unavailable: %w", id, err)
+	}
+	if n == 0 {
 		return &TemplateNotFoundError{ID: id}
 	}
 	return nil

@@ -42,6 +42,12 @@ var sweepDBs atomic.Int64
 // ordinal, one clean. The armed handle is its own connector, so seeding
 // through the clean one never consumes the fault.
 func faultPair(t *testing.T, ordinal int) (armed, clean *httptest.Server, seed *sql.DB) {
+	return faultPairMode(t, "any", ordinal)
+}
+
+// faultPairMode is faultPair with the fault kind chosen explicitly, for the
+// synthetic modes that "any" excludes.
+func faultPairMode(t *testing.T, mode string, ordinal int) (armed, clean *httptest.Server, seed *sql.DB) {
 	t.Helper()
 	name := fmt.Sprintf("sweep-%d", sweepDBs.Add(1))
 	base := "file:" + name + "?mode=memory&cache=shared&_pragma=busy_timeout(5000)"
@@ -66,7 +72,7 @@ func faultPair(t *testing.T, ordinal int) (armed, clean *httptest.Server, seed *
 
 	// Armed lazily: api.New runs the migrations, and counting those would
 	// spend the ordinals before the operation under test even starts.
-	armedDB := open(base + "&fault_op=any&fault_after=" + strconv.Itoa(ordinal) +
+	armedDB := open(base + "&fault_op=" + mode + "&fault_after=" + strconv.Itoa(ordinal) +
 		"&fault_arm_on=" + armMarker)
 	armedHandler, err := api.New(armedDB)
 	if err != nil {
@@ -81,6 +87,22 @@ func faultPair(t *testing.T, ordinal int) (armed, clean *httptest.Server, seed *
 // sweep issues it once the world is prepared, so ordinal one is the first
 // operation the request under test performs.
 const armMarker = "faultsql_arm"
+
+// faultsFired asks the driver how many faults have actually fired. The sweep
+// needs it to tell "the ordinal was past the end of the operation" from "the
+// fault fired and the handler SWALLOWED it" — and the second is the exact
+// regression this sweep exists to catch, so a walk that cannot tell them
+// apart stops early and passes (review 2108). That is not hypothetical: it
+// is how the swallowed idempotency lookup hid through three iterations of
+// this harness.
+func faultsFired(t *testing.T, armedDB *sql.DB) int64 {
+	t.Helper()
+	var n int64
+	if err := armedDB.QueryRow(`SELECT faultsql_fired()`).Scan(&n); err != nil {
+		t.Fatalf("read fault count: %v", err)
+	}
+	return n
+}
 
 func armFaults(t *testing.T, armedDB *sql.DB) {
 	t.Helper()
@@ -277,14 +299,25 @@ func TestStoreFailuresAreUnsettled5xx(t *testing.T) {
 				key := fmt.Sprintf("%s-%d", op.name, ordinal)
 
 				status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
+				fired := faultsFired(t, armedDB)
+
 				if status < 400 {
+					if fired > 0 {
+						t.Fatalf("ordinal %d: the fault FIRED and the handler answered %d anyway — "+
+							"a store failure was swallowed.\nbody: %s", ordinal, status, body)
+					}
 					// The fault never fired: this operation performs fewer
 					// than `ordinal` database operations, so the walk is
-					// done.
+					// done. Only the driver can say that.
 					if ordinal == 1 {
 						t.Fatal("the first fault did not fire; the sweep measured nothing")
 					}
 					return
+				}
+				if fired == 0 {
+					t.Fatalf("ordinal %d answered %d without any fault firing — the failure has "+
+						"another cause and this sweep is measuring the wrong thing.\nbody: %s",
+						ordinal, status, body)
 				}
 				faults++
 
@@ -320,4 +353,45 @@ func sweepRepo(t *testing.T) (path, head string) {
 	t.Helper()
 	repo := newGitRepo(t)
 	return repo.path, repo.featureSHA
+}
+
+// TestUnreadableRowCountsAreUnsettled5xx sweeps the synthetic mode that
+// fault_op=any deliberately excludes. SQLite never fails RowsAffected, so
+// nothing else reaches these branches — and four store methods used to fold
+// the failure into a domain answer, settling a 404 or a 409 for an outcome
+// that was merely unknown (review 2108 named the issue-status path
+// specifically). The property is the same as the main sweep's.
+func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
+	const maxOrdinals = 12
+	for _, op := range sweepOperations() {
+		t.Run(op.name, func(t *testing.T) {
+			for ordinal := 1; ordinal <= maxOrdinals; ordinal++ {
+				armed, clean, armedDB := faultPairMode(t, "rowsaffected", ordinal)
+				w := prepare(t, clean)
+				armFaults(t, armedDB)
+				key := fmt.Sprintf("rows-%s-%d", op.name, ordinal)
+
+				status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
+				fired := faultsFired(t, armedDB)
+				if fired == 0 {
+					// This operation reads fewer than `ordinal` row counts.
+					return
+				}
+				if status < 400 {
+					t.Fatalf("ordinal %d: an unreadable row count was swallowed and the handler answered %d.\nbody: %s",
+						ordinal, status, body)
+				}
+				if status < 500 {
+					t.Fatalf("ordinal %d answered %d — an UNKNOWN row count reported as a definite domain answer. "+
+						"The statement ran; only its count is unavailable, so a 404 or 409 here settles a lie.\nbody: %s",
+						ordinal, status, body)
+				}
+				retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
+				if retryStatus >= 400 {
+					t.Fatalf("ordinal %d: the retry under the same key answered %d — the failure was settled.\nbody: %s",
+						ordinal, retryStatus, retryBody)
+				}
+			}
+		})
+	}
 }

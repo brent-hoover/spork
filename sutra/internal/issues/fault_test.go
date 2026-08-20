@@ -344,12 +344,17 @@ func TestSetStatusReportsNotFoundForBothHalves(t *testing.T) {
 			t.Fatalf("expected NotFoundError, got: %v", err)
 		}
 	})
-	t.Run("row count unavailable", func(t *testing.T) {
+	t.Run("an unreadable row count is not an absent issue", func(t *testing.T) {
+		// Corrected per review 2104. DetachLabel and projects.Archive
+		// already drew this line; these sites did not.
 		h, fx := seed(t, "fault_op=rowsaffected&fault_after=1")
 		err := faultTx(t, h, func(tx *sql.Tx) error { return issues.SetStatus(tx, fx.a, "complete") })
 		var nf *issues.NotFoundError
-		if !errors.As(err, &nf) {
-			t.Fatalf("expected NotFoundError, got: %v", err)
+		if errors.As(err, &nf) {
+			t.Fatalf("an unknown row count must not settle as not-found: %v", err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "row count unavailable") {
+			t.Fatalf("expected the row-count failure, got: %v", err)
 		}
 	})
 }

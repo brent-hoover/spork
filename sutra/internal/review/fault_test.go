@@ -335,21 +335,24 @@ func TestConsumeReportsItsFailures(t *testing.T) {
 			return err
 		}), "consume")
 	})
-	t.Run("row count unavailable reads as a race", func(t *testing.T) {
-		// SQLite never fails RowsAffected, so this arm is reachable only
-		// through the injector — and it must NOT be deleted instead: the
-		// zero-row branch is what stops two subscribers both consuming
-		// one approval, so an unreadable count has to be treated as a
-		// loss, never as a win.
+	t.Run("an unreadable row count is not a race", func(t *testing.T) {
+		// This test used to assert the opposite, and review 2104 was right
+		// to reject it. An error from RowsAffected means the count is
+		// UNKNOWN, not zero — and reporting it as a raced conflict settles
+		// a 409 against the idempotency key forever, leaving an approval
+		// that was never consumed permanently unconsumable. Asserting the
+		// behaviour as found would have locked that in; a fault test is
+		// only as good as its opinion about what SHOULD happen.
 		h, id := approved(t, "fault_op=rowsaffected&fault_after=1")
 		err := inTx(t, h, func(tx *sql.Tx) error {
 			_, err := review.Consume(tx, id, 1, eventID)
 			return err
 		})
 		var conflict *review.ConflictError
-		if !errors.As(err, &conflict) || conflict.Code != "review-consumed" {
-			t.Fatalf("expected a review-consumed conflict, got: %v", err)
+		if errors.As(err, &conflict) {
+			t.Fatalf("an unknown row count must not settle as a conflict: %v", err)
 		}
+		wantErr(t, err, "row count unavailable")
 	})
 }
 
@@ -418,16 +421,19 @@ func TestSpendForCloseReportsItsFailures(t *testing.T) {
 			return err
 		}), "spend")
 	})
-	t.Run("row count unavailable reads as a race", func(t *testing.T) {
+	t.Run("an unreadable row count is not a race", func(t *testing.T) {
+		// Same correction as Consume: a settled close-used conflict would
+		// strand the close permanently.
 		h, id := approved(t, "fault_op=rowsaffected&fault_after=1")
 		err := inTx(t, h, func(tx *sql.Tx) error {
 			_, err := review.SpendForClose(tx, id, issueID, 1, eventID)
 			return err
 		})
 		var conflict *review.ConflictError
-		if !errors.As(err, &conflict) || conflict.Code != "review-close-used" {
-			t.Fatalf("expected a review-close-used conflict, got: %v", err)
+		if errors.As(err, &conflict) {
+			t.Fatalf("an unknown row count must not settle as a conflict: %v", err)
 		}
+		wantErr(t, err, "row count unavailable")
 	})
 }
 

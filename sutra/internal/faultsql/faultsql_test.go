@@ -400,8 +400,9 @@ func TestRowsAffectedCanFail(t *testing.T) {
 // which every CAS here reads as a lost race. Winning a real race against
 // yourself is not a test one can write.
 func TestZeroRowsReportsNoChange(t *testing.T) {
-	// The CREATE is the first exec, so the INSERT under test is the second.
-	db := open(t, "fault_op=zerorows&fault_after=2")
+	// Ordinal one is the first RowsAffected CALL, not the first Exec — the
+	// CREATE's result is never asked for its count, so it spends nothing.
+	db := open(t, "fault_op=zerorows&fault_after=1")
 	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -489,5 +490,74 @@ func TestArmMarkerSpendsNoOrdinal(t *testing.T) {
 	// Begin is now ordinal one.
 	if _, err := db.Begin(); err == nil {
 		t.Fatal("the first operation after the marker should have failed")
+	}
+}
+
+// TestFiredIsObservable covers the mechanism a sweep needs to tell "the
+// ordinal was past the end" from "the fault fired and the code swallowed
+// it". Without it a swallowed error reads as success and the sweep stops
+// early — which is exactly the regression such a sweep exists to catch.
+func TestFiredIsObservable(t *testing.T) {
+	db := open(t, "fault_op=exec&fault_after=2")
+	fired := func() int64 {
+		t.Helper()
+		var n int64
+		if err := db.QueryRow(`SELECT faultsql_fired()`).Scan(&n); err != nil {
+			t.Fatalf("read fired: %v", err)
+		}
+		return n
+	}
+	if n := fired(); n != 0 {
+		t.Fatalf("nothing has fired yet, got %d", n)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("first exec: %v", err)
+	}
+	if n := fired(); n != 0 {
+		t.Fatalf("the first exec should not have fired, got %d", n)
+	}
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1)`); err == nil {
+		t.Fatal("the second exec should have failed")
+	}
+	if n := fired(); n != 1 {
+		t.Fatalf("exactly one fault should have fired, got %d", n)
+	}
+	// And the observation query itself is neither counted nor faulted, or
+	// asking the question would change the answer.
+	_ = fired()
+	if n := fired(); n != 1 {
+		t.Fatalf("asking must not change the count, got %d", n)
+	}
+}
+
+// TestResultModesCountOnlyWhenTheCountIsRead pins the semantics reviews 2096
+// and 2108 corrected. Tripping when Exec returned spent ordinals on results
+// nobody reads — sutra's idempotency reservation ignores its own — so "the
+// second row count" silently meant "the second Exec", and a sweep aimed at
+// row-count failures landed on statements whose counts are never consulted.
+func TestResultModesCountOnlyWhenTheCountIsRead(t *testing.T) {
+	db := open(t, "fault_op=rowsaffected&fault_after=1")
+	// Two execs whose results are DISCARDED. Under the old behaviour these
+	// spent both ordinals and the fault fired here, invisibly.
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var fired int64
+	if err := db.QueryRow(`SELECT faultsql_fired()`).Scan(&fired); err != nil {
+		t.Fatalf("read fired: %v", err)
+	}
+	if fired != 0 {
+		t.Fatalf("results nobody read must not spend an ordinal, but %d fired", fired)
+	}
+	// The first count actually ASKED FOR is ordinal one.
+	res, err := db.Exec(`INSERT INTO t (id) VALUES (2)`)
+	if err != nil {
+		t.Fatalf("third exec: %v", err)
+	}
+	if _, err := res.RowsAffected(); err == nil {
+		t.Fatal("the first row count read should have failed")
 	}
 }
