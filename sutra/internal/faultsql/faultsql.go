@@ -279,7 +279,8 @@ func (c *faultConn) Prepare(query string) (driver.Stmt, error) {
 }
 
 func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	if !c.plan.arm(query) && c.plan.trip("prepare") {
+	marker := c.plan.arm(query)
+	if !marker && c.plan.trip("prepare") {
 		return nil, c.plan.err("prepare")
 	}
 	inner, ok := c.Conn.(driver.ConnPrepareContext)
@@ -290,7 +291,11 @@ func (c *faultConn) PrepareContext(ctx context.Context, query string) (driver.St
 	if err != nil {
 		return nil, err
 	}
-	return &faultStmt{Stmt: st, plan: c.plan}, nil
+	// The marker travels WITH the statement. Arming happens at prepare, so
+	// a faultStmt that did not know it was the marker would trip on every
+	// later execution of it — the marker would inject the very fault it
+	// exists to schedule (review 2107).
+	return &faultStmt{Stmt: st, plan: c.plan, marker: marker}, nil
 }
 
 // firedQuery is the text a caller uses to ask how many faults have fired.
@@ -301,7 +306,8 @@ func (c *faultConn) QueryContext(ctx context.Context, query string, args []drive
 		// Answered here, never passed to SQLite, and never counted.
 		return &firedRows{n: c.plan.fired.Load()}, nil
 	}
-	if !c.plan.arm(query) && c.plan.trip("query") {
+	marker := c.plan.arm(query)
+	if !marker && c.plan.trip("query") {
 		return nil, c.plan.err("query")
 	}
 	inner, ok := c.Conn.(driver.QueryerContext)
@@ -311,6 +317,12 @@ func (c *faultConn) QueryContext(ctx context.Context, query string, args []drive
 	rows, err := inner.QueryContext(ctx, query, args)
 	if err != nil {
 		return nil, err
+	}
+	if marker {
+		// Unwrapped, symmetric with the Exec path: reading or closing the
+		// marker's own rows must not spend a next or close ordinal, and
+		// badrow must not make the marker itself unscannable (2107).
+		return rows, nil
 	}
 	return &faultRows{Rows: rows, plan: c.plan, badrow: c.plan.trip("badrow")}, nil
 }
@@ -415,22 +427,26 @@ func (t *faultTx) Commit() error {
 
 type faultStmt struct {
 	driver.Stmt
-	plan *plan
+	plan   *plan
+	marker bool
 }
 
 func (s *faultStmt) Query(args []driver.Value) (driver.Rows, error) { //nolint:staticcheck // driver.Stmt requires it
-	if s.plan.trip("query") {
+	if !s.marker && s.plan.trip("query") {
 		return nil, s.plan.err("query")
 	}
 	rows, err := s.Stmt.Query(args) //nolint:staticcheck // delegating the deprecated path
 	if err != nil {
 		return nil, err
 	}
+	if s.marker {
+		return rows, nil
+	}
 	return &faultRows{Rows: rows, plan: s.plan, badrow: s.plan.trip("badrow")}, nil
 }
 
 func (s *faultStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	if s.plan.trip("query") {
+	if !s.marker && s.plan.trip("query") {
 		return nil, s.plan.err("query")
 	}
 	inner, ok := s.Stmt.(driver.StmtQueryContext)
@@ -441,22 +457,28 @@ func (s *faultStmt) QueryContext(ctx context.Context, args []driver.NamedValue) 
 	if err != nil {
 		return nil, err
 	}
+	if s.marker {
+		return rows, nil
+	}
 	return &faultRows{Rows: rows, plan: s.plan, badrow: s.plan.trip("badrow")}, nil
 }
 
 func (s *faultStmt) Exec(args []driver.Value) (driver.Result, error) { //nolint:staticcheck // driver.Stmt requires it
-	if s.plan.trip("exec") {
+	if !s.marker && s.plan.trip("exec") {
 		return nil, s.plan.err("exec")
 	}
 	res, err := s.Stmt.Exec(args) //nolint:staticcheck // delegating the deprecated path
 	if err != nil {
 		return nil, err
 	}
+	if s.marker {
+		return res, nil
+	}
 	return maybeFaultyResult(res, s.plan), nil
 }
 
 func (s *faultStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	if s.plan.trip("exec") {
+	if !s.marker && s.plan.trip("exec") {
 		return nil, s.plan.err("exec")
 	}
 	inner, ok := s.Stmt.(driver.StmtExecContext)
@@ -466,6 +488,9 @@ func (s *faultStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (
 	res, err := inner.ExecContext(ctx, args)
 	if err != nil {
 		return nil, err
+	}
+	if s.marker {
+		return res, nil
 	}
 	return maybeFaultyResult(res, s.plan), nil
 }

@@ -3,6 +3,9 @@ package faultsql
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -301,32 +304,62 @@ func TestInjectedCommitLeavesNoOpenTransaction(t *testing.T) {
 // connection, and a single-connection pool is the only way to force the
 // write onto the cursor's connection. I could not construct a case that
 // fails, so the fix stands on the reasoning — database/sql will not retry a
-// Close it was told failed — rather than on this test.
-func TestInjectedCloseStillReleasesTheCursor(t *testing.T) {
-	db := open(t, "fault_op=close&fault_after=1")
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO t (id) VALUES (1), (2), (3)`); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	rows, err := db.Query(`SELECT id FROM t ORDER BY id`)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	// Abandon the cursor with rows still pending. A drained cursor has
-	// already released its statement, which is why draining it proved
-	// nothing; an abandoned one is still holding the read.
-	if !rows.Next() {
-		t.Fatalf("expected a row; rows.Err=%v", rows.Err())
-	}
-	_ = rows.Close()
+// recordingRows is a driver.Rows that remembers whether it was closed and
+// answers with the error it was given. A real SQLite cursor cannot play this
+// part: the effect under test is "the wrapper called through", and SQLite
+// permits a write while a read cursor is open on the SAME connection, so the
+// abandoned-cursor version of this test passed with the call REMOVED — it
+// asserted a lock that never existed. Proven by deleting r.Rows.Close() and
+// watching it still pass (review 2093, a second time).
+type recordingRows struct {
+	closed int
+	err    error
+}
 
-	// The write that proves the read was released. With one connection in
-	// the pool and a cursor still open on it, this blocks.
-	if _, err := db.Exec(`INSERT INTO t (id) VALUES (4)`); err != nil {
-		t.Fatalf("the cursor was left open: %v", err)
+func (r *recordingRows) Columns() []string              { return []string{"id"} }
+func (r *recordingRows) Next(dest []driver.Value) error { return io.EOF }
+func (r *recordingRows) Close() error {
+	r.closed++
+	return r.err
+}
+
+// TestInjectedCloseStillClosesTheUnderlyingCursor pins the cleanup half:
+// database/sql treats a failed Close as final and will not retry, so a
+// wrapper that reports failure WITHOUT closing leaks the real cursor.
+func TestInjectedCloseStillClosesTheUnderlyingCursor(t *testing.T) {
+	inner := &recordingRows{}
+	p := &plan{after: 1, op: "close", msg: "injected fault"}
+	p.armed.Store(true)
+	rows := &faultRows{Rows: inner, plan: p}
+
+	err := rows.Close()
+	if err == nil {
+		t.Fatal("expected the injected close failure")
+	}
+	if !strings.Contains(err.Error(), "injected fault") {
+		t.Fatalf("expected the injected error, got %v", err)
+	}
+	if inner.closed != 1 {
+		t.Fatalf("the real cursor must be closed exactly once, was closed %d times", inner.closed)
+	}
+}
+
+// TestInjectedCloseKeepsTheUnderlyingErrorVisible is the close-side twin of
+// the commit path's join (review 2094). A driver.ErrBadConn from the real
+// Close is how database/sql learns to DISCARD the connection rather than
+// pool it; replacing it with the injected error hands back a broken one.
+func TestInjectedCloseKeepsTheUnderlyingErrorVisible(t *testing.T) {
+	inner := &recordingRows{err: driver.ErrBadConn}
+	p := &plan{after: 1, op: "close", msg: "injected fault"}
+	p.armed.Store(true)
+	rows := &faultRows{Rows: inner, plan: p}
+
+	err := rows.Close()
+	if !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("the underlying ErrBadConn must survive the join, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "injected fault") {
+		t.Fatalf("the injected error must survive too, got %v", err)
 	}
 }
 
@@ -559,5 +592,87 @@ func TestResultModesCountOnlyWhenTheCountIsRead(t *testing.T) {
 	}
 	if _, err := res.RowsAffected(); err == nil {
 		t.Fatal("the first row count read should have failed")
+	}
+}
+
+// TestMarkerSpendsNoOrdinalThroughAnyDoor is review 2107's second finding.
+// arm() fires on the statement TEXT, so it can arrive through Exec, Query,
+// or a prepared statement — but only the Exec door suppressed the fault
+// checks. Through the other doors the marker armed the counter and then
+// immediately spent ordinals on its own rows, and a PREPARED marker tripped
+// on every execution: the statement whose whole job is to schedule a fault
+// was injecting it instead.
+func TestMarkerSpendsNoOrdinalThroughAnyDoor(t *testing.T) {
+	for _, door := range []string{"query", "prepared-query", "prepared-exec"} {
+		t.Run(door, func(t *testing.T) {
+			// fault_after=1 on "any": if the marker spends ANYTHING, it
+			// spends the ordinal meant for the operation under test.
+			db := open(t, "fault_op=any&fault_after=1&fault_arm_on=ARMNOW")
+			if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			marker := `SELECT 1 /* ARMNOW */`
+			switch door {
+			case "query":
+				rows, err := db.Query(marker)
+				if err != nil {
+					t.Fatalf("marker query: %v", err)
+				}
+				for rows.Next() { // spends next ordinals if wrapped
+					var n int
+					if err := rows.Scan(&n); err != nil {
+						t.Fatalf("the marker's own rows were corrupted: %v", err)
+					}
+				}
+				if err := rows.Close(); err != nil {
+					t.Fatalf("marker close: %v", err)
+				}
+			case "prepared-query":
+				st, err := db.Prepare(marker)
+				if err != nil {
+					t.Fatalf("prepare marker: %v", err)
+				}
+				defer st.Close()
+				for i := 0; i < 3; i++ { // a prepared marker run repeatedly
+					rows, err := st.Query()
+					if err != nil {
+						t.Fatalf("prepared marker query %d: %v", i, err)
+					}
+					for rows.Next() {
+						var n int
+						if err := rows.Scan(&n); err != nil {
+							t.Fatalf("prepared marker row %d: %v", i, err)
+						}
+					}
+					if err := rows.Close(); err != nil {
+						t.Fatalf("prepared marker close %d: %v", i, err)
+					}
+				}
+			case "prepared-exec":
+				st, err := db.Prepare(marker)
+				if err != nil {
+					t.Fatalf("prepare marker: %v", err)
+				}
+				defer st.Close()
+				for i := 0; i < 3; i++ {
+					if _, err := st.Exec(); err != nil {
+						t.Fatalf("prepared marker exec %d: %v", i, err)
+					}
+				}
+			}
+
+			var fired int64
+			if err := db.QueryRow(`SELECT faultsql_fired()`).Scan(&fired); err != nil {
+				t.Fatalf("read fired: %v", err)
+			}
+			if fired != 0 {
+				t.Fatalf("the marker fired %d faults; it must fire none", fired)
+			}
+			// The ordinal it must NOT have spent still belongs to the
+			// first real operation after it.
+			if _, err := db.Exec(`INSERT INTO t (id) VALUES (1)`); err == nil {
+				t.Fatal("the marker consumed the ordinal meant for the first real operation")
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package review_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,6 +249,15 @@ func TestEachRefHandlesEveryFailure(t *testing.T) {
 			return review.EachRef(tx, issueID, "", "", func(review.Ref) error { return nil })
 		}), "scan review ref")
 	})
+	// A cursor that yields rows and THEN fails is its own failure mode:
+	// the loop ends normally and only rows.Err() reports it, so a caller
+	// that ignores it sees a truncated list as a complete one (2103).
+	t.Run("cursor breaks mid-stream", func(t *testing.T) {
+		h, _ := seed(t, "fault_op=next&fault_after=1")
+		wantErr(t, inTx(t, h, func(tx *sql.Tx) error {
+			return review.EachRef(tx, issueID, "", "", func(review.Ref) error { return nil })
+		}), "iterate review refs")
+	})
 	t.Run("callback stops the stream", func(t *testing.T) {
 		h, _ := seed(t, "")
 		sentinel := errors.New("caller stopped")
@@ -287,6 +297,15 @@ func TestListEachHandlesEveryFailure(t *testing.T) {
 		wantErr(t, inTx(t, h, func(tx *sql.Tx) error {
 			return review.ListEach(tx, issueID, "", "", func(review.Review) error { return nil })
 		}), "get review")
+	})
+	// A cursor that yields rows and THEN fails is its own failure mode:
+	// the loop ends normally and only rows.Err() reports it, so a caller
+	// that ignores it sees a truncated list as a complete one (2103).
+	t.Run("cursor breaks mid-stream", func(t *testing.T) {
+		h, _ := seed(t, "fault_op=next&fault_after=1")
+		wantErr(t, inTx(t, h, func(tx *sql.Tx) error {
+			return review.EachRef(tx, issueID, "", "", func(review.Ref) error { return nil })
+		}), "iterate review refs")
 	})
 	t.Run("callback stops the stream", func(t *testing.T) {
 		h, _ := seed(t, "")
@@ -757,3 +776,75 @@ func TestDiffReportsAFailedStart(t *testing.T) {
 // real error to satisfy a number, which is the opposite of what the gate is
 // for. Compare the rand.Read guard, which WAS deleted: there the standard
 // library proved the error cannot be returned at all.
+
+// SetVerdict, Consume, Resubmit and SpendForClose all end in
+// `return Get(tx, id)`, and NOTHING tested that closing read. Its failure is
+// indistinguishable from the opening Get's by message — both say "get review"
+// — so the ordinal is the only evidence available (review 2103).
+//
+// sweepToTheLastQuery walks query ordinals, each in its own subtest so each
+// gets its own in-memory database. Runs are independent: at ordinal N the
+// first N-1 queries succeed and the Nth fails, so the HIGHEST ordinal that
+// still errors is the operation's final query. If the closing Get's failure
+// were swallowed, the operation would succeed there and the highest erroring
+// ordinal would fall short by Get's two queries.
+func sweepToTheLastQuery(t *testing.T, setup func(*testing.T, string) (*sql.DB, string), call func(*sql.Tx, string) error) (int, error) {
+	t.Helper()
+	const bound = 12
+	last, lastErr := 0, error(nil)
+	for n := 1; n <= bound; n++ {
+		var err error
+		t.Run(fmt.Sprintf("ordinal-%d", n), func(t *testing.T) {
+			h, id := setup(t, fmt.Sprintf("fault_op=query&fault_after=%d", n))
+			err = inTx(t, h, func(tx *sql.Tx) error { return call(tx, id) })
+		})
+		if err == nil {
+			return last, lastErr
+		}
+		last, lastErr = n, err
+	}
+	t.Fatalf("every ordinal up to %d still failed; the operation is not bounded", bound)
+	return 0, nil
+}
+
+// wantClosingGetReported asserts the operation's LAST query is the closing
+// Get's second one — Get reads the review row and then its submissions — and
+// that its failure reaches the caller.
+func wantClosingGetReported(t *testing.T, setup func(*testing.T, string) (*sql.DB, string), call func(*sql.Tx, string) error) {
+	t.Helper()
+	last, err := sweepToTheLastQuery(t, setup, call)
+	if last < 3 {
+		t.Fatalf("the sweep stopped at ordinal %d, inside the OPENING Get; the closing read was never reached", last)
+	}
+	wantErr(t, err, "submissions of")
+}
+
+func TestSetVerdictReportsItsClosingRead(t *testing.T) {
+	wantClosingGetReported(t, seed, func(tx *sql.Tx, id string) error {
+		_, err := review.SetVerdict(tx, id, "approved", 1, eventID)
+		return err
+	})
+}
+
+func TestConsumeReportsItsClosingRead(t *testing.T) {
+	wantClosingGetReported(t, approved, func(tx *sql.Tx, id string) error {
+		_, err := review.Consume(tx, id, 1, eventID)
+		return err
+	})
+}
+
+func TestResubmitReportsItsClosingRead(t *testing.T) {
+	wantClosingGetReported(t, changesRequested, func(tx *sql.Tx, id string) error {
+		_, err := review.Resubmit(tx, id, 1, eventID,
+			review.Deliverable{Branch: str("work"), Commit: str(strings.Repeat("c", 40))},
+			str("again"), strings.Repeat("d", 40), str("more diff"))
+		return err
+	})
+}
+
+func TestSpendForCloseReportsItsClosingRead(t *testing.T) {
+	wantClosingGetReported(t, approved, func(tx *sql.Tx, id string) error {
+		_, err := review.SpendForClose(tx, id, issueID, 1, eventID)
+		return err
+	})
+}

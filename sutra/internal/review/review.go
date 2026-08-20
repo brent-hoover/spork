@@ -398,7 +398,12 @@ func EachRef(tx *sql.Tx, issue, state, session string, fn func(Ref) error) error
 			return err
 		}
 	}
-	return rows.Err()
+	// Wrapped like ListEach four lines down. A bare rows.Err() reaches the
+	// caller as a driver string with no indication of which cursor broke.
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate review refs: %w", err)
+	}
+	return nil
 }
 
 // ListEach streams matching reviews one at a time — summaries are
