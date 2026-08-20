@@ -13,8 +13,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sutra/internal/api"
 	_ "sutra/internal/faultsql"
+	"sync"
 )
 
 // internal/api holds more uncovered arms than the rest of the module put
@@ -680,10 +685,83 @@ func TestStoreFailuresAreUnsettled5xx(t *testing.T) {
 		total, len(depth), deepestName, deepest, maxOrdinals)
 }
 
+// The sweeps share ONE git repository. Building one per ordinal meant about
+// ten git subprocesses each and roughly fourteen thousand across the sweeps,
+// which was very nearly all of their runtime.
+//
+// Sharing is safe because sutra only ever READS a repository: the whole of
+// its production git surface is merge-base, show-ref and diff. Tests that
+// mutate a repo — the diff.external hijack, the ff-only merge — keep
+// newGitRepo's private per-test copy.
+var (
+	sweepRepoOnce sync.Once
+	sweepRepoPath string
+	sweepRepoHead string
+	sweepRepoErr  error
+)
+
 func sweepRepo(t *testing.T) (path, head string) {
 	t.Helper()
-	repo := newGitRepo(t)
-	return repo.path, repo.featureSHA
+	sweepRepoOnce.Do(buildSweepRepo)
+	if sweepRepoErr != nil {
+		t.Fatalf("build the shared sweep repository: %v", sweepRepoErr)
+	}
+	return sweepRepoPath, sweepRepoHead
+}
+
+// buildSweepRepo mirrors newGitRepo without binding to a *testing.T, since
+// the repository outlives any single test.
+func buildSweepRepo() {
+	dir, err := os.MkdirTemp("", "sutra-sweep-repo-")
+	if err != nil {
+		sweepRepoErr = err
+		return
+	}
+	sweepRepoPath = dir
+	run := func(args ...string) string {
+		if sweepRepoErr != nil {
+			return ""
+		}
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			sweepRepoErr = fmt.Errorf("git %v: %v — %s", args, err, out)
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(name, content string) {
+		if sweepRepoErr != nil {
+			return
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			sweepRepoErr = err
+		}
+	}
+	run("init", "-b", "main")
+	write("a.txt", "base")
+	run("add", ".")
+	run("commit", "-m", "base")
+	run("checkout", "-b", "feature")
+	write("b.txt", "feature work")
+	run("add", ".")
+	run("commit", "-m", "feature")
+	sweepRepoHead = run("rev-parse", "HEAD")
+	run("checkout", "main")
+}
+
+// TestMain removes the shared repository once every test has finished with
+// it. It cannot hang off a t.TempDir without dying at the first test's end.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sweepRepoPath != "" {
+		_ = os.RemoveAll(sweepRepoPath)
+	}
+	os.Exit(code)
 }
 
 // TestUnreadableRowCountsAreUnsettled5xx sweeps the synthetic mode that
