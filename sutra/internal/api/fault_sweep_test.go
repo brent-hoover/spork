@@ -163,6 +163,7 @@ type sweepWorld struct {
 	changesRvw    string
 	changesRev    int64
 	changesEvent  string
+	assignedIssue string // open and assigned, so popping CLAIMS something
 }
 
 // prepare fills a database through the CLEAN server and returns the ids.
@@ -260,6 +261,16 @@ func prepare(t *testing.T, clean *httptest.Server) sweepWorld {
 	w.changesRvw = create("/reviews",
 		`{"issue":"`+w.changesIssue+`","author":"`+w.actor+`","branch":"work","commit":"`+head+`"}`)
 	w.changesRev = w.revision
+	// Its own issue, assigned and left open. Without one, popping the work
+	// stack always took the empty-stack branch and swept none of the claim
+	// path — the transition, the status write, the event, the subtree bump
+	// (reviews 2115, 2116). The sweep's own "assign issue" operation works
+	// on w.issue, so this one stays out of its way.
+	w.assignedIssue = create("/projects/"+w.project+"/issues",
+		`{"title":"assigned","actor":"`+w.actor+`"}`)
+	prepPost(t, clean, next(), "/issues/"+w.assignedIssue+"/assign",
+		`{"assignee":"`+w.actor+`","actor":"`+w.actor+`"}`)
+
 	changes := prepPost(t, clean, next(), "/reviews/"+w.changesRvw+"/verdict",
 		`{"verdict":"changes-requested","actor":"`+w.actor+`","revision":`+strconv.FormatInt(w.changesRev, 10)+`}`)
 	w.changesEvent, _ = changes["latest_verdict_event"].(string)
