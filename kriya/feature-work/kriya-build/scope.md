@@ -16,19 +16,27 @@ in `kriya/avspec.yaml` — in Go, until all 155 scenarios in
 ## In scope
 
 * All twelve avspec modules as Go packages under `kriya/internal/`, plus
-  the composition root `kriya/cmd/kriya`, the `store` package, and the
-  `acceptance` godog harness.
-* The orchestrator state table covering all sixteen `BuildRun` states.
-* The four seams: `claude -p` subprocess agents, the roborev CLI bridge,
-  the sutra HTTP client, and the target-command gate runner.
-* SQLite schema and migrations for all 25 entities, with write-ahead
-  idempotency keys and fence columns.
+  the composition root `kriya/cmd/kriya` and the non-module packages
+  `agent`, `specverify`, `clock`, and `acceptance`. Each module owns its
+  own tables — there is no shared store package.
+* Both state tables: the per-ticket machine over `BuildRun`'s sixteen
+  states plus the `review_submission_state` axis, and the per-target
+  completion machine over `BuildTarget` / `CompletionAdvance`.
+* The five seams: `claude -p` subprocess agents, the `avspec verify`
+  subprocess, the roborev CLI bridge, the sutra HTTP client, and the
+  target-command gate runner.
+* Per-module SQLite schema and migrations for all 25 entities, with the 37
+  write-ahead idempotency-key columns and the fence columns.
 * The bubbletea TUI: live state and the operator inbox.
 * Both test rings — unit against a fake tracker, integration against a
   real sutra instance.
-* Completing `kriya/arch-go.yml` with rules for `cmd/kriya`, `store`, and
-  `acceptance`, using the explicit-complement idiom where `may_import` is
-  empty.
+* Completing `kriya/arch-go.yml`: rules for `cmd/kriya`, `agent`,
+  `specverify`, `clock`, and `acceptance`, and adding those non-module
+  packages to the six `shouldOnlyDependsOn` allowlists that need them.
+  **This deliberately diverges from avspec `may_import` for non-module
+  edges** — avspec cannot express a package that is not a module. State it
+  in the file header and log it as a spec gap, as sutra did
+  (`sutra/arch-go.yml:22-25`).
 * Stack-command changes to `kriya/avspec.yaml` where a gate cannot run as
   written — specifically the mutation scope — each with its own review.
 * One end-to-end driven build of `avspec/examples/linkshort`.
@@ -55,8 +63,11 @@ in `kriya/avspec.yaml` — in Go, until all 155 scenarios in
 
 * `kriya/cmd/**`
 * `kriya/internal/**`
-* `kriya/go.mod`, `kriya/go.sum`
-* `kriya/arch-go.yml`
+* `kriya/testdata/**` — fixtures outside `internal/`
+* `kriya/*` — root-level app files: `go.mod`, `go.sum`, `kriya.toml`,
+  `.golangci.yml`, `branch-coverage-skip`
+* `kriya/arch-go.yml` — including the six `shouldOnlyDependsOn` allowlists,
+  for non-module packages only
 * `kriya/branch-coverage-skip` (if app-specific coverage exclusions prove
   necessary)
 * `kriya/avspec.yaml` — **stack commands only**, and only where a gate
@@ -69,7 +80,9 @@ in `kriya/avspec.yaml` — in Go, until all 155 scenarios in
 * `kriya/verification/**` — the acceptance tests
 * `kriya/avspec.yaml` outside the `stack.commands` block — no requirement,
   acceptance-criterion, entity, or boundary edits
-* `sutra/**` — sutra is built and merged; kriya consumes it
+* `sutra/**` — sutra is built and merged; kriya consumes it. The
+  integration ring *runs* a sutra binary, which is fine; it does not
+  modify sutra's source
 * `avspec/src/**`, `avspec/tests/**` — the verifier is not part of this work
 * `scripts/**` — `branch-coverage.sh` and its regression suite are shared
   by every Go app in the repo and are not kriya's to change
