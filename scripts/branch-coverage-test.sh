@@ -1180,5 +1180,75 @@ check "a cleared floor does not excuse a broken driver" 1 'did not pass' ./subje
 unset BRANCH_COVERAGE_FLOOR
 
 echo
+echo "== a malformed floor refuses rather than disabling the strict rule =="
+# awk coerces a non-numeric value to zero, so an unvalidated `oops` would
+# enter permissive mode and then CLEAR a floor of 0 — every arm requirement
+# gone, reported as a pass. It must refuse, and refuse before measuring.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestQuietOnly(t *testing.T) {
+	if subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+for bad in oops 101 -1 7.5.1 . 1e2 75x; do
+	export BRANCH_COVERAGE_FLOOR="$bad"
+	check "a floor of '$bad' refuses" 2 'must be a number from 0 to 100' ./subject
+done
+unset BRANCH_COVERAGE_FLOOR
+
+echo
+echo "== the floor is judged on the raw ratio, not the displayed rounding =="
+# 2999/3000 is 99.9666%, which DISPLAYS as 100.0%. Comparing the rounded
+# value would let a shortfall round its way through a 100 floor.
+reset
+mkdir -p "$work/mod/wide"
+python3 - "$work/mod/wide/wide.go" <<'PYGEN'
+import sys
+n = 1500
+out = ["package wide", ""]
+out.append("func Pick(i int, b bool) int {")
+out.append("\tswitch i {")
+for k in range(n):
+    out.append("\tcase %d:" % k)
+    out.append("\t\tif b {")
+    out.append("\t\t\treturn %d" % k)
+    out.append("\t\t}")
+out.append("\t}")
+out.append("\treturn -1")
+out.append("}")
+open(sys.argv[1], "w").write("\n".join(out) + "\n")
+PYGEN
+cat >"$work/mod/wide/wide_test.go" <<'EOF'
+package wide
+
+import "testing"
+
+// Takes both arms of every case but one, so the total lands just under
+// 100% and rounds up to it.
+func TestNearlyAll(t *testing.T) {
+	for i := 0; i < 1499; i++ {
+		Pick(i, true)
+		Pick(i, false)
+	}
+	Pick(1499, true)
+}
+EOF
+export BRANCH_COVERAGE_FLOOR=100
+check "a shortfall cannot round its way through the floor" 1 'is below the 100% floor' ./wide
+unset BRANCH_COVERAGE_FLOOR
+
+echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

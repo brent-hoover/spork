@@ -239,6 +239,24 @@ else
 	done <"$work/subjects"
 fi
 
+# A malformed floor must not silently disable the strict rule. awk coerces a
+# non-numeric value to zero, so BRANCH_COVERAGE_FLOOR=oops would enter
+# permissive mode and then clear a floor of 0 -- every arm requirement gone,
+# reported as a pass. Validated HERE, before anything is measured, so the
+# refusal is immediate rather than twenty minutes later.
+if [ -n "${BRANCH_COVERAGE_FLOOR:-}" ]; then
+	case $BRANCH_COVERAGE_FLOOR in
+	*[!0-9.]* | *.*.* | .)
+		echo "branch-coverage: BRANCH_COVERAGE_FLOOR must be a number from 0 to 100, got '$BRANCH_COVERAGE_FLOOR'" >&2
+		exit 2
+		;;
+	esac
+	if awk -v f="$BRANCH_COVERAGE_FLOOR" 'BEGIN { exit !(f + 0 > 100) }'; then
+		echo "branch-coverage: BRANCH_COVERAGE_FLOOR must be a number from 0 to 100, got '$BRANCH_COVERAGE_FLOOR'" >&2
+		exit 2
+	fi
+fi
+
 failed=0
 # Module-wide totals, so a FLOOR can be judged on the whole rather than
 # package by package. A per-package 100% rule and a module floor answer
@@ -600,7 +618,10 @@ if [ "$sum_total" -gt 0 ]; then
 		# A shortfall is a failure even if every package instrumented
 		# cleanly, and an instrumentation failure stays a failure even if
 		# the surviving packages clear the floor.
-		if awk -v p="$pct" -v f="$BRANCH_COVERAGE_FLOOR" 'BEGIN { exit !(p + 0 < f + 0) }'; then
+		# Compared against the RAW RATIO, never against $pct: $pct is
+		# rounded for display, and 74.98% displays as 75.0%. A floor that
+		# a shortfall can round its way through is not a floor.
+		if awk -v c="$sum_covered" -v t="$sum_total" -v f="$BRANCH_COVERAGE_FLOOR" 'BEGIN { exit !(100 * c < f * t) }'; then
 			echo "branch-coverage: ${pct}% is below the ${BRANCH_COVERAGE_FLOOR}% floor" >&2
 			failed=1
 		else

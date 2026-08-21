@@ -146,7 +146,15 @@ func do(t *testing.T, srv *httptest.Server, method, path, key, body string) (int
 	if method != http.MethodGet {
 		req.Header.Set("Idempotency-Key", key)
 	}
-	resp, err := srv.Client().Do(req)
+	// The sweeps judge the STATUS the handler chose, so a redirect must
+	// arrive as a redirect. srv.Client() follows them by default, which
+	// would hand every ok2xx check the final response instead and let a 3xx
+	// terminate a walk or satisfy a clean retry (review 2131).
+	client := *srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
