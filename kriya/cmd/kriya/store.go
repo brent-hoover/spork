@@ -25,59 +25,92 @@ type migration struct {
 // id is the key recorded in schema_migrations.
 func (m migration) id() string { return m.module + "/" + m.name }
 
-// applyMigrations applies each module's schema in the order given, once.
+// ensureMigrationLedger creates schema_migrations, converting the legacy
+// shape if an earlier build left one behind.
 //
-// Order is the caller's, not discovered: a module's tables may reference an
-// earlier module's, and recovery reads them in a declared sequence. Applying
-// is idempotent — a module already recorded in schema_migrations is skipped —
-// so a crashed startup replays safely, which is the same write-ahead
-// discipline every seam uses.
-func applyMigrations(ctx context.Context, db *sql.DB, ms []migration) error {
+// That build keyed the table on `module` rather than `id`, and CREATE TABLE
+// IF NOT EXISTS does not convert an existing schema — the first query for
+// `id` would fail and block startup. Cheap to carry and impossible to notice
+// if it is missing.
+func ensureMigrationLedger(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
-	// An earlier build keyed this table on `module` rather than `id`, and
-	// CREATE TABLE IF NOT EXISTS does not convert an existing schema — the
-	// first query for `id` would fail and block startup. Convert in place.
-	// Cheap to carry and impossible to notice if it is missing.
 	var legacy int
 	if err := db.QueryRowContext(ctx,
 		`SELECT count(*) FROM pragma_table_info('schema_migrations') WHERE name = 'module'`).
 		Scan(&legacy); err != nil {
 		return fmt.Errorf("inspect schema_migrations: %w", err)
 	}
-	if legacy > 0 {
-		if _, err := db.ExecContext(ctx,
-			`ALTER TABLE schema_migrations RENAME COLUMN module TO id`); err != nil {
-			return fmt.Errorf("migrate schema_migrations to id: %w", err)
+	if legacy == 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE schema_migrations RENAME COLUMN module TO id`); err != nil {
+		return fmt.Errorf("migrate schema_migrations to id: %w", err)
+	}
+	return nil
+}
+
+// applied reports whether a migration has already run.
+func applied(ctx context.Context, db *sql.DB, m migration) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM schema_migrations WHERE id = ?`, m.id()).Scan(&n); err != nil {
+		return false, fmt.Errorf("check migration %s: %w", m.id(), err)
+	}
+	return n > 0, nil
+}
+
+// applyOne runs a migration and records it, atomically. A failure leaves
+// neither its statements nor its ledger row behind.
+func applyOne(ctx context.Context, db *sql.DB, m migration) (err error) {
+	tx, txErr := db.BeginTx(ctx, nil)
+	if txErr != nil {
+		return fmt.Errorf("begin migration %s: %w", m.id(), txErr)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	for i, stmt := range m.stmts {
+		if _, err = tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("migration %s statement %d: %w", m.id(), i, err)
 		}
 	}
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (id) VALUES (?)`, m.id()); err != nil {
+		return fmt.Errorf("record migration %s: %w", m.id(), err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", m.id(), err)
+	}
+	return nil
+}
+
+// applyMigrations applies each module's schema in the order given, once.
+//
+// Order is the caller's, not discovered: a module's tables may reference an
+// earlier module's, and recovery reads them in a declared sequence. Applying
+// is idempotent — a migration already recorded is skipped — so a crashed
+// startup replays safely, which is the same write-ahead discipline every seam
+// uses.
+func applyMigrations(ctx context.Context, db *sql.DB, ms []migration) error {
+	if err := ensureMigrationLedger(ctx, db); err != nil {
+		return err
+	}
 	for _, m := range ms {
-		var seen int
-		if err := db.QueryRowContext(ctx,
-			`SELECT count(*) FROM schema_migrations WHERE id = ?`, m.id()).Scan(&seen); err != nil {
-			return fmt.Errorf("check migration %s: %w", m.id(), err)
+		done, err := applied(ctx, db, m)
+		if err != nil {
+			return err
 		}
-		if seen > 0 {
+		if done {
 			continue
 		}
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin migration %s: %w", m.id(), err)
-		}
-		defer func() { _ = tx.Rollback() }()
-		for i, stmt := range m.stmts {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("migration %s statement %d: %w", m.id(), i, err)
-			}
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO schema_migrations (id) VALUES (?)`, m.id()); err != nil {
-			return fmt.Errorf("record migration %s: %w", m.id(), err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %s: %w", m.id(), err)
+		if err := applyOne(ctx, db, m); err != nil {
+			return err
 		}
 	}
 	return nil
