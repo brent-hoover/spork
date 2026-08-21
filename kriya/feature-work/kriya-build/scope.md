@@ -96,7 +96,14 @@ after outline expansion — and the pinned gate chain is green.
 * `sutra/**` — sutra is built and merged; kriya consumes it. The
   integration ring *runs* a sutra binary, which is fine; it does not
   modify sutra's source
-* `avspec/src/**`, `avspec/tests/**` — the verifier is not part of this work
+* `avspec/**` EXCEPT the `resolve` command — the verifier is not part of this
+  work, with one approved exception (2026-08-21): kriya needs each module's
+  resolved effective commands and the referenced artifact set to pin a
+  SpecSnapshot, and avspec exposed only `verify` and `next`. Rather than give
+  kriya a second parser for the avspec format — two readings of one format
+  that can disagree, on the input kriya's correctness most depends on —
+  avspec grows `avspec resolve <dir> --json`. Only that command, its tests,
+  and its docs are in scope
 * `scripts/**` — `branch-coverage.sh` and its regression suite are shared
   by every Go app in the repo and are not kriya's to change
 * `.github/**` — CI is out of scope. Gates run locally, as sutra's did
