@@ -512,7 +512,7 @@ and the rest in a later milestone.
 
 | # | Milestone | Packages | Requirements proven |
 |---|---|---|---|
-| M1 | Skeleton | `cmd/kriya`, `acceptance`, `clock`, `arch-go.yml` completed, Go+uv CI | none — the gate chain itself |
+| M1 | Skeleton | `cmd/kriya`, `acceptance`, `clock`, `arch-go.yml` completed | none — the gate chain itself, run locally |
 | M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `cli`, `planner` (`Plan` lifecycle + `BuildTarget.epic_state`), `recovery` (sequencer + **stage 2 only**) | spec-intake **(partial)**, decompose **(partial)**, risk-first **(partial)** |
 | M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun, code path only) + the real `PopBinder`, `recovery` (+ **stage 1**, 5-7, 9) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent **(partial)**, spec-intake **(remainder)**, decompose **(one scenario)** |
 | M4 | Review, merge, completion | `owner`, `orchestrator` (MergeAttempt + BuildRun research path), `planner` (`completion_state` + `CompletionAdvance`), `recovery` (+ stages 3, 8) | po-validation, submit-review |

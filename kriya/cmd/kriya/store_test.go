@@ -107,28 +107,6 @@ func TestAModuleCanEvolveAcrossMilestones(t *testing.T) {
 	}
 }
 
-func TestALegacySchemaMigrationsTableIsConverted(t *testing.T) {
-	db := openTemp(t)
-	// Exactly what an earlier build left behind.
-	if _, err := db.Exec(`CREATE TABLE schema_migrations (module TEXT PRIMARY KEY)`); err != nil {
-		t.Fatalf("seed legacy table: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO schema_migrations (module) VALUES ('planner')`); err != nil {
-		t.Fatalf("seed row: %v", err)
-	}
-	ms := []migration{{module: "other", name: "0001", stmts: []string{`CREATE TABLE t (id INTEGER)`}}}
-	if err := applyMigrations(context.Background(), db, ms); err != nil {
-		t.Fatalf("apply against a legacy schema: %v", err)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE id = 'planner'`).Scan(&n); err != nil {
-		t.Fatalf("query converted column: %v", err)
-	}
-	if n != 1 {
-		t.Error("the legacy row did not survive conversion")
-	}
-}
-
 func TestForeignKeysAreActuallyEnforced(t *testing.T) {
 	// Opened through the production dsn(), so this tests the real connection
 	// string rather than a copy of its pragmas.

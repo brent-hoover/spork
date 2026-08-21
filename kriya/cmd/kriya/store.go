@@ -25,30 +25,20 @@ type migration struct {
 // id is the key recorded in schema_migrations.
 func (m migration) id() string { return m.module + "/" + m.name }
 
-// ensureMigrationLedger creates schema_migrations, converting the legacy
-// shape if an earlier build left one behind.
+// ensureMigrationLedger creates the table recording which migrations have run.
 //
-// That build keyed the table on `module` rather than `id`, and CREATE TABLE
-// IF NOT EXISTS does not convert an existing schema — the first query for
-// `id` would fail and block startup. Cheap to carry and impossible to notice
-// if it is missing.
+// There is deliberately NO conversion of an older shape. An earlier version of
+// this file keyed the table on `module` rather than `id`, and a review asked
+// for in-place conversion — but no such database has ever existed: both
+// shapes lived and died inside this unreleased branch. The conversion was
+// also wrong, renaming the column while leaving values like "planner" that no
+// longer match ids like "planner/0001_plan", so the first migration would
+// rerun and fail on its existing tables. Speculative compatibility for a
+// database with no instances, carrying a bug of its own.
 func ensureMigrationLedger(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
-	}
-	var legacy int
-	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM pragma_table_info('schema_migrations') WHERE name = 'module'`).
-		Scan(&legacy); err != nil {
-		return fmt.Errorf("inspect schema_migrations: %w", err)
-	}
-	if legacy == 0 {
-		return nil
-	}
-	if _, err := db.ExecContext(ctx,
-		`ALTER TABLE schema_migrations RENAME COLUMN module TO id`); err != nil {
-		return fmt.Errorf("migrate schema_migrations to id: %w", err)
 	}
 	return nil
 }

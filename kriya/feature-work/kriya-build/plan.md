@@ -296,9 +296,11 @@ generation", "overlapping intakes never share a generation", "a delayed
 older plan can never regress the mapping", "amended spec pins a new
 snapshot".
 
-**Deferred to M5:** "working tree edits do not change a pinned build" — its
+**Deferred to M3:** "working tree edits do not change a pinned build" — its
 `And the build runs its gate chain and recovery later replays a step`
-clause needs the gate chain (M3) and a supersession-era replay (M5).
+clause needs the gate chain and BuildRun recovery, both of which land in M3.
+It contains no supersession, so earlier drafts deferring it to M5 were
+wrong twice over.
 
 **Verify:** `go test -tags acceptance ./internal/acceptance/ -godog.paths ../../verification/REQ-spec-intake.feature`
 — 8 from this step; 11 of 12 for the file once step 12 lands.
@@ -387,8 +389,9 @@ disposition **bound**" — is claimed by M3, not faked here.
 now is why M3 and M4 can grow it rather than invent it.
 
 **Scenarios:** `REQ-decompose.feature` — "every parked state recovers
-forward", "retirement distinguishes pending from issued work".
-(The intake-crash scenario is claimed by step 9.)
+forward". (The intake-crash scenario is claimed by step 9; "retirement
+distinguishes pending from issued work" is M3, because it needs a live
+BuildRun to stamp disposition `bound`.)
 
 Note "every parked state recovers forward" has operator actions —
 `ACT-plan-restore`, `ACT-plan-retry` — whose TUI vehicle is M6. The harness
