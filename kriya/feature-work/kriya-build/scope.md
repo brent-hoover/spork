@@ -25,8 +25,9 @@ after outline expansion — and the pinned gate chain is green.
   `CompletionAdvance` completion machine, `MergeAttempt`, and
   `AttributionAmbiguity` — plus the `Plan` lifecycle.
 * `internal/recovery`: a `Recover` method per owning module and the
-  sequencer that runs them, since no single module can reach them all
-  (`orchestrator` cannot import `reviewbridge`).
+  eight-stage sequencer that runs them. It is a composition-root concern:
+  a legal route exists through `devloop`, but it would put cross-module
+  startup sequencing inside a domain module.
 * The five seams: `claude -p` subprocess agents, the `avspec verify`
   subprocess, the roborev CLI bridge, the sutra HTTP client, and the
   target-command gate runner.

@@ -45,13 +45,21 @@ declared, boundary-checked, but not domain modules. Sutra hit this once
 (its composition root); kriya hits it six times, which suggests it is
 structural rather than incidental.
 
-`recovery` is the sharpest case, because it exists **because of** the
-declared boundaries rather than in spite of them. About fifty scenarios
-say "when recovery runs", and recovery must reconcile rows owned by
-planner, workspace, orchestrator, and reviewbridge — but `orchestrator`
-may not import `reviewbridge` (`arch-go.yml:22-29`), so no module can
-sequence the set. The spec's own boundary rules force a package the spec
-has no way to describe.
+`recovery` is the clearest case, though the claim needs stating carefully.
+About fifty scenarios say "when recovery runs", and recovery must
+reconcile rows owned by planner, workspace, devloop, orchestrator, and
+reviewbridge. `orchestrator` may not import `reviewbridge` directly
+(`arch-go.yml:22-29`) — but `devloop` may (`:44-49`), so
+`orchestrator → devloop → reviewbridge` is a legal path and sequencing
+*could* be forced through it. It is not that the boundaries make
+sequencing impossible; it is that every legal route runs cross-module
+startup sequencing through a domain module that has no business holding
+it, and through the one module `CON-deterministic-orchestrator` most
+constrains.
+
+So the gap is narrower than "the spec forbids it" and still real: avspec
+can describe modules and their edges, but not a startup concern that
+belongs to the composition root and spans every owner.
 
 ---
 
