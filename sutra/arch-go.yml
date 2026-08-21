@@ -48,6 +48,7 @@ dependenciesRules:
         - "**.api"
         - "**.cli"
         - "**.web"
+        - "**.faultsql"
   - package: "**.docs"
     shouldOnlyDependsOn:
       internal:
@@ -73,6 +74,7 @@ dependenciesRules:
         - "**.api"
         - "**.cli"
         - "**.web"
+        - "**.faultsql"
   - package: "**.events"
     shouldNotDependsOn:
       internal:
@@ -85,6 +87,7 @@ dependenciesRules:
         - "**.api"
         - "**.cli"
         - "**.web"
+        - "**.faultsql"
   # Comments — polymorphic storage (ENT-comment); anchor-target
   # validation lives in the API layer, so the package imports no
   # sibling modules.
@@ -101,6 +104,7 @@ dependenciesRules:
         - "**.api"
         - "**.cli"
         - "**.web"
+        - "**.faultsql"
   # Fault injection — a database/sql driver that exists only so tests can
   # inject store failures. It imports no sibling module and nothing in
   # production imports IT: the sweeps reach it through a blank import and a
@@ -150,6 +154,7 @@ dependenciesRules:
         - "**.review"
         - "**.api"
         - "**.web"
+        - "**.faultsql"
   - package: "**.web"
     shouldNotDependsOn:
       internal:
@@ -162,3 +167,4 @@ dependenciesRules:
         - "**.review"
         - "**.api"
         - "**.cli"
+        - "**.faultsql"
