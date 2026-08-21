@@ -431,9 +431,14 @@ implementation · `devloop` (pair loop, commit cadence, `DevSession`) ·
 `reviewbridge` (roborev enqueue/poll/respond/close, `EnqueueAttempt`
 write-ahead) · `gates` (six gate runners, `GateResult` with the
 exit/stdout/stderr envelope) · `architect` (impasse, escalation) ·
-`orchestrator` BuildRun **code traversal only** · `recovery` stages 5-7, 9.
+`orchestrator` BuildRun **code traversal only**, plus the real `PopBinder`
+· `recovery` **stage 1** and stages 5-7, 9.
 **Proves:** workspaces, pair-loop, the four gate REQs, context-assembly,
-thread-capture, tier-routing, sa-agent (partial).
+thread-capture, tier-routing, sa-agent (partial), **spec-intake
+(remainder — "working tree edits do not change a pinned build", which needs
+the gate chain and BuildRun recovery, both here)**, and **decompose's
+"retirement distinguishes pending from issued work"**, which needs a live
+BuildRun to stamp disposition `bound`.
 
 ### M4 — Review, merge, completion
 `owner` (AC validation, anti-gaming) · `orchestrator` `MergeAttempt` and
@@ -446,7 +451,8 @@ the BuildRun **research path** · `planner` `completion_state` +
 `AttributionAmbiguity` · `recovery` stage 4 · learning loop feeding
 context.
 **Proves:** run-to-complete, parallel-build, learning-loop, and the
-remainders of risk-first, spec-intake, decompose, sa-agent.
+remainders of risk-first, decompose (its pop-admission scenario), and
+sa-agent. **Not spec-intake** — that completes in M3.
 
 ### M6 — Operator surface and proof
 `tui` (bubbletea; live state, the inbox, operator actions via orchestrator

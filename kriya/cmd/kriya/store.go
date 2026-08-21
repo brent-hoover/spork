@@ -37,6 +37,22 @@ func applyMigrations(ctx context.Context, db *sql.DB, ms []migration) error {
 		`CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
+	// An earlier build keyed this table on `module` rather than `id`, and
+	// CREATE TABLE IF NOT EXISTS does not convert an existing schema — the
+	// first query for `id` would fail and block startup. Convert in place.
+	// Cheap to carry and impossible to notice if it is missing.
+	var legacy int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM pragma_table_info('schema_migrations') WHERE name = 'module'`).
+		Scan(&legacy); err != nil {
+		return fmt.Errorf("inspect schema_migrations: %w", err)
+	}
+	if legacy > 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE schema_migrations RENAME COLUMN module TO id`); err != nil {
+			return fmt.Errorf("migrate schema_migrations to id: %w", err)
+		}
+	}
 	for _, m := range ms {
 		var seen int
 		if err := db.QueryRowContext(ctx,

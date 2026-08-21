@@ -8,18 +8,24 @@
 #
 # THIS FILE DELIBERATELY DIVERGES FROM avspec's may_import, in one
 # direction only. avspec can describe modules and the edges between them;
-# it has no concept of a package that is not a module. Six such packages
+# it has no concept of a package that is not a module. Seven such packages
 # exist here — cmd/kriya (composition root), agent, specverify, clock,
-# recovery, and acceptance — and arch-go requires 100% package coverage,
+# recovery, fakes, and acceptance — and arch-go requires 100% package
+# coverage,
 # so they must appear. Module-to-module edges still match avspec exactly.
 # Logged in feature-work/kriya-build/spec-gaps.md.
 #
-# EVERY RULE IS AN ALLOWLIST, with exactly one exception. An empty
+# EVERY RULE IS AN ALLOWLIST, with no denylist left in the file. An empty
 # shouldOnlyDependsOn is treated as UNCONSTRAINED and passes silently, and
-# a bare "**" pattern panics arch-go v1.7.0 (spiked 2026-08-06), so a
-# package that may import nothing has to use shouldNotDependsOn naming the
-# explicit complement. internal/clock is the only such package. Every
-# other package now imports at least clock, so it gets a real allowlist.
+# a bare "**" pattern panics arch-go v1.7.0 (spiked 2026-08-06).
+# internal/clock may import nothing at all, so it allows a SENTINEL pattern
+# matching no package — the only form that is both enforcing and stable
+# under extension. A denylist there would fail OPEN: any package added
+# later is absent from it and therefore permitted.
+#
+# arch-go v1.7.0 has NO build-tag flag, so import edges inside the
+# acceptance-tagged harness are unchecked. The harness is test-only and
+# imported by nothing, which bounds the exposure without removing it.
 #
 # That uniformity is deliberate and it closes a hole. The two idioms
 # behave differently under extension: adding a new package silently

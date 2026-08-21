@@ -11,8 +11,7 @@ import (
 
 func openTemp(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite",
-		"file:"+filepath.Join(t.TempDir(), "kriya.db")+"?_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", dsn(filepath.Join(t.TempDir(), "kriya.db")))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -105,5 +104,44 @@ func TestAModuleCanEvolveAcrossMilestones(t *testing.T) {
 	}
 	if !tableExists(t, db, "build_target") {
 		t.Error("a module's later migration was skipped")
+	}
+}
+
+func TestALegacySchemaMigrationsTableIsConverted(t *testing.T) {
+	db := openTemp(t)
+	// Exactly what an earlier build left behind.
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (module TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("seed legacy table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_migrations (module) VALUES ('planner')`); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	ms := []migration{{module: "other", name: "0001", stmts: []string{`CREATE TABLE t (id INTEGER)`}}}
+	if err := applyMigrations(context.Background(), db, ms); err != nil {
+		t.Fatalf("apply against a legacy schema: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE id = 'planner'`).Scan(&n); err != nil {
+		t.Fatalf("query converted column: %v", err)
+	}
+	if n != 1 {
+		t.Error("the legacy row did not survive conversion")
+	}
+}
+
+func TestForeignKeysAreActuallyEnforced(t *testing.T) {
+	// Opened through the production dsn(), so this tests the real connection
+	// string rather than a copy of its pragmas.
+	db := openTemp(t)
+	for _, stmt := range []string{
+		`CREATE TABLE parent (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE child (parent_id INTEGER REFERENCES parent(id))`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup %q: %v", stmt, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO child (parent_id) VALUES (999)`); err == nil {
+		t.Fatal("inserted a child row with no parent; foreign keys are not enforced")
 	}
 }

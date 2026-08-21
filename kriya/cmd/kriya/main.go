@@ -13,6 +13,19 @@ import (
 // will make this configurable arrives with internal/cli in M2.
 const defaultDBPath = "kriya.db"
 
+// dsn builds the connection string.
+//
+// foreign_keys is OFF by default in SQLite, so REFERENCES clauses in module
+// schemas would parse and then enforce nothing. busy_timeout keeps parallel
+// dev agents from failing outright on a momentarily locked database.
+//
+// Tests call this rather than repeating the pragmas: a test that rebuilt the
+// same string would pass while production had none, proving only that the
+// test agrees with itself.
+func dsn(path string) string {
+	return "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+}
+
 func main() {
 	if err := run(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "kriya:", err)
@@ -28,11 +41,7 @@ func run(ctx context.Context) error {
 	if path == "" {
 		path = defaultDBPath
 	}
-	// foreign_keys is OFF by default in SQLite, so REFERENCES clauses in module
-	// schemas would parse and then enforce nothing. busy_timeout keeps parallel
-	// dev agents from failing outright on a momentarily locked database.
-	dsn := "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return fmt.Errorf("open store %s: %w", path, err)
 	}
