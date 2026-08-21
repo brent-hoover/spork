@@ -35,8 +35,13 @@ in `kriya/avspec.yaml` — in Go, until all 155 scenarios in
   packages to the six `shouldOnlyDependsOn` allowlists that need them.
   **This deliberately diverges from avspec `may_import` for non-module
   edges** — avspec cannot express a package that is not a module. State it
-  in the file header and log it as a spec gap, as sutra did
-  (`sutra/arch-go.yml:22-25`).
+  in the file header and log it in
+  `kriya/feature-work/kriya-build/spec-gaps.md`, as sutra did in its own
+  (`sutra/arch-go.yml:22-25` is the precedent, not a file to edit).
+* Ownership divergence: `internal/agent` owns the `agent_invocation`
+  table even though `ENT-agent-invocation` is declared under
+  `MOD-orchestrator`, because no module that invokes an agent can legally
+  import orchestrator. Second spec gap; log it with the first.
 * Stack-command changes to `kriya/avspec.yaml` where a gate cannot run as
   written — specifically the mutation scope — each with its own review.
 * One end-to-end driven build of `avspec/examples/linkshort`.
@@ -73,6 +78,8 @@ in `kriya/avspec.yaml` — in Go, until all 155 scenarios in
 * `kriya/avspec.yaml` — **stack commands only**, and only where a gate
   cannot run as written
 * `kriya/feature-work/kriya-build/**`
+* `.github/workflows/**` — the repo has no Go CI job; M1 adds one, and it
+  needs both the Go and uv toolchains
 * `avspec/examples/linkshort/**` — the end-to-end proof target
 
 ## Files/areas you must NOT touch

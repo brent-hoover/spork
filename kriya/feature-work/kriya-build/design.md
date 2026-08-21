@@ -118,15 +118,17 @@ already permitted; they need no change.
 
 **This means `arch-go.yml` deliberately diverges from avspec's
 `may_import` for non-module edges.** That divergence must be stated in the
-file's header, logged as a spec gap alongside sutra's, and permitted by
+file's header, logged as a spec gap in `kriya/feature-work/kriya-build/spec-gaps.md`
+(sutra's own file is out of scope), and permitted by
 `scope.md` — which currently forbids boundary edits. It is the first
 implementation commit, before any package exists.
 
-### Two state machines, not one
+### Four state machines, not one
 
 The design's earlier claim that one transition table covers the build was
-wrong. There are two, owned by different modules, and the 44
-`run-to-complete` scenarios mostly exercise the second.
+wrong, and the first correction still undercounted. There are **four**
+write-ahead machines plus the Plan lifecycle, owned by different modules,
+and different feature files exercise each.
 
 **Per-ticket, owned by `orchestrator`.** `BuildRun.state` has sixteen
 values (`avspec.yaml:1321`), and `review_submission_state` is a
@@ -139,8 +141,29 @@ resubmitting`, `:1335`) that recovery must read together with the first.
 review-submitted | review-resubmitting | closing | complete | reopening`),
 driven by `CompletionAdvance` rows which themselves carry `parenting_state`
 (5), `reclaim_state` (3), `cascade_verified` (3), and a `cause` enum of 7.
-`AttributionAmbiguity` (orchestrator-owned) adds a further 5-value state.
-`Plan.state` adds 5 more.
+**Merge and consumption, owned by `orchestrator`.** `MergeAttempt`
+(`avspec.yaml:1372-1403`) carries its own 7-value state —
+`queued | holding | consuming | consumed | merging | merged | aborted` —
+with `attempt_key` and `consume_key`. This is what most of
+`REQ-submit-review.feature`'s 24 scenarios actually exercise: verdict-ABA
+consumption and the merge CAS against `gated_base`.
+
+**Attribution, owned by `orchestrator`.** `AttributionAmbiguity`
+(`:1483-1497`) has a 5-value state plus its own `resolution_key` /
+`reclaim_removal_key` / `reclaim_state` protocol.
+
+**Plan lifecycle, owned by `planner`.** `Plan.state` adds 5 more
+(`:1211`), covering supersession and retirement.
+
+Which file exercises which:
+
+| Machine | Owner | Exercised by |
+|---|---|---|
+| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop` |
+| `BuildTarget` + `CompletionAdvance` | planner | most of `run-to-complete` |
+| `MergeAttempt` | orchestrator | most of `submit-review` |
+| `AttributionAmbiguity` | orchestrator | `run-to-complete` new-work scenarios |
+| `Plan` | planner | `decompose`, `spec-intake` |
 
 Both machines are expressed the same way — an explicit table, one row per
 transition:
@@ -182,7 +205,19 @@ wholesale for the unit ring.
 invoke agents: `AC-tier-observed` requires that "every agent invocation —
 plan-scoped PM work included — records its role, the configured tier, and
 the resolved model" (`avspec.yaml:433`), and `architect` and `owner` are
-explicitly forbidden from importing `devloop` (`arch-go.yml:82`, `:97`).
+explicitly forbidden from importing `devloop` (`arch-go.yml:84`, `:98`).
+
+**`internal/agent` also owns the `agent_invocation` table**, and this is
+the second spec gap. `ENT-agent-invocation` is declared under
+`MOD-orchestrator` (`avspec.yaml:474`), but
+`REQ-tier-routing.feature:22` requires that "a plan-scoped PM invocation is
+recorded even though no BuildRun exists yet" — and `planner` may import
+only `trackerclient`, while `architect` and `owner` may not import
+`orchestrator` at all. Under avspec's ownership rule the row has **no legal
+writer**. Since every invocation passes through the seam, the ledger is
+naturally the seam's. `sutra/arch-go.yml:108-128` is the precedent for a
+non-module package declaring itself. Log it in
+`kriya/feature-work/kriya-build/spec-gaps.md`.
 
 ```
 claude -p <prompt> \
@@ -214,18 +249,29 @@ ticket are absent". The mechanism is two-part:
 
 - The resolved commands are **content**, written into the context bundle
   passed via `--append-system-prompt-file`.
-- The permission to run them is **generated allow-rules** in Claude Code's
-  permission-rule syntax — `Bash(go test *)`, `Bash(go vet *)`, one per
-  resolved command — and nothing else. No bare `Bash`, which is what makes
-  "tools irrelevant to the ticket are absent" mechanically true.
+- The permission to run them is **generated allow-rules**, and they cannot
+  name the commands directly. The resolved commands are not binaries:
+  kriya's own `lint` is a `mktemp`/`trap`/`&&` pipeline and its `mutation`
+  is an `if`/`awk` pipeline (`avspec.yaml:22`, `:26`). A rule like
+  `Bash(go test *)` cannot express those. Instead kriya writes **one
+  wrapper script per resolved gate command** into the workspace and grants
+  exactly `Bash(<workspace>/.kriya/gate-* *)` and nothing else. No bare
+  `Bash`, which is what makes "tools irrelevant to the ticket are absent"
+  (`REQ-context-assembly.feature:30`) mechanically true.
+  (Permission-rule prefix matching is space-star — `Bash(git diff *)` —
+  where the space is what stops it also matching `git diff-index`.)
 
 **`specverify` → the avspec verifier.** All twelve `REQ-spec-intake`
-scenarios turn on running the verifier and consuming its findings
-("the response carries the verify findings",
-`REQ-spec-intake.feature:18`). It is a **Python** tool kriya shells out to:
+scenarios need the seam present; four consume its **findings** ("the
+response carries the verify findings", `REQ-spec-intake.feature:18`) while
+the rest turn on command resolution from the pinned snapshot. It is a **Python** tool kriya shells out to:
 `avspec verify <dir> --json` (`avspec/src/avspec/cli.py:38-45`), returning
 `{status, ok, counts, findings[]}`. `avspec/src/**` is must-not-touch, so
-the report shape is fixed and consumed as-is. **The integration ring
+the report shape is fixed and consumed as-is. **A refusal is not an
+error**: `avspec verify` exits 1 whenever `ok=False`
+(`avspec/src/avspec/cli.py:48`), which is the ordinary outcome for all
+four refusal scenarios, so the seam must return a `Report`, not a Go
+`error`, on a non-zero exit that produced a parseable payload. **The integration ring
 therefore needs a Python/uv environment**, not only Go.
 
 **`reviewbridge` → roborev.** Enqueue, poll, respond, close. R1 settled the
@@ -237,6 +283,17 @@ orphans surface in the TUI inbox.
 
 **`trackerclient` → sutra.** The one package that speaks sutra's HTTP API.
 Every mutation carries an idempotency key persisted before the call.
+
+**The orchestrator exposes a read facade for the TUI.**
+`VIEW-tui-inbox.shows` (`avspec.yaml:559`) names `ENT-plan.state`,
+`ENT-plan.error`, `ENT-planned-ticket.error`,
+`ENT-workspace.cleanup_error`, and four `ENT-completion-advance` fields;
+`VIEW-tui-overview.shows` (`:552`) names `ENT-planned-ticket` fields. All
+are planner- or workspace-owned, and `MOD-tui` may import only
+orchestrator, architect, and reviewbridge (`arch-go.yml:131-135`).
+Orchestrator imports both planner and workspace, so it carries a read
+facade spanning their state. A facade is not the orchestrator "deciding":
+it selects and forwards, adding no branch.
 
 **`gates` → the target's commands.** The gate runner does not know what a
 linter or a coverage tool is. It resolves the module's command from the
@@ -273,9 +330,12 @@ these, each step carries its own key and its own interim marker, and
 recovery resumes at the first step whose key is unstamped — it never
 replays a completed step or skips an unstarted one.
 
-There are **37 `_key` columns** across the 25 entities. That count is the
-real measure of this design's surface: each one is a crash window somebody
-specified.
+There are **37 `_key` columns** across the 25 entities, of which **15 are
+declared `unique`**. The set mixes true idempotency keys with identity and
+scoping references — `project_key` is explicitly NOT unique — so 37 is a
+measure of surface, not a count of crash windows. Each key must be
+classified before it is implemented; treating a reference as an
+idempotency key would fence work that should proceed.
 
 Where the external system has no key (roborev), recovery **observes** and
 surfaces ambiguity to the operator rather than guessing, per R1.
@@ -300,16 +360,27 @@ Delivery is by merged milestones. Dependency-ordered:
 | # | Milestone | Requirements proven |
 |---|---|---|
 | M1 | Skeleton: packages, arch-go completed, per-module DDL, clock, CI green with zero behavior | none — the gate chain itself |
-| M2 | Intake and decomposition: `specverify`, `trackerclient`, `planner` | spec-intake, decompose, risk-first |
-| M3 | One ticket end to end: `workspace`, `agent`, `devloop`, `reviewbridge`, `gates`, `context` | workspaces, pair-loop, 4 gate REQs, context-assembly, thread-capture, tier-routing |
+| M2 | Intake and decomposition: `specverify`, `trackerclient`, **`agent`**, `planner` | spec-intake, decompose, risk-first |
+| M3 | One ticket end to end: `workspace`, `devloop`, `reviewbridge`, `gates`, `context` | workspaces, pair-loop, 4 gate REQs, context-assembly, thread-capture, tier-routing |
 | M4 | Review and completion: `owner`, the per-target machine | po-validation, submit-review |
 | M5 | The outer loop: full orchestrator table, parallelism, recovery | run-to-complete, parallel-build, sa-agent, learning-loop |
 | M6 | `tui`, then the linkshort end-to-end proof run | tui |
 
+`agent` lands in **M2, not M3**: `REQ-decompose.feature:11` is "When the PM
+agent decomposes it", so M2 cannot go green without at least the `Agent`
+interface and its fake. The real subprocess implementation may follow in
+M3, but the seam and the `agent_invocation` ledger are M2.
+
+Two of the six `GateResult.gate` values — `test` and `arch`
+(`avspec.yaml:1651`) — have **no dedicated requirement or feature file**,
+though `CON-gate-chain` orders all six. They are chain stages implemented
+in M3 alongside the four that do have REQs, proven indirectly by the
+scenarios that traverse the chain.
+
 ## Interfaces
 
 **CLI** — verbatim from the pinned `VIEW-cli-*` and `VIEW-tui-*`
-invocations (`avspec.yaml:531-540`):
+invocations (`avspec.yaml:525`, `:531`, `:537`, `:550`):
 
 ```
 kriya build <project>      intake a spec and start or resume its build
@@ -381,7 +452,8 @@ the weight:
 
 | Pattern | Examples | Why |
 |---|---|---|
-| Idempotency key, unique — **37 columns across the 25 entities** | `decomposition_key`, `pop_key`, `advance_key`, `completion_submission_key`, `reclaim_removal_key`, `ambiguity_key` | Write-ahead replay after a crash |
+| Idempotency keys — the crash windows | `decomposition_key`, `pop_key`, `advance_key`, `completion_submission_key`, `reclaim_removal_key`, `ambiguity_key` | Write-ahead replay after a crash |
+| Identity and scoping keys — **not** crash windows | `project_key` (declared NOT unique), `target_key`, `singleton_key`, `mapping_key` | References and upsert hashes |
 | Fence column compared under transaction | `PopFence`, `intake_generation`, `close_revision`, `review_resubmission_event` | Reject stale work rather than apply it twice |
 | Interim states on independent axes | `BuildRun.state` (16) **and** `review_submission_state` (4); `BuildTarget.completion_state` (7) **and** `epic_state` (2) | Make each crash window visible; recovery reads the axes together |
 | Snapshot pinning | `SpecSnapshot`, `spec_hash`, `gated_base` | Working-tree edits never change what a running build executes |
@@ -479,9 +551,12 @@ the harness would later need.
 - **Sutra's fences are proven by sutra's tests, not by a consumer.** If a
   guarantee is weaker than kriya's recovery assumes, it surfaces here
   first — as a flaky integration test, which is the worst way to learn it.
-- **The integration ring needs Python.** `specverify` shells out to
-  `avspec verify`, so the suite depends on a working uv environment as
-  well as a Go toolchain. A CI image with only Go fails at M2.
+- **CI has no Go job at all.** `.github/workflows/verify.yml` is the
+  repo's only workflow and runs uv, ruff, ty, pytest, and
+  `avspec verify examples/linkshort` — nothing Go. M1 must add one, and it
+  needs **both** toolchains, because `specverify` shells out to
+  `avspec verify`: the integration ring depends on a working uv
+  environment as well as Go.
 
 ## Out of scope
 
@@ -506,15 +581,16 @@ the harness would later need.
 - [ ] **Does `trackerclient` generate from the OpenAPI contract or
       hand-roll against it?** Settle at the first `trackerclient` commit;
       it affects nothing else.
-- [ ] **How does the TUI reach planner-owned actions?** `AC-tui-act`
+- [ ] **How does the TUI reach planner-owned reads and actions?** `AC-tui-act`
       requires `ACT-plan-restore`, `ACT-plan-retry`, and
       `ACT-parenting-resolve` to be executable from the TUI, but
       `MOD-tui` may import only orchestrator, architect, and reviewbridge
       (`arch-go.yml:131-135`). The intended answer is orchestrator
-      pass-throughs — and the reason a pass-through is not the
-      orchestrator "deciding" is that it carries an operator's already-made
-      decision to the owning module, adding no branch of its own. Confirm
-      that reading before M6.
+      pass-throughs for actions and a read facade for the inbox fields
+      (see Approach) — and the reason neither is the orchestrator
+      "deciding" is that both carry an already-made decision or an
+      already-recorded fact to or from the owning module, adding no branch.
+      Confirm that reading before M6.
 
 ## Change log
 
@@ -531,4 +607,16 @@ the harness would later need.
   pinned git as shell-out, named the ticket-toolset mechanism, added the
   R2/target-runtime risk and the Python-in-CI risk, defined six milestones,
   and corrected the scenario count to 162 with outline expansion
+  (Brent Hoover)
+- 2026-08-21: Second design-review pass — `internal/agent` now owns the
+  `agent_invocation` table (no legal writer existed: the entity is
+  orchestrator-owned but planner must record PM invocations and cannot
+  import orchestrator), moved the `agent` seam into M2 ahead of its first
+  consumer, named all four write-ahead machines after `MergeAttempt` was
+  found missing, replaced per-command Bash allow-rules with generated
+  wrapper scripts (the resolved commands are shell pipelines, not
+  binaries), added the orchestrator read facade the TUI's inbox needs,
+  corrected the CI risk (there is no Go job at all), reclassified the 37
+  `_key` columns as a surface measure rather than a crash-window count,
+  and noted that `avspec verify` exits 1 on an ordinary refusal
   (Brent Hoover)
