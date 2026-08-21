@@ -25,6 +25,18 @@ proposed home (avspec field / kriya context / convention).
   list — resolved by an explicitly-commented extra rule in arch-go.yml —
   proposed home: avspec could declare an app composition module, or the
   arch-config generator (deferred item 8) could emit the rule.
+- 2026-08-20 — Test-only packages: internal/faultsql is a database/sql
+  driver that exists solely so tests can inject store failures, and it is
+  invisible to the spec the same way the acceptance harness and the
+  composition root are — nothing in production imports it, it exports
+  nothing, and the sweeps reach it through a blank import and DSN
+  parameters. It needs a declared arch-go rule anyway (100% package
+  coverage) and it needs stripping from deadcode's PRODUCTION pass, since
+  by design nothing production-side reaches it — both resolved by
+  explicitly-commented entries — proposed home: avspec could mark a module
+  test-only, which would carry BOTH consequences instead of leaving them
+  to be rediscovered per tool. Same family as the composition-root gap
+  above.
 - 2026-08-06 — SQLite driver unpinned: `store: sqlite` names the engine
   but not the Go driver — resolved with Brent: modernc.org/sqlite (pure
   Go, FTS5, single-binary) — proposed home: stack block could pin driver

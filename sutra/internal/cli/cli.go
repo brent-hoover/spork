@@ -696,8 +696,11 @@ func yamlScalar(v any) string {
 
 func newKey() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
-	}
+	// crypto/rand.Read cannot return an error — see the note in
+	// internal/identity for the three-way proof (documented contract,
+	// fatal() before any non-nil return at crypto/rand/rand.go:63-66, and
+	// a failing rand.Reader producing a process fatal rather than an
+	// error). The guard that stood here was dead in nine places at once.
+	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("cli-%x", b)
 }

@@ -398,7 +398,12 @@ func EachRef(tx *sql.Tx, issue, state, session string, fn func(Ref) error) error
 			return err
 		}
 	}
-	return rows.Err()
+	// Wrapped like ListEach four lines down. A bare rows.Err() reaches the
+	// caller as a driver string with no indication of which cursor broke.
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate review refs: %w", err)
+	}
+	return nil
 }
 
 // ListEach streams matching reviews one at a time — summaries are
@@ -494,7 +499,16 @@ func Consume(tx *sql.Tx, id string, expectedRevision int64, expectedVerdictEvent
 	if err != nil {
 		return Review{}, fmt.Errorf("consume %s: %w", id, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	// An unreadable row count is UNKNOWN, not zero. Folding it into the
+	// raced-conflict answer made a transient database failure a SETTLED
+	// 409, recorded against the idempotency key forever — so an approval
+	// that was never consumed became permanently unconsumable. The count
+	// failing is a 5xx a retry can complete; only a genuine zero is a race.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Review{}, fmt.Errorf("consume %s: row count unavailable: %w", id, err)
+	}
+	if n == 0 {
 		return Review{}, &ConflictError{Code: "review-consumed", Message: fmt.Sprintf("review %s consumption raced", id)}
 	}
 	return Get(tx, id)
@@ -586,7 +600,13 @@ func SpendForClose(tx *sql.Tx, id, issue string, revision int64, verdictEvent st
 	if err != nil {
 		return Review{}, fmt.Errorf("spend %s for close: %w", id, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	// Same distinction as Consume: an unknown count must not settle as a
+	// close-used conflict, which would strand the close permanently.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Review{}, fmt.Errorf("spend %s for close: row count unavailable: %w", id, err)
+	}
+	if n == 0 {
 		return Review{}, &ConflictError{Code: "review-close-used", Message: fmt.Sprintf("review %s close raced", id)}
 	}
 	return Get(tx, id)
@@ -750,9 +770,12 @@ func SubmissionAt(r Review, revision int64) (Submission, bool) {
 func newUUIDv7() string {
 	var b [16]byte
 	binary.BigEndian.PutUint64(b[:8], uint64(time.Now().UnixMilli())<<16) //nolint:gosec // UnixMilli is non-negative for all realistic clocks
-	if _, err := rand.Read(b[6:]); err != nil {
-		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
-	}
+	// crypto/rand.Read cannot return an error — see the note in
+	// internal/identity for the three-way proof (documented contract,
+	// fatal() before any non-nil return at crypto/rand/rand.go:63-66, and
+	// a failing rand.Reader producing a process fatal rather than an
+	// error). The guard that stood here was dead in nine places at once.
+	_, _ = rand.Read(b[6:])
 	b[6] = (b[6] & 0x0f) | 0x70
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])

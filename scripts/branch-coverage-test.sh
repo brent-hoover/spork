@@ -1106,5 +1106,149 @@ subject
 emptycheck "a module with no test binary at all completes" 1 'no usable coverage data from 0 drivers' ./subject
 
 echo
+echo "== a module-wide floor is judged on the total, not per package =="
+# The per-package 100% rule and a floor answer different questions: "is
+# every arm reached" versus "has coverage gone backwards". Half of one
+# condition is 50%, which makes both sides of a floor expressible.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestQuietOnly(t *testing.T) {
+	if subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "the total is reported even with no floor set" 1 'TOTAL +1/2 arms = 50.0%' ./subject
+# Exported, not prefixed: the gate runs in a CHILD process, and a
+# `VAR=x func` prefix is not required to reach one.
+export BRANCH_COVERAGE_FLOOR=60
+check "a floor above the total fails" 1 'below the 60% floor' ./subject
+export BRANCH_COVERAGE_FLOOR=50
+check "a floor at the total passes" 0 'clears the 50% floor' ./subject
+export BRANCH_COVERAGE_FLOOR=25
+check "a floor below the total passes" 0 'clears the 25% floor' ./subject
+unset BRANCH_COVERAGE_FLOOR
+
+# The guard that matters: a cleared floor must not launder a package that
+# could not be instrumented. Without it, a broken driver would RAISE the
+# reported percentage by removing the arms it failed to cover.
+#
+# This needs TWO packages. With only a broken one, nothing is measured at
+# all, sum_total stays 0, the floor is never consulted, and the case
+# passes however the floor is implemented — which is what the first
+# version of it did.
+reset
+subject
+cat >"$work/mod/subject/subject_test.go" <<'EOF'
+package subject
+
+import "testing"
+
+func TestBoth(t *testing.T) {
+	if Greeting(true) != "HI" || Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+mkdir -p "$work/mod/other"
+cat >"$work/mod/other/other.go" <<'EOF'
+package other
+
+func Always() string { return "x" }
+EOF
+cat >"$work/mod/other/other_test.go" <<'EOF'
+package other
+
+import "testing"
+
+func TestUninstrumentable(t *testing.T) {
+	t.Fatal("cannot survive instrumentation")
+}
+EOF
+export BRANCH_COVERAGE_FLOOR=1
+check "a cleared floor does not excuse a broken driver" 1 'did not pass' ./subject ./other
+unset BRANCH_COVERAGE_FLOOR
+
+echo
+echo "== a malformed floor refuses rather than disabling the strict rule =="
+# awk coerces a non-numeric value to zero, so an unvalidated `oops` would
+# enter permissive mode and then CLEAR a floor of 0 — every arm requirement
+# gone, reported as a pass. It must refuse, and refuse before measuring.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestQuietOnly(t *testing.T) {
+	if subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+for bad in oops 101 -1 7.5.1 . 1e2 75x; do
+	export BRANCH_COVERAGE_FLOOR="$bad"
+	check "a floor of '$bad' refuses" 2 'must be a number from 0 to 100' ./subject
+done
+unset BRANCH_COVERAGE_FLOOR
+
+echo
+echo "== the floor is judged on the raw ratio, not the displayed rounding =="
+# 2999/3000 is 99.9666%, which DISPLAYS as 100.0%. Comparing the rounded
+# value would let a shortfall round its way through a 100 floor.
+reset
+mkdir -p "$work/mod/wide"
+python3 - "$work/mod/wide/wide.go" <<'PYGEN'
+import sys
+n = 1500
+out = ["package wide", ""]
+out.append("func Pick(i int, b bool) int {")
+out.append("\tswitch i {")
+for k in range(n):
+    out.append("\tcase %d:" % k)
+    out.append("\t\tif b {")
+    out.append("\t\t\treturn %d" % k)
+    out.append("\t\t}")
+out.append("\t}")
+out.append("\treturn -1")
+out.append("}")
+open(sys.argv[1], "w").write("\n".join(out) + "\n")
+PYGEN
+cat >"$work/mod/wide/wide_test.go" <<'EOF'
+package wide
+
+import "testing"
+
+// Takes both arms of every case but one, so the total lands just under
+// 100% and rounds up to it.
+func TestNearlyAll(t *testing.T) {
+	for i := 0; i < 1499; i++ {
+		Pick(i, true)
+		Pick(i, false)
+	}
+	Pick(1499, true)
+}
+EOF
+export BRANCH_COVERAGE_FLOOR=100
+check "a shortfall cannot round its way through the floor" 1 'is below the 100% floor' ./wide
+unset BRANCH_COVERAGE_FLOOR
+
+echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
