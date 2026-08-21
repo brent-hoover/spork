@@ -1,13 +1,16 @@
 Feature: Branch coverage gate
-  Coverage is per conditional arm and binary. There is no percentage
-  threshold — one untested arm fails the gate.
+  Coverage is measured per conditional arm, never as statements. The
+  passing bar belongs to the target, declared in its own stack command;
+  kriya runs that command and honours its verdict.
 
-  Scenario: any uncovered arm fails the gate
+  Scenario: the target's declared coverage bar decides the gate
     Given a run at head commit "C2" whose ticket touched module "api"
     When the branch-coverage gate runs the module's snapshot-resolved coverage command
-    Then a single uncovered conditional arm fails the gate for "api"
-    And a module with every arm covered passes
-    And no overall percentage can compensate for an uncovered arm
+    Then the gate fails for "api" when that command fails
+    And the gate passes for "api" when that command succeeds
+    And kriya counts no arms and applies no threshold of its own
+    And a target declaring a floor is judged against that floor
+    And a target declaring no floor is judged against every arm
 
   Scenario: tests must pass before coverage is judged
     Given a run at head commit "C2" whose ticket touched module "api"

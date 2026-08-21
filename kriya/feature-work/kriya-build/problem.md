@@ -183,77 +183,65 @@ scenarios execute against real software. Until kriya runs:
 
 ## Open questions
 
-- [ ] **What floor does kriya's own build carry, and when is it set?**
-      The floor policy is decided; the number is not. Sutra's 75 was set
-      *after* measuring 78.8%, following a full fault-injection campaign.
-      Kriya has zero Go today, so any number now is a guess. Recommended:
-      leave kriya's coverage command floor-less until the first module
-      lands, measure, then set it with a few points of headroom — the same
-      shape as sutra's "measure the mutation gate after module 1".
-- [ ] **How far does the coverage spec amendment go?**
-      `AC-coverage-every-arm` becomes a misnomer under a floor; renaming it
-      (e.g. `AC-coverage-floor`) cascades to its `test:` mapping and the
-      scenario name, and `REQ-gate-branch-coverage.feature:2-3,10` assert
-      "no percentage threshold" as a universal. Scenarios 2 and 3
-      (test-first ordering, commit-pinned upsert) are policy-neutral and
-      survive untouched.
-- [ ] **How does the gate name uncovered arms in the GateResult detail?**
-      `AC-coverage-recorded` requires uncovered arms "named in detail for
-      the dev agent", but `MOD-gates` only runs the target's
-      snapshot-resolved command and observes its exit — it does not parse
-      coverage itself. Whether detail comes from captured stdout, a
-      convention on the command's output format, or an artifact the
-      command writes is undesigned, and it blocks `MOD-gates`. Same
-      question applies to every gate whose failures must be actionable.
+- [ ] **How is a coding agent actually invoked?** — **to discuss.** The
+      spec is deliberately role-and-tier-neutral: `AC-tier-config`
+      requires roles map to tiers in configuration with no hardcoded model
+      ids, and `ENT-agent-invocation` records the resolved model — but
+      nothing pins the mechanism (Claude Code CLI subprocess, the Agent
+      SDK, or direct API). This shapes `MOD-dev-loop`, `MOD-context`,
+      transcript capture, and how `AC-tier-observed` is proven. The only
+      question still blocking DESIGN.
+
+- [x] **What does the test suite run sutra against?** Both, split by test
+      kind: **unit tests run against a fake**, **integration tests run
+      against a real sutra instance**. The fake keeps unit tests fast and
+      hermetic; the real instance is what proves kriya against sutra's
+      actual fences — verdict-ABA, idempotency replay, atomic pop — which
+      exist specifically for kriya and cannot be proven against a stub.
+- [x] **Delivery shape.** **Merged milestones** — not sutra's
+      one-branch-one-merge. Kriya's 12 modules plus the TUI is a larger
+      surface than sutra's, and milestone merges keep `develop` moving
+      rather than holding a months-long branch.
+- [x] **The coverage bar.** Every app gates on a **floor**, branch
+      coverage included, at **75** repo-wide — the value sutra measured
+      its way to (78.8% after the fault-injection campaign). Amendment
+      landed 2026-08-21: `REQ-gate-branch-coverage` retitled,
+      `AC-coverage-every-arm` renamed to `AC-coverage-floor` and restated
+      so the bar belongs to the target rather than to kriya, the scenario
+      rewritten, kriya's own stack command given the floor, and R3 retired
+      in full. Kriya counts no arms and infers no threshold; a target that
+      wants the every-arm rule omits the floor and the same script
+      enforces it.
 - [x] **Which target proves the engine end-to-end?** **linkshort**, made
       buildable 2026-08-21. It was refused by `AC-intake-commands` — one
       project stack block, no module overrides, so all four modules
       (`MOD-api`, `MOD-domain`, `MOD-data`, `MOD-web`) inherited a stack
       declaring only `install`, `test`, and `lint`: 16 refusal reasons.
-      Its stack is now Go 1.25 with all six required commands, mirroring
-      the chain sutra's build validated, plus a hand-written `arch-go.yml`
-      encoding its declared boundaries. Simulated against the intake rule:
-      4 modules PASS, 0 refusals. It still verifies
+      Its stack is now Go 1.25 with all six required commands plus a
+      hand-written `arch-go.yml`. Simulated against the intake rule: 4
+      modules PASS, 0 refusals; still verifies
       `status=ready errors=0 todos=0 ok=True`.
-      The stack flip cost nothing structurally — linkshort's TypeScript
-      was deliberate (it proved the format assumes no language, since
-      stack fields are free-form strings), but that property is already
-      covered by `avspec/tests/unit/test_model.py:242`, which exercises a
-      non-Go language directly.
-      **Still open**: linkshort's provisional 75 floor is a guess until
-      there is code to measure, and its coverage command hard-codes
-      `../../../scripts/branch-coverage.sh` — a relocation to the repo
-      root (alongside `sutra/` and `kriya/`) would change that string and
-      make the path uniform across apps.
 
-- [ ] **How is a coding agent actually invoked?** The spec is deliberately
-      role-and-tier-neutral: `AC-tier-config` requires roles map to tiers
-      in configuration with no hardcoded model ids, and
-      `ENT-agent-invocation` records the resolved model — but nothing
-      pins the mechanism (Claude Code CLI subprocess, the Agent SDK, or
-      direct API). This decision shapes `MOD-dev-loop`, transcript
-      capture, and how `AC-tier-observed` is proven.
-- [ ] **What does the test suite run sutra against?** `MOD-tracker-client`
-      speaks sutra's HTTP API. The scenarios need a tracker — an
-      in-process sutra, a spawned binary, or a fake honoring the pinned
-      OpenAPI contract — and the choice determines whether the suite
-      proves kriya against sutra's real fences or against a stub of them.
+### Deferred — these block finishing, not starting
+
+- [ ] **How does the gate name uncovered arms in the GateResult detail?**
+      `AC-coverage-recorded` requires uncovered arms "named in detail for
+      the dev agent", but `MOD-gates` only runs the target's command and
+      observes its exit. Whether detail comes from captured stdout, a
+      convention on output format, or an artifact the command writes is a
+      DESIGN decision, not a product one — to be proposed in design. Same
+      question for every gate whose failures must be actionable.
 - [ ] **Mutation gate scope for kriya's own code.** Kriya's mutation
       command takes no directory argument — a whole-module run. Sutra
       measured whole-module at 88.74% efficacy over ~1678 mutants in
-      **15h48m** and scoped its gate to the eight domain-core packages to
-      make it usable. Kriya likely needs the same narrowing, which is a
-      stack-command change in its own spec. (Distinct from R2, which asks
-      the cadence question for *targets*.)
+      **15h48m** and scoped its gate to eight domain-core packages to make
+      it usable. Kriya likely needs the same narrowing. (Distinct from R2,
+      which asks the cadence question for *targets*.)
 - [ ] **What model access does the end-to-end proof assume?**
       `CON-no-secrets` covers credentials but not availability. A real
-      driven build spends real tokens against a rate-limited API, and the
-      run is not offline-reproducible — a constraint on a success
-      criterion that requires real agent runs.
-- [ ] **Delivery shape.** Sutra's answer was one branch, modules as
-      ordered commits in dependency order, roborev per commit, one merge.
-      Same here, or sliced into separately-merged milestones given kriya's
-      12 modules and the TUI?
+      driven build spends real tokens against a rate-limited API and is
+      not offline-reproducible — a constraint on a success criterion that
+      requires real agent runs.
 
 ## Change log
 
@@ -273,3 +261,8 @@ scenarios execute against real software. Until kriya runs:
 - 2026-08-21: linkshort made buildable — stack flipped to Go 1.25 with all
   six required commands and an arch-go.yml; resolves the end-to-end proof
   target question (Brent Hoover)
+- 2026-08-21: Resolved the test-double split (unit against a fake,
+  integration against a real sutra), delivery shape (merged milestones),
+  and landed the coverage-floor amendment in kriya's spec and scenarios.
+  Agent-invocation mechanism is the only question still blocking design
+  (Brent Hoover)
