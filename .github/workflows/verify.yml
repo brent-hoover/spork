@@ -18,3 +18,43 @@ jobs:
       - run: uv run ty check
       - run: uv run pytest
       - run: uv run avspec verify examples/linkshort
+
+  kriya:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kriya
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: kriya/go.mod
+      # uv is required from M2: internal/specverify shells out to
+      # `avspec verify`, which is a Python tool. The integration ring needs
+      # both toolchains in one job.
+      - uses: astral-sh/setup-uv@v5
+      # The integration ring drives a real sutra. Building it here also acts
+      # as a canary that sutra still compiles.
+      - name: build sutra for the integration ring
+        working-directory: sutra
+        run: go build ./cmd/sutra
+      # The five gate commands below are copied verbatim from
+      # kriya/avspec.yaml stack.commands. They are DUPLICATED, not read from
+      # the spec, so they can drift — if a gate is changed there, change it
+      # here in the same commit.
+      - name: install
+        run: go mod download
+      - name: test
+        run: go test ./...
+      # The acceptance package sits behind a build tag so the test gate stays
+      # green while scenarios are pending. That also removes it from every
+      # default gate, so compile it explicitly or it can rot unnoticed.
+      - name: acceptance package compiles
+        run: go vet -tags acceptance ./...
+      - name: typecheck
+        run: go vet ./...
+      - name: lint
+        run: |
+          out=$(mktemp); out2=$(mktemp); trap 'rm -f "$out" "$out2"' EXIT; go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run && go run golang.org/x/tools/cmd/deadcode@v0.48.0 -test ./... > "$out" && cat "$out" && test ! -s "$out" && go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./... > "$out2" && cat "$out2" && testonly='^internal/fakes/' && { grep -vE "$testonly" "$out2" > "$out" || true; } && test ! -s "$out"
+      - name: arch
+        run: go run github.com/arch-go/arch-go@v1.7.0
