@@ -27,7 +27,7 @@ rather than assume the flag carries it.
 | PlanHead | planner | `target_key` | identity/scoping | yes |
 | CompletionAdvance | planner | `advance_key` | idempotency | yes |
 | CompletionAdvance | planner | `target_key` | identity/scoping | no |
-| CompletionAdvance | planner | `relation_key` | identity/scoping | no |
+| CompletionAdvance | planner | `relation_key` | idempotency | no |
 | CompletionAdvance | planner | `reclaim_removal_key` | idempotency | no |
 | BuildTarget | planner | `target_key` | identity/scoping | yes |
 | BuildTarget | planner | `completion_submission_key` | idempotency | no |
@@ -56,9 +56,16 @@ rather than assume the flag carries it.
 | GateResult | gates | `result_key` | idempotency | yes |
 | Learning | context | `project_key` | identity/scoping | no |
 
-**37 columns total — 24 idempotency keys, 13 identity/scoping references, 15 declared `unique`.**
+**37 columns total — 25 idempotency keys, 12 identity/scoping references, 15 declared `unique`.**
 
 Every idempotency key above is a crash window a scenario exercises. The
-identity/scoping set is `target_key`, `project_key`, `singleton_key`,
-`mapping_key`, and `relation_key` — the first four name or group a row,
-and `relation_key` identifies a sutra relation rather than fencing a call.
+identity/scoping set is `target_key`, `project_key`, `singleton_key`, and
+`mapping_key` — each names or groups a row rather than fencing a call.
+
+`relation_key` was misclassified as identity on the first pass, on the
+strength of its name. The spec is explicit that it is the *"deterministic
+Idempotency-Key of the parenting mutation, derived per (advance,
+parenting_generation) and UPDATED IN THE SAME TRANSACTION that advances the
+generation"* (`avspec.yaml:723`) — a crash window, and one where the key and
+the generation move together or not at all. Naming is not evidence of kind;
+the field description is.

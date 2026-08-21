@@ -14,8 +14,16 @@ import (
 // thing that can sequence them.
 type migration struct {
 	module string
-	stmts  []string
+	// name is unique within the module. Keying only on module would freeze a
+	// module's schema after its first migration, and modules DO evolve across
+	// milestones by design — planner splits M2/M4 and orchestrator M3/M4/M5 —
+	// so a database created at M2 would silently skip every later table.
+	name  string
+	stmts []string
 }
+
+// id is the key recorded in schema_migrations.
+func (m migration) id() string { return m.module + "/" + m.name }
 
 // applyMigrations applies each module's schema in the order given, once.
 //
@@ -26,34 +34,34 @@ type migration struct {
 // discipline every seam uses.
 func applyMigrations(ctx context.Context, db *sql.DB, ms []migration) error {
 	if _, err := db.ExecContext(ctx,
-		`CREATE TABLE IF NOT EXISTS schema_migrations (module TEXT PRIMARY KEY)`); err != nil {
+		`CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 	for _, m := range ms {
 		var seen int
 		if err := db.QueryRowContext(ctx,
-			`SELECT count(*) FROM schema_migrations WHERE module = ?`, m.module).Scan(&seen); err != nil {
-			return fmt.Errorf("check migration %s: %w", m.module, err)
+			`SELECT count(*) FROM schema_migrations WHERE id = ?`, m.id()).Scan(&seen); err != nil {
+			return fmt.Errorf("check migration %s: %w", m.id(), err)
 		}
 		if seen > 0 {
 			continue
 		}
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			return fmt.Errorf("begin migration %s: %w", m.module, err)
+			return fmt.Errorf("begin migration %s: %w", m.id(), err)
 		}
 		defer func() { _ = tx.Rollback() }()
 		for i, stmt := range m.stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("migration %s statement %d: %w", m.module, i, err)
+				return fmt.Errorf("migration %s statement %d: %w", m.id(), i, err)
 			}
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO schema_migrations (module) VALUES (?)`, m.module); err != nil {
-			return fmt.Errorf("record migration %s: %w", m.module, err)
+			`INSERT INTO schema_migrations (id) VALUES (?)`, m.id()); err != nil {
+			return fmt.Errorf("record migration %s: %w", m.id(), err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %s: %w", m.module, err)
+			return fmt.Errorf("commit migration %s: %w", m.id(), err)
 		}
 	}
 	return nil

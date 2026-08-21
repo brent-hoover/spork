@@ -28,7 +28,11 @@ func run(ctx context.Context) error {
 	if path == "" {
 		path = defaultDBPath
 	}
-	db, err := sql.Open("sqlite", path)
+	// foreign_keys is OFF by default in SQLite, so REFERENCES clauses in module
+	// schemas would parse and then enforce nothing. busy_timeout keeps parallel
+	// dev agents from failing outright on a momentarily locked database.
+	dsn := "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open store %s: %w", path, err)
 	}
