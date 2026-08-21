@@ -12,10 +12,21 @@ import (
 	"kriya/internal/specverify"
 )
 
+// completeModule declares all six gates, so intake's command check passes and
+// these tests exercise only what they are about.
+func completeModule() specverify.Module {
+	cmds := map[string]string{}
+	for _, name := range specverify.RequiredCommands {
+		cmds[name] = "run-" + name
+	}
+	return specverify.Module{ID: "MOD-a", Name: "a", Commands: cmds}
+}
+
 func run(t *testing.T, r specverify.Report) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	in := planner.Intaker{Verify: fakes.NewVerifier("/spec", r)}
+	v := fakes.NewVerifier("/spec", r).WithModules("/spec", completeModule())
+	in := planner.Intaker{Verify: v}
 	err := cli.Build(context.Background(), &out, in, "/spec")
 	return out.String(), err
 }

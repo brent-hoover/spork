@@ -3,9 +3,7 @@ package specverify
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os/exec"
 )
 
 // Severity levels avspec reports. `error` always blocks; `todo` blocks only
@@ -48,6 +46,7 @@ type Report struct {
 // Verifier runs the spec verifier over a directory.
 type Verifier interface {
 	Verify(ctx context.Context, dir string) (Report, error)
+	Resolve(ctx context.Context, dir string) (Model, error)
 }
 
 // CLI shells out to the avspec command.
@@ -70,23 +69,9 @@ type CLI struct {
 // output that does not parse. Treating those as reports would let a crashed
 // or missing verifier read as a clean refusal.
 func (c CLI) Verify(ctx context.Context, dir string) (Report, error) {
-	if len(c.Argv) == 0 {
-		return Report{}, errors.New("specverify: no command configured")
-	}
-	args := append(append([]string{}, c.Argv[1:]...), "verify", dir, "--json")
-	cmd := exec.CommandContext(ctx, c.Argv[0], args...)
-	cmd.Dir = c.WorkDir
-
-	out, err := cmd.Output()
+	out, err := c.run(ctx, "verify", dir, "--json")
 	if err != nil {
-		var ee *exec.ExitError
-		if !errors.As(err, &ee) {
-			return Report{}, fmt.Errorf("specverify: run %s: %w", c.Argv[0], err)
-		}
-		if code := ee.ExitCode(); code != 1 {
-			return Report{}, fmt.Errorf("specverify: %s exited %d: %s",
-				c.Argv[0], code, ee.Stderr)
-		}
+		return Report{}, err
 	}
 
 	var r Report

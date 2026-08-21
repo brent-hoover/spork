@@ -89,3 +89,42 @@ func TestAgainstTheRealVerifier(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveAgainstTheRealVerifier pins the model shape to the actual tool.
+func TestResolveAgainstTheRealVerifier(t *testing.T) {
+	c := realCLI(t)
+	root := repoRoot(t)
+
+	t.Run("linkshort resolves every gate for every module", func(t *testing.T) {
+		m, err := c.Resolve(context.Background(), filepath.Join(root, "avspec", "examples", "linkshort"))
+		if err != nil {
+			t.Fatalf("resolve linkshort: %v", err)
+		}
+		if len(m.Modules) != 4 {
+			t.Fatalf("expected linkshort's four modules, got %d", len(m.Modules))
+		}
+		for _, mod := range m.Modules {
+			if missing := mod.Missing(); len(missing) > 0 {
+				t.Errorf("%s is missing %v; linkshort was made buildable precisely so it would not be", mod.ID, missing)
+			}
+		}
+		if len(m.Artifacts) == 0 {
+			t.Error("a spec with contracts and feature files must list artifacts")
+		}
+	})
+
+	t.Run("a spec with no commands resolves them empty", func(t *testing.T) {
+		dir := t.TempDir()
+		manifest := "avspec: \"0.3\"\nproject:\n  name: bare\n  status: draft\nmodules:\n  - id: MOD-a\n    name: a\n"
+		if err := os.WriteFile(filepath.Join(dir, "avspec.yaml"), []byte(manifest), 0o644); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		m, err := c.Resolve(context.Background(), dir)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if got := m.Modules[0].Missing(); len(got) != len(specverify.RequiredCommands) {
+			t.Errorf("all six should be missing, got %v", got)
+		}
+	})
+}

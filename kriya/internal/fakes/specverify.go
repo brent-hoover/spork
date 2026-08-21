@@ -15,6 +15,7 @@ import (
 // error), and tests need to drive both.
 type Verifier struct {
 	Reports map[string]specverify.Report
+	Models  map[string]specverify.Model
 	Err     error
 	// Calls records the directories asked about, in order, so a test can
 	// assert that intake verified what it claimed to.
@@ -37,4 +38,27 @@ func (v *Verifier) Verify(_ context.Context, dir string) (specverify.Report, err
 		return specverify.Report{}, errors.New("fakes: no report programmed for " + dir)
 	}
 	return r, nil
+}
+
+// Resolve returns the programmed model for dir.
+func (v *Verifier) Resolve(_ context.Context, dir string) (specverify.Model, error) {
+	v.Calls = append(v.Calls, dir)
+	if v.Err != nil {
+		return specverify.Model{}, v.Err
+	}
+	m, ok := v.Models[dir]
+	if !ok {
+		return specverify.Model{}, errors.New("fakes: no model programmed for " + dir)
+	}
+	return m, nil
+}
+
+// WithModules programs a model whose modules carry cmds, and returns v so it
+// can be chained onto NewVerifier.
+func (v *Verifier) WithModules(dir string, mods ...specverify.Module) *Verifier {
+	if v.Models == nil {
+		v.Models = map[string]specverify.Model{}
+	}
+	v.Models[dir] = specverify.Model{OK: true, Modules: mods}
+	return v
 }

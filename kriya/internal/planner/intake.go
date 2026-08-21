@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"kriya/internal/specverify"
 )
@@ -61,6 +62,37 @@ func (i Intaker) Admit(ctx context.Context, dir string) error {
 				dir, report.Counts.Error, report.Counts.Todo),
 			Status:   report.Status,
 			Findings: report.Findings,
+		}
+	}
+	return i.admitCommands(ctx, dir, report.Status)
+}
+
+// admitCommands enforces AC-intake-commands.
+//
+// A module whose effective stack is missing any of test, lint, typecheck,
+// arch, coverage, or mutation is refused, naming the module and the missing
+// command — "even when avspec verify alone reports ready". avspec does not
+// check this: a spec with no commands at all verifies ready, because the
+// format does not require them. The gate chain runs per module with these
+// resolved commands, so a missing one is a gate that would silently not run.
+func (i Intaker) admitCommands(ctx context.Context, dir, status string) error {
+	model, err := i.Verify.Resolve(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", dir, err)
+	}
+	if len(model.Modules) == 0 {
+		return &Refusal{
+			Reason: fmt.Sprintf("spec at %s declares no modules, so no gate chain can run", dir),
+			Status: status,
+		}
+	}
+	for _, m := range model.Modules {
+		if missing := m.Missing(); len(missing) > 0 {
+			return &Refusal{
+				Reason: fmt.Sprintf("module %s (%s) is missing %s",
+					m.ID, m.Name, strings.Join(missing, ", ")),
+				Status: status,
+			}
 		}
 	}
 	return nil

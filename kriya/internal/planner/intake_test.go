@@ -3,6 +3,7 @@ package planner_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"kriya/internal/fakes"
@@ -10,9 +11,19 @@ import (
 	"kriya/internal/specverify"
 )
 
+// complete is a module whose effective stack declares all six gates.
+func complete(id string) specverify.Module {
+	cmds := map[string]string{}
+	for _, name := range specverify.RequiredCommands {
+		cmds[name] = "run-" + name
+	}
+	return specverify.Module{ID: id, Name: id, Commands: cmds}
+}
+
 func admit(t *testing.T, r specverify.Report) error {
 	t.Helper()
-	in := planner.Intaker{Verify: fakes.NewVerifier("/spec", r)}
+	v := fakes.NewVerifier("/spec", r).WithModules("/spec", complete("MOD-a"))
+	in := planner.Intaker{Verify: v}
 	return in.Admit(context.Background(), "/spec")
 }
 
@@ -89,5 +100,69 @@ func TestAVerifierMalfunctionIsNotARefusal(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestAModuleMissingAGateCommandRefusesIntake(t *testing.T) {
+	// AC-intake-commands: refused "even when avspec verify alone reports
+	// ready". avspec does not require commands at all, so this check is
+	// kriya's alone — and a missing one is a gate that silently never runs.
+	partial := complete("MOD-a")
+	delete(partial.Commands, "mutation")
+	v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
+		WithModules("/spec", complete("MOD-ok"), partial)
+	err := planner.Intaker{Verify: v}.Admit(context.Background(), "/spec")
+
+	var refusal *planner.Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("expected a refusal, got: %v", err)
+	}
+	for _, want := range []string{"MOD-a", "mutation"} {
+		if !strings.Contains(refusal.Reason, want) {
+			t.Errorf("refusal must name the module and the command; %q missing from %q", want, refusal.Reason)
+		}
+	}
+}
+
+func TestEveryRequiredCommandIsChecked(t *testing.T) {
+	// Table-driven so a command dropped from the check is caught, rather than
+	// one representative standing in for six.
+	for _, missing := range specverify.RequiredCommands {
+		t.Run(missing, func(t *testing.T) {
+			m := complete("MOD-a")
+			delete(m.Commands, missing)
+			v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
+				WithModules("/spec", m)
+			err := planner.Intaker{Verify: v}.Admit(context.Background(), "/spec")
+			var refusal *planner.Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("missing %q must refuse intake, got: %v", missing, err)
+			}
+			if !strings.Contains(refusal.Reason, missing) {
+				t.Errorf("refusal should name %q, got %q", missing, refusal.Reason)
+			}
+		})
+	}
+}
+
+func TestASpecWithNoModulesIsRefused(t *testing.T) {
+	// A spec with no modules verifies ready and has no gate chain to run.
+	v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
+		WithModules("/spec")
+	err := planner.Intaker{Verify: v}.Admit(context.Background(), "/spec")
+	var refusal *planner.Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("expected a refusal, got: %v", err)
+	}
+}
+
+func TestInstallIsNotRequired(t *testing.T) {
+	// AC-intake-commands names six, and install is not among them.
+	m := complete("MOD-a")
+	delete(m.Commands, "install")
+	v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
+		WithModules("/spec", m)
+	if err := (planner.Intaker{Verify: v}).Admit(context.Background(), "/spec"); err != nil {
+		t.Fatalf("install is not a required gate, got: %v", err)
 	}
 }
