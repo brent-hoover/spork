@@ -1,0 +1,51 @@
+# Lint configuration for kriya's own code.
+#
+# Two jobs beyond the defaults, both structural rather than stylistic:
+#
+# 1. time.Now is banned outside internal/clock. Every recovery, fencing,
+#    and expiry test needs to control time, and threading a Clock through
+#    later is not practical — the design pulls this one element forward
+#    from its "Optimal" alternative for exactly that reason.
+#
+# 2. Size and complexity limits. design.md names these as the only
+#    mechanical guard against the orchestrator becoming a god module —
+#    CON-deterministic-orchestrator says "if a change requires the
+#    orchestrator to decide anything, the change is wrong", and nothing
+#    else in the gate chain can observe that. They are pinned before
+#    internal/orchestrator has a line of code, so they constrain the
+#    design rather than being fitted to it afterwards.
+version: "2"
+
+linters:
+  enable:
+    - forbidigo
+    - funlen
+    - cyclop
+    - gocognit
+
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: ^time\.Now$
+          msg: use a clock.Clock; time.Now is allowed only in internal/clock
+    funlen:
+      lines: 60
+      statements: 40
+    cyclop:
+      max-complexity: 12
+    gocognit:
+      min-complexity: 20
+
+  exclusions:
+    rules:
+      # The one legitimate caller of time.Now.
+      - path: internal/clock/
+        linters:
+          - forbidigo
+      # Table-driven tests are long by construction, and the godog step
+      # registry is one long sequence of registrations, not branching logic.
+      - path: _test\.go$
+        linters:
+          - funlen
+          - gocognit
+          - cyclop

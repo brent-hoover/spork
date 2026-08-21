@@ -60,7 +60,9 @@ against a module with no behavior, each proven to fail closed. Coverage and
 mutation are deliberately *not* claimed here: on a module of `doc.go`-only
 packages `branch-coverage.sh` takes its `expected=0` path, leaves
 `sum_total=0`, skips the floor block and exits 0 having measured nothing.
-They become meaningful at step 3, the first package with a real branch.
+They become meaningful in **M2**, not step 3: `internal/clock` turned out to
+have no conditional at all (`Now()` is a single return), so it adds no arms
+either. The first real branching code with tests to drive it is `planner`.
 Nothing in M1 proves a requirement; it makes every later step verifiable.
 
 ### 1. Go module and package skeleton
