@@ -183,14 +183,30 @@ scenarios execute against real software. Until kriya runs:
 
 ## Open questions
 
-- [ ] **How is a coding agent actually invoked?** — **to discuss.** The
-      spec is deliberately role-and-tier-neutral: `AC-tier-config`
-      requires roles map to tiers in configuration with no hardcoded model
-      ids, and `ENT-agent-invocation` records the resolved model — but
-      nothing pins the mechanism (Claude Code CLI subprocess, the Agent
-      SDK, or direct API). This shapes `MOD-dev-loop`, `MOD-context`,
-      transcript capture, and how `AC-tier-observed` is proven. The only
-      question still blocking DESIGN.
+- [x] **How is a coding agent invoked?** **The Claude Code CLI as a
+      subprocess** (`claude -p --output-format stream-json`). Forced and
+      confirmed: the Agent SDK is a library for **Python and TypeScript
+      only**, and the docs prescribe the CLI subprocess to drive the same
+      agent loop from any other language. Kriya is Go. A flip to Python to
+      reach the SDK was considered and rejected 2026-08-21 — the repo's
+      Python side carries only ruff and pytest, so kriya would have had to
+      rebuild the branch-coverage, fault-injection, mutation, arch, and
+      dead-code apparatus the Go side just finished validating.
+      This is not a downgrade: the CLI *is* the Agent SDK exposed as a
+      process, same agent loop and tools. What the SDK adds is in-process
+      ergonomics kriya does not need — permissions are per-ticket policy
+      that `--allowedTools` expresses, interrupt is `SIGINT`, and the
+      subprocess boundary is a positive for parallel dev agents
+      (independent kill and timeout, crash containment), which is what
+      `CON-deterministic-orchestrator` wants structurally.
+      Three ACs get concrete mechanisms from it: `system/init` reports the
+      resolved model (`AC-tier-observed`), `session_id` stamps every
+      payload (`REQ-thread-capture`), and `stream-json` with
+      `parent_tool_use_id` feeds the live TUI (`AC-tui-overview`).
+      Billing is a non-differentiator — Agent SDK and `claude -p` both draw
+      on the Claude subscription's usage limits; the June 15 2026
+      Agent-SDK credit scheme is announced but paused. Kriya stays agnostic
+      about auth: it is ambient environment state, not kriya's business.
 
 - [x] **What does the test suite run sutra against?** Both, split by test
       kind: **unit tests run against a fake**, **integration tests run
@@ -223,6 +239,18 @@ scenarios execute against real software. Until kriya runs:
       `status=ready errors=0 todos=0 ok=True`.
 
 ### Deferred — these block finishing, not starting
+
+- [ ] **`--bare` forces API-key billing — reproducibility vs the
+      subscription.** `--bare` is the recommended mode for scripted calls
+      and is becoming the default for `-p`, but it never reads OAuth
+      credentials or the keychain, so it requires `ANTHROPIC_API_KEY` and
+      abandons subscription billing. Without it, every dev agent inherits
+      whatever sits in the host's `~/.claude` — hooks, plugins, MCP
+      servers, auto memory, `CLAUDE.md` — which is neither reproducible
+      nor safe for a build engine running unattended. A set
+      `ANTHROPIC_API_KEY` also silently shadows subscription credentials
+      in the non-bare path. Decide deliberately; it is not a default to
+      drift into.
 
 - [ ] **How does the gate name uncovered arms in the GateResult detail?**
       `AC-coverage-recorded` requires uncovered arms "named in detail for
@@ -263,6 +291,9 @@ scenarios execute against real software. Until kriya runs:
   target question (Brent Hoover)
 - 2026-08-21: Resolved the test-double split (unit against a fake,
   integration against a real sutra), delivery shape (merged milestones),
-  and landed the coverage-floor amendment in kriya's spec and scenarios.
-  Agent-invocation mechanism is the only question still blocking design
+  and landed the coverage-floor amendment in kriya's spec and scenarios
   (Brent Hoover)
+- 2026-08-21: Agent invocation resolved — Claude Code CLI as a subprocess.
+  A Python flip to reach the Agent SDK was considered and rejected; the
+  stack stays Go. DESIGN is unblocked. The `--bare` billing/reproducibility
+  tension is recorded as deferred (Brent Hoover)
