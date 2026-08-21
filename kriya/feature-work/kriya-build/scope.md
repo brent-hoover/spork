@@ -102,7 +102,8 @@ after outline expansion — and the pinned gate chain is green.
   SpecSnapshot, and avspec exposed only `verify` and `next`. Rather than give
   kriya a second parser for the avspec format — two readings of one format
   that can disagree, on the input kriya's correctness most depends on —
-  avspec grows `avspec resolve <dir>`, which is always JSON. Only that command, its tests,
+  avspec grows `avspec inspect <dir>`, which is always JSON — verify judges a
+  spec, inspect shows it. Only that command, its tests,
   and its docs are in scope
 * `scripts/**` — `branch-coverage.sh` and its regression suite are shared
   by every Go app in the repo and are not kriya's to change

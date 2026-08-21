@@ -1,4 +1,6 @@
-"""`avspec resolve` — the resolved build model a build engine consumes.
+"""`avspec inspect` — a spec's full resolved detail.
+
+verify judges a spec; inspect shows it.
 
 Kriya needs each module's effective commands and the spec's artifact set to
 pin a reproducible snapshot. Emitting them here keeps ONE parser for the
@@ -17,8 +19,8 @@ from avspec.cli import app
 from tests.conftest import write_manifest
 
 
-def resolve(spec_dir: Path) -> tuple[int, dict]:
-    result = CliRunner().invoke(app, ["resolve", str(spec_dir)])
+def inspect(spec_dir: Path) -> tuple[int, dict]:
+    result = CliRunner().invoke(app, ["inspect", str(spec_dir)])
     return result.exit_code, json.loads(result.stdout)
 
 
@@ -35,7 +37,7 @@ def test_a_module_inherits_the_project_stack(tmp_path: Path) -> None:
             "modules": [{"id": "MOD-a", "name": "a"}],
         },
     )
-    code, payload = resolve(tmp_path)
+    code, payload = inspect(tmp_path)
     assert code == 0
     assert payload["modules"][0]["commands"]["test"] == "pt"
     assert payload["modules"][0]["commands"]["lint"] == "pl"
@@ -61,7 +63,7 @@ def test_override_is_per_field_not_per_block(tmp_path: Path) -> None:
             ],
         },
     )
-    _, payload = resolve(tmp_path)
+    _, payload = inspect(tmp_path)
     commands = payload["modules"][0]["commands"]
     assert commands["test"] == "mt", "the override must win"
     assert commands["lint"] == "pl", "the un-overridden field must be inherited"
@@ -77,7 +79,7 @@ def test_an_undeclared_command_is_null_not_absent(tmp_path: Path) -> None:
             "modules": [{"id": "MOD-a", "name": "a"}],
         },
     )
-    _, payload = resolve(tmp_path)
+    _, payload = inspect(tmp_path)
     commands = payload["modules"][0]["commands"]
     assert "arch" in commands
     assert commands["arch"] is None
@@ -108,7 +110,7 @@ def test_artifacts_list_every_referenced_file(tmp_path: Path) -> None:
             ],
         },
     )
-    _, payload = resolve(tmp_path)
+    _, payload = inspect(tmp_path)
     # The scenario anchor is stripped and the file deduped: two criteria
     # pointing into one feature file are one artifact.
     assert payload["artifacts"] == [
@@ -119,7 +121,7 @@ def test_artifacts_list_every_referenced_file(tmp_path: Path) -> None:
 
 
 def test_a_missing_manifest_exits_one_with_findings(tmp_path: Path) -> None:
-    code, payload = resolve(tmp_path)
+    code, payload = inspect(tmp_path)
     assert code == 1
     assert payload["ok"] is False
     assert payload["findings"], "a refusal must explain itself"

@@ -96,7 +96,7 @@ func TestResolveAgainstTheRealVerifier(t *testing.T) {
 	root := repoRoot(t)
 
 	t.Run("linkshort resolves every gate for every module", func(t *testing.T) {
-		m, err := c.Resolve(context.Background(), filepath.Join(root, "avspec", "examples", "linkshort"))
+		m, err := c.Inspect(context.Background(), filepath.Join(root, "avspec", "examples", "linkshort"))
 		if err != nil {
 			t.Fatalf("resolve linkshort: %v", err)
 		}
@@ -119,7 +119,7 @@ func TestResolveAgainstTheRealVerifier(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "avspec.yaml"), []byte(manifest), 0o644); err != nil {
 			t.Fatalf("write manifest: %v", err)
 		}
-		m, err := c.Resolve(context.Background(), dir)
+		m, err := c.Inspect(context.Background(), dir)
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}

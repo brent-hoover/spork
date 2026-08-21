@@ -129,7 +129,7 @@ func TestAnIncompleteModelIsRejected(t *testing.T) {
 		"ok but no modules": `{"ok":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := stub(t, body, 0).Resolve(context.Background(), "any"); err == nil {
+			if _, err := stub(t, body, 0).Inspect(context.Background(), "any"); err == nil {
 				t.Fatal("an incomplete model must be an error")
 			}
 		})
@@ -139,7 +139,7 @@ func TestAnIncompleteModelIsRejected(t *testing.T) {
 func TestAFailedResolveNeedsNoModules(t *testing.T) {
 	// ok=false is avspec reporting it could not load the manifest; demanding
 	// modules there would turn a legitimate refusal into an error.
-	m, err := stub(t, `{"ok":false,"findings":[]}`, 1).Resolve(context.Background(), "any")
+	m, err := stub(t, `{"ok":false,"findings":[]}`, 1).Inspect(context.Background(), "any")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

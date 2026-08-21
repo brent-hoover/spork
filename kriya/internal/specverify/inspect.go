@@ -34,7 +34,7 @@ func (m Module) Missing() []string {
 	return out
 }
 
-// Model is `avspec resolve` output: the spec as a build engine needs it.
+// Model is `avspec inspect` output: the spec as a build engine needs it.
 type Model struct {
 	OK      bool `json:"ok"`
 	Project struct {
@@ -49,12 +49,12 @@ type Model struct {
 	Artifacts []string `json:"artifacts"`
 }
 
-// Resolve runs `avspec resolve <dir>` and parses the build model.
+// Inspect runs `avspec inspect <dir>` and parses the build model.
 //
 // Same exit contract as Verify: 0 or 1 with a parseable payload is a result,
 // anything else is an error.
-func (c CLI) Resolve(ctx context.Context, dir string) (Model, error) {
-	out, err := c.run(ctx, "resolve", dir)
+func (c CLI) Inspect(ctx context.Context, dir string) (Model, error) {
+	out, err := c.run(ctx, "inspect", dir)
 	if err != nil {
 		return Model{}, err
 	}

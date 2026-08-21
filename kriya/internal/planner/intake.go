@@ -96,7 +96,7 @@ func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) 
 // format does not require them. The gate chain runs per module with these
 // resolved commands, so a missing one is a gate that would silently not run.
 func (i Intaker) admitCommands(ctx context.Context, dir, status string) (specverify.Model, error) {
-	model, err := i.Verify.Resolve(ctx, dir)
+	model, err := i.Verify.Inspect(ctx, dir)
 	if err != nil {
 		return specverify.Model{}, fmt.Errorf("resolve %s: %w", dir, err)
 	}

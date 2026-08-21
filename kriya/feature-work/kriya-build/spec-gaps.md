@@ -164,7 +164,7 @@ caught two of the three mechanically.
 
 **Found during:** M2 slice S3, by review.
 
-Intake shells out to `avspec verify` and then to `avspec resolve`. Both read
+Intake shells out to `avspec verify` and then to `avspec inspect`. Both read
 the target's working tree, in separate subprocesses. If the manifest changes
 between them, kriya verifies one version and resolves another — admitting
 commands from a spec that was never verified, or verifying a spec whose
@@ -190,5 +190,9 @@ artifact read, which could be closed by having that command return the
 artifact contents too, making intake one subprocess and one read.
 
 **Why it is recorded rather than fixed:** the fix belongs in avspec, and the
-`resolve` command was already an approved scope exception. Adding a second is
-a decision for the operator, not something to slip in.
+`inspect` command was already an approved scope exception. Adding a second is
+the operator's decision, not something to slip in — and it has a cost beyond
+scope: merging would make `verify` carry a payload most callers ignore, and
+the response shape would change with the verdict, since a manifest that will
+not load has no detail to show. The window it closes is an edit made during
+the second or so intake takes, on a single-operator machine.

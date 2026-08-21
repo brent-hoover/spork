@@ -47,7 +47,7 @@ type Report struct {
 // Verifier runs the spec verifier over a directory.
 type Verifier interface {
 	Verify(ctx context.Context, dir string) (Report, error)
-	Resolve(ctx context.Context, dir string) (Model, error)
+	Inspect(ctx context.Context, dir string) (Model, error)
 }
 
 // CLI shells out to the avspec command.

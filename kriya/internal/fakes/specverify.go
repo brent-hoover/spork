@@ -40,8 +40,8 @@ func (v *Verifier) Verify(_ context.Context, dir string) (specverify.Report, err
 	return r, nil
 }
 
-// Resolve returns the programmed model for dir.
-func (v *Verifier) Resolve(_ context.Context, dir string) (specverify.Model, error) {
+// Inspect returns the programmed model for dir.
+func (v *Verifier) Inspect(_ context.Context, dir string) (specverify.Model, error) {
 	v.Calls = append(v.Calls, dir)
 	if v.Err != nil {
 		return specverify.Model{}, v.Err

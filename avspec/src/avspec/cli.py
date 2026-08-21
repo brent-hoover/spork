@@ -103,10 +103,15 @@ def _artifacts(spec_dir: Path, manifest: Manifest) -> list[str]:
 
 
 @app.command()
-def resolve(
+def inspect(
     spec_dir: Path = typer.Argument(Path(".")),  # noqa: B008
 ) -> None:
-    """Print the resolved build model as JSON — effective commands and artifacts.
+    """Print the spec's full resolved detail as JSON — commands and artifacts.
+
+    verify judges a spec; inspect shows it. A manifest is a compressed form —
+    modules inherit their stack from the project, per field — so what a module
+    actually runs is written nowhere. This prints it expanded, alongside every
+    file the spec references.
 
     Output is ALWAYS JSON and there is no --json flag, unlike verify and next.
     Those two have a human format worth reading; this command exists only for
