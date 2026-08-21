@@ -5,8 +5,8 @@
 // It sits behind the `acceptance` build tag so that `go test ./...` — which
 // IS the project's test gate — stays green while scenarios are still
 // pending. Run it with `go test -tags acceptance ./internal/acceptance/`.
-// CI compiles it on every run (`go vet -tags acceptance ./...`) so it cannot
-// rot unnoticed while hidden from the default gate.
+// The test gate runs TestDiscovery under the tag, so the scenario count
+// cannot drift while the package is hidden from the default gate.
 package acceptance
 
 import (

@@ -56,7 +56,9 @@ were the same mistake: quoting an `And …` line as if it were a scenario.
 ## M1 — Skeleton
 
 Goal: the **four fast gates** — test, lint, typecheck, arch — green
-against a module with no behavior, each proven to fail closed. Coverage and
+against a module with no behavior, each proven to fail closed, run locally.
+**CI is out of scope**: the repo has no Go workflow, sutra shipped without
+one, and adding it was never asked for. Coverage and
 mutation are deliberately *not* claimed here: on a module of `doc.go`-only
 packages `branch-coverage.sh` takes its `expected=0` path, leaves
 `sum_total=0`, skips the floor block and exits 0 having measured nothing.
@@ -147,32 +149,6 @@ they were one commit.
 **Verify:** `go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./...` reports
 the fakes; the gate's `testonly` strip removes them; the **`-test` pass
 must still be empty**, so a fake nothing uses still fails the gate.
-
-### 4. CI with both toolchains
-
-**What:** Add a Go job to `.github/workflows/verify.yml`. The existing job
-pins `working-directory: avspec` at job level, so the Go job needs its own
-`defaults`. It must provide **three** things in one job: the Go toolchain,
-uv (because `specverify` shells out to `avspec verify`), and a **sutra
-binary built from `sutra/`** for the integration ring. Runs install, test,
-lint, typecheck, arch.
-
-It must also run **`go vet -tags acceptance ./...`**. The acceptance
-package sits behind a build tag so the `test` gate stays green while
-scenarios are pending — but that also removes it from every default gate,
-so without this it could stop compiling and CI would stay green. Compiling
-it is checked; passing it is not, until M6.
-
-Coverage and mutation are **not** in CI: coverage is ~20 minutes and
-mutation is unscoped (see Preconditions). They run locally per milestone,
-as sutra's did. Say so rather than implying "full gate chain" means CI.
-
-**Why:** the repo has no Go CI at all today.
-
-**Scenarios:** none.
-
-**Verify:** `act` locally, or a `workflow_dispatch` on a throwaway branch
-— pushing needs confirmation.
 
 ### 5. `acceptance` harness skeleton — discovery only
 

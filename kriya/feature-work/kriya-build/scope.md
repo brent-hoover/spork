@@ -86,8 +86,6 @@ after outline expansion — and the pinned gate chain is green.
 * `kriya/avspec.yaml` — **stack commands only**, and only where a gate
   cannot run as written
 * `kriya/feature-work/kriya-build/**`
-* `.github/workflows/**` — the repo has no Go CI job; M1 adds one, and it
-  needs both the Go and uv toolchains
 * `avspec/examples/linkshort/**` — the end-to-end proof target
 
 ## Files/areas you must NOT touch
@@ -101,4 +99,5 @@ after outline expansion — and the pinned gate chain is green.
 * `avspec/src/**`, `avspec/tests/**` — the verifier is not part of this work
 * `scripts/**` — `branch-coverage.sh` and its regression suite are shared
   by every Go app in the repo and are not kriya's to change
+* `.github/**` — CI is out of scope. Gates run locally, as sutra's did
 * `.worktrees/**` other than this one

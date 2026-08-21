@@ -791,12 +791,14 @@ the harness would later need.
   under one header, and `REQ-tui.feature:22-54` has fifteen `Given`s.
   Step definitions, not scenario count, are the real cost, and they land in
   M1's `acceptance` package before any of them can pass.
-- **CI has no Go job at all.** `.github/workflows/verify.yml` is the
-  repo's only workflow and runs uv, ruff, ty, pytest, and
-  `avspec verify examples/linkshort` — nothing Go. M1 must add one, and it
-  needs **both** toolchains, because `specverify` shells out to
-  `avspec verify`: the integration ring depends on a working uv
-  environment as well as Go.
+- **There is no Go CI, and adding it is out of scope.** The repo's only
+  workflow runs uv, ruff, ty, pytest, and `avspec verify` — nothing Go.
+  Sutra shipped and merged the same way, with gates run locally. The risk
+  this leaves is real and named rather than fixed: nothing outside a
+  developer's own machine runs kriya's gate chain, so a gate is only as
+  reliable as the discipline of running it. The integration ring also needs
+  a uv environment alongside Go, because `specverify` shells out to
+  `avspec verify` — a constraint on wherever the gates do run.
 
 ## Out of scope
 
