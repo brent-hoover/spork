@@ -218,6 +218,17 @@ table in `spec-gaps.md` or a `docs/` note, reviewed.
 
 Goal: point kriya at a ready spec and see tickets in sutra.
 
+**M2's steps are VERTICAL SLICES, not layers.** The steps below were
+originally written as one seam per step — specverify, then trackerclient,
+then agent, then planner — and that ordering cannot go green. Kriya's lint
+gate runs `deadcode` with a production pass and **no allowlist**, so a seam
+whose first caller does not exist yet is unreachable production code and
+fails the gate. A seam and the thing that calls it must land together, with
+enough `cli` and `main` wiring to reach them from an entry point. Discovered
+at step 6; the same constraint had already forced `clock` to ship as an
+interface with its implementation deferred. Steps 6-12 are therefore
+grouped into slices below rather than executed in their written order.
+
 ### 6. `specverify` seam
 
 **What:** `internal/specverify` wrapping `avspec verify <dir> --json`,
