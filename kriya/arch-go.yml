@@ -1,23 +1,51 @@
-# Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
-# checked against real imports by the stack's arch command:
+# Declared module boundaries, checked against real imports by the stack's
+# arch command:
 #   go run github.com/arch-go/arch-go@v1.7.0
+#
 # Package layout mirrors module names with hyphens dropped: one package
 # directory per module (dev-loop -> devloop, review-bridge -> reviewbridge,
 # tracker-client -> trackerclient).
-# A module may import only the packages listed in its shouldOnlyDependsOn
-# rule (its own package is always allowed). Modules whose may_import is
-# EMPTY use shouldNotDependsOn with the explicit complement of every other
-# module — spiked 2026-08-06: an empty shouldOnlyDependsOn allowlist is
-# treated as UNCONSTRAINED (silent pass) and a bare "**" pattern panics
-# arch-go v1.7.0, so the complement idiom is the only enforcing form.
-# Patterns match the LEAF package per module ("**.issues", not
-# "**.issues.**") — add descendant patterns only if subpackages appear.
+#
+# THIS FILE DELIBERATELY DIVERGES FROM avspec's may_import, in one
+# direction only. avspec can describe modules and the edges between them;
+# it has no concept of a package that is not a module. Six such packages
+# exist here — cmd/kriya (composition root), agent, specverify, clock,
+# recovery, and acceptance — and arch-go requires 100% package coverage,
+# so they must appear. Module-to-module edges still match avspec exactly.
+# Logged in feature-work/kriya-build/spec-gaps.md.
+#
+# EVERY RULE IS AN ALLOWLIST, with exactly one exception. An empty
+# shouldOnlyDependsOn is treated as UNCONSTRAINED and passes silently, and
+# a bare "**" pattern panics arch-go v1.7.0 (spiked 2026-08-06), so a
+# package that may import nothing has to use shouldNotDependsOn naming the
+# explicit complement. internal/clock is the only such package. Every
+# other package now imports at least clock, so it gets a real allowlist.
+#
+# That uniformity is deliberate and it closes a hole. The two idioms
+# behave differently under extension: adding a new package silently
+# FORBIDS it everywhere allowlists are used, and silently PERMITS it
+# everywhere the complement form is used. The original file used the
+# complement form for six modules, so half the boundaries failed open to
+# any package added later. They now fail closed.
+#
+# Patterns match the LEAF package per module ("**.gates", not
+# "**.gates.**") — add descendant patterns only if subpackages appear.
+# "**.kriya" is cmd/kriya; the module root holds no .go files of its own.
+#
+# clock is allowed almost everywhere because nearly every module owns a
+# timestamped entity and time.Now is banned outside internal/clock.
+# agent is allowed only to planner, orchestrator, devloop, architect, and
+# owner — the PM, SA, PO, and dev invocation sites. specverify is allowed
+# only to planner, which performs intake.
 version: 1
 dependenciesRules:
   - package: "**.planner"
     shouldOnlyDependsOn:
       internal:
         - "**.trackerclient"
+        - "**.agent"
+        - "**.specverify"
+        - "**.clock"
   - package: "**.orchestrator"
     shouldOnlyDependsOn:
       internal:
@@ -27,109 +55,133 @@ dependenciesRules:
         - "**.gates"
         - "**.owner"
         - "**.trackerclient"
+        - "**.agent"
+        - "**.clock"
   - package: "**.workspace"
-    shouldNotDependsOn:
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.devloop"
-        - "**.reviewbridge"
-        - "**.gates"
-        - "**.architect"
-        - "**.owner"
-        - "**.context"
-        - "**.trackerclient"
-        - "**.cli"
-        - "**.tui"
+        - "**.clock"
   - package: "**.devloop"
     shouldOnlyDependsOn:
       internal:
         - "**.context"
         - "**.reviewbridge"
         - "**.architect"
+        - "**.agent"
+        - "**.clock"
   - package: "**.reviewbridge"
-    shouldNotDependsOn:
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.workspace"
-        - "**.devloop"
-        - "**.gates"
-        - "**.architect"
-        - "**.owner"
-        - "**.context"
-        - "**.trackerclient"
-        - "**.cli"
-        - "**.tui"
+        - "**.clock"
   - package: "**.gates"
-    shouldNotDependsOn:
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.workspace"
-        - "**.devloop"
-        - "**.reviewbridge"
-        - "**.architect"
-        - "**.owner"
-        - "**.context"
-        - "**.trackerclient"
-        - "**.cli"
-        - "**.tui"
+        - "**.clock"
   - package: "**.architect"
-    shouldNotDependsOn:
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.workspace"
-        - "**.devloop"
-        - "**.reviewbridge"
-        - "**.gates"
-        - "**.owner"
-        - "**.context"
-        - "**.trackerclient"
-        - "**.cli"
-        - "**.tui"
+        - "**.agent"
+        - "**.clock"
   - package: "**.owner"
-    shouldNotDependsOn:
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.workspace"
-        - "**.devloop"
-        - "**.reviewbridge"
-        - "**.gates"
-        - "**.architect"
-        - "**.context"
-        - "**.trackerclient"
-        - "**.cli"
-        - "**.tui"
+        - "**.agent"
+        - "**.clock"
   - package: "**.context"
     shouldOnlyDependsOn:
       internal:
         - "**.trackerclient"
+        - "**.clock"
   - package: "**.trackerclient"
-    shouldNotDependsOn:
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.workspace"
-        - "**.devloop"
-        - "**.reviewbridge"
-        - "**.gates"
-        - "**.architect"
-        - "**.owner"
-        - "**.context"
-        - "**.cli"
-        - "**.tui"
+        - "**.clock"
   - package: "**.cli"
     shouldOnlyDependsOn:
       internal:
         - "**.planner"
         - "**.orchestrator"
         - "**.context"
+        - "**.clock"
   - package: "**.tui"
     shouldOnlyDependsOn:
       internal:
         - "**.orchestrator"
         - "**.architect"
         - "**.reviewbridge"
+        - "**.clock"
+  - package: "**.agent"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.clock"
+  - package: "**.specverify"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.clock"
+  - package: "**.clock"
+    shouldNotDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
+        - "**.agent"
+        - "**.specverify"
+        - "**.recovery"
+        - "**.acceptance"
+        - "**.kriya"
+  - package: "**.recovery"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.planner"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.orchestrator"
+        - "**.reviewbridge"
+        - "**.clock"
+  - package: "**.acceptance"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
+        - "**.agent"
+        - "**.specverify"
+        - "**.clock"
+        - "**.recovery"
+  - package: "**.kriya"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.planner"
+        - "**.orchestrator"
+        - "**.workspace"
+        - "**.devloop"
+        - "**.reviewbridge"
+        - "**.gates"
+        - "**.architect"
+        - "**.owner"
+        - "**.context"
+        - "**.trackerclient"
+        - "**.cli"
+        - "**.tui"
+        - "**.agent"
+        - "**.specverify"
+        - "**.clock"
+        - "**.recovery"
