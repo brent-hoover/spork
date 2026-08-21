@@ -26,7 +26,7 @@
 # FORBIDS it everywhere allowlists are used, and silently PERMITS it
 # everywhere the complement form is used. The original file used the
 # complement form for six modules, so half the boundaries failed open to
-# any package added later. They now fail closed.
+# any package added later. They now fail closed, clock included.
 #
 # Patterns match the LEAF package per module ("**.gates", not
 # "**.gates.**") — add descendant patterns only if subpackages appear.

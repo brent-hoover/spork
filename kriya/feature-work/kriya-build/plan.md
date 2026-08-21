@@ -97,8 +97,11 @@ Then **prove the gate is not vacuous**: add a temporary illegal import
 
 ### 3. `clock` package and the no-`time.Now()` rule
 
-**What:** `internal/clock` with a `Clock` interface, a real
-implementation, and a fake with settable time. `forbidigo` banning
+**What:** `internal/clock` with the `Clock` interface **only** — the real
+`System` implementation is deferred to the composition root (step 5c),
+because until `main` can reach it, it is unreachable production code and the
+no-allowlist deadcode gate rejects it. The fake lives in `internal/fakes`
+(step 3b). `forbidigo` banning
 `time.Now` outside `internal/clock`. **Also pin `.golangci.yml`'s
 structural limits now** — `funlen`, `cyclop`, `gocognit` — because
 design.md names them as the only mechanical guard against orchestrator
@@ -310,7 +313,7 @@ snapshot".
 `And the build runs its gate chain and recovery later replays a step`
 clause needs the gate chain (M3) and a supersession-era replay (M5).
 
-**Verify:** `go test -tags acceptance ./internal/acceptance/ -run 'spec-intake'`
+**Verify:** `go test -tags acceptance ./internal/acceptance/ -godog.paths ../../verification/REQ-spec-intake.feature`
 — 8 from this step; 11 of 12 for the file once step 12 lands.
 
 ### 10. `planner`: decomposition and `BuildTarget.epic_state`
@@ -328,13 +331,17 @@ acceptance criteria", "one epic umbrellas the build target", "phases run behind 
 barriers", "same-key retries are state-aware", "a stale intake recovering
 late cannot supersede a newer head", "reverting to a previously seen spec
 is a fresh plan, not a replay", "supersession retires the predecessor
-before activating", "retirement distinguishes pending from issued work".
+before activating".
+
+**Deferred to M3:** "retirement distinguishes pending from issued work" —
+it requires a ticket claimed by a **live build** to stamp disposition
+`bound`, and no `BuildRun` exists until `orchestrator` lands.
 
 **Deferred to M5:** "relations wire risk ordering and parallelism" — its
 `And an agent popping work receives an unblocked ticket` clause is pop
 admission, which is M5.
 
-**Verify:** godog-filtered to `decompose` — 7 from this step, **8 of 10**
+**Verify:** `-godog.paths ../../verification/REQ-decompose.feature` — 7 from this step, **8 of 10**
 for the file once step 13 adds "every parked state recovers forward".
 
 ### 11. `planner`: risk-first ticketing
@@ -347,7 +354,7 @@ label, with block-relations so dependents cannot proceed.
 **Scenarios:** `REQ-risk-first.feature` — "each risk becomes a blocking
 spike".
 
-**Verify:** `go test -tags acceptance ./internal/acceptance/ -run 'risk-first'`
+**Verify:** `go test -tags acceptance ./internal/acceptance/ -godog.paths ../../verification/REQ-risk-first.feature`
 — 1 of 6. The other five need pop admission and architect escalation, both
 M5; the research path itself is M4, so "needs the research path" was the
 wrong reason.
@@ -367,24 +374,27 @@ wired in `cmd/kriya`. **Not `learn add`** — the learning store is
 "a missing tier fails loudly".
 
 **Verify:**
-`go test -tags acceptance ./internal/acceptance/ -run 'spec-intake/draft_spec_is_refused'`
-and the four siblings — exit 0, 5 scenarios passed. Plus
+`go test -tags acceptance ./internal/acceptance/ -godog.paths ../../verification/REQ-spec-intake.feature`
+and the tier-routing file — the three intake refusals and two tier-routing
+scenarios pass. Plus
 `kriya build avspec/examples/linkshort` against a real sutra creating a
 project and tickets.
 
 ### 13. `recovery` stages 1-2
 
-**What:** `internal/recovery` with the sequencer and `Recover(ctx)` on
-`planner`. Stage 1's pop-binding sweep runs behind the `PopBinder`
-interface `planner` declares.
+**What:** `internal/recovery` with the sequencer and
+`Recover(ctx, stage)` on `planner` — the stage parameter is required
+because the nine-stage table invokes `orchestrator` at 1, 4, 7 and 8 and
+`planner` at 2 and 3, which one unqualified method cannot express. M2 lands
+**stage 2 only**; stage 1's pop-binding sweep needs orchestrator-owned
+`BuildRun` rows and arrives in M3 with the real `PopBinder`.
 
-**Not a no-op.** `REQ-decompose.feature:79` requires "the ticket claimed by
-a live build stamps disposition **bound**", and a stub returning `bound=0`
-cannot produce that stamp. The acceptance harness supplies a **programmable
-fake `PopBinder`** from `internal/fakes` that returns `bound` for a named
-ticket. The production stub — which genuinely does nothing until
-`orchestrator` exists in M3 — is wired in `cmd/kriya`, not in `recovery`,
-so `recovery` never carries knowledge of what is not built yet.
+The M2 `PopBinder` genuinely does nothing, and that is correct rather than
+a stub excused: in M2 there are no `BuildRun` rows to bind. It is wired in
+`cmd/kriya`, not in `recovery`, so `recovery` carries no knowledge of what
+is not built yet. The scenario that needs a real binding —
+`REQ-decompose.feature:79`, "the ticket claimed by a live build stamps
+disposition **bound**" — is claimed by M3, not faked here.
 
 **Why:** M2's intake-crash scenarios call recovery. Landing the sequencer
 now is why M3 and M4 can grow it rather than invent it.

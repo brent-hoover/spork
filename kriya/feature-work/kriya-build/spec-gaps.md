@@ -13,7 +13,7 @@ build kept the same file for the same purpose.
 `arch-go` requires 100% package coverage: every Go package in the module
 must match a rule. But a real Go program contains packages that are not
 domain modules, and avspec's `modules[]` block is the only place boundaries
-can be declared. Kriya needs six such packages:
+can be declared. Kriya needs seven such packages:
 
 | Package | Why it is not a module |
 |---|---|
@@ -22,6 +22,7 @@ can be declared. Kriya needs six such packages:
 | `internal/specverify` | the `avspec verify` seam |
 | `internal/clock` | controllable time, imported everywhere |
 | `internal/recovery` | sequences each module's `Recover`; no module can reach them all |
+| `internal/fakes` | test doubles for the seams; stripped from the deadcode production pass |
 | `internal/acceptance` | the godog harness; test-only |
 
 The consequence is concrete. Six modules use `shouldOnlyDependsOn`
@@ -39,9 +40,10 @@ so half of kriya's boundaries failed open to any package added later.
 **Resolved 2026-08-21** by converting every rule to an allowlist. One
 package — `internal/clock` — may import nothing at all, and an empty
 allowlist passes silently, so it allows a sentinel pattern matching no
-package: enforcing, and stable under extension. An earlier attempt left
-clock on a denylist and reintroduced the same fail-open hole in the one
-place that could not use a normal allowlist; roborev caught it.
+package: enforcing, and stable under extension, leaving no denylist rule in
+the file at all. An earlier attempt left clock on a denylist and
+reintroduced the same fail-open hole in the one place that could not use a
+normal allowlist; roborev caught it.
 
 **Divergence recorded:** `arch-go.yml` enforces avspec's `may_import` for
 module-to-module edges, and adds non-module packages that avspec cannot
@@ -49,7 +51,7 @@ express. The file header must say so.
 
 **What would close it:** an avspec concept for infrastructure packages —
 declared, boundary-checked, but not domain modules. Sutra hit this once
-(its composition root); kriya hits it six times, which suggests it is
+(its composition root); kriya hits it seven times, which suggests it is
 structural rather than incidental.
 
 `recovery` is the clearest case, though the claim needs stating carefully.

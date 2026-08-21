@@ -514,9 +514,9 @@ and the rest in a later milestone.
 |---|---|---|---|
 | M1 | Skeleton | `cmd/kriya`, `acceptance`, `clock`, `arch-go.yml` completed, Go+uv CI | none — the gate chain itself |
 | M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `cli`, `planner` (`Plan` lifecycle + `BuildTarget.epic_state`), `recovery` (sequencer + **stage 2 only**) | spec-intake **(partial)**, decompose **(partial)**, risk-first **(partial)** |
-| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun, code path only) + the real `PopBinder`, `recovery` (+ **stage 1**, 5-7, 9) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent **(partial)** |
+| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun, code path only) + the real `PopBinder`, `recovery` (+ **stage 1**, 5-7, 9) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent **(partial)**, spec-intake **(remainder)**, decompose **(one scenario)** |
 | M4 | Review, merge, completion | `owner`, `orchestrator` (MergeAttempt + BuildRun research path), `planner` (`completion_state` + `CompletionAdvance`), `recovery` (+ stages 3, 8) | po-validation, submit-review |
-| M5 | The outer loop | `orchestrator` (full table + AttributionAmbiguity), `recovery` (+ stage 4) | run-to-complete, parallel-build, learning-loop, risk-first **(remainder)**, spec-intake **(remainder)**, decompose **(remainder)**, sa-agent **(remainder)** |
+| M5 | The outer loop | `orchestrator` (full table + AttributionAmbiguity), `recovery` (+ stage 4) | run-to-complete, parallel-build, learning-loop, risk-first **(remainder)**, decompose **(remainder)**, sa-agent **(remainder)** |
 | M6 | Operator surface and proof | `tui`, then the linkshort end-to-end run | tui |
 
 **DDL ships with its module**, not in M1 — a package that does not exist
@@ -578,9 +578,11 @@ rather than claiming them early:
   with `parallel-build`. The remaining four need the BuildRun research path,
   a sutra document Review, and architect escalation. So the split is 1 in
   M2, 5 in M5.
-- **`decompose`** — `:31` ("an agent popping work receives an unblocked
-  ticket") is the same pop machinery, so it lands M5 with the rest of
-  decomposition proven in M2.
+- **`decompose`** — splits three ways. `:31` ("an agent popping work
+  receives an unblocked ticket") is pop machinery and lands M5;
+  "retirement distinguishes pending from issued work" needs a live
+  `BuildRun` to stamp disposition `bound` and lands M3; the other eight are
+  M2.
 - **`sa-agent`** — `:36` asserts pop admission ("an agent popping in the
   window before the supersession fence cannot claim the obsolete ticket —
   deferred is not poppable"), the same machinery deferred to M5. The rest

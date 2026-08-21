@@ -19,6 +19,7 @@ jobs:
       - run: uv run pytest
       - run: uv run avspec verify examples/linkshort
 
+
   kriya:
     runs-on: ubuntu-latest
     defaults:
@@ -38,23 +39,20 @@ jobs:
       - name: build sutra for the integration ring
         working-directory: sutra
         run: go build ./cmd/sutra
-      # The five gate commands below are copied verbatim from
-      # kriya/avspec.yaml stack.commands. They are DUPLICATED, not read from
-      # the spec, so they can drift — if a gate is changed there, change it
-      # here in the same commit.
+      # The gate commands below are copied verbatim from kriya/avspec.yaml
+      # stack.commands. They are DUPLICATED, not read from the spec, so they
+      # can drift — change a gate there and change it here in the same commit.
+      # The test gate already runs TestDiscovery under the acceptance tag, and
+      # the lint gate already passes --build-tags acceptance, so tagged
+      # harness code is compiled, linted, and its scenario count asserted.
       - name: install
         run: go mod download
       - name: test
-        run: go test ./...
-      # The acceptance package sits behind a build tag so the test gate stays
-      # green while scenarios are pending. That also removes it from every
-      # default gate, so compile it explicitly or it can rot unnoticed.
-      - name: acceptance package compiles
-        run: go vet -tags acceptance ./...
+        run: go test ./... && go test -tags acceptance -run TestDiscovery ./internal/acceptance/
       - name: typecheck
         run: go vet ./...
       - name: lint
         run: |
-          out=$(mktemp); out2=$(mktemp); trap 'rm -f "$out" "$out2"' EXIT; go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run && go run golang.org/x/tools/cmd/deadcode@v0.48.0 -test ./... > "$out" && cat "$out" && test ! -s "$out" && go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./... > "$out2" && cat "$out2" && testonly='^internal/fakes/' && { grep -vE "$testonly" "$out2" > "$out" || true; } && test ! -s "$out"
+          out=$(mktemp); out2=$(mktemp); trap 'rm -f "$out" "$out2"' EXIT; go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run --build-tags acceptance && go run golang.org/x/tools/cmd/deadcode@v0.48.0 -test ./... > "$out" && cat "$out" && test ! -s "$out" && go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./... > "$out2" && cat "$out2" && testonly='^internal/fakes/' && { grep -vE "$testonly" "$out2" > "$out" || true; } && test ! -s "$out"
       - name: arch
         run: go run github.com/arch-go/arch-go@v1.7.0
