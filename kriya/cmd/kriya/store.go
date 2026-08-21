@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"kriya/internal/planner"
 )
 
 // migration is one module's schema, applied as a unit.
@@ -107,5 +109,10 @@ func applyMigrations(ctx context.Context, db *sql.DB, ms []migration) error {
 }
 
 // migrations is the declared order. Each module appends its own schema as it
-// lands; it is empty until planner arrives in M2.
-func migrations() []migration { return nil }
+// lands, and order is the caller's because a module's tables may reference an
+// earlier module's.
+func migrations() []migration {
+	return []migration{
+		{module: "planner", name: "0001_spec_snapshot", stmts: []string{planner.Migration}},
+	}
+}

@@ -15,3 +15,11 @@ import "time"
 type Clock interface {
 	Now() time.Time
 }
+
+// System is the real clock, reading the host's wall time. It lands here now
+// that the composition root can reach it; shipped earlier it was unreachable
+// production code and the no-allowlist deadcode gate rejected it.
+type System struct{}
+
+// Now returns the current wall time.
+func (System) Now() time.Time { return time.Now() }

@@ -3,8 +3,10 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"kriya/internal/cli"
 	"kriya/internal/fakes"
@@ -14,6 +16,18 @@ import (
 
 // completeModule declares all six gates, so intake's command check passes and
 // these tests exercise only what they are about.
+// store is a minimal SnapshotStore; these tests are about cli output, not
+// persistence, so it records without asserting.
+type store struct{ n int }
+
+func newStore() *store { return &store{} }
+
+func (s *store) Put(context.Context, planner.Snapshot) error { s.n++; return nil }
+func (s *store) Get(context.Context, string) (planner.Snapshot, error) {
+	return planner.Snapshot{}, errors.New("not needed")
+}
+func (s *store) Count(context.Context) (int, error) { return s.n, nil }
+
 func completeModule() specverify.Module {
 	cmds := map[string]string{}
 	for _, name := range specverify.RequiredCommands {
@@ -26,7 +40,7 @@ func run(t *testing.T, r specverify.Report) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
 	v := fakes.NewVerifier("/spec", r).WithModules("/spec", completeModule())
-	in := planner.Intaker{Verify: v}
+	in := planner.Intaker{Verify: v, Snapshots: newStore(), Now: fakes.NewClock(time.Unix(0, 0))}
 	err := cli.Build(context.Background(), &out, in, "/spec")
 	return out.String(), err
 }

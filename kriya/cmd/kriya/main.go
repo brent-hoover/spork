@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"kriya/internal/cli"
+	"kriya/internal/clock"
 	"kriya/internal/planner"
 	"kriya/internal/specverify"
 
@@ -86,7 +87,11 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", args[1], err)
 		}
-		in := planner.Intaker{Verify: verifier()}
+		in := planner.Intaker{
+			Verify:    verifier(),
+			Snapshots: planner.SQLSnapshots{DB: db},
+			Now:       clock.System{},
+		}
 		return cli.Build(ctx, os.Stdout, in, target)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"kriya/internal/clock"
+
 	"kriya/internal/specverify"
 )
 
@@ -20,9 +22,12 @@ type Refusal struct {
 // Error lets a Refusal travel as an error where that reads better.
 func (r Refusal) Error() string { return r.Reason }
 
-// Intaker verifies a target spec and decides whether it may be built.
+// Intaker verifies a target spec, decides whether it may be built, and pins
+// what it validated.
 type Intaker struct {
-	Verify specverify.Verifier
+	Verify    specverify.Verifier
+	Snapshots SnapshotStore
+	Now       clock.Clock
 }
 
 // Admit reports nil when dir holds a spec kriya may build, or a *Refusal.
@@ -65,6 +70,22 @@ func (i Intaker) Admit(ctx context.Context, dir string) error {
 		}
 	}
 	return i.admitCommands(ctx, dir, report.Status)
+}
+
+// Admit reports the pinned snapshot for a spec kriya may build.
+//
+// Nothing is pinned unless every check passed: AC-intake-refuse requires that
+// a refused intake pins no snapshot and enqueues nothing, so pinning happens
+// after admission rather than alongside it.
+func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) {
+	if err := i.Admit(ctx, dir); err != nil {
+		return Snapshot{}, err
+	}
+	model, err := i.Verify.Resolve(ctx, dir)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("resolve %s: %w", dir, err)
+	}
+	return i.pin(ctx, dir, model)
 }
 
 // admitCommands enforces AC-intake-commands.

@@ -29,12 +29,14 @@ func (e *errWriter) printf(format string, a ...any) {
 // Build is the `kriya build <project>` entry point.
 func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir string) error {
 	w := &errWriter{w: out}
-	err := in.Admit(ctx, dir)
+	snapshot, err := in.AdmitAndPin(ctx, dir)
 
 	var refusal *planner.Refusal
 	switch {
 	case err == nil:
 		w.printf("%s: ready\n", dir)
+		w.printf("  snapshot %s (%d artifacts, %d modules)\n",
+			snapshot.Hash[:12], len(snapshot.Content), len(snapshot.ResolvedCommands))
 	case errors.As(err, &refusal):
 		w.printf("refused: %s\n", refusal.Reason)
 		for _, f := range refusal.Findings {
