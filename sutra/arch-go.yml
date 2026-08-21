@@ -101,6 +101,27 @@ dependenciesRules:
         - "**.api"
         - "**.cli"
         - "**.web"
+  # Fault injection — a database/sql driver that exists only so tests can
+  # inject store failures. It imports no sibling module and nothing in
+  # production imports IT: the sweeps reach it through a blank import and a
+  # DSN, which is also why it exports nothing. Not an avspec module (the
+  # same spec gap as the acceptance harness and the composition root), but
+  # arch-go requires 100% package coverage, so its emptiness is declared
+  # rather than left implicit.
+  - package: "**.faultsql"
+    shouldNotDependsOn:
+      internal:
+        - "**.issues"
+        - "**.projects"
+        - "**.docs"
+        - "**.threads"
+        - "**.identity"
+        - "**.events"
+        - "**.review"
+        - "**.comments"
+        - "**.api"
+        - "**.cli"
+        - "**.web"
   - package: "**.review"
     shouldOnlyDependsOn:
       internal:
