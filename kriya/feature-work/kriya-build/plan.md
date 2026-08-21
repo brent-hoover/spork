@@ -112,11 +112,11 @@ deferred, and every recovery test needs it.
 
 **Verify:** `golangci-lint run` → exit 0. Two negative controls: add
 `time.Now()` to another package and confirm it fails; add a deliberately
-over-long function and confirm `funlen` fires. This is also the first
-package with a real branch, so run `../scripts/branch-coverage.sh` here
-and confirm the floor **engages** rather than measuring nothing.
+over-long function and confirm `funlen` fires. Coverage is **not** run here: `clock` turned out to have no conditional at
+all, so it contributes no arms and the gate would still measure nothing.
+The floor is first exercisable in M2 with `planner`.
 
-### 3b. Settle where fakes live, before the first one exists
+### 3b. Settle where fakes live — BEFORE step 3, not after
 
 **What:** `kriya/avspec.yaml`'s lint gate runs `deadcode` **twice**, the
 second pass without `-test`, requires empty output, and says "There is NO
@@ -134,6 +134,11 @@ stack-command change to `kriya/avspec.yaml`, which `scope.md` permits.
 **Why:** sutra hit this exact wall and solved it this exact way. Kriya's
 lint command inherited the shape without the escape hatch.
 
+**Ordering:** this is numbered 3b but **runs before step 3's fake**. Step 3
+ships the `Clock` interface; the fake and this gate change land together,
+because a fake with no home breaks lint the moment it exists. In practice
+they were one commit.
+
 **Scenarios:** none.
 
 **Verify:** `go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./...` reports
@@ -148,6 +153,12 @@ pins `working-directory: avspec` at job level, so the Go job needs its own
 uv (because `specverify` shells out to `avspec verify`), and a **sutra
 binary built from `sutra/`** for the integration ring. Runs install, test,
 lint, typecheck, arch.
+
+It must also run **`go vet -tags acceptance ./...`**. The acceptance
+package sits behind a build tag so the `test` gate stays green while
+scenarios are pending — but that also removes it from every default gate,
+so without this it could stop compiling and CI would stay green. Compiling
+it is checked; passing it is not, until M6.
 
 Coverage and mutation are **not** in CI: coverage is ~20 minutes and
 mutation is unscoped (see Preconditions). They run locally per milestone,
@@ -181,6 +192,13 @@ unattainable.
 **Verify:** `go test ./...` → exit 0 (tag excluded).
 `go test -tags acceptance ./internal/acceptance/ -run TestDiscovery` →
 asserts exactly 162, exit 0.
+
+**Scenario filtering is by godog, not `-run`.** godog is driven from
+`TestMain`, so `go test -run 'spec-intake'` filters Go test functions and
+does nothing to scenarios — every pending scenario would still run and keep
+the command red. The harness must expose godog's own selection (a
+`-godog.tags` flag, or `GODOG_PATHS`/format options wired in `TestMain`),
+and every per-step Verify below uses that.
 
 ### 5b. Step definitions land with their milestone
 
@@ -316,8 +334,8 @@ before activating", "retirement distinguishes pending from issued work".
 `And an agent popping work receives an unblocked ticket` clause is pop
 admission, which is M5.
 
-**Verify:** `go test -tags acceptance ./internal/acceptance/ -run 'decompose'`
-— 7 from this step, 9 of 10 for the file with step 13.
+**Verify:** godog-filtered to `decompose` — 7 from this step, **8 of 10**
+for the file once step 13 adds "every parked state recovers forward".
 
 ### 11. `planner`: risk-first ticketing
 
@@ -383,10 +401,12 @@ surface permits.
 **Verify:** crash-injection tests: fake seam accepts, harness suppresses
 the outcome write, store reopens, `recovery.Run` reconciles.
 
-**M2 done when:** `spec-intake` 11/12, `decompose` 9/10, `risk-first` 1/6,
+**M2 done when:** `spec-intake` 11/12, `decompose` **8/10**, `risk-first` 1/6,
 `tier-routing` 2/3 under `-tags acceptance`; `go test ./...` green; the
 four fast gates green; coverage above the 75 floor; and **kriya's mutation
-scope decided and its gate run once** (see Preconditions).
+scope decided and its gate PASSING** — zero survivors, zero timeouts.
+"Run once" would have been a milestone declaring itself green on a gate
+whose result it never checked.
 
 ---
 
@@ -433,8 +453,8 @@ milestones are marked, matching design.md.
 
 | Feature file | Scenarios | Milestone(s) | Steps |
 |---|---|---|---|
-| `REQ-spec-intake.feature` | 12 | M2 (11), M5 (1) | 9, 12 |
-| `REQ-decompose.feature` | 10 | M2 (9), M5 (1) | 10, 13 |
+| `REQ-spec-intake.feature` | 12 | M2 (11), M3 (1) | 9, 12 |
+| `REQ-decompose.feature` | 10 | M2 (8), M3 (1), M5 (1) | 10, 13 |
 | `REQ-risk-first.feature` | 6 | M2 (1), M5 (5) | 11 |
 | `REQ-tier-routing.feature` | 3 | M2 (2), M3 (1) | 12 |
 | `REQ-workspaces.feature` | 5 | M3 | M3 |
@@ -471,7 +491,7 @@ disposable per suite.
 - Expanding M3-M6 into atomic steps before their milestone starts.
 - Behavioral spec changes; only stack-command changes, with their own review.
 - Editing `kriya/verification/**`.
-- The `--bare` decision (needed by M3, not schedulable here).
+- ~~The `--bare` decision~~ — resolved as `--safe-mode`; see Preconditions.
 - Kriya building kriya.
 
 ## Change log

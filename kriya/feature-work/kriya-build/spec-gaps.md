@@ -30,11 +30,18 @@ allowlist that omits a non-module package **forbids** it. So `arch-go.yml`
 must list packages that appear nowhere in `modules[].boundaries.may_import`,
 which means the file is no longer a pure mirror of the spec.
 
-The six modules whose `may_import` is empty use the complement form
-(`shouldNotDependsOn` listing every other module), so a package absent from
-their forbidden list is already permitted. They need no change — which is a
-second, quieter observation: **the two idioms behave differently under
-extension**, and only the complement form is open by default.
+A second, quieter observation came out of this: **the two idioms behave
+differently under extension.** Adding a package silently FORBIDS it
+wherever `shouldOnlyDependsOn` is used and silently PERMITS it wherever the
+complement form is used. Six modules originally used the complement form,
+so half of kriya's boundaries failed open to any package added later.
+
+**Resolved 2026-08-21** by converting every rule to an allowlist. One
+package — `internal/clock` — may import nothing at all, and an empty
+allowlist passes silently, so it allows a sentinel pattern matching no
+package: enforcing, and stable under extension. An earlier attempt left
+clock on a denylist and reintroduced the same fail-open hole in the one
+place that could not use a normal allowlist; roborev caught it.
 
 **Divergence recorded:** `arch-go.yml` enforces avspec's `may_import` for
 module-to-module edges, and adds non-module packages that avspec cannot

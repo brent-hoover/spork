@@ -161,9 +161,9 @@ Which file exercises which:
 
 | Machine | Owner | Exercised by |
 |---|---|---|
-| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop`, the `submit-review` submission windows (`:15`, `:20`, `:27`, `:37`) and its `gate_attempt`/`gated_base` fence scenarios (`:89`, `:96-127`), the `risk-first` research states (`:33-40`, `:51-57`) |
+| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop`, the `submit-review` submission windows (`:15`, `:20`, `:27`, `:37`) and its `gate_attempt`/`gated_base` fence scenarios (`:89`, `:96-127`), the `risk-first` research states (`:33-40`, `:51-57`), and the post-merge completion scenarios (`:167`, `:177`, `:185`) — `:171` says outright that a research run has no merge attempt |
 | `BuildTarget` + `CompletionAdvance` | planner | most of `run-to-complete` |
-| `MergeAttempt` | orchestrator | about half of `submit-review` (`:46`, `:60`, `:66`, `:74`, `:80`, `:129-159`, `:167`, `:177`, `:185`) |
+| `MergeAttempt` | orchestrator | about half of `submit-review` (`:46`, `:60`, `:66`, `:74`, `:80`, `:129-159`) |
 | `AttributionAmbiguity` | orchestrator | `run-to-complete` new-work scenarios |
 | `Plan` | planner | `decompose`, `spec-intake` |
 
@@ -224,6 +224,7 @@ stands on its own — every invocation passes through the seam. Log it in
 
 ```
 claude -p <prompt> \
+  --safe-mode \
   --output-format stream-json --verbose \
   --model <resolved from tier config> \
   --allowedTools <generated per ticket, see below> \
@@ -330,9 +331,13 @@ requirement is met by capture, not by parsing. Kriya stays honest to
 About fifty scenarios are phrased "the crash hit before X … **When recovery
 runs**". Recovery is therefore a named component, not a property.
 
-**Each owning module exposes `Recover(ctx) error`**, which reconciles the
-rows it owns: resume an unstamped step, terminate a crashed DevSession,
-release an abandoned workspace, reconcile an unresolved EnqueueAttempt.
+**Each owning module exposes `Recover(ctx, stage) error`**, taking the
+stage it is being asked to reconcile. A single unqualified `Recover` cannot
+work: the ordering below invokes `orchestrator` at stages 1, 4, 7 and 8 and
+`planner` at stages 2 and 3, so a module that reconciled everything it owns
+on first call would settle later machines too early, and one that ignored
+the stage would repeat itself. Each module returns an error for a stage it
+does not own, which makes the sequencer's table checkable.
 
 **A sixth non-module package, `internal/recovery`, sequences them.**
 
@@ -508,8 +513,8 @@ and the rest in a later milestone.
 | # | Milestone | Packages | Requirements proven |
 |---|---|---|---|
 | M1 | Skeleton | `cmd/kriya`, `acceptance`, `clock`, `arch-go.yml` completed, Go+uv CI | none — the gate chain itself |
-| M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `cli`, `planner` (`Plan` lifecycle + `BuildTarget.epic_state`), `recovery` (stages 1-2) | spec-intake **(partial)**, decompose **(partial)**, risk-first **(partial)** |
-| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun, code path only), `recovery` (+ stages 5-7, 9) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent **(partial)** |
+| M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `cli`, `planner` (`Plan` lifecycle + `BuildTarget.epic_state`), `recovery` (sequencer + **stage 2 only**) | spec-intake **(partial)**, decompose **(partial)**, risk-first **(partial)** |
+| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun, code path only) + the real `PopBinder`, `recovery` (+ **stage 1**, 5-7, 9) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent **(partial)** |
 | M4 | Review, merge, completion | `owner`, `orchestrator` (MergeAttempt + BuildRun research path), `planner` (`completion_state` + `CompletionAdvance`), `recovery` (+ stages 3, 8) | po-validation, submit-review |
 | M5 | The outer loop | `orchestrator` (full table + AttributionAmbiguity), `recovery` (+ stage 4) | run-to-complete, parallel-build, learning-loop, risk-first **(remainder)**, spec-intake **(remainder)**, decompose **(remainder)**, sa-agent **(remainder)** |
 | M6 | Operator surface and proof | `tui`, then the linkshort end-to-end run | tui |
@@ -549,13 +554,21 @@ Three placements are forced rather than chosen:
   directly, having no merge attempt") sits inside a scenario M4 claims.
   M5 adds nothing to the state list; it adds parallelism, the full
   transition table, and `AttributionAmbiguity`.
-- **`recovery` starts in M2 and grows.** `REQ-pair-loop.feature:42` is
+- **`recovery`'s sequencer starts in M2; stage 1 does not.** Stage 1 binds
+  claimed-but-unbound pops on orchestrator-owned `BuildRun` rows, and
+  neither `orchestrator` nor a real `PopBinder` exists before M3. M2 lands
+  the sequencer and stage 2 (plan lifecycle) with a production `PopBinder`
+  that genuinely does nothing, because in M2 there are no BuildRuns to
+  bind. Consequently `REQ-decompose.feature`'s "retirement distinguishes
+  pending from issued work" — which requires a ticket claimed by a **live
+  build** to stamp disposition `bound` — is **M3**, not M2.
+- **`recovery` otherwise starts in M2 and grows.** `REQ-pair-loop.feature:42` is
   literally "When recovery runs", `REQ-workspaces.feature:24` and `:35`
   probe and recreate under recovery, and five `submit-review` scenarios
   replay under it. A `recovery` package arriving in M5 would leave M2, M3,
   and M4 unable to go green.
 
-**Three requirements deliberately span milestones**, and the table says so
+**Four requirements deliberately span milestones**, and the table says so
 rather than claiming them early:
 
 - **`risk-first`** — only scenario 1 (`:7`, ticket creation with the risk
@@ -572,10 +585,12 @@ rather than claiming them early:
   window before the supersession fence cannot claim the obsolete ticket —
   deferred is not poppable"), the same machinery deferred to M5. The rest
   is M3.
-- **`spec-intake`** — `:55` needs the gate chain (M3) *and* a
-  supersession-era replay that only exists once plan supersession and pop
-  admission land in M5. The earlier draft blamed "recovery replays a
-  step", which was wrong: BuildRun recovery is stage 7 and ships in M3.
+- **`spec-intake`** — "working tree edits do not change a pinned build"
+  needs the gate chain and BuildRun recovery, **both M3**, so it completes
+  in M3, not M5. Two earlier drafts gave two different wrong reasons for
+  deferring it to M5 ("recovery replays a step", then "a supersession-era
+  replay"); the scenario contains no supersession at all. It asserts only
+  that a running build and its recovery read snapshot-pinned commands.
 
 Claiming any of these whole in M2 would have been a milestone that could
 not go green.
@@ -754,10 +769,13 @@ the harness would later need.
 - **Whole-module mutation is unusable on kriya's own code.** Sutra scoped
   its gate to eight domain-core packages for exactly this reason. Kriya's
   command currently takes no directory argument.
-- **The `--bare` fork is unresolved and both branches are bad.** With it,
-  agents lose subscription billing; without it, every agent inherits the
-  host's `~/.claude` — hooks, plugins, MCP servers, `CLAUDE.md`. Must be
-  decided before the first real dev-agent run.
+- **`--safe-mode` must be on every agent invocation, and nothing enforces
+  that.** The `--bare` tradeoff turned out to be false — `--safe-mode`
+  keeps subscription billing *and* blocks both host contamination and
+  target-repo hook execution. The residual risk is a missing flag: one
+  invocation without it silently reinstates arbitrary code execution from
+  the target repo. It belongs in one place in `internal/agent`, never
+  assembled at a call site.
 - **The four state tables can be undermined without failing any gate.**
   Nothing mechanically prevents a contributor adding judgment to the
   orchestrator. The structural-lint limits are the intended guard; whether
@@ -791,9 +809,14 @@ the harness would later need.
 
 ## Open questions
 
-- [ ] **`--bare` or not.** Reproducibility versus subscription billing;
-      see Risks. Blocking before the first real dev-agent run, not before
-      implementation starts.
+- [x] **`--bare` or not — resolved as `--safe-mode`** (2026-08-21).
+      Measured with a control: `--safe-mode` keeps subscription auth while
+      disabling CLAUDE.md, skills, plugins, hooks, MCP servers and custom
+      agents. With no flag a target repo's `SessionStart` hook **executed**;
+      with `--safe-mode` it did not. `--bare` was rejected — it never reads
+      OAuth credentials, so it forces pay-per-token billing. Redirecting
+      `HOME` fails too: "Not logged in", the keychain credential alone
+      being insufficient.
 - [ ] **Mutation scope for kriya's own code**, and separately **R2's
       cadence question for targets**. Both answerable once module sizes
       are real; sutra's answer to the first was its eight non-wire
