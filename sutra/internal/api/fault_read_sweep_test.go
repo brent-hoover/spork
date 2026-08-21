@@ -222,11 +222,13 @@ func TestUnscannableRowsAreNeverQuiet(t *testing.T) {
 			inert = append(inert, op.name)
 		}
 	}
-	// Named rather than silent: a read that opens no cursor is a legitimate
-	// outcome, but it must not look like coverage.
-	t.Logf("badrow reached %d of %d reads; %d open no cursor: %v",
-		reached, len(readOperations()), len(inert), inert)
-	if reached == 0 {
-		t.Fatal("no read opened a cursor; this sweep measured nothing")
+	// EVERY read must manifest an unscannable row. All 27 do today, so
+	// anything less is a fixture that has gone empty or a cursor that has
+	// been lost — and "at least one op still works" would let the other 26
+	// rot silently while the test kept passing (reviews 2124, 2125).
+	t.Logf("badrow reached %d of %d reads", reached, len(readOperations()))
+	if len(inert) > 0 {
+		t.Fatalf("these reads never delivered a row to corrupt, so their scan-failure handling is "+
+			"untested: %v", inert)
 	}
 }

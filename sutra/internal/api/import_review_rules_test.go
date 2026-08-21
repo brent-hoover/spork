@@ -152,6 +152,10 @@ func TestImportRejectsIncoherentReviews(t *testing.T) {
 			delete(sub, "base_commit")
 			delete(sub, "content")
 		}, "deliverable shape is invalid"},
+		// THREE rules are shadowed, not two: this one reaches
+		// validateImportShapes at import.go:912 rather than
+		// validateImportedReview's "mixes deliverable shapes" at
+		// import.go:1094, which is therefore unreachable too (review 2122).
 
 		{"doc submission naming an absent version", func(t *testing.T, d map[string]any) {
 			_, sub := reviewOf(t, d)

@@ -616,7 +616,7 @@ func TestStoreFailuresAreUnsettled5xx(t *testing.T) {
 					status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
 					fired := faultsFired(t, armedDB)
 
-					if status < 400 {
+					if ok2xx(status) {
 						if fired > 0 {
 							t.Fatalf("ordinal %d: the fault FIRED and the handler answered %d anyway — "+
 								"a store failure was swallowed.\nbody: %s", ordinal, status, body)
@@ -654,7 +654,7 @@ func TestStoreFailuresAreUnsettled5xx(t *testing.T) {
 					// request through a clean server succeeds. A settled
 					// 5xx would replay the failure forever.
 					retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
-					if retryStatus >= 400 {
+					if !ok2xx(retryStatus) {
 						t.Fatalf("ordinal %d: the retry under the same key answered %d, so the failure was SETTLED — "+
 							"the key is poisoned and no recovery can complete it.\nbody: %s",
 							ordinal, retryStatus, retryBody)
@@ -789,7 +789,7 @@ func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
 					status, body := do(t, armed, op.method, op.path(w), key, op.body(w))
 					fired := faultsFired(t, armedDB)
 
-					if status < 400 {
+					if ok2xx(status) {
 						if fired > 0 {
 							t.Fatalf("ordinal %d: an unreadable row count was swallowed and the handler answered %d.\nbody: %s",
 								ordinal, status, body)
@@ -818,7 +818,7 @@ func TestUnreadableRowCountsAreUnsettled5xx(t *testing.T) {
 							ordinal, status, body)
 					}
 					retryStatus, retryBody := do(t, clean, op.method, op.path(w), key, op.body(w))
-					if retryStatus >= 400 {
+					if !ok2xx(retryStatus) {
 						t.Fatalf("ordinal %d: the retry under the same key answered %d — the failure was settled.\nbody: %s",
 							ordinal, retryStatus, retryBody)
 					}
