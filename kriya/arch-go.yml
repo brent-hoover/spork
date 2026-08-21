@@ -145,9 +145,16 @@ dependenciesRules:
         - "**.reviewbridge"
         - "**.clock"
   - package: "**.fakes"
+    # fakes may import the SEAMS it doubles — it implements their interfaces
+    # and returns their types — but no module. A double of a module would be
+    # a second implementation of domain logic, which is what the acceptance
+    # ring exists to avoid.
     shouldOnlyDependsOn:
       internal:
         - "**.clock"
+        - "**.specverify"
+        - "**.trackerclient"
+        - "**.agent"
   - package: "**.acceptance"
     shouldOnlyDependsOn:
       internal:

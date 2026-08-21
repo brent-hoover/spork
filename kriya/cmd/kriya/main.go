@@ -5,6 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"kriya/internal/cli"
+	"kriya/internal/planner"
+	"kriya/internal/specverify"
 
 	_ "modernc.org/sqlite"
 )
@@ -27,16 +32,21 @@ func dsn(path string) string {
 }
 
 func main() {
-	if err := run(context.Background()); err != nil {
+	if err := run(context.Background(), os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "kriya:", err)
 		os.Exit(1)
 	}
 }
 
+// verifierArgv is how avspec is invoked. It is configurable in principle —
+// this repo runs it under uv — and will move into kriya.toml with the rest of
+// the configuration in a later step.
+func verifierArgv() []string { return []string{"uv", "run", "avspec"} }
+
 // run is the composition root: it opens the one store, applies each module's
 // schema in the declared order, and will wire the modules and run recovery
 // before any pop once those exist.
-func run(ctx context.Context) error {
+func run(ctx context.Context, args []string) error {
 	path := os.Getenv("KRIYA_DB")
 	if path == "" {
 		path = defaultDBPath
@@ -50,6 +60,25 @@ func run(ctx context.Context) error {
 	if err := applyMigrations(ctx, db, migrations()); err != nil {
 		return err
 	}
-	// Module wiring, recovery.Run, and the command surface land in M2.
-	return nil
+
+	if len(args) == 0 {
+		return fmt.Errorf("usage: kriya build <project>")
+	}
+	switch args[0] {
+	case "build":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: kriya build <project>")
+		}
+		target, err := filepath.Abs(args[1])
+		if err != nil {
+			return fmt.Errorf("resolve %s: %w", args[1], err)
+		}
+		in := planner.Intaker{Verify: specverify.CLI{
+			Argv:    verifierArgv(),
+			WorkDir: os.Getenv("KRIYA_AVSPEC_DIR"),
+		}}
+		return cli.Build(ctx, os.Stdout, in, target)
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
 }
