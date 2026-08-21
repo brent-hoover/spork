@@ -1,0 +1,63 @@
+# Declared module boundaries (avspec.yaml modules[].boundaries.may_import)
+# checked against real imports by the stack's arch command:
+#   go run github.com/arch-go/arch-go@v1.7.0
+#
+# Package layout mirrors module names, one package directory per module:
+#   internal/api  internal/domain  internal/data  internal/webui
+# MOD-web is named "web-ui" in the spec; Go package names cannot carry a
+# hyphen, so its package is `webui`. Composition roots are cmd/linkshort-server
+# and cmd/linkshort-web, one per declared app.
+#
+# A module may import only the packages in its shouldOnlyDependsOn rule
+# (its own package is always allowed). Modules whose may_import is EMPTY
+# use shouldNotDependsOn with the explicit complement of every other
+# module — an empty shouldOnlyDependsOn allowlist is treated as
+# UNCONSTRAINED and passes silently, and a bare "**" pattern panics
+# arch-go v1.7.0, so the complement idiom is the only enforcing form
+# (spiked 2026-08-06 during the sutra/kriya builds).
+version: 1
+dependenciesRules:
+  # Composition roots — not declared avspec modules; each wires the
+  # modules its app names in the `apps` section. Same spec gap sutra
+  # logged: avspec has no composition-root concept, yet arch-go requires
+  # 100% package coverage.
+  - package: "**.linkshort-server"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.api"
+        - "**.domain"
+        - "**.data"
+  - package: "**.linkshort-web"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.webui"
+  # MOD-api may_import: [MOD-domain]
+  - package: "**.api"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.domain"
+  # MOD-domain may_import: [MOD-data]
+  - package: "**.domain"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.data"
+  # MOD-data may_import: [] — explicit complement
+  - package: "**.data"
+    shouldNotDependsOn:
+      internal:
+        - "**.api"
+        - "**.domain"
+        - "**.webui"
+        - "**.linkshort-server"
+        - "**.linkshort-web"
+  # MOD-web may_import: [] — explicit complement. This also enforces the
+  # cross-app import ban: APP-web holds MOD-web alone and must not reach
+  # into APP-server's modules.
+  - package: "**.webui"
+    shouldNotDependsOn:
+      internal:
+        - "**.api"
+        - "**.domain"
+        - "**.data"
+        - "**.linkshort-server"
+        - "**.linkshort-web"

@@ -205,22 +205,27 @@ scenarios execute against real software. Until kriya runs:
       convention on the command's output format, or an artifact the
       command writes is undesigned, and it blocks `MOD-gates`. Same
       question applies to every gate whose failures must be actionable.
-- [ ] **Which intake-eligible target proves the engine end-to-end, and is
-      authoring one in scope?** No existing target qualifies.
-      `avspec/examples/linkshort` is refused by `AC-intake-commands`. The
-      file holds exactly one `stack:` block (line 7) and one `commands:`
-      block (line 12), both the project's, so all **four** modules
-      (`MOD-api`, `MOD-domain`, `MOD-data`, `MOD-web`) inherit a stack
-      declaring only `install`, `test`, and `lint` — missing `typecheck`,
-      `arch`, `coverage`, and `mutation`, which is 16 refusal reasons.
-      It verifies `status=ready errors=0 todos=0 ok=True`, which is the
-      point of the AC's "even when avspec verify alone reports ready": it
-      is avspec's conformance fixture, never intended to be built. It is
-      also TypeScript/pnpm/cucumber-js, so adding the four commands would
-      make it eligible but not suitable — kriya's first proof run would
-      drive a toolchain in which every gate command differs from the ones
-      sutra's build validated. Extending linkshort, authoring a small
-      Go target, or building sutra's own residue are the candidates.
+- [x] **Which target proves the engine end-to-end?** **linkshort**, made
+      buildable 2026-08-21. It was refused by `AC-intake-commands` — one
+      project stack block, no module overrides, so all four modules
+      (`MOD-api`, `MOD-domain`, `MOD-data`, `MOD-web`) inherited a stack
+      declaring only `install`, `test`, and `lint`: 16 refusal reasons.
+      Its stack is now Go 1.25 with all six required commands, mirroring
+      the chain sutra's build validated, plus a hand-written `arch-go.yml`
+      encoding its declared boundaries. Simulated against the intake rule:
+      4 modules PASS, 0 refusals. It still verifies
+      `status=ready errors=0 todos=0 ok=True`.
+      The stack flip cost nothing structurally — linkshort's TypeScript
+      was deliberate (it proved the format assumes no language, since
+      stack fields are free-form strings), but that property is already
+      covered by `avspec/tests/unit/test_model.py:242`, which exercises a
+      non-Go language directly.
+      **Still open**: linkshort's provisional 75 floor is a guess until
+      there is code to measure, and its coverage command hard-codes
+      `../../../scripts/branch-coverage.sh` — a relocation to the repo
+      root (alongside `sutra/` and `kriya/`) would change that string and
+      make the path uniform across apps.
+
 - [ ] **How is a coding agent actually invoked?** The spec is deliberately
       role-and-tier-neutral: `AC-tier-config` requires roles map to tiers
       in configuration with no hardcoded model ids, and
@@ -265,3 +270,6 @@ scenarios execute against real software. Until kriya runs:
 - 2026-08-21: Recorded the coverage-floor decision — every app gates on a
   floor including branch coverage; the policy lives in each target's stack
   command and kriya executes it verbatim (Brent Hoover)
+- 2026-08-21: linkshort made buildable — stack flipped to Go 1.25 with all
+  six required commands and an arch-go.yml; resolves the end-to-end proof
+  target question (Brent Hoover)

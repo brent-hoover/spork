@@ -5,14 +5,18 @@ project:
   description: A minimal URL shortener, specified end to end.
   status: ready
   stack:
-    languages: [{ name: typescript, version: "5" }]
-    package_manager: pnpm
-    frameworks: [fastify]
-    bdd: cucumber-js
+    languages: [{ name: go, version: "1.25" }]  # flipped from typescript 2026-08-21: linkshort is now a BUILDABLE target, not only a format fixture, and the repo's validated gate chain is Go. Format language-agnosticism stays covered by tests/unit/test_model.py, which exercises a non-Go language directly
+    package_manager: go
+    frameworks: [net/http, htmx]
+    bdd: godog
     commands:
-      install: pnpm install
-      test: pnpm test
-      lint: pnpm lint
+      install: go mod download
+      test: go test ./...
+      lint: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run
+      typecheck: go vet ./...
+      arch: go run github.com/arch-go/arch-go@v1.7.0  # boundaries mirrored in arch-go.yml
+      coverage: BRANCH_COVERAGE_FLOOR=75 ../../../scripts/branch-coverage.sh  # PROVISIONAL floor — every app gates on a floor (decision 2026-08-21), but the number is a guess until there is code to measure. Sutra's 75 was set after measuring 78.8%. Path is relative to this spec directory; it changes if linkshort relocates
+      mutation: out=$(mktemp); trap 'rm -f "$out"' EXIT; if ! go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.5.0 unleash --coverpkg ./... -i --timeout-coefficient 300 > "$out" 2>&1; then cat "$out"; echo "gremlins itself failed"; exit 1; fi; cat "$out"; awk '/^Killed:/ {k=1; n=$4; sub(/,/,"",n); if (n+0 > 0) bad=1} /^Timed out:/ {t=1; n=$3; sub(/,/,"",n); if (n+0 > 0) bad=1} END {exit (bad || !k || !t)}' "$out"  # sutra's validated invocation: no directory argument (gremlins os.Open()s it), exit status preserved rather than lost to a pipe, and the Lived count read exactly because a large run rounds efficacy to 100.00% with a mutant alive. A TIMEOUT FAILS THE GATE
     store: sqlite
 
 constitution:
