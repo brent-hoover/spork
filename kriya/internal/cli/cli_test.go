@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,10 +40,19 @@ func completeModule() specverify.Module {
 
 func run(t *testing.T, r specverify.Report) (string, error) {
 	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "avspec.yaml"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	v := fakes.NewVerifier(dir, r)
+	v.Models = map[string]specverify.Model{dir: {
+		OK:        true,
+		Modules:   []specverify.Module{completeModule()},
+		Artifacts: []string{"avspec.yaml"},
+	}}
 	var out bytes.Buffer
-	v := fakes.NewVerifier("/spec", r).WithModules("/spec", completeModule())
 	in := planner.Intaker{Verify: v, Snapshots: newStore(), Now: fakes.NewClock(time.Unix(0, 0))}
-	err := cli.Build(context.Background(), &out, in, "/spec")
+	err := cli.Build(context.Background(), &out, in, dir)
 	return out.String(), err
 }
 

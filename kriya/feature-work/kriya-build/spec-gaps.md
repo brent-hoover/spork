@@ -157,3 +157,38 @@ visible when someone tries to write the code. That is an argument for the
 deferred constitution `check:` attachments: a rule like *"every entity is
 writable by every module whose acceptance criteria mutate it"* would have
 caught two of the three mechanically.
+
+---
+
+## 2026-08-21 — intake reads the working tree twice, and cannot make that atomic
+
+**Found during:** M2 slice S3, by review.
+
+Intake shells out to `avspec verify` and then to `avspec resolve`. Both read
+the target's working tree, in separate subprocesses. If the manifest changes
+between them, kriya verifies one version and resolves another — admitting
+commands from a spec that was never verified, or verifying a spec whose
+commands it never saw.
+
+The same window exists between resolving and reading the artifact files for
+the snapshot. `AC-intake-snapshot-authority` guarantees that edits made
+*after* intake cannot change a pinned build, and that holds — the snapshot is
+the authority from then on. It says nothing about edits made *during* intake,
+and nothing in the spec does.
+
+**Narrowed, not closed.** A second bug of the same family WAS closed:
+`AdmitAndPin` used to call `Admit` and then resolve a second time, so the
+model it validated and the model it pinned were different reads even with no
+edit at all. It now resolves once and pins exactly what it validated. What
+remains is the genuinely external window between two subprocesses over a
+mutable directory.
+
+**What would close it:** avspec emitting verification and resolution from a
+single invocation over a single read — `avspec intake <dir>` returning both
+the report and the model. Then kriya's remaining exposure is only the
+artifact read, which could be closed by having that command return the
+artifact contents too, making intake one subprocess and one read.
+
+**Why it is recorded rather than fixed:** the fix belongs in avspec, and the
+`resolve` command was already an approved scope exception. Adding a second is
+a decision for the operator, not something to slip in.

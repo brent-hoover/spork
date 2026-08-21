@@ -58,41 +58,74 @@ func (c CLI) Resolve(ctx context.Context, dir string) (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
-	// Pointers on the fields a successful resolve must state, so a payload
-	// missing them is rejected rather than silently zero-valued. NOT an
-	// embedded Model: encoding/json resolves a name to the SHALLOWEST field,
-	// so an outer Modules would capture "modules" and leave the embedded copy
-	// empty — which is exactly the bug this check was added to prevent, and it
-	// slipped in on the first attempt.
-	var raw struct {
-		OK        *bool             `json:"ok"`
-		Project   json.RawMessage   `json:"project"`
-		Commands  map[string]string `json:"commands"`
-		Modules   *[]Module         `json:"modules"`
-		Artifacts []string          `json:"artifacts"`
-	}
+	return parseModel(out)
+}
+
+// rawModel mirrors the payload with pointers on every field a SUCCESSFUL
+// resolve must state, so a payload missing one is rejected rather than
+// silently zero-valued.
+//
+// Deliberately NOT an embedded Model: encoding/json binds a name to the
+// SHALLOWEST field, so an outer Modules would capture "modules" and leave the
+// embedded copy empty — which is exactly the fail-open this validation was
+// added to prevent, and it slipped in on the first attempt.
+type rawModel struct {
+	OK        *bool             `json:"ok"`
+	Project   json.RawMessage   `json:"project"`
+	Commands  map[string]string `json:"commands"`
+	Modules   *[]Module         `json:"modules"`
+	Artifacts *[]string         `json:"artifacts"`
+}
+
+func parseModel(out []byte) (Model, error) {
+	var raw rawModel
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return Model{}, fmt.Errorf("specverify: parse model: %w", err)
 	}
 	if raw.OK == nil {
 		return Model{}, errors.New("specverify: model has no ok")
 	}
-	m := Model{OK: *raw.OK, Commands: raw.Commands, Artifacts: raw.Artifacts}
+	m := Model{OK: *raw.OK, Commands: raw.Commands}
+	if raw.Artifacts != nil {
+		m.Artifacts = *raw.Artifacts
+	}
 	if !m.OK {
+		// ok:false is avspec reporting it could not load the manifest.
+		// Demanding the rest would turn a legitimate refusal into an error.
 		return m, nil
 	}
-	if raw.Modules == nil {
-		// A successful resolve must state its modules, even as an empty list.
-		// Absent means the verifier did not answer the question.
-		return Model{}, errors.New("specverify: successful model has no modules")
+	if err := raw.requireSuccessFields(); err != nil {
+		return Model{}, err
 	}
 	m.Modules = *raw.Modules
-	if len(raw.Project) > 0 {
-		if err := json.Unmarshal(raw.Project, &m.Project); err != nil {
-			return Model{}, fmt.Errorf("specverify: parse model project: %w", err)
-		}
+	if err := json.Unmarshal(raw.Project, &m.Project); err != nil {
+		return Model{}, fmt.Errorf("specverify: parse model project: %w", err)
 	}
 	return m, nil
+}
+
+// requireSuccessFields checks everything a successful model must carry.
+func (r rawModel) requireSuccessFields() error {
+	switch {
+	case r.Modules == nil:
+		// Even an empty list is an answer; absent is not.
+		return errors.New("specverify: successful model has no modules")
+	case len(r.Project) == 0:
+		return errors.New("specverify: successful model has no project")
+	case r.Artifacts == nil:
+		// Artifacts drives the snapshot's content set. Absent would pin a
+		// "full artifact set" containing nothing, not even the manifest.
+		return errors.New("specverify: successful model has no artifacts")
+	}
+	for i, mod := range *r.Modules {
+		// A module with six commands but no identity passes the command check
+		// and is then unaddressable: gate results pin to a module id, and a
+		// refusal has to name one.
+		if mod.ID == "" || mod.Name == "" {
+			return fmt.Errorf("specverify: module %d has no id or name", i)
+		}
+	}
+	return nil
 }
 
 // run executes an avspec subcommand and returns its stdout.

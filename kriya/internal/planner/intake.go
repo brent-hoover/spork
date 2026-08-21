@@ -30,23 +30,8 @@ type Intaker struct {
 	Now       clock.Clock
 }
 
-// Admit reports nil when dir holds a spec kriya may build, or a *Refusal.
-//
-// "Ready means buildable without further prompting" (REQ-spec-intake), and
-// kriya holds the spec to its own claim. Three separate conditions, because
-// no single signal covers them:
-//
-//   - avspec exits 0 for a DRAFT spec and reports OK=true, since todos do not
-//     block at draft. Trusting the exit code or OK admits drafts, which
-//     AC-intake-refuse forbids.
-//   - status must be exactly ready; any other status is refused by name.
-//   - error AND todo counts must both be zero. Todos block at ready, and a
-//     spec can claim ready while carrying them.
-func (i Intaker) Admit(ctx context.Context, dir string) error {
-	report, err := i.Verify.Verify(ctx, dir)
-	if err != nil {
-		return fmt.Errorf("verify %s: %w", dir, err)
-	}
+// admitReport applies the three report-level checks.
+func admitReport(dir string, report specverify.Report) error {
 	if !report.OK {
 		return &Refusal{
 			Reason:   fmt.Sprintf("spec at %s does not verify", dir),
@@ -69,21 +54,35 @@ func (i Intaker) Admit(ctx context.Context, dir string) error {
 			Findings: report.Findings,
 		}
 	}
-	return i.admitCommands(ctx, dir, report.Status)
+	return nil
 }
 
-// Admit reports the pinned snapshot for a spec kriya may build.
+// AdmitAndPin verifies a spec, decides whether kriya may build it, and pins
+// what it validated.
 //
-// Nothing is pinned unless every check passed: AC-intake-refuse requires that
-// a refused intake pins no snapshot and enqueues nothing, so pinning happens
-// after admission rather than alongside it.
+// "Ready means buildable without further prompting" (REQ-spec-intake), and
+// kriya holds the spec to its own claim. There is deliberately no
+// admit-without-pinning entry point: it existed briefly, was reachable only
+// from tests, and tempted exactly the bug this function now avoids — checking
+// one read of the spec and pinning another.
+//
+// Nothing is pinned unless every check passed: AC-intake-refuse requires a
+// refused intake to pin no snapshot and enqueue nothing.
 func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) {
-	if err := i.Admit(ctx, dir); err != nil {
+	report, err := i.Verify.Verify(ctx, dir)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("verify %s: %w", dir, err)
+	}
+	if err := admitReport(dir, report); err != nil {
 		return Snapshot{}, err
 	}
-	model, err := i.Verify.Resolve(ctx, dir)
+	// ONE resolve, and the model that is validated is the model that is
+	// pinned. An earlier version called Admit and then resolved again, so a
+	// working-tree edit between the two calls meant intake validated one model
+	// and pinned another — including, in principle, an ok:false empty one.
+	model, err := i.admitCommands(ctx, dir, report.Status)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("resolve %s: %w", dir, err)
+		return Snapshot{}, err
 	}
 	return i.pin(ctx, dir, model)
 }
@@ -96,25 +95,25 @@ func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) 
 // check this: a spec with no commands at all verifies ready, because the
 // format does not require them. The gate chain runs per module with these
 // resolved commands, so a missing one is a gate that would silently not run.
-func (i Intaker) admitCommands(ctx context.Context, dir, status string) error {
+func (i Intaker) admitCommands(ctx context.Context, dir, status string) (specverify.Model, error) {
 	model, err := i.Verify.Resolve(ctx, dir)
 	if err != nil {
-		return fmt.Errorf("resolve %s: %w", dir, err)
+		return specverify.Model{}, fmt.Errorf("resolve %s: %w", dir, err)
 	}
 	if len(model.Modules) == 0 {
-		return &Refusal{
+		return model, &Refusal{
 			Reason: fmt.Sprintf("spec at %s declares no modules, so no gate chain can run", dir),
 			Status: status,
 		}
 	}
 	for _, m := range model.Modules {
 		if missing := m.Missing(); len(missing) > 0 {
-			return &Refusal{
+			return model, &Refusal{
 				Reason: fmt.Sprintf("module %s (%s) is missing %s",
 					m.ID, m.Name, strings.Join(missing, ", ")),
 				Status: status,
 			}
 		}
 	}
-	return nil
+	return model, nil
 }

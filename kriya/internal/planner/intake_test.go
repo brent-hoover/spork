@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"kriya/internal/fakes"
 	"kriya/internal/planner"
@@ -20,11 +21,34 @@ func complete(id string) specverify.Module {
 	return specverify.Module{ID: id, Name: id, Commands: cmds}
 }
 
+// admit runs a full intake against a spec directory holding only a manifest,
+// and reports the outcome. There is no admit-without-pinning entry point by
+// design, so these tests exercise the real path.
 func admit(t *testing.T, r specverify.Report) error {
 	t.Helper()
-	v := fakes.NewVerifier("/spec", r).WithModules("/spec", complete("MOD-a"))
-	in := planner.Intaker{Verify: v}
-	return in.Admit(context.Background(), "/spec")
+	dir := specDir(t, "avspec: \"0.3\"\n")
+	v := fakes.NewVerifier(dir, r)
+	v.Models = map[string]specverify.Model{dir: {
+		OK:        true,
+		Modules:   []specverify.Module{complete("MOD-a")},
+		Artifacts: []string{"avspec.yaml"},
+	}}
+	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Now: fakes.NewClock(time.Unix(0, 0))}
+	_, err := in.AdmitAndPin(context.Background(), dir)
+	return err
+}
+
+// admitModel runs intake with a programmed model, for the command checks.
+func admitModel(t *testing.T, mods ...specverify.Module) error {
+	t.Helper()
+	dir := specDir(t, "avspec: \"0.3\"\n")
+	v := fakes.NewVerifier(dir, specverify.Report{Status: "ready", OK: true})
+	v.Models = map[string]specverify.Model{dir: {
+		OK: true, Modules: mods, Artifacts: []string{"avspec.yaml"},
+	}}
+	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Now: fakes.NewClock(time.Unix(0, 0))}
+	_, err := in.AdmitAndPin(context.Background(), dir)
+	return err
 }
 
 func TestAReadySpecIsAdmitted(t *testing.T) {
@@ -90,10 +114,11 @@ func TestAReadyClaimWithErrorFindingsIsRefused(t *testing.T) {
 func TestAVerifierMalfunctionIsNotARefusal(t *testing.T) {
 	// A broken verifier must not read as a clean refusal: the operator has to
 	// know the difference between "your spec is wrong" and "I could not look".
-	v := fakes.NewVerifier("/spec", specverify.Report{})
+	dir := specDir(t, "x")
+	v := fakes.NewVerifier(dir, specverify.Report{})
 	v.Err = errors.New("avspec exited 2")
-	in := planner.Intaker{Verify: v}
-	err := in.Admit(context.Background(), "/spec")
+	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Now: fakes.NewClock(time.Unix(0, 0))}
+	_, err := in.AdmitAndPin(context.Background(), dir)
 	var refusal *planner.Refusal
 	if errors.As(err, &refusal) {
 		t.Fatal("a verifier malfunction must not be reported as a refusal")
@@ -109,9 +134,7 @@ func TestAModuleMissingAGateCommandRefusesIntake(t *testing.T) {
 	// kriya's alone — and a missing one is a gate that silently never runs.
 	partial := complete("MOD-a")
 	delete(partial.Commands, "mutation")
-	v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
-		WithModules("/spec", complete("MOD-ok"), partial)
-	err := planner.Intaker{Verify: v}.Admit(context.Background(), "/spec")
+	err := admitModel(t, complete("MOD-ok"), partial)
 
 	var refusal *planner.Refusal
 	if !errors.As(err, &refusal) {
@@ -131,9 +154,7 @@ func TestEveryRequiredCommandIsChecked(t *testing.T) {
 		t.Run(missing, func(t *testing.T) {
 			m := complete("MOD-a")
 			delete(m.Commands, missing)
-			v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
-				WithModules("/spec", m)
-			err := planner.Intaker{Verify: v}.Admit(context.Background(), "/spec")
+			err := admitModel(t, m)
 			var refusal *planner.Refusal
 			if !errors.As(err, &refusal) {
 				t.Fatalf("missing %q must refuse intake, got: %v", missing, err)
@@ -147,9 +168,7 @@ func TestEveryRequiredCommandIsChecked(t *testing.T) {
 
 func TestASpecWithNoModulesIsRefused(t *testing.T) {
 	// A spec with no modules verifies ready and has no gate chain to run.
-	v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
-		WithModules("/spec")
-	err := planner.Intaker{Verify: v}.Admit(context.Background(), "/spec")
+	err := admitModel(t)
 	var refusal *planner.Refusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("expected a refusal, got: %v", err)
@@ -160,9 +179,7 @@ func TestInstallIsNotRequired(t *testing.T) {
 	// AC-intake-commands names six, and install is not among them.
 	m := complete("MOD-a")
 	delete(m.Commands, "install")
-	v := fakes.NewVerifier("/spec", specverify.Report{Status: "ready", OK: true}).
-		WithModules("/spec", m)
-	if err := (planner.Intaker{Verify: v}).Admit(context.Background(), "/spec"); err != nil {
+	if err := admitModel(t, m); err != nil {
 		t.Fatalf("install is not a required gate, got: %v", err)
 	}
 }

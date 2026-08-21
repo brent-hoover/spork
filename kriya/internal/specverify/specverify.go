@@ -80,10 +80,17 @@ func (c CLI) Verify(ctx context.Context, dir string) (Report, error) {
 	// {"status":"ready","ok":true} would otherwise be admitted with no counts
 	// and no findings — an incompatible or half-broken verifier failing OPEN,
 	// which is the one direction this seam must never fail.
+	// Counts uses pointers per field too. An earlier version required only
+	// that the counts OBJECT exist, so {"counts":{}} became a clean report
+	// with zero errors and zero todos — the same fail-open, one level down.
 	var raw struct {
-		Status   *string    `json:"status"`
-		OK       *bool      `json:"ok"`
-		Counts   *Counts    `json:"counts"`
+		Status *string `json:"status"`
+		OK     *bool   `json:"ok"`
+		Counts *struct {
+			Error *int `json:"error"`
+			Todo  *int `json:"todo"`
+			Warn  *int `json:"warn"`
+		} `json:"counts"`
 		Findings *[]Finding `json:"findings"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
@@ -98,11 +105,17 @@ func (c CLI) Verify(ctx context.Context, dir string) (Report, error) {
 		return Report{}, errors.New("specverify: report has no counts")
 	case raw.Findings == nil:
 		return Report{}, errors.New("specverify: report has no findings")
+	case raw.Counts.Error == nil || raw.Counts.Todo == nil || raw.Counts.Warn == nil:
+		return Report{}, errors.New("specverify: report counts are incomplete")
 	}
 	return Report{
-		Status:   *raw.Status,
-		OK:       *raw.OK,
-		Counts:   *raw.Counts,
+		Status: *raw.Status,
+		OK:     *raw.OK,
+		Counts: Counts{
+			Error: *raw.Counts.Error,
+			Todo:  *raw.Counts.Todo,
+			Warn:  *raw.Counts.Warn,
+		},
 		Findings: *raw.Findings,
 	}, nil
 }

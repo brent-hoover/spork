@@ -107,11 +107,13 @@ func TestAnIncompleteReportIsRejected(t *testing.T) {
 	// verifier would otherwise fail OPEN, reporting zero findings and zero
 	// counts, which reads as a clean spec.
 	for name, body := range map[string]string{
-		"no counts":    `{"status":"ready","ok":true,"findings":[]}`,
-		"no findings":  `{"status":"ready","ok":true,"counts":{"error":0,"todo":0,"warn":0}}`,
-		"no ok":        `{"status":"ready","counts":{"error":0,"todo":0,"warn":0},"findings":[]}`,
-		"no status":    `{"ok":true,"counts":{"error":0,"todo":0,"warn":0},"findings":[]}`,
-		"empty object": `{}`,
+		"no counts":        `{"status":"ready","ok":true,"findings":[]}`,
+		"no findings":      `{"status":"ready","ok":true,"counts":{"error":0,"todo":0,"warn":0}}`,
+		"no ok":            `{"status":"ready","counts":{"error":0,"todo":0,"warn":0},"findings":[]}`,
+		"no status":        `{"ok":true,"counts":{"error":0,"todo":0,"warn":0},"findings":[]}`,
+		"empty object":     `{}`,
+		"counts is empty":  `{"status":"ready","ok":true,"counts":{},"findings":[]}`,
+		"counts half full": `{"status":"ready","ok":true,"counts":{"error":0},"findings":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := stub(t, body, 0).Verify(context.Background(), "any"); err == nil {
