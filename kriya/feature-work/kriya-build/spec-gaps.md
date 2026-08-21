@@ -1,0 +1,87 @@
+# Spec gaps — kriya build
+
+Things avspec cannot express that kriya's build must nonetheless do.
+Each entry is a deliberate, recorded divergence, not drift. The sutra
+build kept the same file for the same purpose.
+
+---
+
+## 2026-08-21 — avspec has no concept of a non-module package
+
+**Found during:** design, before any code existed.
+
+`arch-go` requires 100% package coverage: every Go package in the module
+must match a rule. But a real Go program contains packages that are not
+domain modules, and avspec's `modules[]` block is the only place boundaries
+can be declared. Kriya needs five such packages:
+
+| Package | Why it is not a module |
+|---|---|
+| `cmd/kriya` | composition root — wires the modules together |
+| `internal/agent` | the `claude -p` seam, used by four modules |
+| `internal/specverify` | the `avspec verify` seam |
+| `internal/clock` | controllable time, imported everywhere |
+| `internal/acceptance` | the godog harness; test-only |
+
+The consequence is concrete. Six modules use `shouldOnlyDependsOn`
+allowlists — planner, orchestrator, devloop, context, cli, tui — and an
+allowlist that omits a non-module package **forbids** it. So `arch-go.yml`
+must list packages that appear nowhere in `modules[].boundaries.may_import`,
+which means the file is no longer a pure mirror of the spec.
+
+The six modules whose `may_import` is empty use the complement form
+(`shouldNotDependsOn` listing every other module), so a package absent from
+their forbidden list is already permitted. They need no change — which is a
+second, quieter observation: **the two idioms behave differently under
+extension**, and only the complement form is open by default.
+
+**Divergence recorded:** `arch-go.yml` enforces avspec's `may_import` for
+module-to-module edges, and adds non-module packages that avspec cannot
+express. The file header must say so.
+
+**What would close it:** an avspec concept for infrastructure packages —
+declared, boundary-checked, but not domain modules. Sutra hit this once
+(its composition root); kriya hits it five times, which suggests it is
+structural rather than incidental.
+
+---
+
+## 2026-08-21 — an entity can be declared by a module that cannot write it
+
+**Found during:** design, second review pass. This one is a real defect the
+spec cannot currently express, not merely a missing convenience.
+
+`ENT-agent-invocation` is declared under `MOD-orchestrator`
+(`avspec.yaml:474`), and avspec's ownership rule says the owning module
+holds the table. But `AC-tier-observed` (`:433`) requires that *"every
+agent invocation — plan-scoped PM work included — records its role, the
+configured tier, and the resolved model"*, and
+`REQ-tier-routing.feature:22` pins the case explicitly: a plan-scoped PM
+invocation is recorded **even though no BuildRun exists yet**.
+
+The writers cannot reach the owner:
+
+- `planner` may import only `trackerclient` (`arch-go.yml:17-20`)
+- `architect` may not import `orchestrator` (`:82`)
+- `owner` may not import `orchestrator` (`:96`)
+
+So under the declared boundaries the row has **no legal writer**. The
+entity's own description anticipates the shape — it is deliberately
+role-neutral, with exactly one of `plan` or `build` set — but ownership
+was assigned to the module that happens to hold the *build* half.
+
+**Divergence recorded:** `internal/agent` owns the `agent_invocation`
+table. Every invocation passes through the seam by construction, so the
+execution ledger belongs to the seam. `sutra/arch-go.yml:108-128` is the
+precedent for a non-module package declaring itself.
+
+**What would close it:** either an avspec ownership form that separates
+*who declares* from *who writes*, or a rule that an entity referenced by
+modules across a boundary must be owned by something both can reach.
+
+**Generalisation worth keeping:** ownership was assigned by looking at the
+entity's most prominent consumer, and the spec's own field list already
+said that was wrong — `exactly ONE scope reference is present`, with the
+non-build case listed first. A declaration that contradicts its own field
+constraints is a defect a verifier could catch, and `avspec verify` cannot
+see it today.
