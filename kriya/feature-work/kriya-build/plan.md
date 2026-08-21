@@ -33,16 +33,35 @@ would be fiction.
 - [x] `scope.md` filled with objective, allowlist, and non-goals
 - [x] `spec-gaps.md` records the three ownership/boundary divergences
 - [x] Stack, agent mechanism, coverage floor, test doubles, delivery shape decided
-- [ ] **`--bare` decision** — needed before M3's first real dev-agent run, not before M1
+- [x] **The `--bare` decision — resolved as `--safe-mode`** (2026-08-21).
+      Verified with a control: `--safe-mode` keeps subscription auth (exit
+      0, real models, no `ANTHROPIC_API_KEY`) while disabling CLAUDE.md,
+      skills, plugins, hooks, MCP servers, and custom agents. With no flag
+      a target repo's `SessionStart` hook **executed**; with `--safe-mode`
+      it did not. `--bare` was rejected — it forces pay-per-token billing.
+      Redirecting `HOME` does not work: "Not logged in".
+- [ ] **Kriya's mutation scope** — `avspec.yaml:26` runs whole-module with
+      no directory argument, and M2 already lands five packages plus an
+      integration ring booting a real sutra. Sutra measured 15h48m
+      whole-module. Must be settled as an M2-exit item, not deferred to M3.
 - [ ] Working sutra binary available to the integration ring (built from `sutra/`, not modified)
 
 ---
 
+**One rule for every step below:** a scenario is claimed by exactly one
+step, and a step's **Scenarios** field names scenario *headers* — never a
+clause, a step line, or a line number. Three defects in the first draft
+were the same mistake: quoting an `And …` line as if it were a scenario.
+
 ## M1 — Skeleton
 
-Goal: `go test ./...` and the full gate chain run green against a module
-with no behavior. Nothing here proves a requirement; it makes every later
-step verifiable.
+Goal: the **four fast gates** — test, lint, typecheck, arch — green
+against a module with no behavior, each proven to fail closed. Coverage and
+mutation are deliberately *not* claimed here: on a module of `doc.go`-only
+packages `branch-coverage.sh` takes its `expected=0` path, leaves
+`sum_total=0`, skips the floor block and exits 0 having measured nothing.
+They become meaningful at step 3, the first package with a real branch.
+Nothing in M1 proves a requirement; it makes every later step verifiable.
 
 ### 1. Go module and package skeleton
 
@@ -77,44 +96,122 @@ Then **prove the gate is not vacuous**: add a temporary illegal import
 ### 3. `clock` package and the no-`time.Now()` rule
 
 **What:** `internal/clock` with a `Clock` interface, a real
-implementation, and a fake with settable time. A `golangci-lint` custom
-rule (or `forbidigo`) banning `time.Now` outside `internal/clock`.
+implementation, and a fake with settable time. `forbidigo` banning
+`time.Now` outside `internal/clock`. **Also pin `.golangci.yml`'s
+structural limits now** — `funlen`, `cyclop`, `gocognit` — because
+design.md names them as the only mechanical guard against orchestrator
+god-module drift, and configuring them after `orchestrator` exists is the
+same retrofit the clock was pulled forward to avoid.
 
 **Why:** the one Optimal element pulled forward. It is a retrofit if
 deferred, and every recovery test needs it.
 
 **Scenarios:** none.
 
-**Verify:** `golangci-lint run` → exit 0; add `time.Now()` to any other
-package and confirm it fails.
+**Verify:** `golangci-lint run` → exit 0. Two negative controls: add
+`time.Now()` to another package and confirm it fails; add a deliberately
+over-long function and confirm `funlen` fires. This is also the first
+package with a real branch, so run `../scripts/branch-coverage.sh` here
+and confirm the floor **engages** rather than measuring nothing.
+
+### 3b. Settle where fakes live, before the first one exists
+
+**What:** `kriya/avspec.yaml`'s lint gate runs `deadcode` **twice**, the
+second pass without `-test`, requires empty output, and says "There is NO
+ALLOWLIST here and the second pass must come back empty". A fake clock,
+fake `specverify`, fake `trackerclient`, and fake `Agent` are production
+symbols reached only from tests — and they cannot hide in `_test.go`
+because `internal/acceptance` is a different package. **Lint breaks at
+step 3, on the first fake.**
+
+Create `internal/fakes` as a test-only package and strip it from the
+**production** deadcode pass only, mirroring sutra's `internal/faultsql`
+(`sutra/avspec.yaml:19`). Add its arch-go rule. This is a reviewed
+stack-command change to `kriya/avspec.yaml`, which `scope.md` permits.
+
+**Why:** sutra hit this exact wall and solved it this exact way. Kriya's
+lint command inherited the shape without the escape hatch.
+
+**Scenarios:** none.
+
+**Verify:** `go run golang.org/x/tools/cmd/deadcode@v0.48.0 ./...` reports
+the fakes; the gate's `testonly` strip removes them; the **`-test` pass
+must still be empty**, so a fake nothing uses still fails the gate.
 
 ### 4. CI with both toolchains
 
-**What:** Add a Go job to `.github/workflows/verify.yml` running install,
-test, lint, typecheck, arch against `kriya/`. Keep the existing uv job;
-the integration ring needs both because `specverify` shells out to
-`avspec verify`.
+**What:** Add a Go job to `.github/workflows/verify.yml`. The existing job
+pins `working-directory: avspec` at job level, so the Go job needs its own
+`defaults`. It must provide **three** things in one job: the Go toolchain,
+uv (because `specverify` shells out to `avspec verify`), and a **sutra
+binary built from `sutra/`** for the integration ring. Runs install, test,
+lint, typecheck, arch.
+
+Coverage and mutation are **not** in CI: coverage is ~20 minutes and
+mutation is unscoped (see Preconditions). They run locally per milestone,
+as sutra's did. Say so rather than implying "full gate chain" means CI.
 
 **Why:** the repo has no Go CI at all today.
 
 **Scenarios:** none.
 
-**Verify:** push the branch; both jobs green.
+**Verify:** `act` locally, or a `workflow_dispatch` on a throwaway branch
+— pushing needs confirmation.
 
-### 5. `acceptance` harness skeleton
+### 5. `acceptance` harness skeleton — discovery only
 
 **What:** `internal/acceptance` wiring godog to `kriya/verification/`,
-with a `TestMain` that registers all 19 feature files and every step as
-pending. Assert the suite **discovers 162 runs**.
+registering all 19 feature files. **Behind a `//go:build acceptance` tag**,
+so plain `go test ./...` — which *is* the `test` gate — stays green while
+scenarios are still pending. A separate `go test -tags acceptance` runs
+them.
 
-**Why:** the discovery count is the definition of done, and step
-definitions are the real harness cost — the design's risk notes several
-scenarios carry a dozen-plus steps under one header.
+Two assertions, deliberately separated: **discovery** (162 runs found) is
+the definition of done and must pass from M1; **pass/fail** is per
+milestone and is expected red until M6.
 
-**Scenarios:** all 19 files, discovered and reported pending.
+**Why:** without the build tag the `test` gate goes red at step 5 and
+stays red until M6, making every milestone's "green" exit criterion
+unattainable.
 
-**Verify:** `go test ./internal/acceptance/...` reports 162 undefined
-scenarios, exit non-zero (pending is not passing).
+**Scenarios:** none turned green. All 19 files discovered.
+
+**Verify:** `go test ./...` → exit 0 (tag excluded).
+`go test -tags acceptance ./internal/acceptance/ -run TestDiscovery` →
+asserts exactly 162, exit 0.
+
+### 5b. Step definitions land with their milestone
+
+**What:** Not a single step. Step definitions are written in the milestone
+that needs them, against module APIs that exist by then.
+
+**Why:** the design's own risk notes "162 runs" understates the harness
+surface by about an order of magnitude — `REQ-run-to-complete.feature:234`
+carries fourteen `Then` steps under one header, `REQ-tui.feature:22` has
+fifteen `Given`s. Writing them before the APIs exist means rewriting them.
+
+**Scenarios:** none directly.
+
+**Verify:** each milestone's own scenario runs.
+
+### 5c. Composition root opens the store
+
+**What:** `cmd/kriya` opens one SQLite connection, applies each module's
+DDL in dependency order, and owns migration sequencing. Ships with the
+**key classification artifact** `scope.md` requires: each of the 37 `_key`
+columns labelled idempotency-key or identity/scoping reference, with the
+15 declared-unique ones marked.
+
+**Why:** steps 9, 10 and 13 all assume a live store and nothing opens one.
+The classification is a scope.md deliverable with no other home, and
+treating a reference as an idempotency key would fence work that should
+proceed.
+
+**Scenarios:** none.
+
+**Verify:** `kriya build` against an empty temp dir creates the schema;
+`sqlite3 .schema` shows every owned table. The classification lands as a
+table in `spec-gaps.md` or a `docs/` note, reviewed.
 
 ---
 
@@ -131,11 +228,13 @@ returning `Report{Status, OK, Findings}`. A fake for the unit ring.
 
 **Why:** every intake scenario needs it; three consume its findings.
 
-**Scenarios:** `REQ-spec-intake.feature` — "draft spec is refused",
-"erroring spec is refused", "a ready claim with todo findings is refused".
+**Scenarios:** none. Those refusals are operator-level ("When the operator
+points kriya at the project") and cannot pass until `planner` (step 9) and
+`cli` (step 12) exist; step 12 claims them.
 
 **Verify:** `go test ./internal/specverify/...`, plus an integration test
-running the real binary against `avspec/examples/linkshort`.
+running the real binary against `avspec/examples/linkshort` and asserting
+that `ok=False` (exit 1) yields a `Report`, not an `error`.
 
 ### 7. `trackerclient` seam
 
@@ -152,18 +251,19 @@ reading an issue against a real sutra binary.
 
 ### 8. `agent` seam and the invocation ledger
 
-**What:** `internal/agent`: the `Agent` interface, the `claude -p`
-implementation (stream-json parsing for `system/init` model, `session_id`,
-`parent_tool_use_id`, `api_retry`), a fake, tier config loading from
-`kriya.toml`, and **ownership of the `agent_invocation` table**.
-A role with no configured tier fails at startup.
+**What:** `internal/agent`: the `Agent` interface, a fake in
+`internal/fakes`, tier config loading from `kriya.toml`, and **ownership of
+the `agent_invocation` table**. A role with no configured tier fails at
+startup. The **real `claude -p` subprocess implementation is M3** — M2
+needs only the seam so `planner` can drive a fake PM agent. When it lands
+the invocation is `claude -p --safe-mode --output-format stream-json …`
+(see Preconditions).
 
 **Why:** `REQ-decompose.feature:11` is "When the PM agent decomposes it" —
 M2 cannot go green without it. Second spec gap made concrete.
 
-**Scenarios:** `REQ-tier-routing.feature` — "roles map to tiers in
-configuration", "a missing tier fails loudly"; and the plan-scoped PM
-clause of "config changes take effect and runs record models".
+**Scenarios:** none — the tier-routing scenarios are operator-level
+("When kriya starts") and are claimed by step 12.
 
 **Verify:** `go test ./internal/agent/...`; assert a PM invocation records
 role, tier, and resolved model with a `plan` ref and no `build` ref.
@@ -181,14 +281,17 @@ yet implement against.
 **Scenarios:** `REQ-spec-intake.feature` — "ready spec is pinned",
 "missing module command refuses intake", "complete module override
 resolves to the module's own commands", "partial module override falls
-back per field", "working tree edits do not change a pinned build", "an
-intake crash never allocates a second generation", "overlapping intakes
-never share a generation", "a delayed older plan can never regress the
-mapping", "amended spec pins a new snapshot".
+back per field", "an intake crash never allocates a second
+generation", "overlapping intakes never share a generation", "a delayed
+older plan can never regress the mapping", "amended spec pins a new
+snapshot".
 
-**Verify:** `go test ./internal/acceptance/... -run 'spec-intake'` — 11 of
-12 pass; ":55" (`every parked state recovers forward` prerequisites)
-remains pending until M5.
+**Deferred to M5:** "working tree edits do not change a pinned build" — its
+`And the build runs its gate chain and recovery later replays a step`
+clause needs the gate chain (M3) and a supersession-era replay (M5).
+
+**Verify:** `go test -tags acceptance ./internal/acceptance/ -run 'spec-intake'`
+— 8 from this step; 11 of 12 for the file once step 12 lands.
 
 ### 10. `planner`: decomposition and `BuildTarget.epic_state`
 
@@ -201,15 +304,18 @@ rows, the umbrella epic written **write-ahead** as `BuildTarget` with
 the row is written ahead of the epic's creation.
 
 **Scenarios:** `REQ-decompose.feature` — "tracer bullets carry traceable
-acceptance criteria", "one epic umbrellas the build target", "relations
-wire risk ordering and parallelism", "phases run behind plan-wide
+acceptance criteria", "one epic umbrellas the build target", "phases run behind plan-wide
 barriers", "same-key retries are state-aware", "a stale intake recovering
 late cannot supersede a newer head", "reverting to a previously seen spec
 is a fresh plan, not a replay", "supersession retires the predecessor
 before activating", "retirement distinguishes pending from issued work".
 
-**Verify:** `go test ./internal/acceptance/... -run 'decompose'` — 9 of 10
-pass; ":31" (pop admission) is M5.
+**Deferred to M5:** "relations wire risk ordering and parallelism" — its
+`And an agent popping work receives an unblocked ticket` clause is pop
+admission, which is M5.
+
+**Verify:** `go test -tags acceptance ./internal/acceptance/ -run 'decompose'`
+— 7 from this step, 9 of 10 for the file with step 13.
 
 ### 11. `planner`: risk-first ticketing
 
@@ -221,40 +327,64 @@ label, with block-relations so dependents cannot proceed.
 **Scenarios:** `REQ-risk-first.feature` — "each risk becomes a blocking
 spike".
 
-**Verify:** `go test ./internal/acceptance/... -run 'risk-first'` — 1 of 6
-passes; the other 5 need the research path (M5).
+**Verify:** `go test -tags acceptance ./internal/acceptance/ -run 'risk-first'`
+— 1 of 6. The other five need pop admission and architect escalation, both
+M5; the research path itself is M4, so "needs the research path" was the
+wrong reason.
 
 ### 12. `cli`: `kriya build` and `kriya status`
 
-**What:** `internal/cli` with `build <project>`, `status [--json]`,
-`learn add`. Wired in `cmd/kriya`.
+**What:** `internal/cli` with `build <project>` and `status [--json]`,
+wired in `cmd/kriya`. **Not `learn add`** — the learning store is
+`context`, which is M3, and nothing in M2 needs it.
 
-**Why:** how M2's scenarios are driven at all.
+**Why:** the operator-level entry point every M2 scenario starts from
+("When the operator points kriya at the project", "When kriya starts").
 
-**Scenarios:** the operator-level steps across the M2 files.
+**Scenarios:** `REQ-spec-intake.feature` — "draft spec is refused",
+"erroring spec is refused", "a ready claim with todo findings is refused".
+`REQ-tier-routing.feature` — "roles map to tiers in configuration",
+"a missing tier fails loudly".
 
-**Verify:** `kriya build avspec/examples/linkshort` creates a project and
-tickets in a real sutra; `kriya status --json` reports the plan.
+**Verify:**
+`go test -tags acceptance ./internal/acceptance/ -run 'spec-intake/draft_spec_is_refused'`
+and the four siblings — exit 0, 5 scenarios passed. Plus
+`kriya build avspec/examples/linkshort` against a real sutra creating a
+project and tickets.
 
 ### 13. `recovery` stages 1-2
 
-**What:** `internal/recovery` with the sequencer, `Recover(ctx)` on
-`planner`, and stage 1's pop-binding sweep behind the `PopBinder`
-interface — implemented as a no-op stub until `orchestrator` exists in M3.
-Wired into `cmd/kriya` startup.
+**What:** `internal/recovery` with the sequencer and `Recover(ctx)` on
+`planner`. Stage 1's pop-binding sweep runs behind the `PopBinder`
+interface `planner` declares.
+
+**Not a no-op.** `REQ-decompose.feature:79` requires "the ticket claimed by
+a live build stamps disposition **bound**", and a stub returning `bound=0`
+cannot produce that stamp. The acceptance harness supplies a **programmable
+fake `PopBinder`** from `internal/fakes` that returns `bound` for a named
+ticket. The production stub — which genuinely does nothing until
+`orchestrator` exists in M3 — is wired in `cmd/kriya`, not in `recovery`,
+so `recovery` never carries knowledge of what is not built yet.
 
 **Why:** M2's intake-crash scenarios call recovery. Landing the sequencer
 now is why M3 and M4 can grow it rather than invent it.
 
-**Scenarios:** `REQ-spec-intake.feature` — "an intake crash never
-allocates a second generation"; `REQ-decompose.feature` — "every parked
-state recovers forward" (plan states only).
+**Scenarios:** `REQ-decompose.feature` — "every parked state recovers
+forward", "retirement distinguishes pending from issued work".
+(The intake-crash scenario is claimed by step 9.)
+
+Note "every parked state recovers forward" has operator actions —
+`ACT-plan-restore`, `ACT-plan-retry` — whose TUI vehicle is M6. The harness
+calls `planner`'s module API directly, which design.md's acceptance drive
+surface permits.
 
 **Verify:** crash-injection tests: fake seam accepts, harness suppresses
 the outcome write, store reopens, `recovery.Run` reconciles.
 
 **M2 done when:** `spec-intake` 11/12, `decompose` 9/10, `risk-first` 1/6,
-`tier-routing` 2/3 — and the full gate chain green.
+`tier-routing` 2/3 under `-tags acceptance`; `go test ./...` green; the
+four fast gates green; coverage above the 75 floor; and **kriya's mutation
+scope decided and its gate run once** (see Preconditions).
 
 ---
 
@@ -301,10 +431,10 @@ milestones are marked, matching design.md.
 
 | Feature file | Scenarios | Milestone(s) | Steps |
 |---|---|---|---|
-| `REQ-spec-intake.feature` | 12 | M2 (11), M5 (1) | 6, 9, 13 |
+| `REQ-spec-intake.feature` | 12 | M2 (11), M5 (1) | 9, 12 |
 | `REQ-decompose.feature` | 10 | M2 (9), M5 (1) | 10, 13 |
 | `REQ-risk-first.feature` | 6 | M2 (1), M5 (5) | 11 |
-| `REQ-tier-routing.feature` | 3 | M2 (2), M3 (1) | 8 |
+| `REQ-tier-routing.feature` | 3 | M2 (2), M3 (1) | 12 |
 | `REQ-workspaces.feature` | 5 | M3 | M3 |
 | `REQ-pair-loop.feature` | 6 | M3 | M3 |
 | `REQ-context-assembly.feature` | 6 | M3 | M3 |
@@ -345,3 +475,16 @@ disposable per suite.
 ## Change log
 
 - 2026-08-21: Initial draft (Brent Hoover)
+- 2026-08-21: Applied plan-reviewer findings — put the acceptance suite
+  behind a build tag so the `test` gate is not red from step 5 to M6;
+  added step 3b settling where fakes live before the first one trips the
+  no-allowlist deadcode gate; added step 5c opening the store and
+  producing the 37-key classification; corrected three steps that quoted a
+  step *clause* as if it were a scenario header; made step 13's
+  `PopBinder` a programmable fake rather than a no-op that could not
+  produce the `bound` stamp; moved operator-level scenarios from steps 6
+  and 8 to step 12 where a CLI exists to drive them; scheduled the
+  mutation-scope decision as an M2 precondition; pinned `.golangci.yml`
+  structural limits in M1; restated M1's goal as the four fast gates,
+  since coverage measures nothing on a `doc.go`-only module; and recorded
+  the `--bare` decision as `--safe-mode` (Brent Hoover)
