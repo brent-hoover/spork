@@ -632,7 +632,7 @@ func TestMarkerSpendsNoOrdinalThroughAnyDoor(t *testing.T) {
 				if err != nil {
 					t.Fatalf("prepare marker: %v", err)
 				}
-				defer st.Close()
+				defer func() { _ = st.Close() }()
 				for i := 0; i < 3; i++ { // a prepared marker run repeatedly
 					rows, err := st.Query()
 					if err != nil {
@@ -653,7 +653,7 @@ func TestMarkerSpendsNoOrdinalThroughAnyDoor(t *testing.T) {
 				if err != nil {
 					t.Fatalf("prepare marker: %v", err)
 				}
-				defer st.Close()
+				defer func() { _ = st.Close() }()
 				for i := 0; i < 3; i++ {
 					if _, err := st.Exec(); err != nil {
 						t.Fatalf("prepared marker exec %d: %v", i, err)

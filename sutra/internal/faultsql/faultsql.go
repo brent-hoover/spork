@@ -446,7 +446,7 @@ func (t *faultTx) Commit() error {
 		// connection; swallowing it would hand a broken connection back
 		// to the pool, which is the hazard this path exists to avoid
 		// (review 2094).
-		return errors.Join(t.plan.err("commit"), t.Tx.Rollback())
+		return errors.Join(t.plan.err("commit"), t.Rollback())
 	}
 	return t.Tx.Commit()
 }
