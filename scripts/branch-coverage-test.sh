@@ -1106,5 +1106,79 @@ subject
 emptycheck "a module with no test binary at all completes" 1 'no usable coverage data from 0 drivers' ./subject
 
 echo
+echo "== a module-wide floor is judged on the total, not per package =="
+# The per-package 100% rule and a floor answer different questions: "is
+# every arm reached" versus "has coverage gone backwards". Half of one
+# condition is 50%, which makes both sides of a floor expressible.
+reset
+subject
+mkdir -p "$work/mod/harness"
+cat >"$work/mod/harness/harness_test.go" <<'EOF'
+package harness_test
+
+import (
+	"testing"
+
+	"fixture/subject"
+)
+
+func TestQuietOnly(t *testing.T) {
+	if subject.Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+check "the total is reported even with no floor set" 1 'TOTAL +1/2 arms = 50.0%' ./subject
+# Exported, not prefixed: the gate runs in a CHILD process, and a
+# `VAR=x func` prefix is not required to reach one.
+export BRANCH_COVERAGE_FLOOR=60
+check "a floor above the total fails" 1 'below the 60% floor' ./subject
+export BRANCH_COVERAGE_FLOOR=50
+check "a floor at the total passes" 0 'clears the 50% floor' ./subject
+export BRANCH_COVERAGE_FLOOR=25
+check "a floor below the total passes" 0 'clears the 25% floor' ./subject
+unset BRANCH_COVERAGE_FLOOR
+
+# The guard that matters: a cleared floor must not launder a package that
+# could not be instrumented. Without it, a broken driver would RAISE the
+# reported percentage by removing the arms it failed to cover.
+#
+# This needs TWO packages. With only a broken one, nothing is measured at
+# all, sum_total stays 0, the floor is never consulted, and the case
+# passes however the floor is implemented — which is what the first
+# version of it did.
+reset
+subject
+cat >"$work/mod/subject/subject_test.go" <<'EOF'
+package subject
+
+import "testing"
+
+func TestBoth(t *testing.T) {
+	if Greeting(true) != "HI" || Greeting(false) != "hi" {
+		t.Fatal("wrong")
+	}
+}
+EOF
+mkdir -p "$work/mod/other"
+cat >"$work/mod/other/other.go" <<'EOF'
+package other
+
+func Always() string { return "x" }
+EOF
+cat >"$work/mod/other/other_test.go" <<'EOF'
+package other
+
+import "testing"
+
+func TestUninstrumentable(t *testing.T) {
+	t.Fatal("cannot survive instrumentation")
+}
+EOF
+export BRANCH_COVERAGE_FLOOR=1
+check "a cleared floor does not excuse a broken driver" 1 'did not pass' ./subject ./other
+unset BRANCH_COVERAGE_FLOOR
+
+echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

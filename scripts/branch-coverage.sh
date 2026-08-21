@@ -240,6 +240,12 @@ else
 fi
 
 failed=0
+# Module-wide totals, so a FLOOR can be judged on the whole rather than
+# package by package. A per-package 100% rule and a module floor answer
+# different questions: the first asks "is every arm reached", the second
+# "has coverage gone backwards".
+sum_covered=0
+sum_total=0
 measured=0
 # ${arr[@]+...} throughout: stock macOS Bash 3.2 treats an EMPTY array as
 # unset under `set -u`, so a module with no packages, no test binaries, or a
@@ -561,7 +567,14 @@ EOF
 	printf '%-32s %s/%s arms  (%s drivers)\n' "$importpath" "$covered" "$total" "$drivers"
 	echo "$report" | jq -r '.[] | select(.t == 0 or .f == 0)
 		| "    \(.Start): \(.Code) never \(if .t == 0 and .f == 0 then "evaluated" elif .t == 0 then "true" else "false" end)"'
-	[ "$covered" = "$total" ] || failed=1
+	sum_covered=$((sum_covered + covered))
+	sum_total=$((sum_total + total))
+	# Under a floor, a package below 100% is INFORMATION, not a failure —
+	# the arms are still listed above. Without one, every arm is required,
+	# which is what the residue work needs.
+	if [ -z "${BRANCH_COVERAGE_FLOOR:-}" ]; then
+		[ "$covered" = "$total" ] || failed=1
+	fi
 done
 
 # The same invariant as the discovery check above, but it has to hold for
@@ -575,6 +588,25 @@ done
 if [ "$measured" = 0 ] && [ "$failed" = 0 ]; then
 	echo "branch-coverage: none of the named packages had anything to instrument" >&2
 	exit 2
+fi
+
+# The total is always REPORTED, so the number is visible whether or not it
+# is being enforced.
+if [ "$sum_total" -gt 0 ]; then
+	pct=$(echo "$sum_covered $sum_total" | awk '{printf "%.1f", 100 * $1 / $2}')
+	printf '%-32s %s/%s arms = %s%%
+' "TOTAL" "$sum_covered" "$sum_total" "$pct"
+	if [ -n "${BRANCH_COVERAGE_FLOOR:-}" ]; then
+		# A shortfall is a failure even if every package instrumented
+		# cleanly, and an instrumentation failure stays a failure even if
+		# the surviving packages clear the floor.
+		if awk -v p="$pct" -v f="$BRANCH_COVERAGE_FLOOR" 'BEGIN { exit !(p + 0 < f + 0) }'; then
+			echo "branch-coverage: ${pct}% is below the ${BRANCH_COVERAGE_FLOOR}% floor" >&2
+			failed=1
+		else
+			echo "branch-coverage: ${pct}% clears the ${BRANCH_COVERAGE_FLOOR}% floor"
+		fi
+	fi
 fi
 
 exit "$failed"
