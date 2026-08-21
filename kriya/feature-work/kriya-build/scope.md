@@ -11,27 +11,34 @@ design: ./design.md
 
 **Objective (one sentence):** Implement kriya — the build engine specified
 in `kriya/avspec.yaml` — in Go, until all 155 scenarios in
-`kriya/verification/` pass under godog and the pinned gate chain is green.
+`kriya/verification/` pass under godog — 155 scenario headers, 162 runs
+after outline expansion — and the pinned gate chain is green.
 
 ## In scope
 
 * All twelve avspec modules as Go packages under `kriya/internal/`, plus
   the composition root `kriya/cmd/kriya` and the non-module packages
-  `agent`, `specverify`, `clock`, and `acceptance`. Each module owns its
+  `agent`, `specverify`, `clock`, `recovery`, and `acceptance`. Each module owns its
   own tables — there is no shared store package.
-* Both state tables: the per-ticket machine over `BuildRun`'s sixteen
-  states plus the `review_submission_state` axis, and the per-target
-  completion machine over `BuildTarget` / `CompletionAdvance`.
+* All four write-ahead state machines: `BuildRun` (sixteen states) plus
+  the `review_submission_state` axis, the `BuildTarget` /
+  `CompletionAdvance` completion machine, `MergeAttempt`, and
+  `AttributionAmbiguity` — plus the `Plan` lifecycle.
+* `internal/recovery`: a `Recover` method per owning module and the
+  sequencer that runs them, since no single module can reach them all
+  (`orchestrator` cannot import `reviewbridge`).
 * The five seams: `claude -p` subprocess agents, the `avspec verify`
   subprocess, the roborev CLI bridge, the sutra HTTP client, and the
   target-command gate runner.
-* Per-module SQLite schema and migrations for all 25 entities, with the 37
-  write-ahead idempotency-key columns and the fence columns.
+* Per-module SQLite schema and migrations for all 25 entities. There are
+  37 `_key` columns, of which 15 are declared unique; each must be
+  classified as an idempotency key or an identity/scoping reference before
+  it is implemented — `project_key` is explicitly NOT unique.
 * The bubbletea TUI: live state and the operator inbox.
 * Both test rings — unit against a fake tracker, integration against a
   real sutra instance.
 * Completing `kriya/arch-go.yml`: rules for `cmd/kriya`, `agent`,
-  `specverify`, `clock`, and `acceptance`, and adding those non-module
+  `specverify`, `clock`, `recovery`, and `acceptance`, and adding those non-module
   packages to the six `shouldOnlyDependsOn` allowlists that need them.
   **This deliberately diverges from avspec `may_import` for non-module
   edges** — avspec cannot express a package that is not a module. State it

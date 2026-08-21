@@ -19,10 +19,11 @@ states: it reads the next transition from an explicit table, calls one
 module, and writes the result. It contains no `if` that decides *what
 should happen* — only `if` that decides *whether the write succeeded*.
 
-Four seams isolate everything kriya does not own: **agents** run as
-`claude -p` subprocesses, **reviews** go through the roborev CLI,
-**tracking** goes through a sutra HTTP client, and **gates** shell out to
-the target's own snapshot-resolved commands. Each seam is one package with
+Five seams isolate everything kriya does not own: **agents** run as
+`claude -p` subprocesses, **spec verification** shells out to the Python
+`avspec verify`, **reviews** go through the roborev CLI, **tracking** goes
+through a sutra HTTP client, and **gates** shell out to the target's own
+snapshot-resolved commands. Each seam is one package with
 no internal imports, so each can be faked wholesale in tests.
 
 SQLite holds the durable plane. Every externally-visible action is
@@ -92,6 +93,7 @@ kriya/
     agent/              the `claude -p` seam            (non-module)
     specverify/         the `avspec verify` seam        (non-module)
     clock/              controllable time               (non-module)
+    recovery/           sequences each module's Recover  (non-module)
     acceptance/         godog harness                   (non-module, test-only)
 ```
 
@@ -159,14 +161,14 @@ Which file exercises which:
 
 | Machine | Owner | Exercised by |
 |---|---|---|
-| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop` |
+| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop`, the `submit-review` submission windows (`:15`, `:20`, `:27`, `:37`) and its `gate_attempt`/`gated_base` scenarios (`:96-127`), the `risk-first` research states (`:33-40`, `:51-57`) |
 | `BuildTarget` + `CompletionAdvance` | planner | most of `run-to-complete` |
-| `MergeAttempt` | orchestrator | most of `submit-review` |
+| `MergeAttempt` | orchestrator | about half of `submit-review` (`:46`, `:60`, `:66`, `:74`, `:80`, `:89`, `:129-159`) |
 | `AttributionAmbiguity` | orchestrator | `run-to-complete` new-work scenarios |
 | `Plan` | planner | `decompose`, `spec-intake` |
 
-Both machines are expressed the same way — an explicit table, one row per
-transition:
+All four machines are expressed the same way — an explicit table, one row
+per transition:
 
 ```go
 type transition struct {
@@ -255,14 +257,16 @@ ticket are absent". The mechanism is two-part:
   is an `if`/`awk` pipeline (`avspec.yaml:22`, `:26`). A rule like
   `Bash(go test *)` cannot express those. Instead kriya writes **one
   wrapper script per resolved gate command** into the workspace and grants
-  exactly `Bash(<workspace>/.kriya/gate-* *)` and nothing else. No bare
+  exactly `Bash(<workspace>/.kriya/gate-* *)` and nothing else. `context`
+  writes those wrappers, `workspace` owns the directory they live in, and
+  `gates` runs the same resolved commands directly for its own results. No bare
   `Bash`, which is what makes "tools irrelevant to the ticket are absent"
   (`REQ-context-assembly.feature:30`) mechanically true.
   (Permission-rule prefix matching is space-star — `Bash(git diff *)` —
   where the space is what stops it also matching `git diff-index`.)
 
 **`specverify` → the avspec verifier.** All twelve `REQ-spec-intake`
-scenarios need the seam present; four consume its **findings** ("the
+scenarios need the seam present; **three** consume its **findings** ("the
 response carries the verify findings", `REQ-spec-intake.feature:18`) while
 the rest turn on command resolution from the pinned snapshot. It is a **Python** tool kriya shells out to:
 `avspec verify <dir> --json` (`avspec/src/avspec/cli.py:38-45`), returning
@@ -270,8 +274,11 @@ the rest turn on command resolution from the pinned snapshot. It is a **Python**
 the report shape is fixed and consumed as-is. **A refusal is not an
 error**: `avspec verify` exits 1 whenever `ok=False`
 (`avspec/src/avspec/cli.py:48`), which is the ordinary outcome for all
-four refusal scenarios, so the seam must return a `Report`, not a Go
-`error`, on a non-zero exit that produced a parseable payload. **The integration ring
+three finding-driven refusals (`REQ-spec-intake.feature:18`, `:24`,
+`:30`), so the seam must return a `Report`, not a Go `error`, on a
+non-zero exit that produced a parseable payload. The fourth refusal
+(`:33-38`, a missing module command) is **kriya's own** check against the
+pinned snapshot — that spec verifies `ready` and `avspec verify` exits 0. **The integration ring
 therefore needs a Python/uv environment**, not only Go.
 
 **`reviewbridge` → roborev.** Enqueue, poll, respond, close. R1 settled the
@@ -288,8 +295,10 @@ Every mutation carries an idempotency key persisted before the call.
 `VIEW-tui-inbox.shows` (`avspec.yaml:559`) names `ENT-plan.state`,
 `ENT-plan.error`, `ENT-planned-ticket.error`,
 `ENT-workspace.cleanup_error`, and four `ENT-completion-advance` fields;
-`VIEW-tui-overview.shows` (`:552`) names `ENT-planned-ticket` fields. All
-are planner- or workspace-owned, and `MOD-tui` may import only
+`VIEW-tui-overview.shows` (`:552`) names `ENT-planned-ticket` fields, and
+`VIEW-tui-run` (`:567`) adds `ENT-gate-result` and `ENT-validation`
+fields — gates- and owner-owned. All are owned by modules `tui` cannot
+reach, and `MOD-tui` may import only
 orchestrator, architect, and reviewbridge (`arch-go.yml:131-135`).
 Orchestrator imports both planner and workspace, so it carries a read
 facade spanning their state. A facade is not the orchestrator "deciding":
@@ -314,6 +323,38 @@ agent". The arms are *in* that captured stdout — `branch-coverage.sh:586`
 prints them via `jq -r '.[] | select(.t == 0 or .f == 0)'` — so the
 requirement is met by capture, not by parsing. Kriya stays honest to
 `AC-coverage-floor`: it counts nothing and parses nothing.
+
+### Recovery: who runs it, and how a test induces a crash
+
+About fifty scenarios are phrased "the crash hit before X … **When recovery
+runs**". Recovery is therefore a named component, not a property.
+
+**Each owning module exposes `Recover(ctx) error`**, which reconciles the
+rows it owns: resume an unstamped step, terminate a crashed DevSession,
+release an abandoned workspace, reconcile an unresolved EnqueueAttempt.
+
+**A sixth non-module package, `internal/recovery`, sequences them.** It has
+to be a separate package because no module can reach the whole set:
+`orchestrator` may import planner, workspace, devloop, gates, owner, and
+trackerclient — **not `reviewbridge`** (`arch-go.yml:22-29`) — so
+EnqueueAttempt and orphan reconciliation have no home under it. `recovery`
+imports the owning modules and is itself imported only by `cmd/kriya`,
+which runs it once at startup before any pop. Modules never import
+`recovery`, so no module allowlist changes.
+
+Ordering is fixed and declared, not discovered: plan lifecycle → targets
+and completion → workspaces → build runs → review rounds and enqueue
+attempts. A later stage may depend on an earlier stage's reconciliation;
+none depends on a later one.
+
+**How a test induces a crash.** The harness needs a window between an
+external call being *accepted* and its outcome being *written*. The fake
+seams (`agent`, `specverify`, `trackerclient`, and the roborev bridge)
+accept a call, record that they accepted it, and then the harness
+suppresses the outcome write and drops the store handle. Reopening the
+store and calling `recovery.Run` is exactly what the scenarios mean by
+"recovery runs". No process is actually killed — the crash is the
+suppressed write, which is both deterministic and faster.
 
 ### Recovery model
 
@@ -342,6 +383,15 @@ surfaces ambiguity to the operator rather than guessing, per R1.
 
 ### Test harness
 
+**What `acceptance` drives.** Kriya has no HTTP surface, so sutra's shape
+(harness → `api`) does not transfer. The scenarios mix operator-level steps
+("the operator points kriya at the project") with module-level ones ("the
+context manager assembles the dev agent's context",
+`REQ-context-assembly.feature:9`). `acceptance` therefore drives the `cli`
+package in-process for operator-level steps and module APIs directly for
+module-level ones; its arch-go rule permits importing `cli` and every
+module. It is test-only and imported by nothing.
+
 - **Unit** — each module against a **fake** `trackerclient`, `agent`, and
   `specverify`, all three behind interfaces. Fast, hermetic, no network,
   no subprocesses.
@@ -357,14 +407,35 @@ temporary SQLite database and tears it down after.
 
 Delivery is by merged milestones. Dependency-ordered:
 
-| # | Milestone | Requirements proven |
-|---|---|---|
-| M1 | Skeleton: packages, arch-go completed, per-module DDL, clock, CI green with zero behavior | none — the gate chain itself |
-| M2 | Intake and decomposition: `specverify`, `trackerclient`, **`agent`**, `planner` | spec-intake, decompose, risk-first |
-| M3 | One ticket end to end: `workspace`, `devloop`, `reviewbridge`, `gates`, `context` | workspaces, pair-loop, 4 gate REQs, context-assembly, thread-capture, tier-routing |
-| M4 | Review and completion: `owner`, the per-target machine | po-validation, submit-review |
-| M5 | The outer loop: full orchestrator table, parallelism, recovery | run-to-complete, parallel-build, sa-agent, learning-loop |
-| M6 | `tui`, then the linkshort end-to-end proof run | tui |
+Every package lands in exactly one milestone, and the orchestrator is
+split across three because its four machines are not all needed at once.
+
+| # | Milestone | Packages | Requirements proven |
+|---|---|---|---|
+| M1 | Skeleton | `clock`, per-module DDL, `arch-go.yml` completed, Go+uv CI | none — the gate chain itself |
+| M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `planner`, `cli` | spec-intake, decompose, **risk-first (ticketing half)** |
+| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (per-ticket subset) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent |
+| M4 | Review, merge, completion | `owner`, `orchestrator` (MergeAttempt + BuildTarget machines) | po-validation, submit-review |
+| M5 | The outer loop | `orchestrator` (full table), `recovery` | run-to-complete, parallel-build, learning-loop, **risk-first (research-path half)** |
+| M6 | Operator surface and proof | `tui`, then the linkshort end-to-end run | tui |
+
+Three placements are forced rather than chosen:
+
+- **`agent` is M2, not M3.** `REQ-decompose.feature:11` is "When the PM
+  agent decomposes it", so M2 cannot go green without at least the `Agent`
+  interface and its fake.
+- **`architect` is M3, not M5.** `devloop` imports it
+  (`arch-go.yml:45-49`), so it cannot arrive after its importer — which
+  also pulls `sa-agent` forward from M5.
+- **`cli` is M2.** `kriya build <project>` is how M2's intake scenarios are
+  driven at all.
+
+**`risk-first` deliberately spans two milestones.** Two of its six
+scenarios are ticket creation and block-relations, provable in M2; the
+other four need the BuildRun research path
+(`research-loop` / `finding-submitted`), a sutra document Review, and
+architect escalation — none of which exist before M5. Claiming the whole
+requirement in M2 would have been a milestone that could not go green.
 
 `agent` lands in **M2, not M3**: `REQ-decompose.feature:11` is "When the PM
 agent decomposes it", so M2 cannot go green without at least the `Agent`
@@ -372,10 +443,13 @@ interface and its fake. The real subprocess implementation may follow in
 M3, but the seam and the `agent_invocation` ledger are M2.
 
 Two of the six `GateResult.gate` values — `test` and `arch`
-(`avspec.yaml:1651`) — have **no dedicated requirement or feature file**,
-though `CON-gate-chain` orders all six. They are chain stages implemented
-in M3 alongside the four that do have REQs, proven indirectly by the
-scenarios that traverse the chain.
+(`avspec.yaml:1651`) — have **no dedicated requirement**, but both have
+dedicated scenarios asserting their own GateResult:
+`REQ-gate-structure.feature:20-26` ("the arch gate checks real imports" …
+`GateResult with gate "arch" pinned to "C2"`) and
+`REQ-gate-branch-coverage.feature:17` (`the test gate fails as its own
+commit-pinned GateResult with gate "test"`). They are first-class M3 work
+with their own assertions, not indirect.
 
 ## Interfaces
 
@@ -581,6 +655,10 @@ the harness would later need.
 - [ ] **Does `trackerclient` generate from the OpenAPI contract or
       hand-roll against it?** Settle at the first `trackerclient` commit;
       it affects nothing else.
+- [ ] **What model access does the end-to-end proof assume?** Carried
+      from `problem.md`: M6 is a real driven build spending real tokens
+      against a rate-limited API, and it is not offline-reproducible.
+      `CON-no-secrets` covers credentials but not availability.
 - [ ] **How does the TUI reach planner-owned reads and actions?** `AC-tui-act`
       requires `ACT-plan-restore`, `ACT-plan-retry`, and
       `ACT-parenting-resolve` to be executable from the TUI, but

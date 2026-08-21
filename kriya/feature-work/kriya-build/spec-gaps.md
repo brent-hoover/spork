@@ -13,7 +13,7 @@ build kept the same file for the same purpose.
 `arch-go` requires 100% package coverage: every Go package in the module
 must match a rule. But a real Go program contains packages that are not
 domain modules, and avspec's `modules[]` block is the only place boundaries
-can be declared. Kriya needs five such packages:
+can be declared. Kriya needs six such packages:
 
 | Package | Why it is not a module |
 |---|---|
@@ -21,6 +21,7 @@ can be declared. Kriya needs five such packages:
 | `internal/agent` | the `claude -p` seam, used by four modules |
 | `internal/specverify` | the `avspec verify` seam |
 | `internal/clock` | controllable time, imported everywhere |
+| `internal/recovery` | sequences each module's `Recover`; no module can reach them all |
 | `internal/acceptance` | the godog harness; test-only |
 
 The consequence is concrete. Six modules use `shouldOnlyDependsOn`
@@ -41,8 +42,16 @@ express. The file header must say so.
 
 **What would close it:** an avspec concept for infrastructure packages —
 declared, boundary-checked, but not domain modules. Sutra hit this once
-(its composition root); kriya hits it five times, which suggests it is
+(its composition root); kriya hits it six times, which suggests it is
 structural rather than incidental.
+
+`recovery` is the sharpest case, because it exists **because of** the
+declared boundaries rather than in spite of them. About fifty scenarios
+say "when recovery runs", and recovery must reconcile rows owned by
+planner, workspace, orchestrator, and reviewbridge — but `orchestrator`
+may not import `reviewbridge` (`arch-go.yml:22-29`), so no module can
+sequence the set. The spec's own boundary rules force a package the spec
+has no way to describe.
 
 ---
 
