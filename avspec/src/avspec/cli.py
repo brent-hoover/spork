@@ -108,6 +108,10 @@ def resolve(
 ) -> None:
     """Print the resolved build model as JSON — effective commands and artifacts.
 
+    Output is ALWAYS JSON and there is no --json flag, unlike verify and next.
+    Those two have a human format worth reading; this command exists only for
+    machine consumption, so a second format would be dead weight.
+
     A build engine needs two things the manifest states only indirectly: what
     each module's commands actually resolve to after per-field override, and
     which files make up the spec. Emitting them here keeps ONE parser for the

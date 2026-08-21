@@ -38,10 +38,23 @@ func main() {
 	}
 }
 
-// verifierArgv is how avspec is invoked. It is configurable in principle —
-// this repo runs it under uv — and will move into kriya.toml with the rest of
-// the configuration in a later step.
-func verifierArgv() []string { return []string{"uv", "run", "avspec"} }
+// verifier decides how to invoke avspec.
+//
+// The default is plain `avspec` on PATH, which fails with a clear "executable
+// not found" if it is not installed. An earlier version always used
+// `uv run avspec`, which resolves its environment from the WORKING DIRECTORY
+// — so the advertised command worked only when run from a directory where uv
+// could find the avspec project, and failed obscurely everywhere else.
+//
+// KRIYA_AVSPEC_DIR names a uv project holding avspec, for a checkout that has
+// not installed it: kriya then runs `uv run avspec` there. Both move into
+// kriya.toml with the rest of the configuration.
+func verifier() specverify.CLI {
+	if dir := os.Getenv("KRIYA_AVSPEC_DIR"); dir != "" {
+		return specverify.CLI{Argv: []string{"uv", "run", "avspec"}, WorkDir: dir}
+	}
+	return specverify.CLI{Argv: []string{"avspec"}}
+}
 
 // run is the composition root: it opens the one store, applies each module's
 // schema in the declared order, and will wire the modules and run recovery
@@ -73,10 +86,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", args[1], err)
 		}
-		in := planner.Intaker{Verify: specverify.CLI{
-			Argv:    verifierArgv(),
-			WorkDir: os.Getenv("KRIYA_AVSPEC_DIR"),
-		}}
+		in := planner.Intaker{Verify: verifier()}
 		return cli.Build(ctx, os.Stdout, in, target)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

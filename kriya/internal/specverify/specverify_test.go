@@ -100,3 +100,48 @@ func TestNoCommandConfiguredIsAnError(t *testing.T) {
 		t.Fatal("an empty Argv must be an error")
 	}
 }
+
+func TestAnIncompleteReportIsRejected(t *testing.T) {
+	// Syntactically valid JSON that omits required fields must NOT be
+	// admitted with Go zero values: a half-broken or version-mismatched
+	// verifier would otherwise fail OPEN, reporting zero findings and zero
+	// counts, which reads as a clean spec.
+	for name, body := range map[string]string{
+		"no counts":    `{"status":"ready","ok":true,"findings":[]}`,
+		"no findings":  `{"status":"ready","ok":true,"counts":{"error":0,"todo":0,"warn":0}}`,
+		"no ok":        `{"status":"ready","counts":{"error":0,"todo":0,"warn":0},"findings":[]}`,
+		"no status":    `{"ok":true,"counts":{"error":0,"todo":0,"warn":0},"findings":[]}`,
+		"empty object": `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := stub(t, body, 0).Verify(context.Background(), "any"); err == nil {
+				t.Fatalf("an incomplete report must be an error, not a zero-valued Report")
+			}
+		})
+	}
+}
+
+func TestAnIncompleteModelIsRejected(t *testing.T) {
+	for name, body := range map[string]string{
+		"no ok":             `{"modules":[]}`,
+		"ok but no modules": `{"ok":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := stub(t, body, 0).Resolve(context.Background(), "any"); err == nil {
+				t.Fatal("an incomplete model must be an error")
+			}
+		})
+	}
+}
+
+func TestAFailedResolveNeedsNoModules(t *testing.T) {
+	// ok=false is avspec reporting it could not load the manifest; demanding
+	// modules there would turn a legitimate refusal into an error.
+	m, err := stub(t, `{"ok":false,"findings":[]}`, 1).Resolve(context.Background(), "any")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.OK {
+		t.Error("OK should be false")
+	}
+}

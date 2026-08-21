@@ -226,8 +226,23 @@ whose first caller does not exist yet is unreachable production code and
 fails the gate. A seam and the thing that calls it must land together, with
 enough `cli` and `main` wiring to reach them from an entry point. Discovered
 at step 6; the same constraint had already forced `clock` to ship as an
-interface with its implementation deferred. Steps 6-12 are therefore
-grouped into slices below rather than executed in their written order.
+interface with its implementation deferred.
+
+**The slices, replacing the written order of steps 6-12.** Each lands as one
+commit with every gate green:
+
+| Slice | Steps folded in | Turns green |
+|---|---|---|
+| S1 intake decision | 6 (specverify), part of 9, part of 12, main wiring | spec-intake: draft, erroring, and ready-with-todos refusals |
+| S2 command resolution | rest of 6, more of 9 | spec-intake: missing module command refuses intake |
+| S3 snapshot pinning | rest of 9 | spec-intake: ready spec is pinned, both override scenarios, working-tree edits |
+| S4 tracker | 7, more of 12 | nothing on its own — it enables S5 |
+| S5 decomposition | 8 (agent), 10, 11 | decompose, risk-first's ticketing scenario |
+| S6 recovery | 13 | intake crash, every parked state recovers forward |
+
+S1 and S2 have landed. A slice may not be split further without first
+checking that its production code is reachable from `main`, which is the
+condition the deadcode gate enforces.
 
 ### 6. `specverify` seam
 

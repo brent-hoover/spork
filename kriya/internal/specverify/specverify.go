@@ -3,6 +3,7 @@ package specverify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -74,9 +75,34 @@ func (c CLI) Verify(ctx context.Context, dir string) (Report, error) {
 		return Report{}, err
 	}
 
-	var r Report
-	if err := json.Unmarshal(out, &r); err != nil {
+	// Required fields are pointers so a payload MISSING them is rejected rather
+	// than silently zero-valued. Syntactically valid JSON like
+	// {"status":"ready","ok":true} would otherwise be admitted with no counts
+	// and no findings — an incompatible or half-broken verifier failing OPEN,
+	// which is the one direction this seam must never fail.
+	var raw struct {
+		Status   *string    `json:"status"`
+		OK       *bool      `json:"ok"`
+		Counts   *Counts    `json:"counts"`
+		Findings *[]Finding `json:"findings"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
 		return Report{}, fmt.Errorf("specverify: parse report: %w", err)
 	}
-	return r, nil
+	switch {
+	case raw.Status == nil:
+		return Report{}, errors.New("specverify: report has no status")
+	case raw.OK == nil:
+		return Report{}, errors.New("specverify: report has no ok")
+	case raw.Counts == nil:
+		return Report{}, errors.New("specverify: report has no counts")
+	case raw.Findings == nil:
+		return Report{}, errors.New("specverify: report has no findings")
+	}
+	return Report{
+		Status:   *raw.Status,
+		OK:       *raw.OK,
+		Counts:   *raw.Counts,
+		Findings: *raw.Findings,
+	}, nil
 }

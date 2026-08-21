@@ -58,9 +58,39 @@ func (c CLI) Resolve(ctx context.Context, dir string) (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
-	var m Model
-	if err := json.Unmarshal(out, &m); err != nil {
+	// Pointers on the fields a successful resolve must state, so a payload
+	// missing them is rejected rather than silently zero-valued. NOT an
+	// embedded Model: encoding/json resolves a name to the SHALLOWEST field,
+	// so an outer Modules would capture "modules" and leave the embedded copy
+	// empty — which is exactly the bug this check was added to prevent, and it
+	// slipped in on the first attempt.
+	var raw struct {
+		OK        *bool             `json:"ok"`
+		Project   json.RawMessage   `json:"project"`
+		Commands  map[string]string `json:"commands"`
+		Modules   *[]Module         `json:"modules"`
+		Artifacts []string          `json:"artifacts"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
 		return Model{}, fmt.Errorf("specverify: parse model: %w", err)
+	}
+	if raw.OK == nil {
+		return Model{}, errors.New("specverify: model has no ok")
+	}
+	m := Model{OK: *raw.OK, Commands: raw.Commands, Artifacts: raw.Artifacts}
+	if !m.OK {
+		return m, nil
+	}
+	if raw.Modules == nil {
+		// A successful resolve must state its modules, even as an empty list.
+		// Absent means the verifier did not answer the question.
+		return Model{}, errors.New("specverify: successful model has no modules")
+	}
+	m.Modules = *raw.Modules
+	if len(raw.Project) > 0 {
+		if err := json.Unmarshal(raw.Project, &m.Project); err != nil {
+			return Model{}, fmt.Errorf("specverify: parse model project: %w", err)
+		}
 	}
 	return m, nil
 }
