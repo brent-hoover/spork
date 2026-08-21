@@ -102,3 +102,49 @@ said that was wrong — `exactly ONE scope reference is present`, with the
 non-build case listed first. A declaration that contradicts its own field
 constraints is a defect a verifier could catch, and `avspec verify` cannot
 see it today.
+
+---
+
+## 2026-08-21 — a module must act on another module's rows across a boundary it cannot cross
+
+**Found during:** design, fifth review pass. Third instance of the same
+family, and the one that proves the family is structural.
+
+Plan retirement must bind in-flight pops: *"a defer conflict re-read that
+finds a ticket claimed by a queued BuildRun with an unfilled ticket
+replays that pop and binds the row"* (`avspec.yaml:1137-1145`), and
+stamps disposition `bound` for live builds (`:1066`).
+`REQ-parallel-build.feature:47` pins the ordering — the BuildRun is bound
+by pop replay **before any ownership classification**.
+
+But `ENT-build-run` is owned by `MOD-orchestrator` (`:474`), and
+`MOD-planner` may import only `MOD-tracker-client` (`arch-go.yml:17-20`).
+The retiring module cannot reach the rows retirement is specified to
+bind.
+
+The reverse direction is fine and the spec already relies on it —
+*"BuildRun write-ahead creation invokes the planner's admission guard"*
+(`:1153`) — because orchestrator may import planner. So the boundary is
+correctly one-way for **imports** while the **protocol** is two-way.
+
+**Divergence recorded:** `planner` declares a narrow `PopBinder`
+interface and does not import its implementer; `orchestrator` implements
+it; `cmd/kriya` wires them. Dependency inversion, which arch-go permits
+because no new import edge exists.
+
+**What would close it:** avspec can express that A may import B. It cannot
+express that A must *call into* B without importing it — an interface A
+declares and B satisfies. Every module boundary that carries a two-way
+protocol will hit this.
+
+**The pattern across all three gaps.** Each was found the same way: an
+acceptance criterion requires a module to touch state the boundaries put
+out of reach. `agent_invocation` (entity declared under a module that
+cannot write it), `recovery` (a startup concern spanning every owner), and
+this one (a two-way protocol under one-way imports). None is visible to
+`avspec verify`, because all three are consistent at the level avspec
+checks — ids resolve, refs exist, boundaries form a DAG. They are only
+visible when someone tries to write the code. That is an argument for the
+deferred constitution `check:` attachments: a rule like *"every entity is
+writable by every module whose acceptance criteria mutate it"* would have
+caught two of the three mechanically.

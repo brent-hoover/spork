@@ -29,7 +29,7 @@ no internal imports, so each can be faked wholesale in tests.
 SQLite holds the durable plane. Every externally-visible action is
 **write-ahead**: kriya persists its intent and idempotency key *before* the
 call, so recovery can replay on either side of the other system's
-acceptance. godog drives all 155 scenarios; unit tests run against a fake
+acceptance. godog drives all 162 scenario runs; unit tests run against a fake
 tracker, integration tests against a real sutra.
 
 ## BDD Scenarios
@@ -161,9 +161,9 @@ Which file exercises which:
 
 | Machine | Owner | Exercised by |
 |---|---|---|
-| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop`, the `submit-review` submission windows (`:15`, `:20`, `:27`, `:37`) and its `gate_attempt`/`gated_base` scenarios (`:96-127`), the `risk-first` research states (`:33-40`, `:51-57`) |
+| `BuildRun` + `review_submission_state` | orchestrator | `run-to-complete`, `pair-loop`, the `submit-review` submission windows (`:15`, `:20`, `:27`, `:37`) and its `gate_attempt`/`gated_base` fence scenarios (`:89`, `:96-127`), the `risk-first` research states (`:33-40`, `:51-57`) |
 | `BuildTarget` + `CompletionAdvance` | planner | most of `run-to-complete` |
-| `MergeAttempt` | orchestrator | about half of `submit-review` (`:46`, `:60`, `:66`, `:74`, `:80`, `:89`, `:129-159`) |
+| `MergeAttempt` | orchestrator | about half of `submit-review` (`:46`, `:60`, `:66`, `:74`, `:80`, `:129-159`, `:167`, `:177`, `:185`) |
 | `AttributionAmbiguity` | orchestrator | `run-to-complete` new-work scenarios |
 | `Plan` | planner | `decompose`, `spec-intake` |
 
@@ -218,7 +218,8 @@ only `trackerclient`, while `architect` and `owner` may not import
 `orchestrator` at all. Under avspec's ownership rule the row has **no legal
 writer**. Since every invocation passes through the seam, the ledger is
 naturally the seam's. `sutra/arch-go.yml:108-128` is the precedent for a
-non-module package declaring itself. Log it in
+non-module package carrying its own arch-go rule; the ownership argument
+stands on its own — every invocation passes through the seam. Log it in
 `kriya/feature-work/kriya-build/spec-gaps.md`.
 
 ```
@@ -354,24 +355,70 @@ outbound-only and nothing constrains inbound edges.
 
 | # | Stage | Owner | Machine |
 |---|---|---|---|
-| 1 | Plan lifecycle | planner | `Plan` |
-| 2 | Targets and completion | planner | `BuildTarget` + `CompletionAdvance` |
-| 3 | Attribution | orchestrator | `AttributionAmbiguity` |
-| 4 | Workspaces | workspace | `Workspace` |
-| 5 | Dev sessions | devloop | `DevSession` — terminate crashed, import transcript |
-| 6 | Build runs | orchestrator | `BuildRun` + `review_submission_state` |
-| 7 | Merges | orchestrator | `MergeAttempt` |
-| 8 | Review rounds and enqueue attempts | reviewbridge | `ReviewRound`, `EnqueueAttempt`, orphans |
+| 1 | **Pop binding sweep** | orchestrator | `BuildRun` — bind claimed-but-unbound pops |
+| 2 | Plan lifecycle: retirement and activation | planner | `Plan` |
+| 3 | Targets and completion | planner | `BuildTarget` + `CompletionAdvance` |
+| 4 | Attribution | orchestrator | `AttributionAmbiguity` |
+| 5 | Workspaces | workspace | `Workspace` |
+| 6 | Dev sessions | devloop | `DevSession` — terminate crashed, import transcript |
+| 7 | Build runs | orchestrator | `BuildRun` + `review_submission_state` |
+| 8 | Merges | orchestrator | `MergeAttempt` |
+| 9 | Review rounds and enqueue attempts | reviewbridge | `ReviewRound`, `EnqueueAttempt`, orphans |
+
+**Pop binding runs first, before retirement.** The spec is explicit: "the
+reconciliation pass below runs first so no claimed-but-unbound pop exists
+when those stamps land" (`avspec.yaml:1069-1071`), and
+`REQ-parallel-build.feature:47` asserts "the BuildRun is bound by pop
+replay **before any ownership classification**". An earlier draft of this
+table put plan retirement first and claimed "none depends on a later
+one" — that was wrong in exactly the direction the scenario names.
+
+**Retirement can also re-bind mid-pass**, so stage 1 is a sweep, not a
+one-shot: "claimed-but-unbound pops are bound WHENEVER discovered, not
+only in the initial sweep" (`:1137-1145`). Binding is idempotent, so
+re-invoking it from stage 2 is safe.
 
 Rounds settle **last**, after build runs, because a BuildRun parked in a
 pair-loop state is waiting on its round's outcome
 (`REQ-pair-loop.feature:41-46`): the run must be loaded and its expectation
-known before a round can be judged stale, orphaned, or still live. Every
-stage may depend on an earlier stage's reconciliation; none depends on a
-later one.
+known before a round can be judged stale, orphaned, or still live.
+
+Apart from stage 2's documented re-invocation of stage 1, no stage depends
+on a later one.
+
+### Planner binds an orchestrator-owned row — the third spec gap
+
+Retirement must "replay that pop and bind the row" (`avspec.yaml:1137`),
+and stamp disposition `bound` for live builds (`:1066`). But `ENT-build-run`
+is **orchestrator-owned** (`:474`) and `planner` may import only
+`trackerclient` (`arch-go.yml:17-20`). This is the same shape as the
+`agent_invocation` gap: a module is required to act on another module's
+rows across a boundary it cannot cross.
+
+The reverse direction is already fine and the spec relies on it —
+"BuildRun write-ahead creation invokes the planner's admission guard"
+(`:1153`) — because orchestrator *may* import planner.
+
+**Mechanism:** `planner` declares the narrow interface it needs and does
+not import its implementer:
+
+```go
+// package planner
+type PopBinder interface {
+    BindClaimedPops(ctx context.Context, plan PlanID) (bound int, err error)
+}
+```
+
+`orchestrator` implements it — it already owns `BuildRun` — and
+`cmd/kriya` wires the two together. Dependency inversion keeps every
+arch-go rule intact: planner imports nothing new, and orchestrator already
+imports planner. Logged in `spec-gaps.md`.
 
 **How a test induces a crash.** Every seam is injectable — `agent`,
-`specverify`, `trackerclient`, the roborev bridge, **and git**, which
+`specverify`, `trackerclient`, `gates`, the roborev bridge, **and git**.
+`gates` is faked in the unit ring by necessity, not only for crash
+injection: a real chain is the ~20-minute coverage run and the 15h48m
+mutation run, so no unit test may invoke one. Git matters because
 `REQ-workspaces.feature:23` ("a crash between the pending write and
 creation") and `REQ-submit-review.feature:70-72` (recovery inspects the
 branch; both a landed and an unlanded CAS push must be producible) require.
@@ -461,10 +508,10 @@ and the rest in a later milestone.
 | # | Milestone | Packages | Requirements proven |
 |---|---|---|---|
 | M1 | Skeleton | `cmd/kriya`, `acceptance`, `clock`, `arch-go.yml` completed, Go+uv CI | none — the gate chain itself |
-| M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `cli`, `planner` (Plan lifecycle), `recovery` (stage 1) | spec-intake **(partial)**, decompose **(partial)**, risk-first **(partial)** |
-| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun), `recovery` (+ stages 4-6, 8) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent |
-| M4 | Review, merge, completion | `owner`, `orchestrator` (MergeAttempt), `planner` (BuildTarget + CompletionAdvance), `recovery` (+ stages 2, 7) | po-validation, submit-review |
-| M5 | The outer loop | `orchestrator` (full table + AttributionAmbiguity), `recovery` (+ stage 3) | run-to-complete, parallel-build, learning-loop, risk-first **(remainder)**, spec-intake **(remainder)**, decompose **(remainder)** |
+| M2 | Intake and decomposition | `specverify`, `trackerclient`, `agent`, `cli`, `planner` (`Plan` lifecycle + `BuildTarget.epic_state`), `recovery` (stages 1-2) | spec-intake **(partial)**, decompose **(partial)**, risk-first **(partial)** |
+| M3 | One ticket through the chain | `workspace`, `devloop`, `reviewbridge`, `gates`, `context`, `architect`, `orchestrator` (BuildRun, code path only), `recovery` (+ stages 5-7, 9) | workspaces, pair-loop, gate-structure, gate-typing, gate-branch-coverage, gate-mutation, context-assembly, thread-capture, tier-routing, sa-agent **(partial)** |
+| M4 | Review, merge, completion | `owner`, `orchestrator` (MergeAttempt + BuildRun research path), `planner` (`completion_state` + `CompletionAdvance`), `recovery` (+ stages 3, 8) | po-validation, submit-review |
+| M5 | The outer loop | `orchestrator` (full table + AttributionAmbiguity), `recovery` (+ stage 4) | run-to-complete, parallel-build, learning-loop, risk-first **(remainder)**, spec-intake **(remainder)**, decompose **(remainder)**, sa-agent **(remainder)** |
 | M6 | Operator surface and proof | `tui`, then the linkshort end-to-end run | tui |
 
 **DDL ships with its module**, not in M1 — a package that does not exist
@@ -483,10 +530,25 @@ Three placements are forced rather than chosen:
   also pulls `sa-agent` forward from M5.
 - **`cli` is M2.** `kriya build <project>` is how M2's intake scenarios are
   driven at all.
-- **`planner` splits M2/M4.** It owns both the `Plan` lifecycle (needed for
-  decomposition) and the `BuildTarget` / `CompletionAdvance` completion
-  machine (`avspec.yaml:469`) — which is a *completion* concern and belongs
-  with M4's review-and-merge work, not with intake.
+- **`planner` splits M2/M4, and so does `BuildTarget`.** The `Plan`
+  lifecycle is M2. `BuildTarget` divides along its two enums:
+  `epic_state` is written **write-ahead at decomposition**
+  (`REQ-decompose.feature:20`: "a BuildTarget row is written ahead of the
+  epic's creation and records the epic id when it returns";
+  `avspec.yaml:741-745`), so it is M2. `completion_state` and
+  `CompletionAdvance` are genuinely a completion concern and are M4. An
+  earlier draft deferred all of `BuildTarget` to M4, which would have left
+  M2's decomposition scenarios unprovable.
+- **The `orchestrator` split is by BuildRun state, not by feature.** M3
+  delivers the **code traversal** — `queued`, `no-work`, `dev-loop`,
+  `gates`, `po-validation`, `review-submitted`, `awaiting-operator`,
+  `merging`, `merged`, `failed`, `cancelling`, `cancelled`. M4 adds the
+  **research path** — `research-loop`, `finding-submitted`, `completing`,
+  `closed` — because `REQ-submit-review.feature:171` ("a spike's
+  document-backed close recovers identically … research runs persist them
+  directly, having no merge attempt") sits inside a scenario M4 claims.
+  M5 adds nothing to the state list; it adds parallelism, the full
+  transition table, and `AttributionAmbiguity`.
 - **`recovery` starts in M2 and grows.** `REQ-pair-loop.feature:42` is
   literally "When recovery runs", `REQ-workspaces.feature:24` and `:35`
   probe and recreate under recovery, and five `submit-review` scenarios
@@ -506,8 +568,14 @@ rather than claiming them early:
 - **`decompose`** — `:31` ("an agent popping work receives an unblocked
   ticket") is the same pop machinery, so it lands M5 with the rest of
   decomposition proven in M2.
-- **`spec-intake`** — `:55` needs both the gate chain (M3) and "recovery
-  later replays a step" (M5), so it completes in M5.
+- **`sa-agent`** — `:36` asserts pop admission ("an agent popping in the
+  window before the supersession fence cannot claim the obsolete ticket —
+  deferred is not poppable"), the same machinery deferred to M5. The rest
+  is M3.
+- **`spec-intake`** — `:55` needs the gate chain (M3) *and* a
+  supersession-era replay that only exists once plan supersession and pop
+  admission land in M5. The earlier draft blamed "recovery replays a
+  step", which was wrong: BuildRun recovery is stage 7 and ships in M3.
 
 Claiming any of these whole in M2 would have been a milestone that could
 not go green.
@@ -697,6 +765,12 @@ the harness would later need.
 - **Sutra's fences are proven by sutra's tests, not by a consumer.** If a
   guarantee is weaker than kriya's recovery assumes, it surfaces here
   first — as a flaky integration test, which is the worst way to learn it.
+- **"162 runs" understates the harness surface by roughly an order of
+  magnitude.** Several scenarios are multi-cycle — `REQ-run-to-complete
+  .feature:234-253` carries three `Given` blocks and fourteen `Then` steps
+  under one header, and `REQ-tui.feature:22-54` has fifteen `Given`s.
+  Step definitions, not scenario count, are the real cost, and they land in
+  M1's `acceptance` package before any of them can pass.
 - **CI has no Go job at all.** `.github/workflows/verify.yml` is the
   repo's only workflow and runs uv, ruff, ty, pytest, and
   `avspec verify examples/linkshort` — nothing Go. M1 must add one, and it
@@ -732,9 +806,10 @@ the harness would later need.
       against a rate-limited API, and it is not offline-reproducible.
       `CON-no-secrets` covers credentials but not availability.
 - [x] **How does the TUI reach planner-owned reads and actions?**
-      Decided in Approach: a read facade plus action pass-throughs on
-      `orchestrator`. Kept here as a **verification note** — confirm the
-      facade covers every `VIEW-tui-*` field before M6. `AC-tui-act`
+      *Decided* — a read facade plus action pass-throughs on
+      `orchestrator`, which can reach planner, workspace, gates, and owner.
+      Remains here as a **verification note, not an open question**:
+      confirm the facade covers every `VIEW-tui-*` field before M6. `AC-tui-act`
       requires `ACT-plan-restore`, `ACT-plan-retry`, and
       `ACT-parenting-resolve` to be executable from the TUI, but
       `MOD-tui` may import only orchestrator, architect, and reviewbridge
