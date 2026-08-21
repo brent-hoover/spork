@@ -207,12 +207,19 @@ scenarios execute against real software. Until kriya runs:
       question applies to every gate whose failures must be actionable.
 - [ ] **Which intake-eligible target proves the engine end-to-end, and is
       authoring one in scope?** No existing target qualifies.
-      `avspec/examples/linkshort` is refused by `AC-intake-commands`: its
-      three modules (`MOD-api`, `MOD-domain`, `MOD-data`) carry no stack
-      overrides, and the project stack declares only `install`, `test`,
-      and `lint` — missing `typecheck`, `arch`, `coverage`, and
-      `mutation` — and it is TypeScript/pnpm/cucumber-js, so it would also
-      exercise a non-Go toolchain. Extending linkshort, authoring a small
+      `avspec/examples/linkshort` is refused by `AC-intake-commands`. The
+      file holds exactly one `stack:` block (line 7) and one `commands:`
+      block (line 12), both the project's, so all **four** modules
+      (`MOD-api`, `MOD-domain`, `MOD-data`, `MOD-web`) inherit a stack
+      declaring only `install`, `test`, and `lint` — missing `typecheck`,
+      `arch`, `coverage`, and `mutation`, which is 16 refusal reasons.
+      It verifies `status=ready errors=0 todos=0 ok=True`, which is the
+      point of the AC's "even when avspec verify alone reports ready": it
+      is avspec's conformance fixture, never intended to be built. It is
+      also TypeScript/pnpm/cucumber-js, so adding the four commands would
+      make it eligible but not suitable — kriya's first proof run would
+      drive a toolchain in which every gate command differs from the ones
+      sutra's build validated. Extending linkshort, authoring a small
       Go target, or building sutra's own residue are the candidates.
 - [ ] **How is a coding agent actually invoked?** The spec is deliberately
       role-and-tier-neutral: `AC-tier-config` requires roles map to tiers
@@ -252,7 +259,8 @@ scenarios execute against real software. Until kriya runs:
   work, added the research/spike document path and R2, scoped the
   spec-change non-goal to behavioral changes, made the end-to-end
   criterion observable, replaced linkshort as the proof target (refused by
-  `AC-intake-commands`), and added open questions for GateResult detail,
+  `AC-intake-commands` — four modules, 16 missing commands), and added
+  open questions for GateResult detail,
   model access, and roborev patching scope (Brent Hoover)
 - 2026-08-21: Recorded the coverage-floor decision — every app gates on a
   floor including branch coverage; the policy lives in each target's stack
