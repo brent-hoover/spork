@@ -119,25 +119,16 @@ dependenciesRules:
       internal:
         - "**.clock"
   - package: "**.clock"
-    shouldNotDependsOn:
+    # clock may import nothing internal. An EMPTY shouldOnlyDependsOn is
+    # treated as unconstrained and passes silently, and a denylist here
+    # would fail OPEN — any package added later is absent from it and thus
+    # permitted. A non-empty allowlist naming a pattern that matches no
+    # package is the only form that is both enforcing and stable under
+    # extension: clock passes while importing nothing, and fails the moment
+    # it imports anything.
+    shouldOnlyDependsOn:
       internal:
-        - "**.planner"
-        - "**.orchestrator"
-        - "**.workspace"
-        - "**.devloop"
-        - "**.reviewbridge"
-        - "**.gates"
-        - "**.architect"
-        - "**.owner"
-        - "**.context"
-        - "**.trackerclient"
-        - "**.cli"
-        - "**.tui"
-        - "**.agent"
-        - "**.specverify"
-        - "**.recovery"
-        - "**.acceptance"
-        - "**.kriya"
+        - "**.__no_internal_imports__"
   - package: "**.recovery"
     shouldOnlyDependsOn:
       internal:
@@ -147,9 +138,14 @@ dependenciesRules:
         - "**.orchestrator"
         - "**.reviewbridge"
         - "**.clock"
+  - package: "**.fakes"
+    shouldOnlyDependsOn:
+      internal:
+        - "**.clock"
   - package: "**.acceptance"
     shouldOnlyDependsOn:
       internal:
+        - "**.fakes"
         - "**.planner"
         - "**.orchestrator"
         - "**.workspace"

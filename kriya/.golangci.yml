@@ -25,6 +25,10 @@ linters:
 
   settings:
     forbidigo:
+      # analyze-types resolves the CANONICAL symbol, so an aliased or
+      # dot-imported time package cannot slip past. A purely lexical
+      # pattern matches the text "time.Now" and misses `t "time"; t.Now()`.
+      analyze-types: true
       forbid:
         - pattern: ^time\.Now$
           msg: use a clock.Clock; time.Now is allowed only in internal/clock
