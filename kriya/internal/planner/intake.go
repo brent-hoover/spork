@@ -27,6 +27,8 @@ func (r Refusal) Error() string { return r.Reason }
 type Intaker struct {
 	Verify    specverify.Verifier
 	Snapshots SnapshotStore
+	Targets   TargetStore
+	Tracker   Tracker
 	Now       clock.Clock
 }
 

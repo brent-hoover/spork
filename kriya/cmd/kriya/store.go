@@ -114,5 +114,6 @@ func applyMigrations(ctx context.Context, db *sql.DB, ms []migration) error {
 func migrations() []migration {
 	return []migration{
 		{module: "planner", name: "0001_spec_snapshot", stmts: []string{planner.Migration}},
+		{module: "planner", name: "0002_build_target", stmts: []string{planner.TargetMigration}},
 	}
 }

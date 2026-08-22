@@ -30,6 +30,34 @@ func (s *store) Get(context.Context, string) (planner.Snapshot, error) {
 }
 func (s *store) Count(context.Context) (int, error) { return s.n, nil }
 
+// targets and stubTracker keep these tests about cli output; the epic path
+// has its own tests in planner.
+type targets struct {
+	rows map[string]planner.BuildTarget
+}
+
+func newTargets() *targets { return &targets{rows: map[string]planner.BuildTarget{}} }
+
+func (t *targets) Upsert(_ context.Context, b planner.BuildTarget) error {
+	t.rows[b.TargetKey] = b
+	return nil
+}
+
+func (t *targets) Find(_ context.Context, key string) (planner.BuildTarget, bool, error) {
+	b, ok := t.rows[key]
+	return b, ok, nil
+}
+
+type stubTracker struct{}
+
+func (stubTracker) CreateProject(context.Context, string, string, string, string) (string, error) {
+	return "project-1", nil
+}
+
+func (stubTracker) CreateIssue(context.Context, string, string, string, string, string) (string, error) {
+	return "issue-1", nil
+}
+
 func completeModule() specverify.Module {
 	cmds := map[string]string{}
 	for _, name := range specverify.RequiredCommands {
@@ -51,8 +79,14 @@ func run(t *testing.T, r specverify.Report) (string, error) {
 		Artifacts: []string{"avspec.yaml"},
 	}}
 	var out bytes.Buffer
-	in := planner.Intaker{Verify: v, Snapshots: newStore(), Now: fakes.NewClock(time.Unix(0, 0))}
-	err := cli.Build(context.Background(), &out, in, dir)
+	in := planner.Intaker{
+		Verify:    v,
+		Snapshots: newStore(),
+		Targets:   newTargets(),
+		Tracker:   stubTracker{},
+		Now:       fakes.NewClock(time.Unix(0, 0)),
+	}
+	err := cli.Build(context.Background(), &out, in, dir, "actor-1")
 	return out.String(), err
 }
 

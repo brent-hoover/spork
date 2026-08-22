@@ -11,6 +11,7 @@ import (
 	"kriya/internal/clock"
 	"kriya/internal/planner"
 	"kriya/internal/specverify"
+	"kriya/internal/trackerclient"
 
 	_ "modernc.org/sqlite"
 )
@@ -50,6 +51,15 @@ func main() {
 // KRIYA_AVSPEC_DIR names a uv project holding avspec, for a checkout that has
 // not installed it: kriya then runs `uv run avspec` there. Both move into
 // kriya.toml with the rest of the configuration.
+// sutraURL is where the tracker lives. It moves into kriya.toml with the rest
+// of the configuration.
+func sutraURL() string {
+	if u := os.Getenv("KRIYA_SUTRA_URL"); u != "" {
+		return u
+	}
+	return "http://127.0.0.1:7357"
+}
+
 func verifier() specverify.CLI {
 	if dir := os.Getenv("KRIYA_AVSPEC_DIR"); dir != "" {
 		return specverify.CLI{Argv: []string{"uv", "run", "avspec"}, WorkDir: dir}
@@ -90,9 +100,11 @@ func run(ctx context.Context, args []string) error {
 		in := planner.Intaker{
 			Verify:    verifier(),
 			Snapshots: planner.SQLSnapshots{DB: db},
+			Targets:   planner.SQLTargets{DB: db},
+			Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
 			Now:       clock.System{},
 		}
-		return cli.Build(ctx, os.Stdout, in, target)
+		return cli.Build(ctx, os.Stdout, in, target, os.Getenv("KRIYA_ACTOR"))
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

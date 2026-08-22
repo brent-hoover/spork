@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -16,6 +17,19 @@ CREATE TABLE spec_snapshot (
     content           TEXT NOT NULL,
     resolved_commands TEXT NOT NULL,
     created           TEXT NOT NULL
+)`
+
+// TargetMigration is planner's second table. Separate from the first because
+// a module's schema evolves across milestones and each migration is recorded
+// by its own id; folding it into the first would never run on a database that
+// already applied it.
+const TargetMigration = `
+CREATE TABLE build_target (
+    target_key TEXT PRIMARY KEY,
+    spec_hash  TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    epic_id    TEXT NOT NULL DEFAULT '',
+    epic_state TEXT NOT NULL
 )`
 
 // SQLSnapshots stores snapshots in SQLite.
@@ -73,4 +87,40 @@ func (s SQLSnapshots) Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("count snapshots: %w", err)
 	}
 	return n, nil
+}
+
+// SQLTargets stores build targets in SQLite.
+type SQLTargets struct{ DB *sql.DB }
+
+// Upsert writes a target, replacing any row with the same key.
+func (s SQLTargets) Upsert(ctx context.Context, t BuildTarget) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO build_target (target_key, spec_hash, project_id, epic_id, epic_state)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(target_key) DO UPDATE SET
+		   spec_hash = excluded.spec_hash,
+		   project_id = excluded.project_id,
+		   epic_id = excluded.epic_id,
+		   epic_state = excluded.epic_state`,
+		t.TargetKey, t.SpecHash, t.ProjectID, t.EpicID, t.EpicState)
+	if err != nil {
+		return fmt.Errorf("upsert build target: %w", err)
+	}
+	return nil
+}
+
+// Find reads a target by key.
+func (s SQLTargets) Find(ctx context.Context, targetKey string) (BuildTarget, bool, error) {
+	t := BuildTarget{TargetKey: targetKey}
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT spec_hash, project_id, epic_id, epic_state FROM build_target WHERE target_key = ?`,
+		targetKey).Scan(&t.SpecHash, &t.ProjectID, &t.EpicID, &t.EpicState)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Absence is not failure: the first intake of a target has no row.
+		return BuildTarget{}, false, nil
+	}
+	if err != nil {
+		return BuildTarget{}, false, fmt.Errorf("read build target: %w", err)
+	}
+	return t, true, nil
 }
