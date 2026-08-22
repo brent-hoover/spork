@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,24 +15,29 @@ import (
 
 // projectKey derives a sutra project key from the target directory.
 //
-// Uppercase and truncated because sutra constrains ProjectKey. It is derived
-// rather than configured so a re-intake of the same target reaches the same
-// project instead of creating a second.
+// Eight characters of sanitised basename is not enough: `foo-bar` and
+// `foobar` sanitise identically, two directories can share a basename, and
+// long names collide on their prefix. sutra enforces unique project keys, so a
+// collision is not a cosmetic clash — the second target fails permanently with
+// a 409 and there is no way forward.
+//
+// The key is therefore the basename truncated to leave room for a short digest
+// of the FULL path. Readable at a glance, and distinct for distinct targets.
 func projectKey(dir string) string {
-	base := strings.ToUpper(filepath.Base(dir))
-	base = strings.Map(func(r rune) rune {
+	base := strings.Map(func(r rune) rune {
 		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			return r
 		}
 		return -1
-	}, base)
+	}, strings.ToUpper(filepath.Base(dir)))
 	if len(base) > 8 {
 		base = base[:8]
 	}
 	if base == "" {
 		base = "TARGET"
 	}
-	return base
+	sum := sha256.Sum256([]byte(dir))
+	return base + hex.EncodeToString(sum[:])[:6]
 }
 
 // errWriter defers write-error handling to one place.

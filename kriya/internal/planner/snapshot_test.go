@@ -181,3 +181,21 @@ func TestARefusedIntakePinsNothing(t *testing.T) {
 		t.Errorf("a refused intake pinned %d snapshots", n)
 	}
 }
+
+func TestAnArtifactSetWithoutTheManifestIsRefused(t *testing.T) {
+	// A set carrying some other readable file but not avspec.yaml would pin a
+	// "full artifact set" with no spec in it, and every later read of that
+	// snapshot would find nothing to read. Non-empty is not the same as
+	// complete.
+	dir := specDir(t, "avspec: \"0.3\"\n")
+	if err := os.WriteFile(filepath.Join(dir, "other.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	in, store := intaker(t, dir, []string{"other.txt"})
+	if _, err := in.AdmitAndPin(context.Background(), dir); err == nil {
+		t.Fatal("an artifact set without the manifest must be refused")
+	}
+	if n, _ := store.Count(context.Background()); n != 0 {
+		t.Error("nothing may be pinned")
+	}
+}

@@ -96,7 +96,7 @@ after outline expansion — and the pinned gate chain is green.
 * `sutra/**` — sutra is built and merged; kriya consumes it. The
   integration ring *runs* a sutra binary, which is fine; it does not
   modify sutra's source
-* `avspec/**` EXCEPT the `resolve` command — the verifier is not part of this
+* `avspec/**` EXCEPT the `inspect` command — the verifier is not part of this
   work, with one approved exception (2026-08-21): kriya needs each module's
   resolved effective commands and the referenced artifact set to pin a
   SpecSnapshot, and avspec exposed only `verify` and `next`. Rather than give

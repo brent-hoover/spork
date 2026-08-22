@@ -241,3 +241,33 @@ func TestRecoveryReplaysUnderTheOriginalActor(t *testing.T) {
 		t.Errorf("recovery presented %v, original attempt ended with %v", healthy.keys, firstKeys)
 	}
 }
+
+func TestRecoveryDoesNotAdoptChangedInputs(t *testing.T) {
+	// The keys were derived from the recorded values. Recomputing them from
+	// current inputs would present a different key for a call that may already
+	// have landed, creating a second project or epic rather than replaying the
+	// first. A changed spec is a new plan, not an overwrite of a pending row.
+	store := newMemTargets()
+	failing := &countingTracker{failIssue: errors.New("crash")}
+	if _, err := epicIntaker(store, failing).EnsureEpic(
+		context.Background(), "/spec", "originalhash1234", "SHORT", "shorty", "actor-1"); err == nil {
+		t.Fatal("expected failure")
+	}
+	originalKeys := append([]string{}, failing.keys...)
+
+	// A later call naming a DIFFERENT spec hash must not change the pending
+	// row's keys.
+	healthy := &countingTracker{}
+	if _, err := epicIntaker(store, healthy).EnsureEpic(
+		context.Background(), "/spec", "a-completely-different-hash", "SHORT", "shorty", "actor-1"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if healthy.keys[len(healthy.keys)-1] != originalKeys[len(originalKeys)-1] {
+		t.Errorf("the epic key changed with the spec hash: %q then %q",
+			originalKeys[len(originalKeys)-1], healthy.keys[len(healthy.keys)-1])
+	}
+	row, _, _ := store.Find(context.Background(), "/spec")
+	if row.SpecHash != "originalhash1234" {
+		t.Errorf("the pending row adopted a new spec hash: %q", row.SpecHash)
+	}
+}

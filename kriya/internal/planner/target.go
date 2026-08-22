@@ -99,14 +99,22 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 		ProjectKey: projectKey, Name: name, Actor: actor,
 	}
 	if found {
+		// The EXISTING row wins, spec hash included. The idempotency keys were
+		// derived from those values, so recomputing them from current inputs
+		// would present a different key for a call that may already have
+		// landed — creating a second project or epic rather than replaying the
+		// first. A re-intake of a changed spec is a new plan, which is the
+		// supersession path, not an in-place overwrite of a pending row.
 		target = existing
-		target.SpecHash = specHash
 	}
 	if target.ProjectID == "" {
 		if err := i.Targets.Upsert(ctx, target); err != nil {
 			return BuildTarget{}, fmt.Errorf("write target ahead of project: %w", err)
 		}
-		projectID, err := i.Tracker.CreateProject(ctx, projectKey, name, actor, idempotencyKey("project", targetKey, specHash))
+		// Every value comes from the TARGET, not the parameters: the row is the
+		// record of what the original call sent, and the key must match it.
+		projectID, err := i.Tracker.CreateProject(ctx, target.ProjectKey, target.Name, target.Actor,
+			idempotencyKey("project", target.TargetKey, target.SpecHash))
 		if err != nil {
 			return BuildTarget{}, fmt.Errorf("create project: %w", err)
 		}
@@ -117,7 +125,8 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 	}
 
 	epicID, err := i.Tracker.CreateIssue(ctx, target.ProjectID,
-		"Build "+name, "Umbrella epic for spec "+specHash[:12], actor, idempotencyKey("epic", targetKey, specHash))
+		"Build "+target.Name, "Umbrella epic for spec "+target.SpecHash[:12], target.Actor,
+		idempotencyKey("epic", target.TargetKey, target.SpecHash))
 	if err != nil {
 		return BuildTarget{}, fmt.Errorf("create epic: %w", err)
 	}

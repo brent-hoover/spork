@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
 	"kriya/internal/specverify"
 )
+
+// manifestName is the file every spec has and every snapshot must pin.
+const manifestName = "avspec.yaml"
 
 // Snapshot is the pinned, content-addressed spec a build reads from.
 //
@@ -92,11 +96,13 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // pin builds and stores the snapshot for an admitted spec.
 func (i Intaker) pin(ctx context.Context, dir string, model specverify.Model) (Snapshot, error) {
-	if len(model.Artifacts) == 0 {
-		// Every spec has at least a manifest. An empty set would pin a "full
-		// artifact set" holding nothing, and a build reading from it would
-		// have no spec at all.
-		return Snapshot{}, fmt.Errorf("spec at %s resolved no artifacts to pin", dir)
+	// The manifest specifically, not merely a non-empty list: a set carrying
+	// some other readable file but not avspec.yaml would pin a "full artifact
+	// set" with no spec in it, and every later read of the snapshot would find
+	// nothing to read.
+	if !slices.Contains(model.Artifacts, manifestName) {
+		return Snapshot{}, fmt.Errorf("spec at %s resolved an artifact set without %s: %v",
+			dir, manifestName, model.Artifacts)
 	}
 	content, err := readArtifacts(dir, model.Artifacts)
 	if err != nil {

@@ -112,11 +112,14 @@ func (r rawModel) requireSuccessFields() error {
 		return errors.New("specverify: successful model has no modules")
 	case len(r.Project) == 0:
 		return errors.New("specverify: successful model has no project")
+	case r.Commands == nil:
+		return errors.New("specverify: successful model has no commands")
 	case r.Artifacts == nil:
 		// Artifacts drives the snapshot's content set. Absent would pin a
 		// "full artifact set" containing nothing, not even the manifest.
 		return errors.New("specverify: successful model has no artifacts")
 	}
+	seen := map[string]bool{}
 	for i, mod := range *r.Modules {
 		// A module with six commands but no identity passes the command check
 		// and is then unaddressable: gate results pin to a module id, and a
@@ -124,6 +127,15 @@ func (r rawModel) requireSuccessFields() error {
 		if mod.ID == "" || mod.Name == "" {
 			return fmt.Errorf("specverify: module %d has no id or name", i)
 		}
+		// Duplicates must be rejected, not deduplicated. Commands are pinned
+		// into a map keyed by id, so a later duplicate silently overwrites an
+		// earlier module and the snapshot no longer holds every module's
+		// validated commands — while intake, which walks the list, validated
+		// both.
+		if seen[mod.ID] {
+			return fmt.Errorf("specverify: module id %q appears more than once", mod.ID)
+		}
+		seen[mod.ID] = true
 	}
 	return nil
 }

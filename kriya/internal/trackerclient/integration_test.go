@@ -27,7 +27,11 @@ func startSutra(t *testing.T) string {
 	build := exec.Command("go", "build", "-o", bin, "./cmd/sutra")
 	build.Dir = filepath.Join(root, "sutra")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("cannot build sutra: %v\n%s", err, out)
+		// FAIL, not skip. Skipping on a build failure lets a compilation,
+		// dependency, or contract regression pass kriya's test gate while the
+		// integration is never exercised — a green suite that proved nothing
+		// about the one seam this file exists to prove.
+		t.Fatalf("cannot build sutra: %v\n%s", err, out)
 	}
 
 	port := freePort(t)

@@ -102,7 +102,7 @@ func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) 
 func (i Intaker) admitCommands(ctx context.Context, dir, status string) (specverify.Model, error) {
 	model, err := i.Verify.Inspect(ctx, dir)
 	if err != nil {
-		return specverify.Model{}, fmt.Errorf("resolve %s: %w", dir, err)
+		return specverify.Model{}, fmt.Errorf("inspect %s: %w", dir, err)
 	}
 	if len(model.Modules) == 0 {
 		return model, &Refusal{

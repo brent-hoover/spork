@@ -126,7 +126,7 @@ func TestAnIncompleteReportIsRejected(t *testing.T) {
 func TestAnIncompleteModelIsRejected(t *testing.T) {
 	for name, body := range map[string]string{
 		"no ok":             `{"modules":[]}`,
-		"ok but no modules": `{"ok":true}`,
+		"ok but no modules": `{"ok":true,"commands":{}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := stub(t, body, 0).Inspect(context.Background(), "any"); err == nil {

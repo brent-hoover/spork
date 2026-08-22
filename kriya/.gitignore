@@ -1,0 +1,7 @@
+# Runtime state, not source. kriya.db is the default KRIYA_DB path, so simply
+# running the binary from this directory creates one — and a tracked binary
+# that normal use modifies invites committing snapshots, tracker ids, and
+# whatever else a local run happened to pin.
+kriya.db
+kriya.db-shm
+kriya.db-wal
