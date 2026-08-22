@@ -196,3 +196,51 @@ scope: merging would make `verify` carry a payload most callers ignore, and
 the response shape would change with the verdict, since a manifest that will
 not load has no detail to show. The window it closes is an edit made during
 the second or so intake takes, on a single-operator machine.
+
+---
+
+## 2026-08-22 — some acceptance criteria assert an agent's judgement, which no harness can check
+
+**Found during:** M2, writing REQ-decompose step definitions.
+
+Two of the ten decompose scenarios are blocked not by missing machinery but
+by steps that are not mechanically decidable:
+
+> the walking skeleton — an implementation ticket touching every layer — is
+> the first implementation ticket workable once blocking risks retire
+
+> every implementation ticket is a thin end-to-end slice
+
+These are properties of what the PM agent *produced*. Kriya can require a
+shape (the JSON schema does), can require citations to resolve (validation
+does), and can order tickets — but "thin", "end-to-end", and "touching every
+layer" are judgements about content. A harness cannot decide them without
+being a judge itself.
+
+**Three ways this could go, none of them free:**
+
+1. **Assert what kriya guarantees instead** — that the prompt carries the
+   instruction and the schema constrains the reply. Cheap, and dishonest as a
+   green scenario: the step says the walking skeleton IS first, not that
+   kriya asked for it.
+2. **Use an LLM judge in the suite.** Kriya already has the shape for this —
+   `MOD-owner` is the PO agent, whose entire job is "validates ACs are
+   genuinely satisfied and tests are not gaming". But a judge in kriya's OWN
+   acceptance suite makes the suite non-deterministic and costly, and a
+   flaky gate is worse than an honest gap.
+3. **Amend the criteria** to say what is checkable, moving the qualitative
+   half into the PO's remit for the target build rather than kriya's suite.
+
+**Recorded rather than resolved**, because it is the operator's call and it
+is not local: the same shape will recur wherever a criterion describes agent
+output rather than kriya's protocol. Measured: **28 steps across the suite carry qualitative wording**
+(thin, end-to-end, genuinely, not gaming, sensible, appropriate,
+reasonable, quality), concentrated in REQ-decompose and
+REQ-po-validation. So this is not two stray steps — it is a category, and
+REQ-po-validation is almost entirely made of it, which stands to reason:
+judging whether acceptance criteria are genuinely satisfied IS the PO's
+job, and a scenario asserting the PO judged well needs a judge to check.
+
+**What it means for "done".** A milestone cannot claim a scenario whose steps
+no harness can decide. Those scenarios need naming explicitly, so "162 green"
+does not quietly become "the ones we could check".

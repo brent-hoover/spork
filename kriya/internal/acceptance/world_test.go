@@ -29,18 +29,20 @@ import (
 // agent's judgement or sutra's storage — both of which have their own
 // integration tests.
 type world struct {
-	dir      string
-	cleanup  []func()
-	out      bytes.Buffer
-	err      error
-	store    *memSnapshots
-	targets  *memTargets
-	attempts *memAttempts
-	token    string
-	retried  planner.IntakeAttempt
-	reserved []planner.IntakeAttempt
-	tracker  *recordingTracker
-	agent    *fakes.Agent
+	dir         string
+	cleanup     []func()
+	out         bytes.Buffer
+	err         error
+	store       *memSnapshots
+	targets     *memTargets
+	attempts    *memAttempts
+	token       string
+	retried     planner.IntakeAttempt
+	reserved    []planner.IntakeAttempt
+	tickets     []planner.Ticket
+	firstEpicID string
+	tracker     *recordingTracker
+	agent       *fakes.Agent
 }
 
 func newWorld() *world {
@@ -118,6 +120,12 @@ func (w *world) run() error {
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
 	w.err = cli.Build(ctx, &w.out, in, w.dir, "01a02852-0000-7000-8000-000000000000", w.token)
+	if w.err == nil {
+		if t, found, _ := w.targets.Find(ctx, w.dir); found && w.firstEpicID == "" {
+			w.firstEpicID = t.EpicID
+		}
+		w.tickets = w.tracker.tickets
+	}
 	return nil
 }
 
@@ -186,7 +194,15 @@ func copyTree(src, dst string) error {
 
 // recordingTracker records what kriya asked the tracker to do.
 type recordingTracker struct {
-	projects, issues, relations int
+	projects, issues, relations, epics int
+	// tickets records what decomposition asked for, so a scenario can assert
+	// against what kriya actually filed rather than what the fake replied.
+	tickets []planner.Ticket
+}
+
+// reset clears the counters so a later run can be measured on its own.
+func (r *recordingTracker) reset() {
+	r.projects, r.issues, r.relations, r.epics = 0, 0, 0, 0
 }
 
 func (r *recordingTracker) CreateProject(context.Context, string, string, string, string) (string, error) {
@@ -194,9 +210,14 @@ func (r *recordingTracker) CreateProject(context.Context, string, string, string
 	return "project-1", nil
 }
 
-func (r *recordingTracker) CreateIssue(context.Context, string, string, string, string, string) (string, error) {
+func (r *recordingTracker) CreateIssue(_ context.Context, _, title, _, _, _ string) (string, error) {
 	r.issues++
-	return "issue-1", nil
+	if strings.HasPrefix(title, "Build ") {
+		r.epics++
+		return "epic-1", nil
+	}
+	r.tickets = append(r.tickets, planner.Ticket{Title: title})
+	return fmt.Sprintf("issue-%d", r.issues), nil
 }
 
 func (r *recordingTracker) AddRelation(context.Context, string, string, string, string, string) error {
@@ -285,6 +306,9 @@ func (w *world) citeCriteria(ids ...string) {
 	}
 	w.agent = fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"","criteria":[` +
 		strings.Join(quoted, ",") + `]}]}`)
+	// A supersession decomposes again, and the PM answering the same way is
+	// exactly what "carried-forward tickets" means.
+	w.agent.Repeat = true
 }
 
 // memAttempts is an in-memory AttemptStore for the acceptance world.

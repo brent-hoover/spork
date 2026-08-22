@@ -16,6 +16,11 @@ type Agent struct {
 	// Requests records what was asked, so a test can assert an agent was
 	// invoked with the context and permissions the ticket called for.
 	Requests []agent.Request
+	// Repeat keeps answering with the last reply once the queue is empty,
+	// for scenarios that invoke an agent more than once — a supersession
+	// decomposes again. Off by default, so a test that expects exactly N
+	// invocations still fails loudly on the N+1st.
+	Repeat bool
 }
 
 // NewAgent returns an Agent replying with structured once.
@@ -37,6 +42,8 @@ func (a *Agent) Run(_ context.Context, req agent.Request) (agent.Result, error) 
 		return agent.Result{}, errors.New("fakes: no reply programmed")
 	}
 	next := a.Replies[0]
-	a.Replies = a.Replies[1:]
+	if !a.Repeat || len(a.Replies) > 1 {
+		a.Replies = a.Replies[1:]
+	}
 	return next, nil
 }
