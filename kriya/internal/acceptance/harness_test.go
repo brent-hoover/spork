@@ -10,6 +10,7 @@
 package acceptance
 
 import (
+	"context"
 	"flag"
 	"os"
 	"path/filepath"
@@ -62,11 +63,28 @@ func TestAcceptance(t *testing.T) {
 	}
 }
 
-// InitializeScenario registers step definitions. Steps land with the
-// milestone that needs them, not up front: several scenarios carry a dozen
-// or more steps under one header, and definitions written before the module
-// APIs exist would only be rewritten.
-func InitializeScenario(_ *godog.ScenarioContext) {}
+// InitializeScenario registers step definitions.
+//
+// Steps land with the milestone that needs them, not up front: several
+// scenarios carry a dozen or more steps under one header, and definitions
+// written before the module APIs exist would only be rewritten.
+func InitializeScenario(sc *godog.ScenarioContext) {
+	// ONE world per scenario, shared by every registration. Each file having
+	// its own Before hook gave each its own world, so a Given in one file set
+	// a directory the When in another never saw — and the scenario passed or
+	// failed for reasons unrelated to what it asserts.
+	w := &world{}
+	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		*w = *newWorld()
+		return ctx, nil
+	})
+	sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		w.done()
+		return ctx, nil
+	})
+	registerSpecIntake(sc, w)
+	registerModuleCommands(sc, w)
+}
 
 // featureFiles lists the .feature files on disk.
 func featureFiles(t *testing.T) []string {
