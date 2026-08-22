@@ -231,8 +231,24 @@ being a judge itself.
 3. **Amend the criteria** to say what is checkable, moving the qualitative
    half into the PO's remit for the target build rather than kriya's suite.
 
-**Recorded rather than resolved**, because it is the operator's call and it
-is not local: the same shape will recur wherever a criterion describes agent
+**Decided 2026-08-22: judged elsewhere, not amended.** A middle option was
+considered and rejected — have the PM declare `kind` and `walking_skeleton`
+on each ticket so kriya could enforce "exactly one skeleton, first among
+implementation tickets". It was pitched as a real guard and it is not: all
+it enforces is that the agent applied a tag. The agent can tag anything, so
+a mislabelled ticket passes exactly as a correct one does. The only genuine
+catch is the degenerate case of zero or three skeletons, which is too narrow
+to pay for the schema, the validation, and the steps.
+
+The line is the same one avspec already draws: declare what is structural,
+judge what is semantic. These steps are semantic.
+
+**Consequence for reporting:** milestones must not count these scenarios as
+targets. A suite total of "162 green" is unreachable by construction, and
+quoting it as the goal would misreport progress against something that
+cannot happen.
+
+The gap is not local: the same shape will recur wherever a criterion describes agent
 output rather than kriya's protocol. Measured: **28 steps across the suite carry qualitative wording**
 (thin, end-to-end, genuinely, not gaming, sensible, appropriate,
 reasonable, quality), concentrated in REQ-decompose and
