@@ -46,7 +46,7 @@ func decomposePrompt(snap Snapshot, known map[string]bool) string {
 	b.WriteString("- Every implementation ticket is a thin end-to-end slice touching every layer it needs, not a layer.\n")
 	b.WriteString("- The first implementation ticket is the walking skeleton: the thinnest slice that touches every layer.\n")
 	b.WriteString("- Spike and research tickets are exempt from the slice rule.\n")
-	b.WriteString("- Every ticket cites the REQ and AC ids it satisfies, and may cite ONLY these:\n  ")
+	b.WriteString("- Every ticket cites the REQ and AC ids it satisfies as BARE IDS, never prose, and may cite ONLY these:\n  ")
 	b.WriteString(strings.Join(ids, ", "))
 	b.WriteString("\n\nSpecification:\n")
 	for _, path := range sortedKeys(snap.Content) {

@@ -33,7 +33,10 @@ const ticketSchema = `{
           "criteria": {
             "type": "array",
             "minItems": 1,
-            "items": {"type": "string", "minLength": 1}
+            "items": {
+              "type": "string",
+              "pattern": "^(REQ|AC)-[A-Za-z0-9-]+$"
+            }
           }
         }
       }
@@ -86,12 +89,12 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 
 	for n, ticket := range reply.Tickets {
 		issueID, err := i.Tracker.CreateIssue(ctx, target.ProjectID, ticket.Title, ticket.Body, actor,
-			idempotencyKey(fmt.Sprintf("ticket-%d", n), target.TargetKey, target.SpecHash, actor))
+			idempotencyKey(fmt.Sprintf("ticket-%d", n), target.TargetKey, target.SpecHash))
 		if err != nil {
 			return nil, fmt.Errorf("create ticket %d: %w", n, err)
 		}
 		if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
-			idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash, actor)); err != nil {
+			idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
 			return nil, fmt.Errorf("parent ticket %d under the epic: %w", n, err)
 		}
 	}

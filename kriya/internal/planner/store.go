@@ -29,7 +29,10 @@ CREATE TABLE build_target (
     spec_hash  TEXT NOT NULL,
     project_id TEXT NOT NULL DEFAULT '',
     epic_id    TEXT NOT NULL DEFAULT '',
-    epic_state TEXT NOT NULL
+    epic_state TEXT NOT NULL,
+    project_key TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL DEFAULT '',
+    actor       TEXT NOT NULL DEFAULT ''
 )`
 
 // SQLSnapshots stores snapshots in SQLite.
@@ -95,14 +98,19 @@ type SQLTargets struct{ DB *sql.DB }
 // Upsert writes a target, replacing any row with the same key.
 func (s SQLTargets) Upsert(ctx context.Context, t BuildTarget) error {
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO build_target (target_key, spec_hash, project_id, epic_id, epic_state)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO build_target
+		   (target_key, spec_hash, project_id, epic_id, epic_state, project_key, name, actor)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(target_key) DO UPDATE SET
 		   spec_hash = excluded.spec_hash,
 		   project_id = excluded.project_id,
 		   epic_id = excluded.epic_id,
-		   epic_state = excluded.epic_state`,
-		t.TargetKey, t.SpecHash, t.ProjectID, t.EpicID, t.EpicState)
+		   epic_state = excluded.epic_state,
+		   project_key = excluded.project_key,
+		   name = excluded.name,
+		   actor = excluded.actor`,
+		t.TargetKey, t.SpecHash, t.ProjectID, t.EpicID, t.EpicState,
+		t.ProjectKey, t.Name, t.Actor)
 	if err != nil {
 		return fmt.Errorf("upsert build target: %w", err)
 	}
@@ -113,8 +121,10 @@ func (s SQLTargets) Upsert(ctx context.Context, t BuildTarget) error {
 func (s SQLTargets) Find(ctx context.Context, targetKey string) (BuildTarget, bool, error) {
 	t := BuildTarget{TargetKey: targetKey}
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT spec_hash, project_id, epic_id, epic_state FROM build_target WHERE target_key = ?`,
-		targetKey).Scan(&t.SpecHash, &t.ProjectID, &t.EpicID, &t.EpicState)
+		`SELECT spec_hash, project_id, epic_id, epic_state, project_key, name, actor
+		 FROM build_target WHERE target_key = ?`,
+		targetKey).Scan(&t.SpecHash, &t.ProjectID, &t.EpicID, &t.EpicState,
+		&t.ProjectKey, &t.Name, &t.Actor)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Absence is not failure: the first intake of a target has no row.
 		return BuildTarget{}, false, nil
@@ -123,4 +133,31 @@ func (s SQLTargets) Find(ctx context.Context, targetKey string) (BuildTarget, bo
 		return BuildTarget{}, false, fmt.Errorf("read build target: %w", err)
 	}
 	return t, true, nil
+}
+
+// Pending lists targets a crash left mid-creation.
+func (s SQLTargets) Pending(ctx context.Context) ([]BuildTarget, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT target_key, spec_hash, project_id, epic_id, epic_state, project_key, name, actor
+		 FROM build_target WHERE epic_state = ? ORDER BY target_key`, EpicPending)
+	if err != nil {
+		return nil, fmt.Errorf("query pending targets: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []BuildTarget
+	for rows.Next() {
+		var t BuildTarget
+		if err := rows.Scan(&t.TargetKey, &t.SpecHash, &t.ProjectID, &t.EpicID,
+			&t.EpicState, &t.ProjectKey, &t.Name, &t.Actor); err != nil {
+			return nil, fmt.Errorf("scan pending target: %w", err)
+		}
+		out = append(out, t)
+	}
+	// Checked, because a cursor that fails mid-iteration otherwise returns a
+	// SHORT list that reads exactly like "nothing left to recover".
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending targets: %w", err)
+	}
+	return out, nil
 }

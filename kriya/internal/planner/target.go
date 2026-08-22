@@ -24,12 +24,23 @@ type BuildTarget struct {
 	ProjectID string
 	EpicID    string
 	EpicState string
+	// ProjectKey, Name and Actor are persisted because RECOVERY MUST REPLAY
+	// THE SAME REQUEST. The idempotency key is derived from the inputs that
+	// shape the call, so a recovery that reconstructed them differently —
+	// a different actor, say — would present a different key and create a
+	// duplicate instead of replaying. A write-ahead row that cannot rebuild
+	// its own call is not write-ahead.
+	ProjectKey string
+	Name       string
+	Actor      string
 }
 
 // TargetStore persists build targets.
 type TargetStore interface {
 	Upsert(ctx context.Context, t BuildTarget) error
 	Find(ctx context.Context, targetKey string) (BuildTarget, bool, error)
+	// Pending lists targets a crash left mid-creation.
+	Pending(ctx context.Context) ([]BuildTarget, error)
 }
 
 // Tracker is the slice of the issue tracker planner needs.
@@ -44,17 +55,22 @@ type Tracker interface {
 
 // idempotencyKey derives a stable key for one step of one target.
 //
-// It hashes every input that shapes the request, not just the target. An
-// earlier version keyed on the target path alone, which broke on the first
-// real run: sutra settles a rejected request under its key — deliberately, so
-// a DIFFERENT request cannot reuse a key and mutate — so when the actor
-// changed between runs, the second request was a genuine key reuse and sutra
-// correctly replayed the original rejection forever. The key must therefore
-// change when the request changes, and stay identical when it does not, which
-// is what makes a crash replay safe and a corrected retry possible.
-func idempotencyKey(step, targetKey, specHash, actor string) string {
+// It hashes RESOURCE IDENTITY — the step, the target, and the spec it was
+// pinned from — and deliberately NOT the actor. Two attempts to create one
+// project are the same operation regardless of who ran them, and the project
+// is identified by its key, not by its creator.
+//
+// A previous version did include the actor, reasoning that sutra settles a
+// rejected request under its key so a changed request must get a new key.
+// That produced the opposite bug on the next real run: changing the actor
+// made kriya present a fresh key and try to create a SECOND project with an
+// already-taken key, which sutra correctly refused with a 409. The lesson is
+// that the fix for "kriya poisoned a key with an invalid request" is to not
+// send an invalid request — the actor is now validated at startup, before any
+// mutation — rather than to make the key vary with everything.
+func idempotencyKey(step, targetKey, specHash string) string {
 	h := sha256.New()
-	for _, part := range []string{step, targetKey, specHash, actor} {
+	for _, part := range []string{step, targetKey, specHash} {
 		_, _ = fmt.Fprintf(h, "%d:%s", len(part), part)
 	}
 	return step + "-" + hex.EncodeToString(h.Sum(nil))[:32]
@@ -78,7 +94,10 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 		return existing, nil
 	}
 
-	target := BuildTarget{TargetKey: targetKey, SpecHash: specHash, EpicState: EpicPending}
+	target := BuildTarget{
+		TargetKey: targetKey, SpecHash: specHash, EpicState: EpicPending,
+		ProjectKey: projectKey, Name: name, Actor: actor,
+	}
 	if found {
 		target = existing
 		target.SpecHash = specHash
@@ -87,7 +106,7 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 		if err := i.Targets.Upsert(ctx, target); err != nil {
 			return BuildTarget{}, fmt.Errorf("write target ahead of project: %w", err)
 		}
-		projectID, err := i.Tracker.CreateProject(ctx, projectKey, name, actor, idempotencyKey("project", targetKey, specHash, actor))
+		projectID, err := i.Tracker.CreateProject(ctx, projectKey, name, actor, idempotencyKey("project", targetKey, specHash))
 		if err != nil {
 			return BuildTarget{}, fmt.Errorf("create project: %w", err)
 		}
@@ -98,7 +117,7 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 	}
 
 	epicID, err := i.Tracker.CreateIssue(ctx, target.ProjectID,
-		"Build "+name, "Umbrella epic for spec "+specHash[:12], actor, idempotencyKey("epic", targetKey, specHash, actor))
+		"Build "+name, "Umbrella epic for spec "+specHash[:12], actor, idempotencyKey("epic", targetKey, specHash))
 	if err != nil {
 		return BuildTarget{}, fmt.Errorf("create epic: %w", err)
 	}
@@ -108,4 +127,27 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 		return BuildTarget{}, fmt.Errorf("record epic: %w", err)
 	}
 	return target, nil
+}
+
+// RecoverTargets completes any BuildTarget left mid-creation by a crash.
+//
+// The write-ahead row is the whole point: a target stamped pending has a
+// project or an epic that may or may not exist on the tracker side, and the
+// derived idempotency key makes finding out safe — replaying the call returns
+// the original if it landed and creates it if it did not. Recovery therefore
+// finishes the job rather than guessing what happened.
+func (i Intaker) RecoverTargets(ctx context.Context) (int, error) {
+	pending, err := i.Targets.Pending(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list pending targets: %w", err)
+	}
+	for _, t := range pending {
+		// t.Actor, not a caller-supplied one: the key was derived from the
+		// actor the original call used, and replaying under a different one
+		// would create a duplicate rather than reuse the original.
+		if _, err := i.EnsureEpic(ctx, t.TargetKey, t.SpecHash, t.ProjectKey, t.Name, t.Actor); err != nil {
+			return 0, fmt.Errorf("recover target %s: %w", t.TargetKey, err)
+		}
+	}
+	return len(pending), nil
 }

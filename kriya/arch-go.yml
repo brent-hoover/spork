@@ -136,6 +136,11 @@ dependenciesRules:
       internal:
         - "**.__no_internal_imports__"
   - package: "**.recovery"
+    # recovery reaches the modules through FUNCTIONS the composition root
+    # supplies, not by importing them: an interface taking its Stage type
+    # would force every module to import recovery while recovery must reach
+    # them, a two-way edge for no gain. The allowlist stays for the day a
+    # stage genuinely needs a module type.
     shouldOnlyDependsOn:
       internal:
         - "**.planner"

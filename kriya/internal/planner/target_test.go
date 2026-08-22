@@ -140,15 +140,28 @@ func TestIdempotencyKeysAreStableForAnIdenticalRequest(t *testing.T) {
 	}
 }
 
-func TestTheKeyChangesWhenTheRequestChanges(t *testing.T) {
-	// sutra settles a REJECTED request under its key, deliberately, so a
-	// different request cannot reuse a key and mutate. Keying on the target
-	// alone therefore poisoned the key whenever the actor changed: the retry
-	// was a genuine key reuse and sutra replayed the original rejection
-	// forever. Every input that shapes the request must reach the key.
+func TestTheKeyTracksResourceIdentityNotTheActor(t *testing.T) {
+	// The key hashes what identifies the RESOURCE — step, target, spec hash —
+	// and deliberately not the actor. Two attempts to create one project are
+	// the same operation whoever ran them, and a project is identified by its
+	// key, not its creator.
+	//
+	// An earlier version DID include the actor, on the reasoning that sutra
+	// settles a rejected request under its key so a changed request needs a
+	// new one. That produced the opposite bug on the next real run: a changed
+	// actor presented a fresh key and tried to create a SECOND project under
+	// an already-taken key, which sutra refused with a 409. The cure for
+	// "kriya poisoned a key with an invalid request" is to not send an invalid
+	// request — the actor is validated at startup — not to vary the key with
+	// everything.
 	base := keysFor(t, "/spec", "hash1234567890", "actor-1")
+	changedActor := keysFor(t, "/spec", "hash1234567890", "actor-2")
+	for i := range base {
+		if base[i] != changedActor[i] {
+			t.Errorf("a different actor changed key %d: %q vs %q", i, base[i], changedActor[i])
+		}
+	}
 	for name, got := range map[string][]string{
-		"actor":     keysFor(t, "/spec", "hash1234567890", "actor-2"),
 		"spec hash": keysFor(t, "/spec", "otherhash12345", "actor-1"),
 		"target":    keysFor(t, "/other", "hash1234567890", "actor-1"),
 	} {
@@ -166,5 +179,65 @@ func TestTheTwoStepsDoNotShareAKey(t *testing.T) {
 	keys := keysFor(t, "/spec", "hash1234567890", "actor-1")
 	if keys[0] == keys[1] {
 		t.Errorf("project and epic share the key %q", keys[0])
+	}
+}
+
+func (t *memTargets) Pending(_ context.Context) ([]planner.BuildTarget, error) {
+	var out []planner.BuildTarget
+	for _, b := range t.rows {
+		if b.EpicState == planner.EpicPending {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
+func TestRecoveryFinishesATargetLeftPending(t *testing.T) {
+	// The crash window: the row is written, the epic call never returns.
+	store := newMemTargets()
+	failing := &countingTracker{failIssue: errors.New("crash")}
+	if _, err := epicIntaker(store, failing).EnsureEpic(
+		context.Background(), "/spec", "hash1234567890", "SHORT", "shorty", "actor-1"); err == nil {
+		t.Fatal("expected the epic call to fail")
+	}
+
+	healthy := &countingTracker{}
+	in := epicIntaker(store, healthy)
+	n, err := in.RecoverTargets(context.Background())
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected one target recovered, got %d", n)
+	}
+	row, _, _ := store.Find(context.Background(), "/spec")
+	if row.EpicState != planner.EpicCreated {
+		t.Errorf("the target is still %q after recovery", row.EpicState)
+	}
+	if healthy.projects != 0 {
+		t.Error("recovery created a second project instead of reusing the recorded one")
+	}
+}
+
+func TestRecoveryReplaysUnderTheOriginalActor(t *testing.T) {
+	// The key was derived from the actor the original call used. Replaying
+	// under a different one presents a different key and creates a duplicate
+	// rather than reusing the original — so the row has to carry it.
+	store := newMemTargets()
+	failing := &countingTracker{failIssue: errors.New("crash")}
+	if _, err := epicIntaker(store, failing).EnsureEpic(
+		context.Background(), "/spec", "hash1234567890", "SHORT", "shorty", "actor-1"); err == nil {
+		t.Fatal("expected failure")
+	}
+	firstKeys := append([]string{}, failing.keys...)
+
+	healthy := &countingTracker{}
+	if _, err := epicIntaker(store, healthy).RecoverTargets(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	// The epic key presented at recovery must match the one the original
+	// attempt used.
+	if len(healthy.keys) == 0 || healthy.keys[len(healthy.keys)-1] != firstKeys[len(firstKeys)-1] {
+		t.Errorf("recovery presented %v, original attempt ended with %v", healthy.keys, firstKeys)
 	}
 }
