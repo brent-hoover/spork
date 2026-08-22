@@ -8,6 +8,7 @@ import (
 
 	"kriya/internal/agent"
 	"kriya/internal/planner"
+	"kriya/internal/workspace"
 )
 
 // migration is one module's schema, applied as a unit.
@@ -119,6 +120,7 @@ func migrations() []migration {
 		{module: "planner", name: "0002_build_target", stmts: []string{planner.TargetMigration}},
 		{module: "planner", name: "0003_intake_generation", stmts: splitSQL(planner.AttemptMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
+		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
 	}
 }
 

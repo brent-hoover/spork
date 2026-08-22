@@ -24,6 +24,7 @@ import (
 	"kriya/internal/recovery"
 	"kriya/internal/specverify"
 	"kriya/internal/trackerclient"
+	"kriya/internal/workspace"
 )
 
 // defaultDBPath is used when KRIYA_DB is unset. Configuration moves to
@@ -130,9 +131,18 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Now: clock.System{},
 	}
 
+	ws := workspace.Manager{
+		Repo:          target,
+		Root:          filepath.Join(target, ".kriya", "worktrees"),
+		DefaultBranch: "main",
+		Store:         workspace.SQLStore{DB: db},
+		Git:           workspace.ShellGit{},
+		Now:           clock.System{},
+	}
+
 	// Recovery runs BEFORE any new work, in declared stage order. Nothing pops
 	// until every crash window a previous run left open is reconciled.
-	if err := recovery.Run(ctx, recoverySteps(in)); err != nil {
+	if err := recovery.Run(ctx, recoverySteps(in, ws)); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -152,10 +162,14 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 // spread across the modules — which is the point of sequencing being a
 // composition-root concern. Stages with no owner yet simply have no step; they
 // gain one as their module lands.
-func recoverySteps(in planner.Intaker) []recovery.Step {
+func recoverySteps(in planner.Intaker, ws workspace.Manager) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
 			_, err := in.RecoverTargets(ctx)
+			return err
+		}},
+		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
+			_, err := ws.Recover(ctx)
 			return err
 		}},
 	}
