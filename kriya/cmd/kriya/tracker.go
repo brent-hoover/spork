@@ -20,3 +20,7 @@ func (t sutraTracker) CreateIssue(ctx context.Context, projectID, title, body, a
 	i, err := t.c.CreateIssue(ctx, projectID, title, body, actor, idem)
 	return i.ID, err
 }
+
+func (t sutraTracker) AddRelation(ctx context.Context, issueID, kind, to, actor, idem string) error {
+	return t.c.AddRelation(ctx, issueID, kind, to, actor, idem)
+}

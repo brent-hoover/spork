@@ -66,6 +66,14 @@ func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor st
 			return epicErr
 		}
 		w.printf("  epic %s in project %s\n", target.EpicID, target.ProjectID)
+		tickets, decErr := in.Decompose(ctx, target, snapshot, actor)
+		if decErr != nil {
+			return decErr
+		}
+		w.printf("  %d tracer tickets\n", len(tickets))
+		for _, t := range tickets {
+			w.printf("    %s  [%s]\n", t.Title, strings.Join(t.Criteria, " "))
+		}
 	case errors.As(err, &refusal):
 		w.printf("refused: %s\n", refusal.Reason)
 		for _, f := range refusal.Findings {

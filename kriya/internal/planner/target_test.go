@@ -27,8 +27,8 @@ func (t *memTargets) Find(_ context.Context, key string) (planner.BuildTarget, b
 // countingTracker records every call so a test can assert how many times the
 // tracker was actually asked to create something.
 type countingTracker struct {
-	projects, issues int
-	failIssue        error
+	projects, issues, relations int
+	failIssue                   error
 	// keys records the idempotency keys presented, which is what makes a
 	// replay safe on sutra's side.
 	keys []string
@@ -38,6 +38,12 @@ func (c *countingTracker) CreateProject(_ context.Context, _, _, _, idem string)
 	c.projects++
 	c.keys = append(c.keys, idem)
 	return "project-1", nil
+}
+
+func (c *countingTracker) AddRelation(_ context.Context, _, _, _, _, idem string) error {
+	c.relations++
+	c.keys = append(c.keys, idem)
+	return nil
 }
 
 func (c *countingTracker) CreateIssue(_ context.Context, _, _, _, _, idem string) (string, error) {

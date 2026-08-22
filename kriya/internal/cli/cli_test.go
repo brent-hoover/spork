@@ -54,6 +54,10 @@ func (stubTracker) CreateProject(context.Context, string, string, string, string
 	return "project-1", nil
 }
 
+func (stubTracker) AddRelation(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
 func (stubTracker) CreateIssue(context.Context, string, string, string, string, string) (string, error) {
 	return "issue-1", nil
 }
@@ -69,7 +73,11 @@ func completeModule() specverify.Module {
 func run(t *testing.T, r specverify.Report) (string, error) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "avspec.yaml"), []byte("x\n"), 0o644); err != nil {
+	// The manifest must carry a criterion id: decomposition validates every
+	// ticket's citations against the snapshot, so a snapshot with none has
+	// nothing a ticket could legitimately cite.
+	manifest := "requirements:\n  - id: REQ-x\n    acceptance:\n      - id: AC-x\n"
+	if err := os.WriteFile(filepath.Join(dir, "avspec.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 	v := fakes.NewVerifier(dir, r)
@@ -84,6 +92,7 @@ func run(t *testing.T, r specverify.Report) (string, error) {
 		Snapshots: newStore(),
 		Targets:   newTargets(),
 		Tracker:   stubTracker{},
+		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","criteria":["AC-x"]}]}`),
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
 	err := cli.Build(context.Background(), &out, in, dir, "actor-1")

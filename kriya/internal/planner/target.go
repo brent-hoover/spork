@@ -39,6 +39,7 @@ type TargetStore interface {
 type Tracker interface {
 	CreateProject(ctx context.Context, key, name, actor, idempotencyKey string) (projectID string, err error)
 	CreateIssue(ctx context.Context, projectID, title, body, actor, idempotencyKey string) (issueID string, err error)
+	AddRelation(ctx context.Context, issueID, kind, to, actor, idempotencyKey string) error
 }
 
 // idempotencyKey derives a stable key for one step of one target.

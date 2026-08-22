@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"kriya/internal/agent"
 	"kriya/internal/clock"
 
 	"kriya/internal/specverify"
@@ -29,6 +30,7 @@ type Intaker struct {
 	Snapshots SnapshotStore
 	Targets   TargetStore
 	Tracker   Tracker
+	Agent     agent.Agent
 	Now       clock.Clock
 }
 

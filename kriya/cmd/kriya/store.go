@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"kriya/internal/agent"
 	"kriya/internal/planner"
 )
 
@@ -115,5 +116,6 @@ func migrations() []migration {
 	return []migration{
 		{module: "planner", name: "0001_spec_snapshot", stmts: []string{planner.Migration}},
 		{module: "planner", name: "0002_build_target", stmts: []string{planner.TargetMigration}},
+		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 	}
 }

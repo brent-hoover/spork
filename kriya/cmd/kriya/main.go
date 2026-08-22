@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"kriya/internal/agent"
 	"kriya/internal/cli"
 	"kriya/internal/clock"
 	"kriya/internal/planner"
@@ -60,6 +63,27 @@ func sutraURL() string {
 	return "http://127.0.0.1:7357"
 }
 
+// loadTiers reads the role-to-model configuration.
+//
+// No model identifier appears in kriya's source (AC-tier-config). The file
+// moves to kriya.toml with the rest of the configuration; KRIYA_TIERS names it
+// meanwhile.
+func loadTiers() (agent.Tiers, error) {
+	path := os.Getenv("KRIYA_TIERS")
+	if path == "" {
+		return agent.Tiers{}, errors.New("KRIYA_TIERS is unset: no role tiers configured")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return agent.Tiers{}, fmt.Errorf("read tiers %s: %w", path, err)
+	}
+	var t agent.Tiers
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return agent.Tiers{}, fmt.Errorf("parse tiers %s: %w", path, err)
+	}
+	return t, nil
+}
+
 func verifier() specverify.CLI {
 	if dir := os.Getenv("KRIYA_AVSPEC_DIR"); dir != "" {
 		return specverify.CLI{Argv: []string{"uv", "run", "avspec"}, WorkDir: dir}
@@ -97,11 +121,29 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", args[1], err)
 		}
+		tiers, err := loadTiers()
+		if err != nil {
+			return err
+		}
+		// Validated at startup, before any build begins: AC-tier-explicit
+		// wants a missing tier to fail loudly, not on the first invocation
+		// halfway through a decomposition.
+		if err := tiers.Validate(agent.RolePM); err != nil {
+			return err
+		}
+		pmAgent := agent.Recording{
+			Inner:  agent.Claude{Tiers: tiers},
+			Ledger: agent.Ledger{DB: db, Now: clock.System{}},
+			Tiers:  tiers,
+			Now:    clock.System{},
+			Scope:  agent.Scope{Plan: target},
+		}
 		in := planner.Intaker{
 			Verify:    verifier(),
 			Snapshots: planner.SQLSnapshots{DB: db},
 			Targets:   planner.SQLTargets{DB: db},
 			Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
+			Agent:     pmAgent,
 			Now:       clock.System{},
 		}
 		return cli.Build(ctx, os.Stdout, in, target, os.Getenv("KRIYA_ACTOR"))
