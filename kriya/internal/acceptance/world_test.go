@@ -119,7 +119,7 @@ func (w *world) run() error {
 		Agent:     w.agent,
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
-	w.err = cli.Build(ctx, &w.out, in, w.dir, "01a02852-0000-7000-8000-000000000000", w.token)
+	w.err = cli.Build(ctx, &w.out, in, w.dir, "01a02852-0000-7000-8000-000000000000", w.token, nil)
 	if w.err == nil {
 		if t, found, _ := w.targets.Find(ctx, w.dir); found && w.firstEpicID == "" {
 			w.firstEpicID = t.EpicID

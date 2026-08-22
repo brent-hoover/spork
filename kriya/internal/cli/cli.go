@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 )
 
@@ -58,7 +59,11 @@ func (e *errWriter) printf(format string, a ...any) {
 }
 
 // Build is the `kriya build <project>` entry point.
-func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, token string) error {
+// Drive starts and advances a BuildRun for one ticket. Nil when no repository
+// is configured, in which case a build stops after decomposition.
+type Drive func(ctx context.Context, ticket planner.Ticket) (orchestrator.BuildRun, error)
+
+func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, token string, drive Drive) error {
 	w := &errWriter{w: out}
 	snapshot, err := in.AdmitAndPin(ctx, dir, token)
 
@@ -80,6 +85,22 @@ func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, t
 		w.printf("  %d tracer tickets\n", len(tickets))
 		for _, t := range tickets {
 			w.printf("    %s  [%s]\n", t.Title, strings.Join(t.Criteria, " "))
+		}
+		if drive == nil {
+			// No repository to work in. Decomposition is the whole of intake,
+			// and refusing to guess a repository is deliberate: the workspace
+			// manager creates git worktrees, and inferring the wrong
+			// repository would cut branches in it.
+			w.printf("  no repository configured; not starting a run\n")
+			break
+		}
+		run, driveErr := drive(ctx, tickets[0])
+		w.printf("  run %s settled in %s\n", run.ID, run.State)
+		if run.Error != "" {
+			w.printf("    %s\n", run.Error)
+		}
+		if driveErr != nil {
+			return driveErr
 		}
 	case errors.As(err, &refusal):
 		w.printf("refused: %s\n", refusal.Reason)

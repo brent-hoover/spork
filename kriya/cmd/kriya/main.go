@@ -20,6 +20,9 @@ import (
 	"kriya/internal/agent"
 	"kriya/internal/cli"
 	"kriya/internal/clock"
+	"kriya/internal/devloop"
+	"kriya/internal/gates"
+	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 	"kriya/internal/recovery"
 	"kriya/internal/specverify"
@@ -131,9 +134,10 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Now: clock.System{},
 	}
 
+	repo := os.Getenv("KRIYA_REPO")
 	ws := workspace.Manager{
-		Repo:          target,
-		Root:          filepath.Join(target, ".kriya", "worktrees"),
+		Repo:          repo,
+		Root:          filepath.Join(repo, ".kriya", "worktrees"),
 		DefaultBranch: "main",
 		Store:         workspace.SQLStore{DB: db},
 		Git:           workspace.ShellGit{},
@@ -153,7 +157,60 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	if token == "" {
 		token = uuid.NewString()
 	}
-	return cli.Build(ctx, os.Stdout, in, target, actor, token)
+	return cli.Build(ctx, os.Stdout, in, target, actor, token,
+		driver(db, ws, tiers, repo, target))
+}
+
+// driver returns a cli.Drive, or nil when no repository is configured.
+//
+// Nil rather than a stub: a build engine with nowhere to work should say so
+// and stop, not create worktrees in whatever repository it happens to be
+// standing in. KRIYA_REPO moves to the target's declared repo_path once
+// intake reads it.
+func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, repo, target string) cli.Drive {
+	if repo == "" {
+		return nil
+	}
+	return func(ctx context.Context, ticket planner.Ticket) (orchestrator.BuildRun, error) {
+		snap, err := planner.SQLSnapshots{DB: db}.Get(ctx, latestSnapshotHash(ctx, db, target))
+		if err != nil {
+			return orchestrator.BuildRun{}, err
+		}
+		loop := devloop.Loop{
+			Agent: agent.Recording{
+				Inner:  agent.Claude{Tiers: tiers},
+				Ledger: agent.Ledger{DB: db, Now: clock.System{}},
+				Tiers:  tiers, Now: clock.System{},
+				Scope: agent.Scope{Build: ticket.Title},
+			},
+			Store: devloop.SQLStore{DB: db},
+			Now:   clock.System{},
+		}
+		o := orchestrator.Orchestrator{
+			Store: orchestrator.SQLStore{DB: db},
+			Stages: buildStages(ws, loop,
+				gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}},
+				snap, commandsFromSnapshot(snap)),
+			Now: clock.System{},
+		}
+		run := orchestrator.BuildRun{
+			ID: uuid.NewString(), Ticket: ticket.Title,
+			Plan: target, State: orchestrator.StateQueued,
+		}
+		if err := o.Store.Upsert(ctx, run); err != nil {
+			return orchestrator.BuildRun{}, err
+		}
+		return o.Drive(ctx, run.ID, 16)
+	}
+}
+
+// latestSnapshotHash reads the snapshot the newest intake mapped.
+func latestSnapshotHash(ctx context.Context, db *sql.DB, target string) string {
+	m, found, err := (planner.SQLAttempts{DB: db}).Mapping(ctx, target)
+	if err != nil || !found {
+		return ""
+	}
+	return m.SnapshotHash
 }
 
 // recoverySteps maps modules to the stages they reconcile.

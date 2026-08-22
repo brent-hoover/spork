@@ -7,6 +7,9 @@ import (
 	"strings"
 
 	"kriya/internal/agent"
+	"kriya/internal/devloop"
+	"kriya/internal/gates"
+	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 	"kriya/internal/workspace"
 )
@@ -121,6 +124,9 @@ func migrations() []migration {
 		{module: "planner", name: "0003_intake_generation", stmts: splitSQL(planner.AttemptMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
+		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
+		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
+		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},
 	}
 }
 

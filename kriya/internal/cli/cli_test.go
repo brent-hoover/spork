@@ -113,7 +113,7 @@ func run(t *testing.T, r specverify.Report) (string, error) {
 		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","criteria":["AC-x"]}]}`),
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
-	err := cli.Build(context.Background(), &out, in, dir, "actor-1", "token-1")
+	err := cli.Build(context.Background(), &out, in, dir, "actor-1", "token-1", nil)
 	return out.String(), err
 }
 
