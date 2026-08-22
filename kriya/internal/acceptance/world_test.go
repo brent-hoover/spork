@@ -15,6 +15,8 @@ import (
 	"kriya/internal/cli"
 	"kriya/internal/fakes"
 	"kriya/internal/planner"
+	_ "modernc.org/sqlite"
+
 	"kriya/internal/specverify"
 )
 
