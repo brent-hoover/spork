@@ -495,6 +495,13 @@ milestones are marked, matching design.md.
 | `REQ-tui.feature` | 4 | M6 | M6 |
 | **Total** | **155 headers / 162 runs** | | |
 
+**Not all 162 are reachable.** 28 steps across the suite assert semantic
+properties of an agent's output — "thin end-to-end slice", "genuinely
+satisfied", "not gaming" — which no deterministic harness can decide,
+concentrated in `REQ-decompose` and `REQ-po-validation`. They are judged
+elsewhere by decision (2026-08-22, see `spec-gaps.md`), so a milestone must
+not count them as targets and "162 green" is not the goal.
+
 No scenario is unclaimed.
 
 ## Rollback
