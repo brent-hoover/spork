@@ -64,6 +64,21 @@ func (stubTracker) CreateIssue(context.Context, string, string, string, string, 
 	return "issue-1", nil
 }
 
+// attempts is a minimal AttemptStore; these tests are about cli output.
+type attempts struct{ n int }
+
+func newAttempts() *attempts { return &attempts{} }
+
+func (a *attempts) Reserve(context.Context, string, string) (planner.IntakeAttempt, error) {
+	a.n++
+	return planner.IntakeAttempt{Generation: a.n}, nil
+}
+func (a *attempts) Complete(context.Context, string, string) error     { return nil }
+func (a *attempts) MapSpec(context.Context, planner.SpecMapping) error { return nil }
+func (a *attempts) Mapping(context.Context, string) (planner.SpecMapping, bool, error) {
+	return planner.SpecMapping{}, false, nil
+}
+
 func completeModule() specverify.Module {
 	cmds := map[string]string{}
 	for _, name := range specverify.RequiredCommands {
@@ -92,12 +107,13 @@ func run(t *testing.T, r specverify.Report) (string, error) {
 	in := planner.Intaker{
 		Verify:    v,
 		Snapshots: newStore(),
+		Attempts:  newAttempts(),
 		Targets:   newTargets(),
 		Tracker:   stubTracker{},
 		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","criteria":["AC-x"]}]}`),
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
-	err := cli.Build(context.Background(), &out, in, dir, "actor-1")
+	err := cli.Build(context.Background(), &out, in, dir, "actor-1", "token-1")
 	return out.String(), err
 }
 

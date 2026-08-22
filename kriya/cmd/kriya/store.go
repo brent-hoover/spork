@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"kriya/internal/agent"
 	"kriya/internal/planner"
@@ -116,6 +117,22 @@ func migrations() []migration {
 	return []migration{
 		{module: "planner", name: "0001_spec_snapshot", stmts: []string{planner.Migration}},
 		{module: "planner", name: "0002_build_target", stmts: []string{planner.TargetMigration}},
+		{module: "planner", name: "0003_intake_generation", stmts: splitSQL(planner.AttemptMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 	}
+}
+
+// splitSQL breaks a multi-statement migration into single statements.
+//
+// database/sql executes ONE statement per Exec with most drivers, so a
+// migration written as several would silently apply only the first — creating
+// one table and leaving the rest missing until something queried them.
+func splitSQL(migration string) []string {
+	var out []string
+	for _, part := range strings.Split(migration, ";") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

@@ -58,9 +58,9 @@ func (e *errWriter) printf(format string, a ...any) {
 }
 
 // Build is the `kriya build <project>` entry point.
-func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor string) error {
+func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, token string) error {
 	w := &errWriter{w: out}
-	snapshot, err := in.AdmitAndPin(ctx, dir)
+	snapshot, err := in.AdmitAndPin(ctx, dir, token)
 
 	var refusal *planner.Refusal
 	switch {

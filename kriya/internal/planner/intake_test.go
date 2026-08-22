@@ -33,8 +33,8 @@ func admit(t *testing.T, r specverify.Report) error {
 		Modules:   []specverify.Module{complete("MOD-a")},
 		Artifacts: []string{"avspec.yaml"},
 	}}
-	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Now: fakes.NewClock(time.Unix(0, 0))}
-	_, err := in.AdmitAndPin(context.Background(), dir)
+	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Attempts: newMemAttempts(), Now: fakes.NewClock(time.Unix(0, 0))}
+	_, err := in.AdmitAndPin(context.Background(), dir, "token-1")
 	return err
 }
 
@@ -46,8 +46,8 @@ func admitModel(t *testing.T, mods ...specverify.Module) error {
 	v.Models = map[string]specverify.Model{dir: {
 		OK: true, Modules: mods, Artifacts: []string{"avspec.yaml"},
 	}}
-	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Now: fakes.NewClock(time.Unix(0, 0))}
-	_, err := in.AdmitAndPin(context.Background(), dir)
+	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Attempts: newMemAttempts(), Now: fakes.NewClock(time.Unix(0, 0))}
+	_, err := in.AdmitAndPin(context.Background(), dir, "token-1")
 	return err
 }
 
@@ -117,8 +117,8 @@ func TestAVerifierMalfunctionIsNotARefusal(t *testing.T) {
 	dir := specDir(t, "x")
 	v := fakes.NewVerifier(dir, specverify.Report{})
 	v.Err = errors.New("avspec exited 2")
-	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Now: fakes.NewClock(time.Unix(0, 0))}
-	_, err := in.AdmitAndPin(context.Background(), dir)
+	in := planner.Intaker{Verify: v, Snapshots: newMemSnapshots(), Attempts: newMemAttempts(), Now: fakes.NewClock(time.Unix(0, 0))}
+	_, err := in.AdmitAndPin(context.Background(), dir, "token-1")
 	var refusal *planner.Refusal
 	if errors.As(err, &refusal) {
 		t.Fatal("a verifier malfunction must not be reported as a refusal")

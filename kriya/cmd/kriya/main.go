@@ -118,6 +118,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Verify:    verifier(),
 		Snapshots: planner.SQLSnapshots{DB: db},
 		Targets:   planner.SQLTargets{DB: db},
+		Attempts:  planner.SQLAttempts{DB: db},
 		Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
 		Agent: agent.Recording{
 			Inner:  agent.Claude{Tiers: tiers},
@@ -134,7 +135,15 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	if err := recovery.Run(ctx, recoverySteps(in)); err != nil {
 		return err
 	}
-	return cli.Build(ctx, os.Stdout, in, target, actor)
+	// Each explicit run is a deliberate re-intake and allocates the next
+	// generation. KRIYA_INTAKE_TOKEN names an earlier attempt to resume,
+	// which is how a retry after a crash reuses its generation instead of
+	// superseding itself.
+	token := os.Getenv("KRIYA_INTAKE_TOKEN")
+	if token == "" {
+		token = uuid.NewString()
+	}
+	return cli.Build(ctx, os.Stdout, in, target, actor, token)
 }
 
 // recoverySteps maps modules to the stages they reconcile.

@@ -29,21 +29,27 @@ import (
 // agent's judgement or sutra's storage — both of which have their own
 // integration tests.
 type world struct {
-	dir     string
-	cleanup []func()
-	out     bytes.Buffer
-	err     error
-	store   *memSnapshots
-	targets *memTargets
-	tracker *recordingTracker
-	agent   *fakes.Agent
+	dir      string
+	cleanup  []func()
+	out      bytes.Buffer
+	err      error
+	store    *memSnapshots
+	targets  *memTargets
+	attempts *memAttempts
+	token    string
+	retried  planner.IntakeAttempt
+	reserved []planner.IntakeAttempt
+	tracker  *recordingTracker
+	agent    *fakes.Agent
 }
 
 func newWorld() *world {
 	return &world{
-		store:   newMemSnapshots(),
-		targets: newMemTargets(),
-		tracker: &recordingTracker{},
+		store:    newMemSnapshots(),
+		targets:  newMemTargets(),
+		attempts: newMemAttempts(),
+		token:    "token-1",
+		tracker:  &recordingTracker{},
 		agent: fakes.NewAgent(
 			`{"tickets":[{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]}]}`),
 	}
@@ -106,11 +112,12 @@ func (w *world) run() error {
 		Verify:    v,
 		Snapshots: w.store,
 		Targets:   w.targets,
+		Attempts:  w.attempts,
 		Tracker:   w.tracker,
 		Agent:     w.agent,
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
-	w.err = cli.Build(ctx, &w.out, in, w.dir, "01a02852-0000-7000-8000-000000000000")
+	w.err = cli.Build(ctx, &w.out, in, w.dir, "01a02852-0000-7000-8000-000000000000", w.token)
 	return nil
 }
 
@@ -278,4 +285,53 @@ func (w *world) citeCriteria(ids ...string) {
 	}
 	w.agent = fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"","criteria":[` +
 		strings.Join(quoted, ",") + `]}]}`)
+}
+
+// memAttempts is an in-memory AttemptStore for the acceptance world.
+type memAttempts struct {
+	byToken map[string]planner.IntakeAttempt
+	next    map[string]int
+	mapping map[string]planner.SpecMapping
+}
+
+func newMemAttempts() *memAttempts {
+	return &memAttempts{
+		byToken: map[string]planner.IntakeAttempt{},
+		next:    map[string]int{},
+		mapping: map[string]planner.SpecMapping{},
+	}
+}
+
+func (m *memAttempts) Reserve(_ context.Context, token, targetKey string) (planner.IntakeAttempt, error) {
+	if a, ok := m.byToken[token]; ok {
+		return a, nil
+	}
+	m.next[targetKey]++
+	a := planner.IntakeAttempt{
+		Token: token, TargetKey: targetKey,
+		Generation: m.next[targetKey], State: planner.AttemptPending,
+	}
+	m.byToken[token] = a
+	return a, nil
+}
+
+func (m *memAttempts) Complete(_ context.Context, token, specHash string) error {
+	a := m.byToken[token]
+	a.SpecHash = specHash
+	a.State = planner.AttemptComplete
+	m.byToken[token] = a
+	return nil
+}
+
+func (m *memAttempts) MapSpec(_ context.Context, s planner.SpecMapping) error {
+	if cur, ok := m.mapping[s.TargetKey]; ok && cur.Generation >= s.Generation {
+		return nil
+	}
+	m.mapping[s.TargetKey] = s
+	return nil
+}
+
+func (m *memAttempts) Mapping(_ context.Context, targetKey string) (planner.SpecMapping, bool, error) {
+	s, ok := m.mapping[targetKey]
+	return s, ok, nil
 }

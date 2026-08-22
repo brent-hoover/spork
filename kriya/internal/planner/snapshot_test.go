@@ -65,15 +65,15 @@ func intaker(t *testing.T, dir string, artifacts []string) (planner.Intaker, *me
 	store := newMemSnapshots()
 	return planner.Intaker{
 		Verify:    v,
-		Snapshots: store,
-		Now:       fakes.NewClock(time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)),
+		Snapshots: store, Attempts: newMemAttempts(),
+		Now: fakes.NewClock(time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)),
 	}, store
 }
 
 func TestAPinnedSnapshotHoldsTheArtifactsAndCommands(t *testing.T) {
 	dir := specDir(t, "avspec: \"0.3\"\n")
 	in, store := intaker(t, dir, []string{"avspec.yaml"})
-	snap, err := in.AdmitAndPin(context.Background(), dir)
+	snap, err := in.AdmitAndPin(context.Background(), dir, "token-1")
 	if err != nil {
 		t.Fatalf("admit and pin: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestTheSnapshotIsTheAuthorityAfterWorkingTreeEdits(t *testing.T) {
 	// the whole mechanism, so the test edits the tree and reads the store.
 	dir := specDir(t, "original\n")
 	in, store := intaker(t, dir, []string{"avspec.yaml"})
-	snap, err := in.AdmitAndPin(context.Background(), dir)
+	snap, err := in.AdmitAndPin(context.Background(), dir, "token-1")
 	if err != nil {
 		t.Fatalf("pin: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestCommandsChangeTheHashEvenWhenFilesDoNot(t *testing.T) {
 	// build could execute commands intake never validated.
 	dir := specDir(t, "same\n")
 	a, _ := intaker(t, dir, []string{"avspec.yaml"})
-	first, err := a.AdmitAndPin(context.Background(), dir)
+	first, err := a.AdmitAndPin(context.Background(), dir, "token-a")
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestCommandsChangeTheHashEvenWhenFilesDoNot(t *testing.T) {
 	m := v.Models[dir]
 	m.Modules[0].Commands["mutation"] = "a-different-command"
 	v.Models[dir] = m
-	second, err := b.AdmitAndPin(context.Background(), dir)
+	second, err := b.AdmitAndPin(context.Background(), dir, "token-b")
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -140,12 +140,12 @@ func TestCommandsChangeTheHashEvenWhenFilesDoNot(t *testing.T) {
 func TestIdenticalInputPinsIdenticalHash(t *testing.T) {
 	dir := specDir(t, "same\n")
 	a, _ := intaker(t, dir, []string{"avspec.yaml"})
-	first, err := a.AdmitAndPin(context.Background(), dir)
+	first, err := a.AdmitAndPin(context.Background(), dir, "token-a")
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	b, _ := intaker(t, dir, []string{"avspec.yaml"})
-	second, err := b.AdmitAndPin(context.Background(), dir)
+	second, err := b.AdmitAndPin(context.Background(), dir, "token-b")
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestIdenticalInputPinsIdenticalHash(t *testing.T) {
 func TestAMissingArtifactIsAnError(t *testing.T) {
 	dir := specDir(t, "avspec: \"0.3\"\n")
 	in, store := intaker(t, dir, []string{"avspec.yaml", "verification/absent.feature"})
-	if _, err := in.AdmitAndPin(context.Background(), dir); err == nil {
+	if _, err := in.AdmitAndPin(context.Background(), dir, "token-1"); err == nil {
 		t.Fatal("a referenced artifact that does not exist must fail intake")
 	}
 	if n, _ := store.Count(context.Background()); n != 0 {
@@ -174,7 +174,7 @@ func TestARefusedIntakePinsNothing(t *testing.T) {
 		t.Fatal("expected the fake verifier")
 	}
 	v.Reports[dir] = specverify.Report{Status: "draft", OK: true}
-	if _, err := in.AdmitAndPin(context.Background(), dir); err == nil {
+	if _, err := in.AdmitAndPin(context.Background(), dir, "token-1"); err == nil {
 		t.Fatal("a draft spec must be refused")
 	}
 	if n, _ := store.Count(context.Background()); n != 0 {
@@ -192,7 +192,7 @@ func TestAnArtifactSetWithoutTheManifestIsRefused(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	in, store := intaker(t, dir, []string{"other.txt"})
-	if _, err := in.AdmitAndPin(context.Background(), dir); err == nil {
+	if _, err := in.AdmitAndPin(context.Background(), dir, "token-1"); err == nil {
 		t.Fatal("an artifact set without the manifest must be refused")
 	}
 	if n, _ := store.Count(context.Background()); n != 0 {

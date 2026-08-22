@@ -29,6 +29,7 @@ type Intaker struct {
 	Verify    specverify.Verifier
 	Snapshots SnapshotStore
 	Targets   TargetStore
+	Attempts  AttemptStore
 	Tracker   Tracker
 	Agent     agent.Agent
 	Now       clock.Clock
@@ -72,7 +73,7 @@ func admitReport(dir string, report specverify.Report) error {
 //
 // Nothing is pinned unless every check passed: AC-intake-refuse requires a
 // refused intake to pin no snapshot and enqueue nothing.
-func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) {
+func (i Intaker) AdmitAndPin(ctx context.Context, dir, token string) (Snapshot, error) {
 	report, err := i.Verify.Verify(ctx, dir)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("verify %s: %w", dir, err)
@@ -88,7 +89,30 @@ func (i Intaker) AdmitAndPin(ctx context.Context, dir string) (Snapshot, error) 
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return i.pin(ctx, dir, model)
+
+	// The attempt is reserved BEFORE the snapshot is pinned, so a crash in
+	// between is replayable: the retry under the same token finds the recorded
+	// attempt and reuses its generation rather than allocating a second and
+	// superseding itself.
+	attempt, err := i.Attempts.Reserve(ctx, token, dir)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("reserve intake generation: %w", err)
+	}
+
+	snap, err := i.pin(ctx, dir, model)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if err := i.Attempts.Complete(ctx, token, snap.Hash); err != nil {
+		return Snapshot{}, err
+	}
+	// Fenced on generation: a delayed seed carrying an older one loses.
+	if err := i.Attempts.MapSpec(ctx, SpecMapping{
+		TargetKey: dir, Generation: attempt.Generation, SnapshotHash: snap.Hash,
+	}); err != nil {
+		return Snapshot{}, err
+	}
+	return snap, nil
 }
 
 // admitCommands enforces AC-intake-commands.
