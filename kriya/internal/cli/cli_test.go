@@ -12,6 +12,7 @@ import (
 
 	"kriya/internal/cli"
 	"kriya/internal/fakes"
+	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 	"kriya/internal/specverify"
 )
@@ -144,5 +145,86 @@ func TestBuildPrintsTheFindingsBehindARefusal(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+// runWith drives Build with a supplied Drive so the run-reporting paths are
+// exercised. The intake half is the same as run's.
+func runWith(t *testing.T, r specverify.Report, drive cli.Drive, out *bytes.Buffer) error {
+	t.Helper()
+	dir := t.TempDir()
+	manifest := "requirements:\n  - id: REQ-x\n    acceptance:\n      - id: AC-x\n"
+	if err := os.WriteFile(filepath.Join(dir, "avspec.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	v := fakes.NewVerifier(dir, r)
+	v.Models = map[string]specverify.Model{dir: {
+		OK: true, Modules: []specverify.Module{completeModule()}, Artifacts: []string{"avspec.yaml"},
+	}}
+	in := planner.Intaker{
+		Verify:    v,
+		Snapshots: newStore(),
+		Attempts:  newAttempts(),
+		Targets:   newTargets(),
+		Tracker:   stubTracker{},
+		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","criteria":["AC-x"]}]}`),
+		Now:       fakes.NewClock(time.Unix(0, 0)),
+	}
+	return cli.Build(context.Background(), out, in, dir, "actor-1", "token-1", drive)
+}
+
+func TestASettledRunIsReported(t *testing.T) {
+	var out bytes.Buffer
+	drive := func(context.Context, planner.Ticket) (orchestrator.BuildRun, error) {
+		return orchestrator.BuildRun{ID: "run-1", State: orchestrator.StatePOValidation}, nil
+	}
+	if err := runWith(t, specverify.Report{Status: "ready", OK: true}, drive, &out); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !strings.Contains(out.String(), "run run-1 settled in po-validation") {
+		t.Errorf("output did not report the run:\n%s", out.String())
+	}
+}
+
+func TestAParkedRunPrintsWhyBeforeFailing(t *testing.T) {
+	// The reason is the whole value of a parked run; returning the error
+	// without printing it would leave the operator with nothing to act on.
+	var out bytes.Buffer
+	drive := func(context.Context, planner.Ticket) (orchestrator.BuildRun, error) {
+		return orchestrator.BuildRun{
+			ID: "run-2", State: orchestrator.StateAwaitingOperator,
+			Error: "gate structure failed",
+		}, errors.New("run parked")
+	}
+	err := runWith(t, specverify.Report{Status: "ready", OK: true}, drive, &out)
+	if err == nil {
+		t.Fatal("a parked run must not read as success")
+	}
+	if !strings.Contains(out.String(), "gate structure failed") {
+		t.Errorf("the reason never reached the operator:\n%s", out.String())
+	}
+}
+
+// brokenWriter fails every write.
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("pipe closed") }
+
+func TestOutputThatVanishedIsAnError(t *testing.T) {
+	// AC-intake-refuse requires the findings to REACH the operator, so output
+	// that silently vanished means the requirement was not met even though the
+	// refusal itself was correct.
+	dir := t.TempDir()
+	v := fakes.NewVerifier(dir, specverify.Report{
+		OK: false, Status: "draft",
+		Findings: []specverify.Finding{{Severity: "error", Code: "E1", Message: "not ready"}},
+	})
+	in := planner.Intaker{
+		Verify: v, Snapshots: newStore(), Attempts: newAttempts(),
+		Targets: newTargets(), Tracker: stubTracker{}, Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	err := cli.Build(context.Background(), brokenWriter{}, in, dir, "actor-1", "token-1", nil)
+	if err == nil || !strings.Contains(err.Error(), "pipe closed") {
+		t.Fatalf("got %v, want the write failure alongside the refusal", err)
 	}
 }

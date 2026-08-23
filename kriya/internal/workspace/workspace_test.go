@@ -3,6 +3,7 @@ package workspace_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,5 +162,44 @@ func TestEnsureIsIdempotent(t *testing.T) {
 	}
 	if again.Branch != first.Branch {
 		t.Error("the second call produced a different branch")
+	}
+}
+
+func TestABranchNameSurvivesAnAwkwardTicket(t *testing.T) {
+	// Branch names are read by humans, and a ticket title is arbitrary text.
+	store, git := newMemStore(), &fakeGit{}
+	w, err := manager(store, git).Ensure(context.Background(), "run-1",
+		"walking skeleton: intake → tickets (v2)")
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if !strings.HasPrefix(w.Branch, "kriya/walking-skeleton") {
+		t.Errorf("branch %q lost the ticket it belongs to", w.Branch)
+	}
+	for _, bad := range []string{" ", ":", "→", "(", ")"} {
+		if strings.Contains(w.Branch, bad) {
+			t.Errorf("branch %q kept %q, which git will not accept", w.Branch, bad)
+		}
+	}
+	if strings.Contains(w.Branch, "run-1") {
+		t.Errorf("branch %q embeds the run id raw", w.Branch)
+	}
+}
+
+func TestTwoRunsOnOneTicketGetSeparateBranches(t *testing.T) {
+	// A retry must not land on the predecessor's branch, which is quarantined
+	// with unmerged commits.
+	store, git := newMemStore(), &fakeGit{}
+	m := manager(store, git)
+	first, err := m.Ensure(context.Background(), "run-1", "same ticket")
+	if err != nil {
+		t.Fatalf("ensure first: %v", err)
+	}
+	second, err := m.Ensure(context.Background(), "run-2", "same ticket")
+	if err != nil {
+		t.Fatalf("ensure second: %v", err)
+	}
+	if first.Branch == second.Branch || first.Path == second.Path {
+		t.Errorf("two runs share %q at %q", first.Branch, first.Path)
 	}
 }
