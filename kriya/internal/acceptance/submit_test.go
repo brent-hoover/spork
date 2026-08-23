@@ -26,6 +26,9 @@ type reviewCatalog struct {
 	calls   []reviewRequest
 	err     error
 	next    int
+	// revision is the review's current revision, advanced once per new key.
+	revision  int
+	revisions map[string]int
 }
 
 type reviewRecord struct {
@@ -34,10 +37,37 @@ type reviewRecord struct {
 
 type reviewRequest struct {
 	branch, commit, session, key string
+	// Set on a resubmission.
+	expectedRevision int
+	verdictEvent     string
 }
 
 func newReviewCatalog() *reviewCatalog {
-	return &reviewCatalog{byKey: map[string]reviewRecord{}}
+	return &reviewCatalog{byKey: map[string]reviewRecord{}, revisions: map[string]int{}}
+}
+
+// Resubmit advances a revision once per key, as sutra does.
+func (c *reviewCatalog) Resubmit(
+	_ context.Context, id, _, _, branch, commit, session string,
+	expectedRevision int, verdictEvent, key string,
+) (int, error) {
+	c.calls = append(c.calls, reviewRequest{
+		branch: branch, commit: commit, session: session, key: key,
+		expectedRevision: expectedRevision, verdictEvent: verdictEvent,
+	})
+	if c.err != nil {
+		return 0, c.err
+	}
+	if landed, ok := c.revisions[key]; ok {
+		return landed, nil
+	}
+	if c.revision != expectedRevision {
+		return 0, fmt.Errorf("revision fence: review %s is at %d, not %d",
+			id, c.revision, expectedRevision)
+	}
+	c.revision++
+	c.revisions[key] = c.revision
+	return c.revision, nil
 }
 
 func (c *reviewCatalog) Create(
@@ -78,14 +108,22 @@ func (r *runStore) Find(_ context.Context, id string) (orchestrator.BuildRun, bo
 }
 
 func (r *runStore) Submitting(context.Context) ([]orchestrator.BuildRun, error) {
+	return r.inReviewState(orchestrator.SubmitSubmitting), nil
+}
+
+func (r *runStore) Resubmitting(context.Context) ([]orchestrator.BuildRun, error) {
+	return r.inReviewState(orchestrator.SubmitResubmitting), nil
+}
+
+func (r *runStore) inReviewState(state string) []orchestrator.BuildRun {
 	var out []orchestrator.BuildRun
 	for _, run := range r.rows {
-		if run.ReviewState == orchestrator.SubmitSubmitting {
+		if run.ReviewState == state {
 			out = append(out, run)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return out
 }
 
 // submitWorld is one submission scenario's state.
@@ -95,6 +133,7 @@ type submitWorld struct {
 	submitter orchestrator.Submitter
 	run       orchestrator.BuildRun
 	sub       orchestrator.Submission
+	rework    orchestrator.Rework
 	err       error
 }
 
@@ -322,4 +361,117 @@ func registerSubmit(sc *godog.ScenarioContext, w *world) {
 		}
 		return nil
 	})
+}
+
+// replayResubmission is the shared "recovery replays the persisted request
+// under the same key" sentence, which two features use. The caller hands back
+// MOVED fences; a replay that used them instead of the persisted ones is
+// visible in the recorded call.
+func (s *submitWorld) replayResubmission() error {
+	moved := s.rework
+	moved.VerdictEvent, moved.Revision = "event-later", 7
+	_, s.err = s.submitter.RecoverResubmissions(context.Background(),
+		func(orchestrator.BuildRun) orchestrator.Rework { return moved })
+	return s.err
+}
+
+func registerResubmit(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^the resubmitting state and its key were persisted and the crash hit before sutra accepted the resubmission$`,
+		func() error {
+			s := w.newSubmit()
+			s.run = orchestrator.BuildRun{
+				ID: "run-1", Ticket: "KRI-1", GatedBase: "C3", Attempt: 2,
+				ReviewID: "review-1", ReviewState: orchestrator.SubmitSubmitted,
+			}
+			s.catalog.revision = 1
+			s.rework = orchestrator.Rework{
+				Branch: s.sub.Branch, Session: "sess-42", Summary: "Create a short link",
+				Revision: 1, VerdictEvent: "event-9",
+			}
+			s.catalog.err = errors.New("sutra unreachable")
+			if _, err := s.submitter.Resubmit(context.Background(), s.run, s.rework); err == nil {
+				return errors.New("a resubmission that never landed read as success")
+			}
+			row := s.store.rows["run-1"]
+			if row.ReviewState != orchestrator.SubmitResubmitting {
+				return fmt.Errorf("the row is in state %q", row.ReviewState)
+			}
+			if row.ReviewKey == "" || row.ReviewCommit != "C3" ||
+				row.ReviewRevision != 1 || row.ReviewVerdictEvent != "event-9" {
+				return fmt.Errorf("the row cannot rebuild its own call: %+v", row)
+			}
+			s.catalog.err = nil
+			return nil
+		})
+
+	sc.Step(`^sutra performs the resubmission and the revision advances exactly once$`, func() error {
+		s := w.submit
+		// Twice, because a replay may itself crash and run again.
+		if _, err := s.submitter.RecoverResubmissions(context.Background(),
+			func(orchestrator.BuildRun) orchestrator.Rework { return s.rework }); err != nil {
+			return err
+		}
+		if s.catalog.revision != 2 {
+			return fmt.Errorf("the revision advanced to %d, want exactly 2", s.catalog.revision)
+		}
+		if s.store.rows["run-1"].ReviewRevision != 2 {
+			return fmt.Errorf("recorded revision %d", s.store.rows["run-1"].ReviewRevision)
+		}
+		return nil
+	})
+
+	sc.Step(`^sutra accepted the resubmission and the crash hit before kriya recorded it$`, func() error {
+		s := w.newSubmit()
+		s.run = orchestrator.BuildRun{
+			ID: "run-1", Ticket: "KRI-1", GatedBase: "C3", Attempt: 2,
+			ReviewID: "review-1", ReviewState: orchestrator.SubmitSubmitted,
+		}
+		s.catalog.revision = 1
+		s.rework = orchestrator.Rework{
+			Branch: s.sub.Branch, Session: "sess-42", Summary: "Create a short link",
+			Revision: 1, VerdictEvent: "event-9",
+		}
+		got, err := s.submitter.Resubmit(context.Background(), s.run, s.rework)
+		if err != nil {
+			return err
+		}
+		// Rewind: sutra advanced the revision, kriya never recorded it.
+		got.ReviewRevision, got.ReviewState = 1, orchestrator.SubmitResubmitting
+		return s.store.Upsert(context.Background(), got)
+	})
+
+	sc.Step(`^sutra returns the original response and the recorded revision reconciles as expected plus one$`,
+		func() error {
+			s := w.submit
+			if s.err != nil {
+				return s.err
+			}
+			row := s.store.rows["run-1"]
+			if row.ReviewRevision != 2 {
+				return fmt.Errorf("recorded revision %d, want the original 2", row.ReviewRevision)
+			}
+			if s.catalog.revision != 2 {
+				return fmt.Errorf("sutra advanced to %d — the replay advanced it again",
+					s.catalog.revision)
+			}
+			return nil
+		})
+
+	sc.Step(`^the replay names the persisted verdict event and pinned commit — neither a moved branch nor a later verdict can change what the replay requests$`,
+		func() error {
+			s := w.submit
+			last := s.catalog.calls[len(s.catalog.calls)-1]
+			if last.verdictEvent != "event-9" {
+				return fmt.Errorf("the replay answered %q, want the persisted event-9",
+					last.verdictEvent)
+			}
+			if last.expectedRevision != 1 {
+				return fmt.Errorf("the replay expected revision %d, want the persisted 1",
+					last.expectedRevision)
+			}
+			if last.commit != "C3" {
+				return fmt.Errorf("the replay named %s, want the pinned C3", last.commit)
+			}
+			return nil
+		})
 }

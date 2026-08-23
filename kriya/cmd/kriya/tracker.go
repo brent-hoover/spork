@@ -50,3 +50,12 @@ func (t sutraReviews) Create(
 	rv, err := t.c.CreateReview(ctx, issue, author, summary, branch, commit, session, key)
 	return rv.ID, err
 }
+
+func (t sutraReviews) Resubmit(
+	ctx context.Context, id, author, summary, branch, commit, session string,
+	expectedRevision int, expectedVerdictEvent, key string,
+) (int, error) {
+	rv, err := t.c.ResubmitReview(ctx, id, author, summary, branch, commit, session,
+		expectedRevision, expectedVerdictEvent, key)
+	return rv.Revision, err
+}

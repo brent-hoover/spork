@@ -63,6 +63,12 @@ func (recordingReviews) Create(
 	return "review-" + key[:8] + "-" + commit, nil
 }
 
+func (recordingReviews) Resubmit(
+	_ context.Context, _, _, _, _, _, _ string, expectedRevision int, _, _ string,
+) (int, error) {
+	return expectedRevision + 1, nil
+}
+
 func quietLoop() devloop.Loop {
 	return devloop.Loop{
 		Agent: &fakes.Agent{Repeat: true},

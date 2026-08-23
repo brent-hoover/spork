@@ -174,6 +174,11 @@ type Review struct {
 	State    string `json:"state"`
 	Revision int    `json:"revision"`
 	Session  string `json:"session"`
+	Commit   string `json:"commit"`
+	// LatestVerdictEvent identifies the verdict a resubmission answers. It is
+	// a FENCE: a rework that named an older event would be answering a verdict
+	// the human has since replaced.
+	LatestVerdictEvent string `json:"latest_verdict_event"`
 }
 
 // CreateReview opens a review over a branch pinned at a commit.
@@ -198,5 +203,55 @@ func (c *Client) CreateReview(
 	}
 	var rv Review
 	err := c.do(ctx, "createReview", http.MethodPost, "/reviews", key, payload, &rv)
+	return rv, err
+}
+
+// GetReview reads a review's current state.
+//
+// Not a mutation, so it carries no idempotency key and no body — it needs its
+// own path rather than a branch inside `do`.
+func (c *Client) GetReview(ctx context.Context, id string) (Review, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/reviews/"+id, nil)
+	if err != nil {
+		return Review{}, fmt.Errorf("build getReview: %w", err)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return Review{}, fmt.Errorf("send getReview: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return Review{}, &APIError{Status: resp.StatusCode, Body: string(b), Op: "getReview"}
+	}
+	var rv Review
+	if err := json.NewDecoder(resp.Body).Decode(&rv); err != nil {
+		return Review{}, fmt.Errorf("decode getReview: %w", err)
+	}
+	return rv, nil
+}
+
+// ResubmitReview advances a review to a new revision after rework.
+//
+// expectedRevision and expectedVerdictEvent are FENCES: sutra refuses the call
+// if the review has moved on, so a replay cannot advance a revision twice and
+// a later verdict cannot be answered by an earlier rework.
+func (c *Client) ResubmitReview(
+	ctx context.Context, id, author, summary, branch, commit, session string,
+	expectedRevision int, expectedVerdictEvent, key string,
+) (Review, error) {
+	payload := map[string]any{
+		"author": author, "branch": branch, "commit": commit,
+		"expected_revision": expectedRevision, "expected_verdict_event": expectedVerdictEvent,
+	}
+	if summary != "" {
+		payload["summary"] = summary
+	}
+	if session != "" {
+		payload["session"] = session
+	}
+	var rv Review
+	err := c.do(ctx, "resubmitReview", http.MethodPost, "/reviews/"+id+"/resubmit", key, payload, &rv)
 	return rv, err
 }

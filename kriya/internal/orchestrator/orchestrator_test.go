@@ -34,14 +34,22 @@ func (m *memStore) Find(_ context.Context, id string) (orchestrator.BuildRun, bo
 }
 
 func (m *memStore) Submitting(context.Context) ([]orchestrator.BuildRun, error) {
+	return m.inReviewState(orchestrator.SubmitSubmitting), nil
+}
+
+func (m *memStore) Resubmitting(context.Context) ([]orchestrator.BuildRun, error) {
+	return m.inReviewState(orchestrator.SubmitResubmitting), nil
+}
+
+func (m *memStore) inReviewState(state string) []orchestrator.BuildRun {
 	var out []orchestrator.BuildRun
 	for _, r := range m.rows {
-		if r.ReviewState == orchestrator.SubmitSubmitting {
+		if r.ReviewState == state {
 			out = append(out, r)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return out
 }
 
 // recordingStages logs which stages ran, so a test asserts the traversal

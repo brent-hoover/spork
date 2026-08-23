@@ -96,6 +96,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerArchitect(sc, w)
 	registerOwner(sc, w)
 	registerSubmit(sc, w)
+	registerResubmit(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

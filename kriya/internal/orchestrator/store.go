@@ -33,11 +33,14 @@ ALTER TABLE build_run ADD COLUMN review_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN review_commit TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN review_session TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN review_state TEXT NOT NULL DEFAULT 'none';
-ALTER TABLE build_run ADD COLUMN review_id TEXT NOT NULL DEFAULT ''`
+ALTER TABLE build_run ADD COLUMN review_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE build_run ADD COLUMN review_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE build_run ADD COLUMN review_verdict_event TEXT NOT NULL DEFAULT ''`
 
 // runColumns is every column a BuildRun reads back, in scan order.
 const runColumns = `ticket, plan, state, gated_base, error, attempt, round_limit,
-	review_key, review_commit, review_session, review_state, review_id`
+	review_key, review_commit, review_session, review_state, review_id,
+	review_revision, review_verdict_event`
 
 // SQLStore stores build runs in SQLite.
 type SQLStore struct{ DB *sql.DB }
@@ -46,18 +49,21 @@ type SQLStore struct{ DB *sql.DB }
 func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO build_run (id, ticket, plan, state, gated_base, error, attempt,
-		   round_limit, review_key, review_commit, review_session, review_state, review_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   round_limit, review_key, review_commit, review_session, review_state, review_id,
+		   review_revision, review_verdict_event)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ticket = excluded.ticket, plan = excluded.plan, state = excluded.state,
 		   gated_base = excluded.gated_base, error = excluded.error,
 		   attempt = excluded.attempt, round_limit = excluded.round_limit,
 		   review_key = excluded.review_key, review_commit = excluded.review_commit,
 		   review_session = excluded.review_session, review_state = excluded.review_state,
-		   review_id = excluded.review_id`,
+		   review_id = excluded.review_id,
+		   review_revision = excluded.review_revision,
+		   review_verdict_event = excluded.review_verdict_event`,
 		r.ID, r.Ticket, r.Plan, string(r.State), r.GatedBase, r.Error, r.Attempt,
 		r.RoundLimit, r.ReviewKey, r.ReviewCommit, r.ReviewSession,
-		reviewStateOf(r), r.ReviewID)
+		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent)
 	if err != nil {
 		return fmt.Errorf("upsert build run: %w", err)
 	}
@@ -71,7 +77,8 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM build_run WHERE id = ?`, id).
 		Scan(&r.Ticket, &r.Plan, &state, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
-			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID)
+			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID,
+			&r.ReviewRevision, &r.ReviewVerdictEvent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return BuildRun{}, false, nil
 	}
@@ -95,30 +102,39 @@ func reviewStateOf(r BuildRun) string {
 
 // Submitting lists runs whose review submission a crash left in flight.
 func (s SQLStore) Submitting(ctx context.Context) ([]BuildRun, error) {
+	return s.inReviewState(ctx, SubmitSubmitting)
+}
+
+// Resubmitting lists runs whose rework resubmission a crash left in flight.
+func (s SQLStore) Resubmitting(ctx context.Context) ([]BuildRun, error) {
+	return s.inReviewState(ctx, SubmitResubmitting)
+}
+
+func (s SQLStore) inReviewState(ctx context.Context, state string) ([]BuildRun, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, `+runColumns+` FROM build_run WHERE review_state = ? ORDER BY id`,
-		SubmitSubmitting)
+		`SELECT id, `+runColumns+` FROM build_run WHERE review_state = ? ORDER BY id`, state)
 	if err != nil {
-		return nil, fmt.Errorf("query submitting runs: %w", err)
+		return nil, fmt.Errorf("query %s runs: %w", state, err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	var out []BuildRun
 	for rows.Next() {
 		var r BuildRun
-		var state string
-		if err := rows.Scan(&r.ID, &r.Ticket, &r.Plan, &state, &r.GatedBase, &r.Error,
+		var runState string
+		if err := rows.Scan(&r.ID, &r.Ticket, &r.Plan, &runState, &r.GatedBase, &r.Error,
 			&r.Attempt, &r.RoundLimit, &r.ReviewKey, &r.ReviewCommit,
-			&r.ReviewSession, &r.ReviewState, &r.ReviewID); err != nil {
-			return nil, fmt.Errorf("scan submitting run: %w", err)
+			&r.ReviewSession, &r.ReviewState, &r.ReviewID,
+			&r.ReviewRevision, &r.ReviewVerdictEvent); err != nil {
+			return nil, fmt.Errorf("scan %s run: %w", state, err)
 		}
-		r.State = State(state)
+		r.State = State(runState)
 		out = append(out, r)
 	}
 	// Checked, because a cursor failing mid-iteration otherwise returns a
 	// SHORT list that reads exactly like "every review reached sutra".
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate submitting runs: %w", err)
+		return nil, fmt.Errorf("iterate %s runs: %w", state, err)
 	}
 	return out, nil
 }

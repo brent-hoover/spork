@@ -80,6 +80,13 @@ type BuildRun struct {
 	ReviewSession string
 	ReviewState   string
 	ReviewID      string
+	// ReviewRevision is the revision a pending resubmission expects to find,
+	// and the one it advanced to once recorded.
+	ReviewRevision int
+	// ReviewVerdictEvent is the changes-requested event a pending
+	// resubmission answers. Persisted with the key so a later verdict cannot
+	// change what a replay requests.
+	ReviewVerdictEvent string
 }
 
 // Transition is one row of the table.
@@ -138,6 +145,10 @@ type Store interface {
 	Find(ctx context.Context, id string) (BuildRun, bool, error)
 	// Submitting lists runs whose review submission a crash left in flight.
 	Submitting(ctx context.Context) ([]BuildRun, error)
+	// Resubmitting lists runs whose rework resubmission a crash left in
+	// flight. Separate from Submitting because the two replay differently:
+	// one creates a review, the other advances one.
+	Resubmitting(ctx context.Context) ([]BuildRun, error)
 }
 
 // Stages maps a stage to the module that performs it.

@@ -206,6 +206,15 @@ func submitStage(
 		if err != nil {
 			return run, err
 		}
+		if run.ReviewID != "" {
+			// A review already exists, so this is rework reaching the human
+			// again. Resubmission advances its revision rather than opening a
+			// second review over the same ticket.
+			return submitter.Resubmit(ctx, run, orchestrator.Rework{
+				Branch: w.Branch, Session: session, Summary: run.Ticket,
+				Revision: run.ReviewRevision, VerdictEvent: run.ReviewVerdictEvent,
+			})
+		}
 		return submitter.Submit(ctx, run, orchestrator.Submission{
 			Issue: issueFor(run.Ticket), Branch: w.Branch, Session: session,
 			Summary: run.Ticket,

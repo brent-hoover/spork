@@ -16,13 +16,21 @@ type reviewAPI struct {
 	calls []reviewCall
 	err   error
 	next  int
+	// revision is the review's current revision, advanced once per new key.
+	revision  int
+	revisions map[string]int
 }
 
 type reviewCall struct {
 	issue, author, summary, branch, commit, session, key string
+	// Set on a resubmission.
+	expectedRevision int
+	verdictEvent     string
 }
 
-func newReviewAPI() *reviewAPI { return &reviewAPI{byKey: map[string]string{}} }
+func newReviewAPI() *reviewAPI {
+	return &reviewAPI{byKey: map[string]string{}, revisions: map[string]int{}}
+}
 
 func (r *reviewAPI) Create(
 	_ context.Context, issue, author, summary, branch, commit, session, key string,
@@ -41,6 +49,31 @@ func (r *reviewAPI) Create(
 	id := "review-" + strings.Repeat("x", r.next)
 	r.byKey[key] = id
 	return id, nil
+}
+
+// Resubmit advances a revision once per key, as sutra does.
+func (r *reviewAPI) Resubmit(
+	_ context.Context, id, author, summary, branch, commit, session string,
+	expectedRevision int, verdictEvent, key string,
+) (int, error) {
+	r.calls = append(r.calls, reviewCall{
+		issue: id, author: author, summary: summary, branch: branch,
+		commit: commit, session: session, key: key,
+		expectedRevision: expectedRevision, verdictEvent: verdictEvent,
+	})
+	if r.err != nil {
+		return 0, r.err
+	}
+	if landed, ok := r.revisions[key]; ok {
+		// Replayed key: the original result, and no second advance.
+		return landed, nil
+	}
+	if r.revision != expectedRevision {
+		return 0, errors.New("revision fence: the review has moved on")
+	}
+	r.revision++
+	r.revisions[key] = r.revision
+	return r.revision, nil
 }
 
 func submitter(store *memStore, api *reviewAPI) orchestrator.Submitter {
@@ -325,4 +358,183 @@ func (f *failingRuns) Find(context.Context, string) (orchestrator.BuildRun, bool
 
 func (f *failingRuns) Submitting(context.Context) ([]orchestrator.BuildRun, error) {
 	return nil, f.listErr
+}
+
+func (f *failingRuns) Resubmitting(context.Context) ([]orchestrator.BuildRun, error) {
+	return nil, f.listErr
+}
+
+func submittedRun() orchestrator.BuildRun {
+	return orchestrator.BuildRun{
+		ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateSubmitting,
+		GatedBase: "C3", Attempt: 2, ReviewID: "review-x",
+		ReviewState: orchestrator.SubmitSubmitted,
+	}
+}
+
+func rework() orchestrator.Rework {
+	return orchestrator.Rework{
+		Branch: "kriya/KRI-1/abcd1234", Session: "sess-42",
+		Summary: "Create a short link", Revision: 1, VerdictEvent: "event-9",
+	}
+}
+
+func TestAResubmissionAdvancesTheRevisionOnce(t *testing.T) {
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	got, err := submitter(store, api).Resubmit(context.Background(), submittedRun(), rework())
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	if got.ReviewRevision != 2 {
+		t.Errorf("revision is %d, want 2", got.ReviewRevision)
+	}
+	if got.ReviewState != orchestrator.SubmitSubmitted {
+		t.Errorf("state is %q", got.ReviewState)
+	}
+	last := api.calls[len(api.calls)-1]
+	if last.expectedRevision != 1 || last.verdictEvent != "event-9" {
+		t.Errorf("the fences were %+v", last)
+	}
+}
+
+func TestTheResubmittingStateAndItsFencesArePersistedFirst(t *testing.T) {
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	api.err = errors.New("sutra unreachable")
+	if _, err := submitter(store, api).Resubmit(context.Background(), submittedRun(), rework()); err == nil {
+		t.Fatal("a resubmission that never landed read as success")
+	}
+	row := store.rows["run-1"]
+	if row.ReviewState != orchestrator.SubmitResubmitting {
+		t.Errorf("state is %q, so the crash window is invisible", row.ReviewState)
+	}
+	if row.ReviewKey == "" || row.ReviewCommit != "C3" ||
+		row.ReviewRevision != 1 || row.ReviewVerdictEvent != "event-9" {
+		t.Errorf("the row cannot rebuild its own call: %+v", row)
+	}
+}
+
+func TestAReplayedResubmissionAdvancesTheRevisionExactlyOnce(t *testing.T) {
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	s := submitter(store, api)
+	api.err = errors.New("sutra unreachable")
+	if _, err := s.Resubmit(context.Background(), submittedRun(), rework()); err == nil {
+		t.Fatal("expected the resubmission failure")
+	}
+	api.err = nil
+
+	// Twice, because a replay may itself crash and run again.
+	for range 2 {
+		if _, err := s.RecoverResubmissions(context.Background(),
+			func(orchestrator.BuildRun) orchestrator.Rework { return rework() }); err != nil {
+			t.Fatalf("recover: %v", err)
+		}
+	}
+	if api.revision != 2 {
+		t.Errorf("the revision advanced to %d, want exactly 2", api.revision)
+	}
+	if store.rows["run-1"].ReviewRevision != 2 {
+		t.Errorf("recorded revision %d", store.rows["run-1"].ReviewRevision)
+	}
+}
+
+func TestTheReplayNamesThePersistedEventAndCommit(t *testing.T) {
+	// Neither a moved branch nor a later verdict can change what the replay
+	// requests.
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	s := submitter(store, api)
+	api.err = errors.New("sutra unreachable")
+	if _, err := s.Resubmit(context.Background(), submittedRun(), rework()); err == nil {
+		t.Fatal("expected the resubmission failure")
+	}
+	api.err = nil
+
+	moved := rework()
+	moved.VerdictEvent = "event-later"
+	moved.Revision = 7
+	if _, err := s.RecoverResubmissions(context.Background(),
+		func(orchestrator.BuildRun) orchestrator.Rework { return moved }); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	last := api.calls[len(api.calls)-1]
+	if last.verdictEvent != "event-9" {
+		t.Errorf("the replay answered %q, want the persisted event-9", last.verdictEvent)
+	}
+	if last.expectedRevision != 1 {
+		t.Errorf("the replay expected revision %d, want the persisted 1", last.expectedRevision)
+	}
+	if last.commit != "C3" {
+		t.Errorf("the replay named %s, want the pinned C3", last.commit)
+	}
+}
+
+func TestAReviewThatMovedUnderTheFenceIsReported(t *testing.T) {
+	// The fence exists to catch exactly this, and a silent acceptance would
+	// record a revision the review does not have.
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 5
+	if _, err := submitter(store, api).Resubmit(context.Background(), submittedRun(), rework()); err == nil {
+		t.Fatal("a resubmission past a moved fence read as success")
+	}
+}
+
+func TestAResubmissionNeedsAReviewAndAVerdictEvent(t *testing.T) {
+	store, api := newMemStore(), newReviewAPI()
+	s := submitter(store, api)
+
+	noReview := submittedRun()
+	noReview.ReviewID = ""
+	if _, err := s.Resubmit(context.Background(), noReview, rework()); err == nil {
+		t.Error("a run with no review was resubmitted")
+	}
+	noCommit := submittedRun()
+	noCommit.GatedBase = ""
+	if _, err := s.Resubmit(context.Background(), noCommit, rework()); err == nil {
+		t.Error("a run with no gated commit was resubmitted")
+	}
+	// Without an event sutra cannot fence the call, and the rework could
+	// answer a verdict the human has since replaced.
+	unfenced := rework()
+	unfenced.VerdictEvent = ""
+	if _, err := s.Resubmit(context.Background(), submittedRun(), unfenced); err == nil {
+		t.Error("a resubmission with no verdict event was sent")
+	}
+	if len(api.calls) != 0 {
+		t.Errorf("sutra was called %d times for refused resubmissions", len(api.calls))
+	}
+}
+
+func TestEachReworkOfARevisionKeysDifferently(t *testing.T) {
+	// A second changes-requested at the same revision is a different rework,
+	// and reusing the key would replay the first instead of sending it.
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	s := submitter(store, api)
+	first, err := s.Resubmit(context.Background(), submittedRun(), rework())
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	again := rework()
+	again.VerdictEvent = "event-10"
+	again.Revision = 2
+	second, err := s.Resubmit(context.Background(), first, again)
+	if err != nil {
+		t.Fatalf("resubmit again: %v", err)
+	}
+	if first.ReviewKey == second.ReviewKey {
+		t.Error("two reworks shared one key")
+	}
+}
+
+func TestAnUnreadableResubmitListStopsRecovery(t *testing.T) {
+	store := &failingRuns{listErr: errors.New("store unavailable")}
+	_, err := (orchestrator.Submitter{Store: store, Reviews: newReviewAPI(), Author: "a"}).
+		RecoverResubmissions(context.Background(),
+			func(orchestrator.BuildRun) orchestrator.Rework { return rework() })
+	if err == nil {
+		t.Fatal("an unreadable store read as no resubmissions in flight")
+	}
 }

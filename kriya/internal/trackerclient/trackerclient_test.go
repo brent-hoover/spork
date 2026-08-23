@@ -249,3 +249,89 @@ func TestCreateReviewOmitsAnAbsentSummaryAndSession(t *testing.T) {
 		}
 	}
 }
+
+func TestGetReviewReadsTheCurrentState(t *testing.T) {
+	c, got := serve(t, http.StatusOK,
+		`{"id":"r-1","state":"changes-requested","revision":2,"latest_verdict_event":"event-9"}`)
+	rv, err := c.GetReview(context.Background(), "r-1")
+	if err != nil {
+		t.Fatalf("get review: %v", err)
+	}
+	if rv.Revision != 2 || rv.LatestVerdictEvent != "event-9" {
+		t.Errorf("decoded %+v", rv)
+	}
+	if got.method != http.MethodGet || got.path != "/reviews/r-1" {
+		t.Errorf("sent %s %s", got.method, got.path)
+	}
+	// A read is not a mutation: claiming otherwise would make sutra settle it
+	// under a key and replay a stale body.
+	if got.key != "" || got.ctype != "" {
+		t.Errorf("a read sent key %q and Content-Type %q", got.key, got.ctype)
+	}
+}
+
+func TestGetReviewSurfacesANotFound(t *testing.T) {
+	c, _ := serve(t, http.StatusNotFound, `{"detail":"no such review"}`)
+	_, err := c.GetReview(context.Background(), "r-absent")
+	var apiErr *trackerclient.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Fatalf("got %v, want a 404 APIError", err)
+	}
+}
+
+func TestGetReviewFailsOnAnUnparseableBody(t *testing.T) {
+	c, _ := serve(t, http.StatusOK, "not json")
+	if _, err := c.GetReview(context.Background(), "r-1"); err == nil {
+		t.Fatal("a 2xx with an unparseable body read as a review")
+	}
+}
+
+func TestAnUnreachableTrackerFailsAReview(t *testing.T) {
+	c := trackerclient.New("http://127.0.0.1:1")
+	if _, err := c.GetReview(context.Background(), "r-1"); err == nil {
+		t.Fatal("an unreachable tracker must fail loudly")
+	}
+}
+
+func TestAnInvalidBaseURLFailsAReviewRead(t *testing.T) {
+	c := trackerclient.New("://nonsense")
+	if _, err := c.GetReview(context.Background(), "r-1"); err == nil {
+		t.Fatal("an unbuildable request must fail")
+	}
+}
+
+func TestResubmitCarriesItsFences(t *testing.T) {
+	// sutra refuses the call if the review has moved on, which is what stops a
+	// replay advancing a revision twice.
+	c, got := serve(t, http.StatusOK, `{"id":"r-1","revision":3}`)
+	rv, err := c.ResubmitReview(context.Background(), "r-1", "actor-1", "summary",
+		"kriya/KRI-1/abcd", "C3", "sess-42", 2, "event-9", "key-1")
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	if rv.Revision != 3 {
+		t.Errorf("decoded revision %d", rv.Revision)
+	}
+	for _, want := range []string{`"expected_revision":2`, `"expected_verdict_event":"event-9"`,
+		`"commit":"C3"`, `"branch":"kriya/KRI-1/abcd"`} {
+		if !strings.Contains(got.body, want) {
+			t.Errorf("body %s is missing %s", got.body, want)
+		}
+	}
+	if got.path != "/reviews/r-1/resubmit" || got.key != "key-1" {
+		t.Errorf("sent to %s with key %q", got.path, got.key)
+	}
+}
+
+func TestResubmitOmitsAnAbsentSummaryAndSession(t *testing.T) {
+	c, got := serve(t, http.StatusOK, `{"id":"r-1","revision":3}`)
+	if _, err := c.ResubmitReview(context.Background(), "r-1", "actor-1", "",
+		"kriya/KRI-1/abcd", "C3", "", 2, "event-9", "key-1"); err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	for _, field := range []string{`"summary"`, `"session"`} {
+		if strings.Contains(got.body, field) {
+			t.Errorf("body %s sent an empty %s", got.body, field)
+		}
+	}
+}

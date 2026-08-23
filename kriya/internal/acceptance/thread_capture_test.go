@@ -259,7 +259,13 @@ func registerThreadCapture(sc *godog.ScenarioContext, w *world) {
 			return nil
 		})
 
+	// Two features say this — one means a transcript import, the other a
+	// review resubmission. Whichever world the scenario set up is the one
+	// that means it.
 	sc.Step(`^recovery replays the persisted request under the same key$`, func() error {
+		if w.submit != nil {
+			return w.submit.replayResubmission()
+		}
 		tw := w.threads
 		_, tw.err = tw.loop.RecoverImports(context.Background(), "KRI-7", "actor-1")
 		return tw.err
@@ -277,7 +283,12 @@ func registerThreadCapture(sc *godog.ScenarioContext, w *world) {
 			return tw.store.Upsert(context.Background(), row)
 		})
 
+	// Shared with the review-resubmission feature, same as the sentence
+	// above: whichever world the scenario set up is the one that means it.
 	sc.Step(`^recovery replays under the same key$`, func() error {
+		if w.submit != nil {
+			return w.submit.replayResubmission()
+		}
 		tw := w.threads
 		_, tw.err = tw.loop.RecoverImports(context.Background(), "KRI-7", "actor-1")
 		return tw.err

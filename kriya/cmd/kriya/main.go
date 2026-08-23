@@ -327,12 +327,21 @@ func recoverySteps(
 			// Replayed from the PERSISTED fields under the persisted key, so
 			// a branch that moved cannot smuggle an ungated commit in and a
 			// fresh session cannot displace the one feedback routes to.
-			_, err := submitter.RecoverSubmissions(ctx, func(run orchestrator.BuildRun) orchestrator.Submission {
-				return orchestrator.Submission{
-					Issue: run.Ticket, Branch: "", Session: run.ReviewSession,
-					Summary: run.Ticket,
-				}
-			})
+			if _, err := submitter.RecoverSubmissions(ctx,
+				func(run orchestrator.BuildRun) orchestrator.Submission {
+					return orchestrator.Submission{
+						Issue: run.Ticket, Session: run.ReviewSession, Summary: run.Ticket,
+					}
+				}); err != nil {
+				return err
+			}
+			_, err := submitter.RecoverResubmissions(ctx,
+				func(run orchestrator.BuildRun) orchestrator.Rework {
+					return orchestrator.Rework{
+						Session: run.ReviewSession, Summary: run.Ticket,
+						Revision: run.ReviewRevision, VerdictEvent: run.ReviewVerdictEvent,
+					}
+				})
 			return err
 		}},
 		{Stage: recovery.StageReviewRounds, Owner: "reviewbridge", Run: func(ctx context.Context) error {
