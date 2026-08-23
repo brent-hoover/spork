@@ -3,6 +3,7 @@ package context_test
 import (
 	stdctx "context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,4 +257,85 @@ func toJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// failingBundles refuses to record.
+type failingBundles struct{}
+
+func (failingBundles) Put(stdctx.Context, context.Bundle) error {
+	return errors.New("disk full")
+}
+
+func (failingBundles) Get(stdctx.Context, string) (context.Bundle, bool, error) {
+	return context.Bundle{}, false, errors.New("disk full")
+}
+
+// failingLearnings refuses to answer.
+type failingLearnings struct{}
+
+func (failingLearnings) Matching(stdctx.Context, []string, []string) ([]context.Learning, error) {
+	return nil, errors.New("store unavailable")
+}
+
+func TestAnUnrecordableBundleIsAFailure(t *testing.T) {
+	// A bundle that could not be recorded means the run's evidence is gone,
+	// and running the agent anyway would produce work nobody can review.
+	a := context.Assembler{Store: failingBundles{}, Now: fakes.NewClock(time.Unix(0, 0))}
+	if _, err := a.Assemble(stdctx.Background(), "run-1", spec(), ticket(), ""); err == nil {
+		t.Fatal("assembly succeeded with nothing recorded")
+	}
+}
+
+func TestALearningStoreFailureStopsAssembly(t *testing.T) {
+	// Errors should never pass silently: a store that cannot be read is not a
+	// project that has learned nothing.
+	a := context.Assembler{
+		Store: newMemBundles(), Learnings: failingLearnings{},
+		Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	if _, err := a.Assemble(stdctx.Background(), "run-1", spec(), ticket(), ""); err == nil {
+		t.Fatal("assembly succeeded having read no learnings")
+	}
+}
+
+func TestContractsComeBackInAStableOrder(t *testing.T) {
+	// Two assemblies of the same snapshot must produce the same bundle, or the
+	// record of "what the agent knew" differs run to run for no reason.
+	s := spec()
+	s.Modules[0].Contracts = []context.Contract{
+		{ID: "CTR-z", Type: "openapi", Path: "z.yaml"},
+		{ID: "CTR-a", Type: "openapi", Path: "a.yaml"},
+	}
+	s.Artifacts["a.yaml"] = "first"
+	s.Artifacts["z.yaml"] = "last"
+	a := context.Assembler{Store: newMemBundles(), Now: fakes.NewClock(time.Unix(0, 0))}
+	first, err := a.Assemble(stdctx.Background(), "run-1", s, ticket(), "")
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	second, err := a.Assemble(stdctx.Background(), "run-1", s, ticket(), "")
+	if err != nil {
+		t.Fatalf("assemble again: %v", err)
+	}
+	if string(first.Content) != string(second.Content) {
+		t.Error("two assemblies of one snapshot produced different bundles")
+	}
+	if strings.Index(string(first.Content), "CTR-a") > strings.Index(string(first.Content), "CTR-z") {
+		t.Error("contracts are not ordered by id")
+	}
+}
+
+func TestAContractWithNoPinnedBodyStillTravels(t *testing.T) {
+	// The interface's identity is worth having even when the snapshot did not
+	// pin the file — silently dropping it would hide a gap in the artifact set.
+	s := spec()
+	delete(s.Artifacts, "contracts/api.yaml")
+	a := context.Assembler{Store: newMemBundles(), Now: fakes.NewClock(time.Unix(0, 0))}
+	bundle, err := a.Assemble(stdctx.Background(), "run-1", s, ticket(), "")
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if !strings.Contains(string(bundle.Content), "CTR-api") {
+		t.Error("a contract with no pinned body was dropped entirely")
+	}
 }
