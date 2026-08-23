@@ -3,6 +3,7 @@ package gates_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -237,4 +238,56 @@ func TestOutputOverTheLimitKeepsItsTail(t *testing.T) {
 	if !strings.Contains(detail, "VERDICT") {
 		t.Errorf("truncation discarded the tail: %s", detail)
 	}
+}
+
+func TestTheReviewGatesOnlyMutation(t *testing.T) {
+	// The other five tell the dev agent what to fix. Waiting for a review
+	// before running them would stall the loop at the point it most needs
+	// their output.
+	store := &memStore{}
+	review := &noReview{}
+	runner := gates.Runner{Store: store, Review: review, Now: fakes.NewClock(time.Unix(0, 0))}
+	results, err := runner.RunChain(context.Background(), "run-1", "MOD-a", "sha-a",
+		t.TempDir(), allPassing())
+	if err != nil {
+		t.Fatalf("run chain: %v", err)
+	}
+	var ran []string
+	for _, r := range results {
+		ran = append(ran, r.Gate)
+	}
+	want := []string{"test", "structure", "typing", "arch", "branch-coverage"}
+	if strings.Join(ran, ",") != strings.Join(want, ",") {
+		t.Fatalf("ran %v, want the five that precede the review check", ran)
+	}
+	if len(review.asked) != 1 {
+		t.Errorf("the review was consulted %d times, want once — before mutation", len(review.asked))
+	}
+}
+
+// noReview reports that nothing has passed review.
+type noReview struct{ asked []string }
+
+func (n *noReview) PassedAt(_ context.Context, _, commit string) (bool, error) {
+	n.asked = append(n.asked, commit)
+	return false, nil
+}
+
+func TestAReviewThatCannotBeReadStopsTheChain(t *testing.T) {
+	// "I could not read the verdict" is not "the review passed".
+	store := &memStore{}
+	runner := gates.Runner{
+		Store: store, Review: brokenReview{}, Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	_, err := runner.RunChain(context.Background(), "run-1", "MOD-a", "sha-a",
+		t.TempDir(), allPassing())
+	if err == nil {
+		t.Fatal("an unreadable review verdict was treated as a pass")
+	}
+}
+
+type brokenReview struct{}
+
+func (brokenReview) PassedAt(context.Context, string, string) (bool, error) {
+	return false, errors.New("store unavailable")
 }

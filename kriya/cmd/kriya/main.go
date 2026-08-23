@@ -155,7 +155,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Rev:   reviewbridge.CLI{},
 		Now:   clock.System{},
 	}
-	if err := recovery.Run(ctx, recoverySteps(in, ws, reviews)); err != nil {
+	if err := recovery.Run(ctx, recoverySteps(in, ws, reviews, recoveryLoop(db), actor)); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -198,9 +198,10 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 				Learnings: kctx.SQLLearnings{DB: db},
 				Now:       clock.System{},
 			},
-			Commit: workspace.ShellGit{},
-			Review: reviews,
-			Now:    clock.System{},
+			Threads: sutraThreads{c: trackerclient.New(sutraURL())},
+			Commit:  workspace.ShellGit{},
+			Review:  reviews,
+			Now:     clock.System{},
 		}
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
@@ -252,13 +253,30 @@ func latestSnapshotHash(ctx context.Context, db *sql.DB, target string) string {
 	return m.SnapshotHash
 }
 
+// recoveryLoop is the dev loop as recovery needs it.
+//
+// Only the seams an import replay touches: the session store and the thread
+// importer. The agent, committer and reviewer belong to running work, and
+// recovery starts none — handing it those would let a reconciliation step
+// invoke an agent.
+func recoveryLoop(db *sql.DB) devloop.Loop {
+	return devloop.Loop{
+		Store:   devloop.SQLStore{DB: db},
+		Threads: sutraThreads{c: trackerclient.New(sutraURL())},
+		Now:     clock.System{},
+	}
+}
+
 // recoverySteps maps modules to the stages they reconcile.
 //
 // The whole ordering lives here, in the composition root, rather than being
 // spread across the modules — which is the point of sequencing being a
 // composition-root concern. Stages with no owner yet simply have no step; they
 // gain one as their module lands.
-func recoverySteps(in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge) []recovery.Step {
+func recoverySteps(
+	in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge,
+	loop devloop.Loop, actor string,
+) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
 			_, err := in.RecoverTargets(ctx)
@@ -266,6 +284,13 @@ func recoverySteps(in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bri
 		}},
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
 			_, err := ws.Recover(ctx)
+			return err
+		}},
+		{Stage: recovery.StageDevSessions, Owner: "devloop", Run: func(ctx context.Context) error {
+			// An import that may have landed is replayed under its persisted
+			// key. sutra returns the original thread for one that did and
+			// creates otherwise, so exactly one thread exists either way.
+			_, err := loop.RecoverImports(ctx, "", actor)
 			return err
 		}},
 		{Stage: recovery.StageReviewRounds, Owner: "reviewbridge", Run: func(ctx context.Context) error {

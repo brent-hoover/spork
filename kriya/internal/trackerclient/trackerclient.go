@@ -137,3 +137,35 @@ func (c *Client) AddRelation(ctx context.Context, issueID, kind, to, actor, key 
 		"/issues/"+issueID+"/relations", key,
 		map[string]string{"kind": kind, "to": to, "actor": actor}, nil)
 }
+
+// Thread is a sutra thread as read back.
+type Thread struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Session string `json:"session"`
+}
+
+// ImportThread puts an agent transcript into the thread catalog.
+//
+// The key is the caller's and is persisted before the call: sutra returns the
+// ORIGINAL thread for a replayed key rather than creating a second one, which
+// is what makes exactly one thread exist per session across a crash.
+func (c *Client) ImportThread(
+	ctx context.Context, title string, transcript json.RawMessage,
+	session, issue, actor, key string,
+) (Thread, error) {
+	payload := map[string]any{
+		"title": title, "transcript": transcript, "actor": actor,
+	}
+	// Omitted rather than sent empty: sutra distinguishes an absent anchor
+	// from a blank one, and a blank issue id is not a thread anchored nowhere.
+	if session != "" {
+		payload["session"] = session
+	}
+	if issue != "" {
+		payload["issue"] = issue
+	}
+	var t Thread
+	err := c.do(ctx, "importThread", http.MethodPost, "/threads", key, payload, &t)
+	return t, err
+}

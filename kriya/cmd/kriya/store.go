@@ -132,6 +132,7 @@ func migrations() []migration {
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
 		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},
 		{module: "devloop", name: "0002_dev_session_rounds", stmts: splitSQL(devloop.RoundsMigration)},
+		{module: "devloop", name: "0003_thread_capture", stmts: splitSQL(devloop.CaptureMigration)},
 		{module: "reviewbridge", name: "0001_review_round", stmts: splitSQL(reviewbridge.Migration)},
 		{module: "reviewbridge", name: "0002_response_lifecycle", stmts: splitSQL(reviewbridge.ResponseMigration)},
 		{module: "context", name: "0001_context_and_learnings", stmts: splitSQL(kctx.Migration)},

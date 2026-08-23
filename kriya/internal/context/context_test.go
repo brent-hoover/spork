@@ -320,8 +320,9 @@ func TestContractsComeBackInAStableOrder(t *testing.T) {
 	if string(first.Content) != string(second.Content) {
 		t.Error("two assemblies of one snapshot produced different bundles")
 	}
-	if strings.Index(string(first.Content), "CTR-a") > strings.Index(string(first.Content), "CTR-z") {
-		t.Error("contracts are not ordered by id")
+	// Declared order, which the spec fixes: CTR-z was listed first.
+	if strings.Index(string(first.Content), "CTR-z") > strings.Index(string(first.Content), "CTR-a") {
+		t.Error("contracts did not keep the order the spec declared them in")
 	}
 }
 

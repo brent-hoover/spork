@@ -26,6 +26,16 @@ func (m *memStore) Upsert(_ context.Context, s devloop.Session) error {
 	return nil
 }
 
+func (m *memStore) Importing(context.Context) ([]devloop.Session, error) {
+	var out []devloop.Session
+	for _, s := range m.rows {
+		if s.ImportState == devloop.ImportImporting {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) only(t *testing.T) devloop.Session {
 	t.Helper()
 	if len(m.rows) != 1 {

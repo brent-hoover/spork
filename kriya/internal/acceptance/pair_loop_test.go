@@ -175,6 +175,8 @@ type nullSessions struct{}
 
 func (nullSessions) Upsert(context.Context, devloop.Session) error { return nil }
 
+func (nullSessions) Importing(context.Context) ([]devloop.Session, error) { return nil, nil }
+
 func registerPairLoop(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^a dev agent working a ticket in its workspace$`, func() error {
 		w.newPair()

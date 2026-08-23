@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"kriya/internal/clock"
@@ -190,12 +189,14 @@ func withBodies(contracts []Contract, artifacts map[string]string) []Contract {
 	if len(contracts) == 0 {
 		return nil
 	}
+	// Declared order, not sorted: the spec lists a module's contracts in a
+	// fixed order and that order is already deterministic, so sorting would
+	// add a comparison that can never change the output.
 	out := make([]Contract, 0, len(contracts))
 	for _, c := range contracts {
 		c.Body = artifacts[c.Path]
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

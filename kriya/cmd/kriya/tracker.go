@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 
 	"kriya/internal/trackerclient"
 )
@@ -23,4 +24,19 @@ func (t sutraTracker) CreateIssue(ctx context.Context, projectID, title, body, a
 
 func (t sutraTracker) AddRelation(ctx context.Context, issueID, kind, to, actor, idem string) error {
 	return t.c.AddRelation(ctx, issueID, kind, to, actor, idem)
+}
+
+// sutraThreads adapts the sutra client to the dev loop's thread seam.
+//
+// Same reason as the tracker adapter above: MOD-dev-loop's declared boundary
+// does not permit the tracker client, so the composition root is what connects
+// them and the loop stays testable with no HTTP at all.
+type sutraThreads struct{ c *trackerclient.Client }
+
+func (t sutraThreads) Import(
+	ctx context.Context, title string, transcript json.RawMessage,
+	session, issue, actor, key string,
+) (string, error) {
+	thread, err := t.c.ImportThread(ctx, title, transcript, session, issue, actor, key)
+	return thread.ID, err
 }

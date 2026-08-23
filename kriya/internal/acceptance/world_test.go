@@ -51,6 +51,8 @@ type world struct {
 	ctxw *contextWorld
 	// ws is the workspace scenarios' state, nil until one starts.
 	ws *workspaceWorld
+	// threads is the thread-capture scenarios' state, nil until one starts.
+	threads *threadWorld
 }
 
 func newWorld() *world {

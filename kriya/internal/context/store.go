@@ -76,16 +76,19 @@ func (s SQLLearnings) Matching(ctx stdctx.Context, modules, patterns []string) (
 	}
 	args := make([]any, 0, len(modules)+len(patterns))
 	var clauses []string
-	if len(modules) > 0 {
-		clauses = append(clauses, "module IN ("+placeholders(len(modules))+")")
-		for _, m := range modules {
-			args = append(args, m)
+	// An empty tag set contributes NO clause. SQLite accepts `x IN ()` and
+	// evaluates it false, so an empty list would not error — it would quietly
+	// widen nothing while looking like a filter.
+	for _, tag := range []struct {
+		column string
+		values []string
+	}{{"module", modules}, {"pattern", patterns}} {
+		if len(tag.values) == 0 {
+			continue
 		}
-	}
-	if len(patterns) > 0 {
-		clauses = append(clauses, "pattern IN ("+placeholders(len(patterns))+")")
-		for _, p := range patterns {
-			args = append(args, p)
+		clauses = append(clauses, tag.column+" IN ("+placeholders(len(tag.values))+")")
+		for _, v := range tag.values {
+			args = append(args, v)
 		}
 	}
 	rows, err := s.DB.QueryContext(ctx,

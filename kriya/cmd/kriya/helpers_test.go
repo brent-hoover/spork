@@ -8,6 +8,7 @@ import (
 
 	"kriya/internal/agent"
 	"kriya/internal/clock"
+	"kriya/internal/devloop"
 	"kriya/internal/fakes"
 	"kriya/internal/planner"
 	"kriya/internal/reviewbridge"
@@ -82,4 +83,10 @@ func intakerForTest(db *sql.DB) planner.Intaker {
 		Attempts:  planner.SQLAttempts{DB: db},
 		Now:       clock.System{},
 	}
+}
+
+// loopForTest is the recovery-shaped loop: a session store and nothing else
+// that running work would need.
+func loopForTest(db *sql.DB) devloop.Loop {
+	return devloop.Loop{Store: devloop.SQLStore{DB: db}, Now: clock.System{}}
 }

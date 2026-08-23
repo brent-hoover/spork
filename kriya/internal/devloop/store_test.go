@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -18,11 +19,17 @@ func sqlSessionStore(t *testing.T) devloop.SQLStore {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	for _, stmt := range []string{devloop.Migration,
-		"ALTER TABLE dev_session ADD COLUMN rounds INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE dev_session ADD COLUMN commits TEXT NOT NULL DEFAULT '[]'"} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("migrate: %v", err)
+	// The real migration text, split as the composition root splits it: a test
+	// that rebuilt the DDL by hand would pass while production had different
+	// columns, proving only that the test agrees with itself.
+	for _, schema := range []string{devloop.Migration, devloop.RoundsMigration, devloop.CaptureMigration} {
+		for _, stmt := range strings.Split(schema, ";") {
+			if strings.TrimSpace(stmt) == "" {
+				continue
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
 		}
 	}
 	return devloop.SQLStore{DB: db}

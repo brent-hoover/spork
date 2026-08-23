@@ -194,13 +194,13 @@ func TestRecoveryStepsRunInDeclaredOrder(t *testing.T) {
 	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t))
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), "actor-1")
 	var stages []string
 	for _, s := range steps {
 		stages = append(stages, s.Stage.String())
 	}
 	got := strings.Join(stages, ",")
-	if got != "targets,workspaces,review-rounds" {
+	if got != "targets,workspaces,dev-sessions,review-rounds" {
 		t.Errorf("stages %s — the order is declared, not discovered", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestReviewRecoverySurfacesRatherThanBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db))
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), "actor-1")
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
 			continue
@@ -234,7 +234,7 @@ func TestReviewRecoveryPropagatesAStoreFailure(t *testing.T) {
 	// Errors should never pass silently: a store kriya cannot read is not the
 	// same as a store with nothing in it.
 	db := openTemp(t)
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db))
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), "actor-1")
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
 			continue

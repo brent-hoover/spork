@@ -32,12 +32,22 @@ type Session struct {
 	// SystemFile is where the assembled context was written, so a fix round
 	// reads the same law the first round did.
 	SystemFile string
-	Ended      bool
+	// TranscriptRef, ImportKey, ImportState and ThreadRef carry the transcript
+	// import across its crash window. The first two are persisted TOGETHER
+	// before sutra is called, so a replay reproduces the exact request.
+	TranscriptRef string
+	ImportKey     string
+	ImportState   string
+	ThreadRef     string
+	Ended         bool
 }
 
 // Store persists sessions.
 type Store interface {
 	Upsert(ctx context.Context, s Session) error
+	// Importing lists sessions whose transcript import a crash left in
+	// flight. Recovery replays them under their persisted key.
+	Importing(ctx context.Context) ([]Session, error)
 }
 
 // Committer commits the agent's work so a review has something to read.
@@ -67,6 +77,9 @@ type Loop struct {
 	// Context assembles the ticket's law, contracts, and learnings. Nil skips
 	// assembly, which is what a test of the loop's own protocol wants.
 	Context Contexts
+	// Threads imports finished transcripts into the tracker's catalog. Nil
+	// skips capture.
+	Threads Threads
 	Agent   agent.Agent
 	Store   Store
 	Commit  Committer
@@ -95,6 +108,10 @@ type Request struct {
 	Spec kctx.Spec
 	// Instructions is the operator's hand-crafted project file.
 	Instructions string
+	// Issue is the tracker issue the transcript is tied to.
+	Issue string
+	// Actor is the identity every tracker mutation is recorded against.
+	Actor string
 	// Modules are the module ids this ticket touches.
 	Modules []string
 	// Patterns are the failure patterns this ticket is prone to.
@@ -123,9 +140,10 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 	}
 	session.SystemFile = systemFile
 
+	implement := prompt(req)
 	res, err := l.Agent.Run(ctx, agent.Request{
 		Role:       agent.RoleDev,
-		Prompt:     prompt(req),
+		Prompt:     implement,
 		Workspace:  req.Workspace,
 		SystemFile: systemFile,
 		AllowRules: req.AllowRules,
@@ -133,14 +151,24 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 	if err != nil {
 		return Session{}, fmt.Errorf("dev agent on %s: %w", req.Ticket, err)
 	}
+	turns := []Exchange{{
+		Role: string(agent.RoleDev), Prompt: implement, Reply: res.Text, Model: res.Model,
+	}}
 
 	session.SessionID = res.SessionID
 	session.Model = res.Model
 
 	if l.Commit != nil && l.Review != nil {
-		if err := l.pair(ctx, req, &session); err != nil {
+		if err := l.pair(ctx, req, &session, &turns); err != nil {
 			return Session{}, err
 		}
+	}
+
+	// Captured before the session is stamped ended: AC-thread-no-loss wants
+	// every outcome in the catalog, and a row stamped ended with no import
+	// would look settled while its conversation was nowhere.
+	if err := l.capture(ctx, req, &session, turns); err != nil {
+		return Session{}, err
 	}
 
 	session.Ended = true
@@ -182,7 +210,7 @@ func (l Loop) assembleContext(ctx context.Context, req Request) (string, error) 
 // (CON-pair-programming). The findings go back to the agent VERBATIM: they are
 // the next instruction, and summarising them drops the file and line the fix
 // needs.
-func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
+func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]Exchange) error {
 	rounds := l.MaxRounds
 	if rounds <= 0 {
 		rounds = 5
@@ -227,9 +255,10 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 			return nil
 		}
 
+		fix := fixPrompt(req, reviewed.Findings)
 		res, err := l.Agent.Run(ctx, agent.Request{
 			Role:       agent.RoleDev,
-			Prompt:     fixPrompt(req, reviewed.Findings),
+			Prompt:     fix,
 			Workspace:  req.Workspace,
 			SystemFile: session.SystemFile,
 			AllowRules: req.AllowRules,
@@ -237,6 +266,9 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 		if err != nil {
 			return fmt.Errorf("dev agent fixing round %d: %w", round+1, err)
 		}
+		*turns = append(*turns, Exchange{
+			Role: string(agent.RoleDev), Prompt: fix, Reply: res.Text, Model: res.Model,
+		})
 		session.SessionID = res.SessionID
 		answered = &reviewed
 	}
