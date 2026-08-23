@@ -13,14 +13,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"time"
+
 	"kriya/internal/clock"
 )
 
 // States a workspace passes through.
+//
+// Two, exactly as ENT-workspace declares them, and removal is NOT one: a
+// removed worktree is a created row with RemovedAt stamped. A third state
+// would make "was this ever created?" — the question recovery turns on —
+// unanswerable for a row that has since been cleaned up.
 const (
 	StatePending = "pending"
-	StateReady   = "ready"
-	StateRemoved = "removed"
+	StateCreated = "created"
 )
 
 // Workspace is one run's isolated checkout.
@@ -34,10 +40,19 @@ type Workspace struct {
 	Branch string
 	// Base is the commit the branch was cut from, recorded so a merge can
 	// check the base has not moved under it.
-	Base    string
-	State   string
-	Cleanup string
+	Base  string
+	State string
+	// CleanupError is the durable cause when cleanup refuses — a dirty
+	// worktree. The operator inbox lists it without touching the run's
+	// terminal state.
+	CleanupError string
+	// RemovedAt is stamped when the worktree is gone. The BRANCH may well
+	// survive it: only merge or explicit operator disposal deletes that.
+	RemovedAt time.Time
 }
+
+// Removed reports whether the worktree is gone.
+func (w Workspace) Removed() bool { return !w.RemovedAt.IsZero() }
 
 // Store persists workspaces.
 type Store interface {
@@ -45,6 +60,19 @@ type Store interface {
 	Find(ctx context.Context, run string) (Workspace, bool, error)
 	// Pending lists workspaces a crash left mid-creation.
 	Pending(ctx context.Context) ([]Workspace, error)
+	// Created lists workspaces whose creation was proven, so recovery can
+	// check the ones whose disappearance would be a discrepancy.
+	Created(ctx context.Context) ([]Workspace, error)
+}
+
+// Prober answers whether a recorded worktree is really there.
+//
+// Separate from Git because recovery asks a question about the FILESYSTEM,
+// not about git: the row promised a path, and what recovery needs to know
+// first is whether anything is at it.
+type Prober interface {
+	// Exists reports whether path holds a worktree.
+	Exists(path string) (bool, error)
 }
 
 // Git is the slice of git the workspace needs.
@@ -71,7 +99,10 @@ type Manager struct {
 	DefaultBranch string
 	Store         Store
 	Git           Git
-	Now           clock.Clock
+	// Probe answers whether a recorded worktree is really on disk. Nil means
+	// recovery cannot adopt and will recreate instead.
+	Probe Prober
+	Now   clock.Clock
 }
 
 // branchName is deterministic and run-scoped.
@@ -105,7 +136,7 @@ func sanitise(s string) string {
 func (m Manager) Ensure(ctx context.Context, run, ticket string) (Workspace, error) {
 	if existing, found, err := m.Store.Find(ctx, run); err != nil {
 		return Workspace{}, fmt.Errorf("find workspace: %w", err)
-	} else if found && existing.State == StateReady {
+	} else if found && existing.State == StateCreated {
 		return existing, nil
 	}
 
@@ -125,7 +156,7 @@ func (m Manager) Ensure(ctx context.Context, run, ticket string) (Workspace, err
 	if err := m.Git.AddWorktree(ctx, m.Repo, w.Path, w.Branch, w.Base); err != nil {
 		return Workspace{}, fmt.Errorf("create worktree: %w", err)
 	}
-	w.State = StateReady
+	w.State = StateCreated
 	if err := m.Store.Upsert(ctx, w); err != nil {
 		return Workspace{}, fmt.Errorf("record ready workspace: %w", err)
 	}
@@ -146,21 +177,87 @@ func branchSuffix(branch string) string {
 // refusal records its reason on the workspace row leaving the run's terminal
 // state untouched — and REQ-workspaces pins it.
 
-// Recover finishes workspaces a crash left mid-creation.
+// Recover reconciles what a crash left behind.
 //
-// Recovery stage 5. A row stamped pending has a worktree that may or may not
-// exist — the row is written first precisely so this is answerable — and
-// AddWorktree is idempotent enough to retry: git refuses a path that already
-// holds one, which is the same outcome as having created it.
+// Recovery stage 5, and the two states recover DIFFERENTLY, which is the whole
+// reason the row is written first:
+//
+//   - A PENDING row whose worktree is absent simply recreates it. Creation was
+//     never proven, so nothing was lost.
+//   - A CREATED row whose worktree is missing surfaces the discrepancy. Proven
+//     state has vanished, and silently recreating it would hide whatever
+//     destroyed it.
+//
+// Either way the recorded path is probed rather than assumed: an existing
+// worktree at that path is adopted, which is what makes no orphan
+// undiscoverable.
 func (m Manager) Recover(ctx context.Context) (int, error) {
+	// Proven state first. A row this pass recreates becomes created, and
+	// checking afterwards would re-examine work recovery had just done —
+	// finding it "vanished" on any probe that has not caught up.
+	created, err := m.Store.Created(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list created workspaces: %w", err)
+	}
+	for _, w := range created {
+		here, err := m.probe(w.Path)
+		if err != nil {
+			return 0, err
+		}
+		if !here {
+			return 0, fmt.Errorf(
+				"workspace %s for %s recorded created at %s, which no longer exists: "+
+					"proven state has vanished", w.Run, w.Ticket, w.Path)
+		}
+	}
+
 	pending, err := m.Store.Pending(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list pending workspaces: %w", err)
 	}
 	for _, w := range pending {
+		here, err := m.probe(w.Path)
+		if err != nil {
+			return 0, err
+		}
+		if here {
+			// Adopted. The row promised this path and something is at it, so
+			// creation in fact succeeded and only the write did not.
+			w.State = StateCreated
+			if err := m.Store.Upsert(ctx, w); err != nil {
+				return 0, fmt.Errorf("adopt workspace %s: %w", w.Run, err)
+			}
+			continue
+		}
 		if _, err := m.Ensure(ctx, w.Run, w.Ticket); err != nil {
 			return 0, fmt.Errorf("recover workspace %s: %w", w.Run, err)
 		}
 	}
 	return len(pending), nil
 }
+
+// probe asks whether anything is at a recorded path.
+//
+// Absent a Prober the answer is "no", which makes Ensure recreate — the
+// behaviour before probing existed, and the safe one: git refuses a path that
+// already holds a worktree, so a wrong "no" fails loudly rather than
+// clobbering.
+func (m Manager) probe(path string) (bool, error) {
+	if m.Probe == nil {
+		return false, nil
+	}
+	here, err := m.Probe.Exists(path)
+	if err != nil {
+		return false, fmt.Errorf("probe %s: %w", path, err)
+	}
+	return here, nil
+}
+
+// Disposal lands with the orchestrator's merge and completion path in M4.
+//
+// Deliberately absent rather than written ahead: kriya's lint gate runs
+// deadcode with no allowlist, so a method whose only caller does not exist yet
+// is unreachable production code and fails the gate. REQ-workspaces pins the
+// behaviour it must have — cleanup can NEVER destroy unmerged work, a refusal
+// records its cause on the workspace row, and the run's terminal state is left
+// untouched — and the row already carries CleanupError and RemovedAt for it.

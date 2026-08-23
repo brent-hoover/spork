@@ -49,6 +49,8 @@ type world struct {
 	gates *gateWorld
 	// ctxw is the context-assembly scenarios' state, nil until one starts.
 	ctxw *contextWorld
+	// ws is the workspace scenarios' state, nil until one starts.
+	ws *workspaceWorld
 }
 
 func newWorld() *world {

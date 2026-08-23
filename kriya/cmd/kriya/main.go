@@ -143,6 +143,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		DefaultBranch: "main",
 		Store:         workspace.SQLStore{DB: db},
 		Git:           workspace.ShellGit{},
+		Probe:         workspace.DirProbe{},
 		Now:           clock.System{},
 	}
 

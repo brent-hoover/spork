@@ -91,6 +91,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerGates(sc, w)
 	registerCoverageAndMutationGates(sc, w)
 	registerContextAssembly(sc, w)
+	registerWorkspaces(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

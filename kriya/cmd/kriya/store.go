@@ -127,6 +127,7 @@ func migrations() []migration {
 		{module: "planner", name: "0004_snapshot_law", stmts: splitSQL(planner.LawMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
+		{module: "workspace", name: "0002_removal", stmts: splitSQL(workspace.RemovalMigration)},
 		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
 		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},

@@ -3,6 +3,7 @@ package workspace_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -29,13 +30,24 @@ func (m *memStore) Find(_ context.Context, run string) (workspace.Workspace, boo
 }
 
 func (m *memStore) Pending(context.Context) ([]workspace.Workspace, error) {
+	return m.inState(workspace.StatePending), nil
+}
+
+func (m *memStore) Created(context.Context) ([]workspace.Workspace, error) {
+	return m.inState(workspace.StateCreated), nil
+}
+
+// inState lists rows in a state that are still expected on disk. Order is by
+// run, because recovery replays in a declared order.
+func (m *memStore) inState(state string) []workspace.Workspace {
 	var out []workspace.Workspace
 	for _, w := range m.rows {
-		if w.State == workspace.StatePending {
+		if w.State == state && !w.Removed() {
 			out = append(out, w)
 		}
 	}
-	return out, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Run < out[j].Run })
+	return out
 }
 
 // fakeGit records what was asked and can be made to fail.
@@ -117,7 +129,7 @@ func TestASuccessorRunForTheSameTicketNeverCollides(t *testing.T) {
 	}
 	// The predecessor's row is untouched.
 	kept, found, _ := store.Find(context.Background(), "run-1")
-	if !found || kept.State != workspace.StateReady {
+	if !found || kept.State != workspace.StateCreated {
 		t.Error("the predecessor's workspace was disturbed")
 	}
 }
@@ -201,5 +213,146 @@ func TestTwoRunsOnOneTicketGetSeparateBranches(t *testing.T) {
 	}
 	if first.Branch == second.Branch || first.Path == second.Path {
 		t.Errorf("two runs share %q at %q", first.Branch, first.Path)
+	}
+}
+
+// fakeProbe answers from a set of paths that "exist".
+type fakeProbe struct {
+	here  map[string]bool
+	err   error
+	asked []string
+}
+
+func (p *fakeProbe) Exists(path string) (bool, error) {
+	p.asked = append(p.asked, path)
+	if p.err != nil {
+		return false, p.err
+	}
+	return p.here[path], nil
+}
+
+func managerWith(store *memStore, git *fakeGit, probe *fakeProbe) workspace.Manager {
+	m := manager(store, git)
+	m.Probe = probe
+	return m
+}
+
+func TestRecoveryAdoptsAWorktreeThatIsAlreadyThere(t *testing.T) {
+	// The row promised this path and something is at it, so creation in fact
+	// succeeded and only the write did not. Recreating would fail on git's own
+	// refusal for no reason.
+	store, git := newMemStore(), &fakeGit{}
+	w, err := manager(store, git).Ensure(context.Background(), "run-1", "KRI-1")
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	// Rewind to the crash window: the row says pending, the worktree exists.
+	w.State = workspace.StatePending
+	if err := store.Upsert(context.Background(), w); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	before := git.added
+	probe := &fakeProbe{here: map[string]bool{w.Path: true}}
+
+	if _, err := managerWith(store, git, probe).Recover(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if git.added != before {
+		t.Error("an existing worktree was recreated instead of adopted")
+	}
+	got, _, err := store.Find(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got.State != workspace.StateCreated {
+		t.Errorf("the adopted row is in state %q", got.State)
+	}
+}
+
+func TestRecoveryRecreatesAPendingWorktreeThatIsAbsent(t *testing.T) {
+	// Creation was never proven, so nothing was lost.
+	store, git := newMemStore(), &fakeGit{}
+	if err := store.Upsert(context.Background(), workspace.Workspace{
+		Run: "run-1", Ticket: "KRI-1", Path: "/gone", Branch: "kriya/KRI-1/abcd1234",
+		Base: "base-sha", State: workspace.StatePending,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	probe := &fakeProbe{here: map[string]bool{}}
+	if _, err := managerWith(store, git, probe).Recover(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if git.added != 1 {
+		t.Errorf("created %d worktrees, want 1", git.added)
+	}
+}
+
+func TestAVanishedCreatedWorktreeSurfacesRatherThanRecreating(t *testing.T) {
+	// Proven state has vanished, and silently recreating it would hide
+	// whatever destroyed it.
+	store, git := newMemStore(), &fakeGit{}
+	if err := store.Upsert(context.Background(), workspace.Workspace{
+		Run: "run-1", Ticket: "KRI-1", Path: "/gone", Branch: "kriya/KRI-1/abcd1234",
+		Base: "base-sha", State: workspace.StateCreated,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	probe := &fakeProbe{here: map[string]bool{}}
+	_, err := managerWith(store, git, probe).Recover(context.Background())
+	if err == nil {
+		t.Fatal("a vanished worktree was passed over in silence")
+	}
+	if !strings.Contains(err.Error(), "/gone") {
+		t.Errorf("the error %q does not name the path", err)
+	}
+	if git.added != 0 {
+		t.Error("the vanished worktree was silently recreated")
+	}
+}
+
+func TestACreatedWorktreeStillThereIsNotADiscrepancy(t *testing.T) {
+	store, git := newMemStore(), &fakeGit{}
+	w, err := manager(store, git).Ensure(context.Background(), "run-1", "KRI-1")
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	probe := &fakeProbe{here: map[string]bool{w.Path: true}}
+	if _, err := managerWith(store, git, probe).Recover(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+}
+
+func TestAProbeThatCannotAnswerIsAnError(t *testing.T) {
+	// "I could not look" is not "it is not there".
+	store, git := newMemStore(), &fakeGit{}
+	if err := store.Upsert(context.Background(), workspace.Workspace{
+		Run: "run-1", Ticket: "KRI-1", Path: "/somewhere", State: workspace.StatePending,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	probe := &fakeProbe{err: errors.New("permission denied")}
+	if _, err := managerWith(store, git, probe).Recover(context.Background()); err == nil {
+		t.Fatal("an unanswerable probe read as an absent worktree")
+	}
+	if git.added != 0 {
+		t.Error("a worktree was created on the strength of a failed probe")
+	}
+}
+
+func TestRecoveryProbesTheRecordedPath(t *testing.T) {
+	// No orphaned worktree is undiscoverable, which only holds if the path
+	// recovery looks at is the one the row promised.
+	store, git := newMemStore(), &fakeGit{}
+	if err := store.Upsert(context.Background(), workspace.Workspace{
+		Run: "run-1", Ticket: "KRI-1", Path: "/promised/path", State: workspace.StatePending,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	probe := &fakeProbe{here: map[string]bool{}}
+	if _, err := managerWith(store, git, probe).Recover(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(probe.asked) != 1 || probe.asked[0] != "/promised/path" {
+		t.Errorf("probed %v", probe.asked)
 	}
 }

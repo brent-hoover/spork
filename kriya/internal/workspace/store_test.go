@@ -18,8 +18,10 @@ func sqlStore(t *testing.T) workspace.SQLStore {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(workspace.Migration); err != nil {
-		t.Fatalf("migrate: %v", err)
+	for _, stmt := range []string{workspace.Migration, workspace.RemovalMigration} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
 	}
 	return workspace.SQLStore{DB: db}
 }
@@ -28,7 +30,7 @@ func TestAWorkspaceSurvivesTheRoundTrip(t *testing.T) {
 	s := sqlStore(t)
 	want := workspace.Workspace{
 		Run: "run-1", Ticket: "T-1", Path: "/w/T-1", Branch: "kriya/T-1/abcd1234",
-		Base: "base-sha", State: workspace.StateReady,
+		Base: "base-sha", State: workspace.StateCreated,
 	}
 	if err := s.Upsert(context.Background(), want); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -61,7 +63,7 @@ func TestUpsertReplacesRatherThanDuplicates(t *testing.T) {
 	if err := s.Upsert(context.Background(), w); err != nil {
 		t.Fatalf("upsert pending: %v", err)
 	}
-	w.State = workspace.StateReady
+	w.State = workspace.StateCreated
 	if err := s.Upsert(context.Background(), w); err != nil {
 		t.Fatalf("upsert ready: %v", err)
 	}
@@ -79,7 +81,7 @@ func TestPendingListsOnlyWhatACrashLeftBehind(t *testing.T) {
 	rows := []workspace.Workspace{
 		{Run: "run-b", Ticket: "T-2", State: workspace.StatePending},
 		{Run: "run-a", Ticket: "T-1", State: workspace.StatePending},
-		{Run: "run-c", Ticket: "T-3", State: workspace.StateReady},
+		{Run: "run-c", Ticket: "T-3", State: workspace.StateCreated},
 	}
 	for _, w := range rows {
 		if err := s.Upsert(context.Background(), w); err != nil {
