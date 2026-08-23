@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	"path/filepath"
 	"sort"
 
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
+	"kriya/internal/owner"
 	"kriya/internal/planner"
 	"kriya/internal/workspace"
 )
@@ -26,6 +28,8 @@ func buildStages(
 	snap planner.Snapshot,
 	commandsFor func(module string) map[string]string,
 	instructions string,
+	po owner.Owner,
+	criteriaFor func(ticket string) []string,
 ) orchestrator.Stages {
 	return orchestrator.Stages{
 		orchestrator.StageWorkspace: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
@@ -64,29 +68,9 @@ func buildStages(
 			return run, err
 		},
 
-		orchestrator.StageGates: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
-			w, found, err := ws.Store.Find(ctx, run.ID)
-			if err != nil {
-				return run, err
-			}
-			if !found {
-				return run, fmt.Errorf("no workspace for run %s", run.ID)
-			}
-			results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.GatedBase, w.Path, commandsFor(run.Ticket))
-			if err != nil {
-				return run, err
-			}
-			run.Attempt++
-			for _, result := range results {
-				if !result.Passed {
-					// A failing gate is a RESULT, and the table sends it back
-					// to the dev loop — the findings are the next instruction.
-					// Returning an error here would park the run instead.
-					return run, fmt.Errorf("gate %s failed for %s", result.Gate, result.Module)
-				}
-			}
-			return run, nil
-		},
+		orchestrator.StageValidate: validateStage(ws, po, criteriaFor),
+
+		orchestrator.StageGates: gateStage(ws, runner, commandsFor),
 	}
 }
 
@@ -124,4 +108,82 @@ func modulesFor(snap planner.Snapshot, ticket string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// gateStage runs the whole chain for a run's module.
+func gateStage(
+	ws workspace.Manager, runner gates.Runner, commandsFor func(string) map[string]string,
+) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		w, found, err := ws.Store.Find(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		if !found {
+			return run, fmt.Errorf("no workspace for run %s", run.ID)
+		}
+		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.GatedBase, w.Path,
+			commandsFor(run.Ticket))
+		if err != nil {
+			return run, err
+		}
+		run.Attempt++
+		for _, result := range results {
+			if !result.Passed {
+				// A failing gate is a RESULT, and the table sends it back to
+				// the dev loop — the findings are the next instruction.
+				// Returning an error here would park the run instead.
+				return run, fmt.Errorf("gate %s failed for %s", result.Gate, result.Module)
+			}
+		}
+		return run, nil
+	}
+}
+
+// validateStage runs the product owner over a fully gated run.
+func validateStage(
+	ws workspace.Manager, po owner.Owner, criteriaFor func(string) []string,
+) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		w, found, err := ws.Store.Find(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		if !found {
+			return run, fmt.Errorf("no workspace for run %s", run.ID)
+		}
+		v, err := po.Validate(ctx, owner.Request{
+			Build: run.ID, Module: run.Ticket, Ticket: run.Ticket,
+			Commit: run.GatedBase, Attempt: run.Attempt,
+			Criteria: criteriaFor(run.Ticket), Workspace: w.Path,
+			SystemFile: systemFileFor(w.Path),
+		})
+		if err != nil {
+			return run, err
+		}
+		if !v.Passed() {
+			// A RESULT, not an error: the table sends it back to the dev loop,
+			// and the notes are what the agent is told to act on.
+			return run, fmt.Errorf("product owner returned %s: %s", v.Verdict, v.Notes)
+		}
+		return run, nil
+	}
+}
+
+// systemFileFor names the context bundle a workspace holds.
+//
+// The SAME file the dev agent read. The PO judging an AC's intent needs the
+// whole spec's law, and re-assembling it here could show the PO a different
+// spec than the one the work was done against.
+func systemFileFor(workspace string) string {
+	return filepath.Join(workspace, ".kriya", "context.json")
+}
+
+// criteriaFromTickets maps a ticket title to the criteria it cites.
+func criteriaFromTickets(tickets []planner.Ticket) func(string) []string {
+	byTitle := make(map[string][]string, len(tickets))
+	for _, t := range tickets {
+		byTitle[t.Title] = t.Criteria
+	}
+	return func(ticket string) []string { return byTitle[ticket] }
 }

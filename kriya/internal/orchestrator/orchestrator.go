@@ -46,6 +46,7 @@ const (
 	StageWorkspace Stage = "workspace"
 	StageDevLoop   Stage = "dev-loop"
 	StageGates     Stage = "gates"
+	StageValidate  Stage = "po-validation"
 )
 
 // BuildRun is one ticket's journey through the chain.
@@ -92,6 +93,11 @@ var Table = []Transition{
 	// findings ARE the next instruction, and the loop is how they get acted
 	// on. Parking would need an operator to relay what the tools already said.
 	{From: StateGates, Stage: StageGates, OnOK: StatePOValidation, OnFail: StateDevLoop},
+	// A PO rejection returns to the dev loop for the same reason a failing
+	// gate does: the findings are the next instruction. AC-po-verdict says so
+	// explicitly — fail returns the findings to the dev agent and the pair
+	// loop resumes.
+	{From: StatePOValidation, Stage: StageValidate, OnOK: StateReviewSubmitted, OnFail: StateDevLoop},
 }
 
 // Lookup returns the transition for a state.

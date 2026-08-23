@@ -6,11 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"encoding/json"
+
+	"kriya/internal/agent"
 	"kriya/internal/clock"
 	"kriya/internal/devloop"
 	"kriya/internal/fakes"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
+	"kriya/internal/owner"
 	"kriya/internal/planner"
 	"kriya/internal/workspace"
 )
@@ -32,7 +36,12 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 	}
 	ws := workspaceManagerOn(t, db)
 	runner := gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}}
-	return buildStages(ws, loop, runner, planner.Snapshot{}, commandsFor, ""), ws
+	return buildStages(ws, loop, runner, planner.Snapshot{}, commandsFor, "",
+		owner.Owner{
+			Agent: &fakes.Agent{Replies: poReply(owner.VerdictSatisfied)},
+			Store: owner.SQLStore{DB: db}, Gates: runner, Now: clock.System{},
+		},
+		func(string) []string { return []string{"AC-x"} }), ws
 }
 
 func quietLoop() devloop.Loop {
@@ -145,5 +154,49 @@ func TestAmbiguityResolvesToNothingRatherThanAGuess(t *testing.T) {
 	}}
 	if got := commandsFromSnapshot(snap)("neither"); got != nil {
 		t.Errorf("guessed %v for a name matching no module", got)
+	}
+}
+
+// poReply is a structured PO verdict.
+func poReply(verdict string) []agent.Result {
+	return []agent.Result{{
+		SessionID: "po-1", Model: "test-model",
+		Structured: json.RawMessage(
+			`{"verdict":"` + verdict + `","notes":"every AC has a test that exercises it"}`),
+	}}
+}
+
+func TestTheProductOwnerRefusesUngatedCode(t *testing.T) {
+	// AC-po-position: validation cannot be skipped OR reordered around a gap,
+	// so the precondition is the owner's to check rather than the caller's to
+	// remember.
+	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	run, err := stages[orchestrator.StageWorkspace](context.Background(),
+		orchestrator.BuildRun{ID: "run-po-1", Ticket: "T-1"})
+	if err != nil {
+		t.Fatalf("workspace stage: %v", err)
+	}
+	// No gate has run at this commit.
+	_, err = stages[orchestrator.StageValidate](context.Background(), run)
+	if err == nil {
+		t.Fatal("the product owner validated a run with no gate results")
+	}
+	if !strings.Contains(err.Error(), "test gate has not passed") {
+		t.Errorf("got %v, want the earliest missing gate named", err)
+	}
+}
+
+func TestAPassingProductOwnerAdvancesTheRun(t *testing.T) {
+	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	run, err := stages[orchestrator.StageWorkspace](context.Background(),
+		orchestrator.BuildRun{ID: "run-po-2", Ticket: "T-1"})
+	if err != nil {
+		t.Fatalf("workspace stage: %v", err)
+	}
+	if run, err = stages[orchestrator.StageGates](context.Background(), run); err != nil {
+		t.Fatalf("gate stage: %v", err)
+	}
+	if _, err := stages[orchestrator.StageValidate](context.Background(), run); err != nil {
+		t.Fatalf("validation stage: %v", err)
 	}
 }

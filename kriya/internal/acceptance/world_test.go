@@ -55,6 +55,8 @@ type world struct {
 	threads *threadWorld
 	// sa is the architect scenarios' state, nil until one starts.
 	sa *saWorld
+	// po is the product-owner scenarios' state, nil until one starts.
+	po *poWorld
 }
 
 func newWorld() *world {

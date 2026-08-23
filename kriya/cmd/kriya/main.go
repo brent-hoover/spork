@@ -27,6 +27,7 @@ import (
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
+	"kriya/internal/owner"
 	"kriya/internal/planner"
 	"kriya/internal/recovery"
 	"kriya/internal/reviewbridge"
@@ -189,12 +190,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			return orchestrator.BuildRun{}, err
 		}
 		loop := devloop.Loop{
-			Agent: agent.Recording{
-				Inner:  agent.Claude{Tiers: tiers},
-				Ledger: agent.Ledger{DB: db, Now: clock.System{}},
-				Tiers:  tiers, Now: clock.System{},
-				Scope: agent.Scope{Build: ticket.Title},
-			},
+			Agent: recorder(db, tiers, ticket.Title),
 			Store: devloop.SQLStore{DB: db},
 			Context: kctx.Assembler{
 				Store:     kctx.SQLBundles{DB: db},
@@ -203,12 +199,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			},
 			Threads: sutraThreads{c: trackerclient.New(sutraURL())},
 			Architect: architect.Architect{
-				Agent: agent.Recording{
-					Inner:  agent.Claude{Tiers: tiers},
-					Ledger: agent.Ledger{DB: db, Now: clock.System{}},
-					Tiers:  tiers, Now: clock.System{},
-					Scope: agent.Scope{Build: ticket.Title},
-				},
+				Agent: recorder(db, tiers, ticket.Title),
 				Store: architect.SQLStore{DB: db},
 				Now:   clock.System{},
 			},
@@ -216,15 +207,22 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			Review: reviews,
 			Now:    clock.System{},
 		}
+		runner := gates.Runner{
+			Store:  gates.SQLStore{DB: db},
+			Review: reviewbridge.SQLStore{DB: db},
+			Now:    clock.System{},
+		}
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
-			Stages: buildStages(ws, loop,
-				gates.Runner{
-					Store:  gates.SQLStore{DB: db},
-					Review: reviewbridge.SQLStore{DB: db},
-					Now:    clock.System{},
+			Stages: buildStages(ws, loop, runner, snap, commandsFromSnapshot(snap),
+				operatorInstructions(target),
+				owner.Owner{
+					Agent: recorder(db, tiers, ticket.Title),
+					Store: owner.SQLStore{DB: db},
+					Gates: runner,
+					Now:   clock.System{},
 				},
-				snap, commandsFromSnapshot(snap), operatorInstructions(target)),
+				criteriaFromTickets([]planner.Ticket{ticket})),
 			Now: clock.System{},
 		}
 		run := orchestrator.BuildRun{
@@ -346,6 +344,21 @@ func verifier() specverify.CLI {
 		return specverify.CLI{Argv: []string{"uv", "run", "avspec"}, WorkDir: dir}
 	}
 	return specverify.CLI{Argv: []string{"avspec"}}
+}
+
+// recorder wraps the claude seam in the invocation ledger.
+//
+// Every role gets the same wrapper: AC-tier-observed wants the model that
+// ACTUALLY ran recorded for each invocation, and a role wired without the
+// ledger would spend tokens nothing accounted for.
+func recorder(db *sql.DB, tiers agent.Tiers, build string) agent.Recording {
+	return agent.Recording{
+		Inner:  agent.Claude{Tiers: tiers},
+		Ledger: agent.Ledger{DB: db, Now: clock.System{}},
+		Tiers:  tiers,
+		Now:    clock.System{},
+		Scope:  agent.Scope{Build: build},
+	}
 }
 
 // roundLimit is the configured pair-loop round limit.

@@ -193,3 +193,34 @@ func (r Runner) RunChain(ctx context.Context, build, module, commit, dir string,
 	}
 	return out, nil
 }
+
+// AllPassed reports whether every gate in the chain passed at a commit, and
+// names the first that did not.
+//
+// The chain is walked in ORDER so the name returned is the earliest gap. A
+// caller told "mutation" when test also failed would fix the wrong thing.
+func (r Runner) AllPassed(ctx context.Context, build, module, commit string) (bool, string, error) {
+	for _, gate := range Chain {
+		passed, err := r.Store.Passed(ctx, build, module, gate, commit)
+		if err != nil {
+			return false, "", fmt.Errorf("read %s result: %w", gate, err)
+		}
+		if !passed {
+			return false, gate, nil
+		}
+	}
+	if r.Review == nil {
+		return true, "", nil
+	}
+	// The review is not a gate kriya runs, so it is asked about — and it comes
+	// FIRST in the constitution's chain, which is why a missing review is
+	// reported as the gap even when every gate result is present.
+	reviewed, err := r.Review.PassedAt(ctx, build, commit)
+	if err != nil {
+		return false, "", fmt.Errorf("read review verdict at %s: %w", commit, err)
+	}
+	if !reviewed {
+		return false, "review", nil
+	}
+	return true, "", nil
+}

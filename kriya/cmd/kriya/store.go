@@ -12,6 +12,7 @@ import (
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
+	"kriya/internal/owner"
 	"kriya/internal/planner"
 	"kriya/internal/reviewbridge"
 	"kriya/internal/workspace"
@@ -132,6 +133,7 @@ func migrations() []migration {
 		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
 		{module: "orchestrator", name: "0002_round_limit", stmts: splitSQL(orchestrator.RoundLimitMigration)},
 		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
+		{module: "owner", name: "0001_validation", stmts: splitSQL(owner.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
 		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},
 		{module: "devloop", name: "0002_dev_session_rounds", stmts: splitSQL(devloop.RoundsMigration)},

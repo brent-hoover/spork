@@ -38,6 +38,7 @@ func recordingStages(log *[]orchestrator.Stage, failures map[orchestrator.Stage]
 	s := orchestrator.Stages{}
 	for _, stage := range []orchestrator.Stage{
 		orchestrator.StageWorkspace, orchestrator.StageDevLoop, orchestrator.StageGates,
+		orchestrator.StageValidate,
 	} {
 		stage := stage
 		s[stage] = func(_ context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
@@ -138,12 +139,12 @@ func TestATerminalStateIsNotAnError(t *testing.T) {
 	// broke.
 	store := newMemStore()
 	var log []orchestrator.Stage
-	id := seed(t, store, orchestrator.StatePOValidation)
+	id := seed(t, store, orchestrator.StateReviewSubmitted)
 	run, err := orch(store, recordingStages(&log, nil)).Advance(context.Background(), id)
 	if err != nil {
 		t.Fatalf("a terminal state must not error: %v", err)
 	}
-	if run.State != orchestrator.StatePOValidation {
+	if run.State != orchestrator.StateReviewSubmitted {
 		t.Errorf("state changed to %q", run.State)
 	}
 	if len(log) != 0 {
@@ -159,11 +160,12 @@ func TestDriveWalksTheWholeTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}
-	if run.State != orchestrator.StatePOValidation {
-		t.Errorf("settled in %q, want po-validation", run.State)
+	if run.State != orchestrator.StateReviewSubmitted {
+		t.Errorf("settled in %q, want review-submitted", run.State)
 	}
 	want := []orchestrator.Stage{
 		orchestrator.StageWorkspace, orchestrator.StageDevLoop, orchestrator.StageGates,
+		orchestrator.StageValidate,
 	}
 	if len(log) != len(want) {
 		t.Fatalf("ran %v, want %v", log, want)
@@ -182,8 +184,8 @@ func TestDriveRefusesToLoopForever(t *testing.T) {
 	var log []orchestrator.Stage
 	id := seed(t, store, orchestrator.StateGates)
 	stages := recordingStages(&log, map[orchestrator.Stage]error{})
-	// gates -> po-validation is terminal, so force the cycle the guard exists
-	// for by failing gates every round: gates -> dev-loop -> gates -> ...
+	// Force the cycle the guard exists for by failing gates every round:
+	// gates -> dev-loop -> gates -> ...
 	stages[orchestrator.StageGates] = func(_ context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 		return run, errors.New("always fails")
 	}
