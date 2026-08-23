@@ -20,7 +20,7 @@ import (
 // test first because coverage is judged only over a passing suite; mutation
 // last because it is the most expensive and only meaningful once everything
 // else holds.
-var Chain = []string{"test", "structure", "typing", "arch", "coverage", "mutation"}
+var Chain = []string{"test", "structure", "typing", "arch", "branch-coverage", "mutation"}
 
 // commandFor maps a gate to the stack command that implements it.
 //
@@ -29,7 +29,7 @@ var Chain = []string{"test", "structure", "typing", "arch", "coverage", "mutatio
 // against the requirement rather than against one project's tooling.
 var commandFor = map[string]string{
 	"test": "test", "structure": "lint", "typing": "typecheck",
-	"arch": "arch", "coverage": "coverage", "mutation": "mutation",
+	"arch": "arch", "branch-coverage": "coverage", "mutation": "mutation",
 }
 
 // Result is one gate's outcome, pinned to the commit it ran at.
@@ -67,6 +67,16 @@ type detail struct {
 	Duration string `json:"duration"`
 }
 
+// ReviewPass reports whether the pair loop's review passed at a commit.
+//
+// Declared here rather than imported: the constitution puts the review pass
+// FIRST in the chain, so the gate runner has to be able to ask — but a gate
+// package that imported the review bridge would invert the dependency the
+// composition root exists to keep flat.
+type ReviewPass interface {
+	PassedAt(ctx context.Context, run, commit string) (bool, error)
+}
+
 // Runner executes gates against a workspace.
 type Runner struct {
 	Store Store
@@ -74,6 +84,10 @@ type Runner struct {
 	// Limit caps captured output. A mutation run can print megabytes, and a
 	// result nobody can open is a result nobody reads.
 	Limit int
+	// Review answers whether the pair loop's review passed. Nil runs the
+	// chain without that precondition, which is what a module-level test of
+	// the other five gates wants.
+	Review ReviewPass
 }
 
 // Run executes one gate and records the outcome.
@@ -155,6 +169,19 @@ func truncate(s string, limit int) string {
 func (r Runner) RunChain(ctx context.Context, build, module, commit, dir string, commands map[string]string) ([]Result, error) {
 	var out []Result
 	for _, gate := range Chain {
+		// AC-mutation-after-review: mutation is the most expensive gate and
+		// only meaningful once everything else holds, the review pass
+		// included. Every earlier gate stops the chain by failing; the review
+		// is not a gate kriya runs, so it is asked about instead.
+		if gate == "mutation" && r.Review != nil {
+			passed, err := r.Review.PassedAt(ctx, build, commit)
+			if err != nil {
+				return out, fmt.Errorf("read review verdict at %s: %w", commit, err)
+			}
+			if !passed {
+				return out, nil
+			}
+		}
 		result, err := r.Run(ctx, build, module, gate, commit, dir, commands)
 		if err != nil {
 			return out, err

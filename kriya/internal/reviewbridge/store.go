@@ -134,3 +134,20 @@ func (s SQLStore) Unsettled(ctx context.Context) ([]Round, error) {
 	}
 	return out, nil
 }
+
+// PassedAt reports whether a review round on this run went clean at a commit.
+//
+// The round is the durable record the gate chain reads (REQ-pair-loop). It is
+// keyed by run AND commit: a pass on an earlier commit says nothing about the
+// branch head, which is the whole point of reviewing every commit.
+func (s SQLStore) PassedAt(ctx context.Context, run, commit string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT count(*) FROM review_round
+		   WHERE run = ? AND commit_sha = ? AND verdict = ?`,
+		run, commit, VerdictClean).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("read review verdict: %w", err)
+	}
+	return n > 0, nil
+}

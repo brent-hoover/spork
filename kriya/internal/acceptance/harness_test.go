@@ -89,6 +89,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerDecompose(sc, w)
 	registerPairLoop(sc, w)
 	registerGates(sc, w)
+	registerCoverageAndMutationGates(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

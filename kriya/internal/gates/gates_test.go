@@ -98,7 +98,7 @@ func TestTheToolsOutputIsCapturedForTheDevAgent(t *testing.T) {
 	store := &memStore{}
 	cmds := allPassing()
 	cmds["coverage"] = "echo 'uncovered: foo.go:12 arm false'"
-	r, err := runner(store).Run(context.Background(), "b1", "MOD-a", "coverage", "c1", t.TempDir(), cmds)
+	r, err := runner(store).Run(context.Background(), "b1", "MOD-a", "branch-coverage", "c1", t.TempDir(), cmds)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

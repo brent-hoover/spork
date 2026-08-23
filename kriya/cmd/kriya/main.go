@@ -198,7 +198,11 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
 			Stages: buildStages(ws, loop,
-				gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}},
+				gates.Runner{
+					Store:  gates.SQLStore{DB: db},
+					Review: reviewbridge.SQLStore{DB: db},
+					Now:    clock.System{},
+				},
 				snap, commandsFromSnapshot(snap)),
 			Now: clock.System{},
 		}

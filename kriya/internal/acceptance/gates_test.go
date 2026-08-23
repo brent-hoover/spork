@@ -66,6 +66,24 @@ type gateWorld struct {
 	commit  string
 	modules map[string]map[string]string
 	results map[string]gates.Result
+	// chainResults is what RunChain reported, for the scenarios about which
+	// gates ran at all.
+	chainResults []gates.Result
+	review       *reviewStub
+}
+
+// chain runs the whole chain for every declared module.
+func (g *gateWorld) chain() ([]gates.Result, error) {
+	var out []gates.Result
+	for module, cmds := range g.modules {
+		results, err := g.runner.RunChain(context.Background(), "run-1", module,
+			g.commit, g.dir, cmds)
+		if err != nil {
+			return nil, fmt.Errorf("chain for %s: %w", module, err)
+		}
+		out = append(out, results...)
+	}
+	return out, nil
 }
 
 func (w *world) newGates() (*gateWorld, error) {
@@ -463,4 +481,315 @@ func onlyModule(g *gateWorld) string {
 		return module
 	}
 	return ""
+}
+
+// reviewStub answers the gate runner's review question.
+type reviewStub struct {
+	passedAt map[string]bool
+	asked    []string
+}
+
+func (r *reviewStub) PassedAt(_ context.Context, _, commit string) (bool, error) {
+	r.asked = append(r.asked, commit)
+	return r.passedAt[commit], nil
+}
+
+func registerCoverageAndMutationGates(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^the branch-coverage gate runs the module's snapshot-resolved coverage command$`, func() error {
+		return w.gates.run("branch-coverage")
+	})
+
+	sc.Step(`^the gate fails for "([^"]*)" when that command fails$`, func(module string) error {
+		g := w.gates
+		g.modules[module] = commandsFor("coverage")
+		if err := g.run("branch-coverage"); err != nil {
+			return err
+		}
+		return mustPass(g, module, false)
+	})
+
+	sc.Step(`^the gate passes for "([^"]*)" when that command succeeds$`, func(module string) error {
+		g := w.gates
+		g.modules[module] = commandsFor()
+		if err := g.run("branch-coverage"); err != nil {
+			return err
+		}
+		return mustPass(g, module, true)
+	})
+
+	sc.Step(`^kriya counts no arms and applies no threshold of its own$`, func() error {
+		// A source scan, because the claim is about what kriya does NOT do.
+		// Parsing a coverage number anywhere in the gate package would mean
+		// kriya deciding what a coverage tool means.
+		return noThresholdIn("../gates")
+	})
+
+	sc.Step(`^a target declaring a floor is judged against that floor$`, func() error {
+		return judgedByItsOwnCommand(w.gates,
+			`test "$FLOOR" -le 75 && echo 'at or above the floor'`, true)
+	})
+
+	sc.Step(`^a target declaring no floor is judged against every arm$`, func() error {
+		return judgedByItsOwnCommand(w.gates,
+			`echo 'one arm uncovered' >&2; exit 1`, false)
+	})
+
+	sc.Step(`^the module's test command fails at "([^"]*)"$`, func(commit string) error {
+		g := w.gates
+		g.commit = commit
+		for module := range g.modules {
+			g.modules[module] = commandsFor("test")
+		}
+		results, err := g.chain()
+		if err != nil {
+			return err
+		}
+		g.chainResults = results
+		return nil
+	})
+
+	sc.Step(`^the test gate fails as its own commit-pinned GateResult with gate "([^"]*)"$`,
+		func(gate string) error {
+			g := w.gates
+			result, ok := g.store.find(onlyModule(g), gate, g.commit)
+			if !ok {
+				return fmt.Errorf("no %s result at %s", gate, g.commit)
+			}
+			if result.Passed {
+				return errors.New("a failing test command passed the test gate")
+			}
+			return nil
+		})
+
+	sc.Step(`^the chain fails regardless of what coverage would report$`, func() error {
+		g := w.gates
+		for _, r := range g.chainResults {
+			if r.Gate == "branch-coverage" {
+				return errors.New("coverage was judged over a failing suite")
+			}
+		}
+		if _, ok := g.store.find(onlyModule(g), "branch-coverage", g.commit); ok {
+			return errors.New("a coverage result was recorded for a failing suite")
+		}
+		return nil
+	})
+
+	sc.Step(`^the test command passes at "([^"]*)"$`, func(commit string) error {
+		g := w.gates
+		g.commit = commit
+		for module := range g.modules {
+			g.modules[module] = commandsFor()
+		}
+		results, err := g.chain()
+		if err != nil {
+			return err
+		}
+		g.chainResults = results
+		return nil
+	})
+
+	sc.Step(`^coverage is judged over the passing suite$`, func() error {
+		g := w.gates
+		var sawTest bool
+		for _, r := range g.chainResults {
+			if r.Gate == "test" {
+				sawTest = r.Passed
+			}
+			if r.Gate == "branch-coverage" {
+				if !sawTest {
+					return errors.New("coverage ran before the test gate passed")
+				}
+				return nil
+			}
+		}
+		return errors.New("coverage never ran")
+	})
+
+	sc.Step(`^the coverage gate ran for module "([^"]*)" at commit "([^"]*)"$`,
+		func(module, commit string) error {
+			g, err := w.newGates()
+			if err != nil {
+				return err
+			}
+			g.commit = commit
+			cmds := commandsFor()
+			cmds["coverage"] = "echo 'uncovered: api.go:31 arm false'"
+			g.modules[module] = cmds
+			return g.run("branch-coverage")
+		})
+
+	sc.Step(`^the uncovered arms are named in the result's detail for the dev agent$`, func() error {
+		result := w.gates.results[onlyModule(w.gates)]
+		if !strings.Contains(string(result.Detail), "api.go:31") {
+			return fmt.Errorf("the tool's own report is not in detail: %s", result.Detail)
+		}
+		return nil
+	})
+
+	sc.Step(`^a run whose head commit "([^"]*)" has not yet passed the review gate$`,
+		func(commit string) error {
+			g, err := w.newGates()
+			if err != nil {
+				return err
+			}
+			g.commit = commit
+			g.modules["store"] = commandsFor()
+			g.review = &reviewStub{passedAt: map[string]bool{}}
+			g.runner.Review = g.review
+			results, err := g.chain()
+			if err != nil {
+				return err
+			}
+			g.chainResults = results
+			return nil
+		})
+
+	sc.Step(`^the mutation gate does not run$`, func() error {
+		return mutationDidNotRun(w.gates)
+	})
+
+	sc.Step(`^the mutation gate still does not run$`, func() error {
+		return mutationDidNotRun(w.gates)
+	})
+
+	sc.Step(`^the review gate passes at "([^"]*)" but the branch-coverage gate has not$`,
+		func(commit string) error {
+			g := w.gates
+			g.review.passedAt[commit] = true
+			g.modules["store"] = commandsFor("coverage")
+			results, err := g.chain()
+			if err != nil {
+				return err
+			}
+			g.chainResults = results
+			return nil
+		})
+
+	sc.Step(`^the test, structure, typing, arch, and branch-coverage gates all pass at "([^"]*)"$`,
+		func(commit string) error {
+			g := w.gates
+			g.review.passedAt[commit] = true
+			g.modules["store"] = commandsFor()
+			results, err := g.chain()
+			if err != nil {
+				return err
+			}
+			g.chainResults = results
+			return nil
+		})
+
+	sc.Step(`^each touched module's snapshot-resolved mutation command runs against "([^"]*)"$`,
+		func(commit string) error {
+			g := w.gates
+			for module := range g.modules {
+				result, ok := g.store.find(module, "mutation", commit)
+				if !ok {
+					return fmt.Errorf("mutation never ran for %s at %s", module, commit)
+				}
+				if err := ranCommand(result, g.modules[module]["mutation"]); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+	sc.Step(`^the mutation command reports surviving mutants for module "([^"]*)"$`,
+		func(module string) error {
+			g, err := w.newGates()
+			if err != nil {
+				return err
+			}
+			g.commit = "C2"
+			cmds := commandsFor()
+			cmds["mutation"] = "echo 'LIVED CONDITIONALS_NEGATION at store.go:44'; exit 1"
+			g.modules[module] = cmds
+			return g.run("mutation")
+		})
+
+	sc.Step(`^the gate fails for "([^"]*)"$`, func(module string) error {
+		return mustPass(w.gates, module, false)
+	})
+
+	sc.Step(`^the survivors are returned to the dev agent as named test gaps to kill$`, func() error {
+		result := w.gates.results[onlyModule(w.gates)]
+		if !strings.Contains(string(result.Detail), "store.go:44") {
+			return fmt.Errorf("the survivors are not named in detail: %s", result.Detail)
+		}
+		return nil
+	})
+
+	sc.Step(`^the result upserts as a GateResult with gate "([^"]*)" pinned to the commit$`,
+		func(gate string) error {
+			return pinnedTo(w.gates, gate, w.gates.commit)
+		})
+
+	sc.Step(`^a run with zero survivors passes the gate$`, func() error {
+		g := w.gates
+		module := onlyModule(g)
+		g.modules[module] = commandsFor()
+		if err := g.run("mutation"); err != nil {
+			return err
+		}
+		return mustPass(g, module, true)
+	})
+}
+
+// mutationDidNotRun requires no mutation result at the current commit.
+func mutationDidNotRun(g *gateWorld) error {
+	for module := range g.modules {
+		if _, ok := g.store.find(module, "mutation", g.commit); ok {
+			return fmt.Errorf("mutation ran for %s before its preconditions held", module)
+		}
+	}
+	for _, r := range g.chainResults {
+		if r.Gate == "mutation" {
+			return errors.New("the chain reported a mutation result")
+		}
+	}
+	return nil
+}
+
+// judgedByItsOwnCommand replaces the coverage command and checks the verdict
+// follows it rather than any opinion of kriya's.
+func judgedByItsOwnCommand(g *gateWorld, command string, wantPass bool) error {
+	module := onlyModule(g)
+	cmds := commandsFor()
+	cmds["coverage"] = "FLOOR=75; " + command
+	g.modules[module] = cmds
+	if err := g.run("branch-coverage"); err != nil {
+		return err
+	}
+	return mustPass(g, module, wantPass)
+}
+
+// noThresholdIn reports whether the package decides a coverage verdict itself.
+func noThresholdIn(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", dir, err)
+	}
+	banned := []string{"threshold", "percent", "ParseFloat", "coverageOf", "arms"}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") ||
+			strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			code := line
+			if i := strings.Index(code, "//"); i >= 0 {
+				code = code[:i]
+			}
+			for _, word := range banned {
+				if strings.Contains(strings.ToLower(code), strings.ToLower(word)) {
+					return fmt.Errorf("%s decides a coverage verdict: %s",
+						e.Name(), strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+	return nil
 }
