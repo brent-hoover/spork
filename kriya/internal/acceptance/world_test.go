@@ -53,6 +53,8 @@ type world struct {
 	ws *workspaceWorld
 	// threads is the thread-capture scenarios' state, nil until one starts.
 	threads *threadWorld
+	// sa is the architect scenarios' state, nil until one starts.
+	sa *saWorld
 }
 
 func newWorld() *world {

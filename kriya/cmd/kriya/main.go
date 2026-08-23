@@ -17,7 +17,10 @@ import (
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 
+	"strconv"
+
 	"kriya/internal/agent"
+	"kriya/internal/architect"
 	"kriya/internal/cli"
 	"kriya/internal/clock"
 	kctx "kriya/internal/context"
@@ -199,9 +202,19 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 				Now:       clock.System{},
 			},
 			Threads: sutraThreads{c: trackerclient.New(sutraURL())},
-			Commit:  workspace.ShellGit{},
-			Review:  reviews,
-			Now:     clock.System{},
+			Architect: architect.Architect{
+				Agent: agent.Recording{
+					Inner:  agent.Claude{Tiers: tiers},
+					Ledger: agent.Ledger{DB: db, Now: clock.System{}},
+					Tiers:  tiers, Now: clock.System{},
+					Scope: agent.Scope{Build: ticket.Title},
+				},
+				Store: architect.SQLStore{DB: db},
+				Now:   clock.System{},
+			},
+			Commit: workspace.ShellGit{},
+			Review: reviews,
+			Now:    clock.System{},
 		}
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
@@ -217,6 +230,9 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		run := orchestrator.BuildRun{
 			ID: uuid.NewString(), Ticket: ticket.Title,
 			Plan: target, State: orchestrator.StateQueued,
+			// Snapshotted here, at creation. Changing KRIYA_ROUND_LIMIT later
+			// affects only runs created after the change.
+			RoundLimit: roundLimit(),
 		}
 		if err := o.Store.Upsert(ctx, run); err != nil {
 			return orchestrator.BuildRun{}, err
@@ -330,6 +346,24 @@ func verifier() specverify.CLI {
 		return specverify.CLI{Argv: []string{"uv", "run", "avspec"}, WorkDir: dir}
 	}
 	return specverify.CLI{Argv: []string{"avspec"}}
+}
+
+// roundLimit is the configured pair-loop round limit.
+//
+// Read once per run and snapshotted onto it. An unparseable value is reported
+// and the default stands: a build engine that refused to start over a typo in
+// an optional tuning knob would be worse than one that says so.
+func roundLimit() int {
+	raw := os.Getenv("KRIYA_ROUND_LIMIT")
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		fmt.Fprintf(os.Stderr, "kriya: ignoring KRIYA_ROUND_LIMIT=%q\n", raw)
+		return 0
+	}
+	return n
 }
 
 // sutraURL is where the tracker lives.

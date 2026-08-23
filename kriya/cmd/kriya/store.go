@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"kriya/internal/agent"
+	"kriya/internal/architect"
 	kctx "kriya/internal/context"
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
@@ -129,6 +130,8 @@ func migrations() []migration {
 		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
 		{module: "workspace", name: "0002_removal", stmts: splitSQL(workspace.RemovalMigration)},
 		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
+		{module: "orchestrator", name: "0002_round_limit", stmts: splitSQL(orchestrator.RoundLimitMigration)},
+		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
 		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},
 		{module: "devloop", name: "0002_dev_session_rounds", stmts: splitSQL(devloop.RoundsMigration)},

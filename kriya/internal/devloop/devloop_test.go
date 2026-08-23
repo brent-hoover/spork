@@ -2,12 +2,14 @@ package devloop_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"kriya/internal/architect"
 	"kriya/internal/devloop"
 	"kriya/internal/fakes"
 	"kriya/internal/reviewbridge"
@@ -472,4 +474,180 @@ func (f *failOnRound) Commit(context.Context, string, string) (string, error) {
 		return "", errors.New("index.lock exists")
 	}
 	return "sha-" + strconv.Itoa(f.calls), nil
+}
+
+// fakeArchitect records impasses and can hand back a direction.
+type fakeArchitect struct {
+	resolved  []architect.Intervention
+	direction string
+	resumeErr error
+	resumed   int
+}
+
+func (f *fakeArchitect) Resolve(
+	_ context.Context, build, ticket, trigger string, findings []string, _ string,
+) (architect.Intervention, error) {
+	history, err := json.Marshal(findings)
+	if err != nil {
+		return architect.Intervention{}, err
+	}
+	in := architect.Intervention{
+		Build: build, Trigger: trigger, Findings: history,
+		Direction: f.direction, State: architect.StateDirected,
+	}
+	f.resolved = append(f.resolved, in)
+	return in, nil
+}
+
+func (f *fakeArchitect) Resume(context.Context, string) (architect.Intervention, bool, error) {
+	f.resumed++
+	if f.resumeErr != nil {
+		return architect.Intervention{}, false, f.resumeErr
+	}
+	if f.direction == "" {
+		return architect.Intervention{}, false, nil
+	}
+	return architect.Intervention{Direction: f.direction, State: architect.StateDirected}, true, nil
+}
+
+func findingsLoop(store *memStore, ag *fakes.Agent, c *fakeCommitter, rev *fakeReviewer,
+	sa *fakeArchitect, limit int) devloop.Loop {
+	loop := pairLoop(store, ag, c, rev, 0)
+	loop.Architect = sa
+	loop.MaxRounds = limit
+	return loop
+}
+
+func findingRounds(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = reviewbridge.VerdictFindings
+	}
+	return out
+}
+
+func TestTheImpasseReachesTheArchitectAtTheRoundLimit(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{verdicts: findingRounds(6), findings: "- **Severity**: High"}
+	sa := &fakeArchitect{}
+	_, err := findingsLoop(store, ag, c, rev, sa, 4).Work(context.Background(), request())
+	if err == nil {
+		t.Fatal("a run that hit the round limit read as success")
+	}
+	if len(sa.resolved) != 1 {
+		t.Fatalf("the architect was asked %d times", len(sa.resolved))
+	}
+	if sa.resolved[0].Trigger != architect.TriggerRoundLimit {
+		t.Errorf("the trigger is %q", sa.resolved[0].Trigger)
+	}
+	var handed []string
+	if err := json.Unmarshal(sa.resolved[0].Findings, &handed); err != nil {
+		t.Fatalf("the findings history is unreadable: %v", err)
+	}
+	if len(handed) != 4 {
+		t.Errorf("handed over %d findings for a limit of 4", len(handed))
+	}
+}
+
+func TestBelowTheLimitTheLoopDoesNotPause(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+			reviewbridge.VerdictClean,
+		},
+		findings: "- **Severity**: Low",
+	}
+	sa := &fakeArchitect{}
+	if _, err := findingsLoop(store, ag, c, rev, sa, 4).Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(sa.resolved) != 0 {
+		t.Error("two consecutive findings rounds paused the run")
+	}
+}
+
+func TestACleanPassResetsTheCounter(t *testing.T) {
+	// Consecutive rounds, not rounds: a clean pass mid-count means the loop is
+	// converging, and counting through it would pause a run that is working.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+			reviewbridge.VerdictClean,
+		},
+		findings: "- **Severity**: Low",
+	}
+	sa := &fakeArchitect{}
+	got, err := findingsLoop(store, ag, c, rev, sa, 3).Work(context.Background(), request())
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(sa.resolved) != 0 {
+		t.Error("a run that reached a clean pass was sent to the architect")
+	}
+	if got.Rounds != 3 {
+		t.Errorf("ran %d rounds", got.Rounds)
+	}
+}
+
+func TestTheSnapshottedLimitGovernsTheRun(t *testing.T) {
+	// The limit the run was CREATED under, not the one configured now: a
+	// config change affects only future runs.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{verdicts: findingRounds(8), findings: "- **Severity**: High"}
+	sa := &fakeArchitect{}
+	// The loop's default has since been lowered to 2; the run carries 4.
+	req := request()
+	req.RoundLimit = 4
+	if _, err := findingsLoop(store, ag, c, rev, sa, 2).Work(context.Background(), req); err == nil {
+		t.Fatal("expected the impasse")
+	}
+	if len(c.shas) != 4 {
+		t.Errorf("ran %d rounds, want the 4 the run was created under", len(c.shas))
+	}
+}
+
+func TestAnArchitectDirectionReachesTheDevAgent(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictClean},
+		findings: "- **Severity**: Low",
+	}
+	sa := &fakeArchitect{direction: "Split the handler; the store is not the problem."}
+	if _, err := findingsLoop(store, ag, c, rev, sa, 4).Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if sa.resumed == 0 {
+		t.Fatal("the loop never looked for a recorded direction")
+	}
+	if len(ag.Requests) < 2 {
+		t.Fatalf("the agent was invoked %d times", len(ag.Requests))
+	}
+	if !strings.Contains(ag.Requests[1].Prompt, "Split the handler") {
+		t.Errorf("the direction did not reach the agent:\n%s", ag.Requests[1].Prompt)
+	}
+}
+
+func TestAResumeFailureStopsTheLoop(t *testing.T) {
+	// Running on without a recorded direction would repeat the impasse the
+	// architect already answered.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	sa := &fakeArchitect{resumeErr: errors.New("store unavailable")}
+	if _, err := findingsLoop(store, ag, c, rev, sa, 4).Work(context.Background(), request()); err == nil {
+		t.Fatal("an unreadable intervention read as no intervention")
+	}
 }

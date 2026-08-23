@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"kriya/internal/agent"
+	"kriya/internal/architect"
 	"kriya/internal/clock"
 	kctx "kriya/internal/context"
 	"kriya/internal/reviewbridge"
@@ -72,6 +73,13 @@ type Contexts interface {
 		instructions string) (kctx.Bundle, error)
 }
 
+// Architects resolve an impasse the pair loop cannot get past.
+type Architects interface {
+	Resolve(ctx context.Context, build, ticket, trigger string,
+		findings []string, systemFile string) (architect.Intervention, error)
+	Resume(ctx context.Context, build string) (architect.Intervention, bool, error)
+}
+
 // Loop drives a dev agent through pair-programming rounds.
 type Loop struct {
 	// Context assembles the ticket's law, contracts, and learnings. Nil skips
@@ -80,15 +88,17 @@ type Loop struct {
 	// Threads imports finished transcripts into the tracker's catalog. Nil
 	// skips capture.
 	Threads Threads
-	Agent   agent.Agent
-	Store   Store
-	Commit  Committer
-	Review  Reviewer
-	Now     clock.Clock
-	// MaxRounds bounds the fix-and-recommit cycle. A review that keeps finding
-	// the same thing is a stall the operator must see, not a loop to run
-	// forever — CON-pair-programming wants review latency in minutes, and an
-	// unbounded loop turns that into never.
+	// Architect resolves an impasse the pair loop cannot get past. Nil makes
+	// the round limit a plain stall.
+	Architect Architects
+	Agent     agent.Agent
+	Store     Store
+	Commit    Committer
+	Review    Reviewer
+	Now       clock.Clock
+	// MaxRounds is the DEFAULT round limit. The one that governs a run is
+	// snapshotted onto its Request at creation, so changing this affects only
+	// future runs — a run mid-flight keeps the limit it started under.
 	MaxRounds int
 }
 
@@ -116,6 +126,9 @@ type Request struct {
 	Modules []string
 	// Patterns are the failure patterns this ticket is prone to.
 	Patterns []string
+	// RoundLimit is the limit snapshotted onto the BuildRun at its creation.
+	// Zero falls back to the loop's default.
+	RoundLimit int
 	// AllowRules are the generated permission rules. No bare Bash: what an
 	// agent may run is the ticket's business, and "tools irrelevant to the
 	// ticket are absent" has to be mechanically true rather than requested.
@@ -211,10 +224,14 @@ func (l Loop) assembleContext(ctx context.Context, req Request) (string, error) 
 // the next instruction, and summarising them drops the file and line the fix
 // needs.
 func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]Exchange) error {
-	rounds := l.MaxRounds
-	if rounds <= 0 {
-		rounds = 5
+	rounds := l.roundLimit(req)
+	direction, err := l.direction(ctx, req.Run)
+	if err != nil {
+		return err
 	}
+	// Findings since the last clean pass. A clean pass resets it, which is
+	// what makes the limit "consecutive rounds" rather than "rounds".
+	var consecutive []string
 	// answered is a round whose findings the agent has been given but whose
 	// response cannot be written yet: the honest answer names the commit that
 	// addressed it, and that commit does not exist until the next round.
@@ -247,6 +264,9 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 		session.Rounds = round + 1
 		switch reviewed.Verdict {
 		case reviewbridge.VerdictClean:
+			// The counter would reset here, but a clean pass ENDS the loop, so
+			// there is nothing left to count. It is reset where it matters:
+			// nothing accumulates across a run that converged.
 			return l.Review.Settle(ctx, reviewed, "Clean pass at "+sha+".")
 		case reviewbridge.VerdictPending:
 			// Still running. The caller polls again rather than the loop
@@ -255,7 +275,8 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 			return nil
 		}
 
-		fix := fixPrompt(req, reviewed.Findings)
+		consecutive = append(consecutive, reviewed.Findings)
+		fix := fixPrompt(req, reviewed.Findings, direction)
 		res, err := l.Agent.Run(ctx, agent.Request{
 			Role:       agent.RoleDev,
 			Prompt:     fix,
@@ -272,16 +293,71 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 		session.SessionID = res.SessionID
 		answered = &reviewed
 	}
-	// Out of rounds with findings outstanding. A stall, and the operator sees
-	// it — including the last round, still open, which is the evidence of what
-	// was asked for and never answered.
-	return fmt.Errorf("review still reporting findings after %d rounds", rounds)
+	// Out of rounds with findings outstanding.
+	return l.impasse(ctx, req, session, consecutive, rounds)
 }
 
-// fixPrompt hands the findings back unaltered.
-func fixPrompt(req Request, findings string) string {
+// roundLimit is the limit governing this run.
+//
+// The run's own, snapshotted at its creation, before the loop's default: a
+// change to the configured limit affects only runs created after it.
+func (l Loop) roundLimit(req Request) int {
+	if req.RoundLimit > 0 {
+		return req.RoundLimit
+	}
+	if l.MaxRounds > 0 {
+		return l.MaxRounds
+	}
+	return 5
+}
+
+// direction reads any recorded architect direction for a run.
+//
+// From the ROW, never carried in memory: a run that restarted between the
+// direction and the resume must still get it.
+func (l Loop) direction(ctx context.Context, run string) (string, error) {
+	if l.Architect == nil {
+		return "", nil
+	}
+	resumed, found, err := l.Architect.Resume(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", nil
+	}
+	return resumed.Direction, nil
+}
+
+// impasse hands a stalled run to the architect.
+//
+// The last round stays OPEN — it is the evidence of what was asked for and
+// never answered.
+func (l Loop) impasse(ctx context.Context, req Request, session *Session,
+	findings []string, rounds int) error {
+	if l.Architect == nil {
+		return fmt.Errorf("review still reporting findings after %d rounds", rounds)
+	}
+	if _, err := l.Architect.Resolve(ctx, req.Run, req.Ticket,
+		architect.TriggerRoundLimit, findings, session.SystemFile); err != nil {
+		return err
+	}
+	return fmt.Errorf("run %s paused for the architect after %d rounds", req.Run, rounds)
+}
+
+// fixPrompt hands the findings back unaltered, under any architect direction.
+//
+// The direction comes FIRST because it is the instruction and the findings are
+// what it applies to; a direction buried under a wall of findings reads as
+// commentary.
+func fixPrompt(req Request, findings, direction string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The review of your work on %q reported findings.\n\n", req.Title)
+	if direction != "" {
+		b.WriteString("The architect has given this direction:\n\n")
+		b.WriteString(direction)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("Address every one, then stop. Do not restate them back.\n\n")
 	b.WriteString(findings)
 	return b.String()

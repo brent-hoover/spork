@@ -209,8 +209,12 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(orchestrator.Migration); err != nil {
-		t.Fatalf("migrate: %v", err)
+	// The real migration text, as the composition root applies it: a test that
+	// rebuilt the DDL by hand would pass while production had other columns.
+	for _, stmt := range []string{orchestrator.Migration, orchestrator.RoundLimitMigration} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
 	}
 	return orchestrator.SQLStore{DB: db}
 }
@@ -220,6 +224,7 @@ func TestARunSurvivesTheRoundTrip(t *testing.T) {
 	want := orchestrator.BuildRun{
 		ID: "run-1", Ticket: "T-1", Plan: "/target", State: orchestrator.StateGates,
 		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
+		RoundLimit: 4,
 	}
 	if err := s.Upsert(context.Background(), want); err != nil {
 		t.Fatalf("upsert: %v", err)

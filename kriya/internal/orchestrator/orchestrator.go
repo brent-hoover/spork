@@ -63,6 +63,10 @@ type BuildRun struct {
 	// Attempt counts gate-chain rounds, so results pin to the round that
 	// produced them.
 	Attempt int
+	// RoundLimit is snapshotted at the run's creation. A later change to the
+	// configured limit affects only future runs; this one keeps the limit it
+	// started under, and recovery reads it from here rather than from config.
+	RoundLimit int
 }
 
 // Transition is one row of the table.

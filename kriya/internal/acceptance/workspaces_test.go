@@ -371,14 +371,23 @@ func registerWorkspaces(sc *godog.ScenarioContext, w *world) {
 		return nil
 	})
 
+	// Two features say "the run resumes" — one means reattaching to a
+	// worktree, the other means continuing under an architect's direction.
+	// Whichever world the scenario set up is the one that means it.
 	sc.Step(`^the run resumes$`, func() error {
-		ww := w.ws
-		got, err := ww.manager.Ensure(context.Background(), "run-1", "KRI-1")
-		if err != nil {
-			return err
+		switch {
+		case w.sa != nil:
+			return w.sa.resume()
+		case w.ws != nil:
+			got, err := w.ws.manager.Ensure(context.Background(), "run-1", "KRI-1")
+			if err != nil {
+				return err
+			}
+			w.ws.made["resumed"] = got
+			return nil
+		default:
+			return errors.New("no run to resume")
 		}
-		ww.made["resumed"] = got
-		return nil
 	})
 
 	sc.Step(`^it reattaches to the same worktree and branch$`, func() error {

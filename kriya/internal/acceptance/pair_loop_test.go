@@ -128,6 +128,15 @@ func (c *seqCommitter) Commit(context.Context, string, string) (string, error) {
 	return fmt.Sprintf("C%d", c.n), nil
 }
 
+// callsAt reports the commits made, so a scenario can count rounds.
+func (c *seqCommitter) callsAt() []int {
+	out := make([]int, 0, c.n)
+	for i := 1; i <= c.n; i++ {
+		out = append(out, i)
+	}
+	return out
+}
+
 // pairWorld is one pair-loop scenario's state.
 type pairWorld struct {
 	rev       *fakeRoborev

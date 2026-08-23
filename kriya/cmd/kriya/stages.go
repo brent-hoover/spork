@@ -57,6 +57,9 @@ func buildStages(
 				Spec:         specForContext(snap.Law, snap.Constitution, snap.Content),
 				Modules:      modulesFor(snap, run.Ticket),
 				Instructions: instructions,
+				// The limit the RUN was created under, not the one configured
+				// now: a config change affects only future runs.
+				RoundLimit: run.RoundLimit,
 			})
 			return run, err
 		},
