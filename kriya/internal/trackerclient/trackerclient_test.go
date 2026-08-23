@@ -335,3 +335,16 @@ func TestResubmitOmitsAnAbsentSummaryAndSession(t *testing.T) {
 		}
 	}
 }
+
+func TestAReviewReadAcceptsExactlyTheTwoHundreds(t *testing.T) {
+	// 200 must succeed and 300 must not: a redirect kriya cannot follow is not
+	// a review it can read.
+	c, _ := serve(t, http.StatusOK, `{"id":"r-1"}`)
+	if _, err := c.GetReview(context.Background(), "r-1"); err != nil {
+		t.Errorf("200 was rejected: %v", err)
+	}
+	c, _ = serve(t, http.StatusMultipleChoices, `{"id":"r-1"}`)
+	if _, err := c.GetReview(context.Background(), "r-1"); err == nil {
+		t.Error("300 read as a review")
+	}
+}

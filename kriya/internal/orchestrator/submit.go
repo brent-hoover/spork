@@ -123,11 +123,15 @@ func (s Submitter) RecoverSubmissions(ctx context.Context, subs func(BuildRun) S
 }
 
 // resubmissionKey is derived from the original submission key, the revision
-// being advanced to, and the verdict event being answered.
+// being advanced FROM, and the verdict event being answered.
 //
 // All three, because none alone is enough: the submission key alone would
 // collide across revisions, the revision alone across reworks of the same
 // revision, and the event is what pins WHICH verdict this rework answers.
+//
+// The revision it names is the CURRENT one rather than the next. Either
+// distinguishes the same set of reworks, and naming what the caller actually
+// holds avoids an arithmetic nothing can observe.
 func resubmissionKey(submission string, revision int, event string) string {
 	sum := sha256.Sum256([]byte(
 		"kriya-review-resubmission:" + submission + ":" + strconv.Itoa(revision) + ":" + event))
@@ -165,7 +169,7 @@ func (s Submitter) Resubmit(ctx context.Context, run BuildRun, rw Rework) (Build
 		return BuildRun{}, fmt.Errorf("run %s names no verdict event to answer", run.ID)
 	}
 	run.ReviewKey = resubmissionKey(
-		submissionKey(run.ID, run.GatedBase, run.Attempt), rw.Revision+1, rw.VerdictEvent)
+		submissionKey(run.ID, run.GatedBase, run.Attempt), rw.Revision, rw.VerdictEvent)
 	run.ReviewCommit = run.GatedBase
 	run.ReviewSession = rw.Session
 	run.ReviewRevision = rw.Revision

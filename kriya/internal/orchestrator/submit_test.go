@@ -426,10 +426,17 @@ func TestAReplayedResubmissionAdvancesTheRevisionExactlyOnce(t *testing.T) {
 	api.err = nil
 
 	// Twice, because a replay may itself crash and run again.
-	for range 2 {
-		if _, err := s.RecoverResubmissions(context.Background(),
-			func(orchestrator.BuildRun) orchestrator.Rework { return rework() }); err != nil {
+	for i := range 2 {
+		n, err := s.RecoverResubmissions(context.Background(),
+			func(orchestrator.BuildRun) orchestrator.Rework { return rework() })
+		if err != nil {
 			t.Fatalf("recover: %v", err)
+		}
+		// The first pass finds the stuck one; the second finds none, because
+		// the first settled it.
+		want := 1 - i
+		if n != want {
+			t.Errorf("pass %d recovered %d, want %d", i, n, want)
 		}
 	}
 	if api.revision != 2 {
