@@ -2,11 +2,16 @@ package orchestrator_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	_ "modernc.org/sqlite"
+
+	"kriya/internal/clock"
 	"kriya/internal/fakes"
 	"kriya/internal/orchestrator"
 )
@@ -194,5 +199,71 @@ func TestAMissingStageImplementationIsAnError(t *testing.T) {
 	id := seed(t, store, orchestrator.StateQueued)
 	if _, err := orch(store, orchestrator.Stages{}).Advance(context.Background(), id); err == nil {
 		t.Fatal("a stage with no implementation must be an error")
+	}
+}
+
+func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "o.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(orchestrator.Migration); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return orchestrator.SQLStore{DB: db}
+}
+
+func TestARunSurvivesTheRoundTrip(t *testing.T) {
+	s := sqlOrchStore(t)
+	want := orchestrator.BuildRun{
+		ID: "run-1", Ticket: "T-1", Plan: "/target", State: orchestrator.StateGates,
+		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
+	}
+	if err := s.Upsert(context.Background(), want); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, found, err := s.Find(context.Background(), "run-1")
+	if err != nil || !found {
+		t.Fatalf("find: %v found=%v", err, found)
+	}
+	if got != want {
+		t.Errorf("read back %+v", got)
+	}
+}
+
+func TestAnUnknownRunIsNotFound(t *testing.T) {
+	s := sqlOrchStore(t)
+	_, found, err := s.Find(context.Background(), "run-absent")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if found {
+		t.Error("a run that was never recorded was found")
+	}
+}
+
+func TestARunStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bare.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s := orchestrator.SQLStore{DB: db}
+	if _, _, err := s.Find(context.Background(), "run-1"); err == nil {
+		t.Error("a missing table read as a run that does not exist")
+	}
+	if err := s.Upsert(context.Background(), orchestrator.BuildRun{ID: "run-1"}); err == nil {
+		t.Error("a write to a missing table reported success")
+	}
+}
+
+func TestAdvanceRefusesARunItCannotFind(t *testing.T) {
+	// Advancing a run that is not there would invent state for a build nobody
+	// started.
+	o := orchestrator.Orchestrator{Store: sqlOrchStore(t), Now: clock.System{}}
+	if _, err := o.Advance(context.Background(), "run-absent"); err == nil {
+		t.Fatal("an unknown run was advanced")
 	}
 }

@@ -264,3 +264,78 @@ func TestAPendingReviewDoesNotBlockTheLoop(t *testing.T) {
 		t.Error("a job still running was closed")
 	}
 }
+
+func TestThePromptStatesTheTicketAndTheBar(t *testing.T) {
+	// What the agent is judged by has to be IN the prompt: an agent that never
+	// saw the gate chain cannot write to it.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	req := request()
+	req.Body = "the walking skeleton, end to end"
+	req.Criteria = []string{"AC-x", "AC-y"}
+	req.Commands = map[string]string{"test": "go test ./...", "lint": "golangci-lint run"}
+	loop := devloop.Loop{Agent: ag, Store: store, Now: fakes.NewClock(time.Unix(0, 0))}
+	if _, err := loop.Work(context.Background(), req); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	got := ag.Requests[0].Prompt
+	for _, want := range []string{
+		req.Title, "the walking skeleton, end to end", "AC-x, AC-y",
+		"Write the test first", "go test ./...", "golangci-lint run",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the prompt omits %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestATicketWithNothingExtraStillProducesAPrompt(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	bare := devloop.Request{Run: "run-1", Ticket: "KRI-1", Title: "Create a short link"}
+	loop := devloop.Loop{Agent: ag, Store: store, Now: fakes.NewClock(time.Unix(0, 0))}
+	if _, err := loop.Work(context.Background(), bare); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	got := ag.Requests[0].Prompt
+	if strings.Contains(got, "It satisfies:") || strings.Contains(got, "judged by these commands") {
+		t.Errorf("the prompt invented sections the ticket did not have:\n%s", got)
+	}
+}
+
+func TestTheRoundBoundDefaultsRatherThanRunningForever(t *testing.T) {
+	// A zero MaxRounds is a caller that did not choose, not a caller asking
+	// for an unbounded loop.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+		},
+		findings: "- **Severity**: High",
+	}
+	if _, err := pairLoop(store, ag, c, rev, 0).Work(context.Background(), request()); err == nil {
+		t.Fatal("an unbounded loop ran to completion")
+	}
+	if len(c.shas) != 5 {
+		t.Errorf("ran %d rounds, want the default 5", len(c.shas))
+	}
+}
+
+func TestACommitFailureStopsTheRound(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{err: errors.New("index.lock exists")}
+	rev := &fakeReviewer{}
+	_, err := pairLoop(store, ag, c, rev, 3).Work(context.Background(), request())
+	if err == nil || !strings.Contains(err.Error(), "index.lock") {
+		t.Fatalf("got %v, want git's own complaint", err)
+	}
+	if rev.submits != 0 {
+		t.Error("a review was submitted for work that was never committed")
+	}
+}
