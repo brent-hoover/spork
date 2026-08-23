@@ -100,3 +100,22 @@ func submitterForTest(db *sql.DB) orchestrator.Submitter {
 		Author:  "actor-1",
 	}
 }
+
+// queueForTest merges against a repository this test owns.
+func queueForTest(t *testing.T, db *sql.DB) orchestrator.Queue {
+	t.Helper()
+	return orchestrator.Queue{
+		Store:     orchestrator.SQLAttempts{DB: db},
+		Runs:      orchestrator.SQLStore{DB: db},
+		Approvals: noApprovals{},
+		Git:       repoMerger{git: workspace.ShellGit{}, repo: t.TempDir(), branch: "main"},
+		Actor:     "actor-1",
+	}
+}
+
+// noApprovals consumes nothing; these tests never reach a merge.
+type noApprovals struct{}
+
+func (noApprovals) Consume(context.Context, string, string, int, string, string) error {
+	return nil
+}

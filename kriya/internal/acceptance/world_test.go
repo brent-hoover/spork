@@ -59,6 +59,8 @@ type world struct {
 	po *poWorld
 	// submit is the review-submission scenarios' state, nil until one starts.
 	submit *submitWorld
+	// merge is the merge-queue scenarios' state, nil until one starts.
+	merge *mergeWorld
 }
 
 func newWorld() *world {

@@ -255,3 +255,23 @@ func (c *Client) ResubmitReview(
 	err := c.do(ctx, "resubmitReview", http.MethodPost, "/reviews/"+id+"/resubmit", key, payload, &rv)
 	return rv, err
 }
+
+// ConsumeApproval claims a review's approval so a merge may proceed.
+//
+// The fences are the same shape as a resubmission's: sutra refuses if the
+// review has moved on. Once consumed, a verdict reversal is rejected — which
+// is what makes "merges exactly once" hold across a human changing their mind
+// mid-merge.
+func (c *Client) ConsumeApproval(
+	ctx context.Context, id, actor string, expectedRevision int,
+	expectedVerdictEvent, key string,
+) (Review, error) {
+	payload := map[string]any{
+		"actor": actor, "expected_revision": expectedRevision,
+		"expected_verdict_event": expectedVerdictEvent,
+	}
+	var rv Review
+	err := c.do(ctx, "consumeReviewApproval", http.MethodPost,
+		"/reviews/"+id+"/consume", key, payload, &rv)
+	return rv, err
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -290,4 +291,125 @@ type brokenReview struct{}
 
 func (brokenReview) PassedAt(context.Context, string, string) (bool, error) {
 	return false, errors.New("store unavailable")
+}
+
+func TestAnUnknownGateIsRefused(t *testing.T) {
+	// The chain naming a gate nothing maps to a command is a defect, and
+	// running nothing would record a pass for work never checked.
+	_, err := runner(&memStore{}).Run(context.Background(), "b1", "MOD-a", "vibes",
+		"c1", t.TempDir(), allPassing())
+	if err == nil {
+		t.Fatal("an unknown gate was run")
+	}
+}
+
+func TestAModuleMissingAGateCommandIsADefect(t *testing.T) {
+	// Intake refuses a module missing any of the six, so reaching here means
+	// the snapshot and the chain disagree.
+	cmds := allPassing()
+	delete(cmds, "coverage")
+	_, err := runner(&memStore{}).Run(context.Background(), "b1", "MOD-a", "branch-coverage",
+		"c1", t.TempDir(), cmds)
+	if err == nil {
+		t.Fatal("a module with no coverage command was gated anyway")
+	}
+}
+
+func TestAnUnrunnableCommandIsAnErrorNotAFailure(t *testing.T) {
+	// A gate that could not run and a gate that ran and failed are different
+	// outcomes: the first is a broken build engine, the second is work to do.
+	_, err := runner(&memStore{}).Run(context.Background(), "b1", "MOD-a", "test",
+		"c1", filepath.Join(t.TempDir(), "absent"), allPassing())
+	if err == nil {
+		t.Fatal("a gate run in a directory that does not exist reported a result")
+	}
+}
+
+func TestAResultThatCannotBeRecordedIsAFailure(t *testing.T) {
+	// A gate whose result vanished is one the chain cannot read, and the run
+	// would re-run it forever.
+	_, err := gates.Runner{Store: failingGateStore{}, Now: fakes.NewClock(time.Unix(0, 0))}.
+		Run(context.Background(), "b1", "MOD-a", "test", "c1", t.TempDir(), allPassing())
+	if err == nil {
+		t.Fatal("a result that could not be recorded read as recorded")
+	}
+}
+
+// failingGateStore refuses every write and read.
+type failingGateStore struct{}
+
+func (failingGateStore) Upsert(context.Context, gates.Result) error {
+	return errors.New("disk full")
+}
+
+func (failingGateStore) Passed(context.Context, string, string, string, string) (bool, error) {
+	return false, errors.New("store unavailable")
+}
+
+func TestAnUnreadableGateResultStopsAllPassed(t *testing.T) {
+	runner := gates.Runner{Store: failingGateStore{}, Now: fakes.NewClock(time.Unix(0, 0))}
+	if _, _, err := runner.AllPassed(context.Background(), "b1", "MOD-a", "c1"); err == nil {
+		t.Fatal("an unreadable gate result read as a pass")
+	}
+}
+
+func TestAllPassedNamesTheEarliestGap(t *testing.T) {
+	// A caller told "mutation" when test also failed would fix the wrong
+	// thing.
+	store := &memStore{}
+	r := runner(store)
+	for _, gate := range []string{"test", "structure"} {
+		if _, err := r.Run(context.Background(), "b1", "MOD-a", gate, "c1",
+			t.TempDir(), allPassing()); err != nil {
+			t.Fatalf("run %s: %v", gate, err)
+		}
+	}
+	passed, missing, err := r.AllPassed(context.Background(), "b1", "MOD-a", "c1")
+	if err != nil {
+		t.Fatalf("all passed: %v", err)
+	}
+	if passed {
+		t.Error("a chain with four gates outstanding reported as complete")
+	}
+	if missing != "typing" {
+		t.Errorf("named %q as the gap, want the earliest one", missing)
+	}
+}
+
+func TestAMissingReviewIsReportedAsTheGap(t *testing.T) {
+	// The review comes FIRST in the constitution's chain, so a missing one is
+	// the gap even when every gate result is present.
+	store := &memStore{}
+	r := gates.Runner{Store: store, Review: &noReview{}, Now: fakes.NewClock(time.Unix(0, 0))}
+	for _, gate := range gates.Chain {
+		if _, err := r.Run(context.Background(), "b1", "MOD-a", gate, "c1",
+			t.TempDir(), allPassing()); err != nil {
+			t.Fatalf("run %s: %v", gate, err)
+		}
+	}
+	passed, missing, err := r.AllPassed(context.Background(), "b1", "MOD-a", "c1")
+	if err != nil {
+		t.Fatalf("all passed: %v", err)
+	}
+	if passed || missing != "review" {
+		t.Errorf("reported passed=%v missing=%q", passed, missing)
+	}
+}
+
+func TestEveryGatePassedIsACompleteChain(t *testing.T) {
+	store := &memStore{}
+	r := runner(store)
+	for _, gate := range gates.Chain {
+		if _, err := r.Run(context.Background(), "b1", "MOD-a", gate, "c1",
+			t.TempDir(), allPassing()); err != nil {
+			t.Fatalf("run %s: %v", gate, err)
+		}
+	}
+	passed, missing, err := r.AllPassed(context.Background(), "b1", "MOD-a", "c1")
+	if err != nil {
+		t.Fatalf("all passed: %v", err)
+	}
+	if !passed || missing != "" {
+		t.Errorf("reported passed=%v missing=%q", passed, missing)
+	}
 }

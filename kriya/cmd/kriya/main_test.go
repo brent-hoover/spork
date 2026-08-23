@@ -1,8 +1,17 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+
 	"context"
 	"errors"
+	"kriya/internal/clock"
+	"kriya/internal/devloop"
+	"kriya/internal/orchestrator"
+	"kriya/internal/planner"
+	"kriya/internal/trackerclient"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,7 +203,7 @@ func TestRecoveryStepsRunInDeclaredOrder(t *testing.T) {
 	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), submitterForTest(db), "actor-1")
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), submitterForTest(db), queueForTest(t, db), "actor-1")
 	var stages []string
 	for _, s := range steps {
 		stages = append(stages, s.Stage.String())
@@ -217,7 +226,7 @@ func TestReviewRecoverySurfacesRatherThanBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), "actor-1")
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), queueForTest(t, db), "actor-1")
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
 			continue
@@ -234,7 +243,7 @@ func TestReviewRecoveryPropagatesAStoreFailure(t *testing.T) {
 	// Errors should never pass silently: a store kriya cannot read is not the
 	// same as a store with nothing in it.
 	db := openTemp(t)
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), "actor-1")
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), queueForTest(t, db), "actor-1")
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
 			continue
@@ -255,5 +264,116 @@ func TestMainErrorsCarryTheirCause(t *testing.T) {
 	}
 	if errors.Unwrap(err) == nil && !strings.Contains(err.Error(), "open store") {
 		t.Errorf("error %q lost its cause", err)
+	}
+}
+
+func TestTheRoundLimitIsReadFromTheEnvironment(t *testing.T) {
+	t.Setenv("KRIYA_ROUND_LIMIT", "")
+	if got := roundLimit(); got != 0 {
+		t.Errorf("an unset limit read as %d", got)
+	}
+	t.Setenv("KRIYA_ROUND_LIMIT", "7")
+	if got := roundLimit(); got != 7 {
+		t.Errorf("read %d", got)
+	}
+}
+
+func TestAnUnusableRoundLimitFallsBackRatherThanRefusing(t *testing.T) {
+	// A build engine that refused to start over a typo in an optional tuning
+	// knob would be worse than one that says so and carries on.
+	for _, raw := range []string{"lots", "0", "-3"} {
+		t.Setenv("KRIYA_ROUND_LIMIT", raw)
+		if got := roundLimit(); got != 0 {
+			t.Errorf("KRIYA_ROUND_LIMIT=%q read as %d", raw, got)
+		}
+	}
+}
+
+func TestAnUnapprovedReviewLeavesTheRunWaiting(t *testing.T) {
+	// Any verdict but approved leaves the run exactly where it was, which is
+	// what a submitted run does.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"review-1","state":"changes-requested","revision":2}`)
+	}))
+	defer srv.Close()
+
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	run := orchestrator.BuildRun{
+		ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateReviewSubmitted,
+		GatedBase: "base-1", ReviewID: "review-1", ReviewCommit: "C2",
+	}
+	got, err := observeApproval(t.Context(),
+		orchestrator.Orchestrator{Store: orchestrator.SQLStore{DB: db}, Now: clock.System{}},
+		queueForTest(t, db), trackerclient.New(srv.URL), run, "/target")
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if got.State != orchestrator.StateReviewSubmitted {
+		t.Errorf("the run moved to %q", got.State)
+	}
+}
+
+func TestAnUnreadableReviewStopsTheObservation(t *testing.T) {
+	// "I could not read the verdict" is not "there is no verdict".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, err := observeApproval(t.Context(),
+		orchestrator.Orchestrator{Store: orchestrator.SQLStore{DB: db}, Now: clock.System{}},
+		queueForTest(t, db), trackerclient.New(srv.URL),
+		orchestrator.BuildRun{ID: "run-1", ReviewID: "review-1"}, "/target")
+	if err == nil {
+		t.Fatal("an unreadable review read as unapproved")
+	}
+}
+
+func TestASessionIsReadFromTheRunThatDidTheWork(t *testing.T) {
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (devloop.SQLStore{DB: db}).Upsert(t.Context(), devloop.Session{
+		Run: "run-1", Ticket: "KRI-1", SessionID: "sess-42",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := sessionFromStore(db)(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if got != "sess-42" {
+		t.Errorf("read %q", got)
+	}
+	// A run with no session is an error, not an empty string: a review stamped
+	// with nothing routes feedback nowhere.
+	if _, err := sessionFromStore(db)(t.Context(), "run-absent"); err == nil {
+		t.Error("a run with no session read as one with a blank session")
+	}
+}
+
+func TestATicketsIssueAndCriteriaAreLookedUpByTitle(t *testing.T) {
+	tickets := []planner.Ticket{
+		{Title: "Create a short link", Criteria: []string{"AC-valid-url"}, IssueID: "issue-7"},
+		{Title: "Redirect", Criteria: []string{"AC-redirect"}, IssueID: "issue-8"},
+	}
+	if got := issuesFromTickets(tickets)("Redirect"); got != "issue-8" {
+		t.Errorf("resolved %q", got)
+	}
+	if got := criteriaFromTickets(tickets)("Create a short link"); len(got) != 1 ||
+		got[0] != "AC-valid-url" {
+		t.Errorf("resolved %v", got)
+	}
+	// An unknown title resolves to nothing rather than to another ticket's.
+	if got := issuesFromTickets(tickets)("Unknown"); got != "" {
+		t.Errorf("an unknown ticket resolved to %q", got)
 	}
 }

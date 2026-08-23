@@ -79,3 +79,66 @@ func (g ShellGit) Commit(ctx context.Context, dir, message string) (string, erro
 	}
 	return g.run(ctx, dir, "rev-parse", "HEAD")
 }
+
+// mergeTree computes the merged tree in memory and reports whether it is
+// conflict-free.
+//
+// `git merge-tree --write-tree` writes nothing to any ref and touches no
+// working tree: it prints the resulting tree and exits non-zero on conflicts.
+// That is what makes it safe to run BEFORE consuming an approval, which cannot
+// be given back.
+func (g ShellGit) mergeTree(ctx context.Context, repo, commit, base string) (string, bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "merge-tree", "--write-tree", base, commit)
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if ok := asExitError(err, &ee); ok {
+			// A non-zero exit is git reporting conflicts, which is an ANSWER.
+			// Only a failure to run at all is an error.
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("git merge-tree: %w", err)
+	}
+	tree := strings.TrimSpace(string(out))
+	if tree == "" {
+		return "", false, fmt.Errorf("git merge-tree produced no tree for %s into %s", commit, base)
+	}
+	return tree, true, nil
+}
+
+// Preflight reports whether a commit merges cleanly into base, publishing
+// nothing.
+func (g ShellGit) Preflight(ctx context.Context, repo, commit, base string) (bool, error) {
+	_, clean, err := g.mergeTree(ctx, repo, commit, base)
+	return clean, err
+}
+
+// MergeCAS lands commit on branch, but only while branch still points at
+// expectedBase.
+//
+// The compare-and-swap is the whole point: between the preflight and here
+// another merge may have landed, and merging anyway would put work on a base
+// no gate chain ever ran against. update-ref with an old-value IS the swap —
+// git refuses when the ref has moved, which is exactly the case this catches.
+func (g ShellGit) MergeCAS(
+	ctx context.Context, repo, branch, commit, expectedBase string,
+) (string, error) {
+	tree, clean, err := g.mergeTree(ctx, repo, commit, expectedBase)
+	if err != nil {
+		return "", err
+	}
+	if !clean {
+		return "", fmt.Errorf("merge of %s into %s conflicts", commit, expectedBase)
+	}
+	merged, err := g.run(ctx, repo, "commit-tree", tree,
+		"-p", expectedBase, "-p", commit, "-m", "Merge "+commit)
+	if err != nil {
+		return "", err
+	}
+	if _, err := g.run(ctx, repo, "update-ref",
+		"refs/heads/"+branch, merged, expectedBase); err != nil {
+		return "", fmt.Errorf("merge did not land: %w", err)
+	}
+	return merged, nil
+}

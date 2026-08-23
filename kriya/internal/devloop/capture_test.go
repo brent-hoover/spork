@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	kctx "kriya/internal/context"
 	"kriya/internal/devloop"
 	"kriya/internal/fakes"
 	"kriya/internal/reviewbridge"
@@ -273,5 +274,131 @@ func TestNoCatalogConfiguredSkipsCapture(t *testing.T) {
 	}
 	if got.ImportState != "" {
 		t.Errorf("import state is %q with no catalog configured", got.ImportState)
+	}
+}
+
+func TestContextAssemblyFailureStopsTheSession(t *testing.T) {
+	// An agent started without its context would work from the prompt alone —
+	// no ACs, no module law, no learnings — which is not the ticket it was
+	// given.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	loop := devloop.Loop{
+		Agent: ag, Store: store, Context: failingContexts{},
+		Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	if _, err := loop.Work(context.Background(), captureRequest(t)); err == nil {
+		t.Fatal("a session started with no assembled context")
+	}
+	if len(ag.Requests) != 0 {
+		t.Error("the agent ran without its context")
+	}
+}
+
+// failingContexts refuses to assemble.
+type failingContexts struct{}
+
+func (failingContexts) Assemble(
+	context.Context, string, kctx.Spec, kctx.Ticket, string,
+) (kctx.Bundle, error) {
+	return kctx.Bundle{}, errors.New("learning store unavailable")
+}
+
+func TestTheAssembledContextReachesTheAgentAsASystemFile(t *testing.T) {
+	// Content, not instruction: the ticket's law competes with the task if it
+	// is stated as one.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	req := captureRequest(t)
+	loop := devloop.Loop{
+		Agent: ag, Store: store, Context: bundleContexts{},
+		Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	got, err := loop.Work(context.Background(), req)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if got.SystemFile == "" {
+		t.Fatal("no system file was recorded on the session")
+	}
+	if ag.Requests[0].SystemFile != got.SystemFile {
+		t.Errorf("the agent was pointed at %q", ag.Requests[0].SystemFile)
+	}
+	body, err := os.ReadFile(got.SystemFile)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "AC-valid-url") {
+		t.Errorf("the file does not hold the assembled context: %s", body)
+	}
+}
+
+// bundleContexts assembles a bundle naming the ticket's criteria.
+type bundleContexts struct{}
+
+func (bundleContexts) Assemble(
+	_ context.Context, build string, _ kctx.Spec, ticket kctx.Ticket, _ string,
+) (kctx.Bundle, error) {
+	body, err := json.Marshal(map[string]any{"criteria": ticket.Criteria})
+	if err != nil {
+		return kctx.Bundle{}, err
+	}
+	return kctx.Bundle{Build: build, Content: body}, nil
+}
+
+func TestASessionWriteFailureStopsBeforeTheAgentRuns(t *testing.T) {
+	// AC-thread-no-loss: a crash mid-session must leave a row recovery can
+	// terminate. Running the agent with no row would make that impossible.
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	loop := devloop.Loop{
+		Agent: ag, Store: failingSessions{}, Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	if _, err := loop.Work(context.Background(), captureRequest(t)); err == nil {
+		t.Fatal("a session with no row read as started")
+	}
+	if len(ag.Requests) != 0 {
+		t.Error("the agent ran with no session row")
+	}
+}
+
+// failingSessions refuses every write.
+type failingSessions struct{}
+
+func (failingSessions) Upsert(context.Context, devloop.Session) error {
+	return errors.New("disk full")
+}
+
+func (failingSessions) Importing(context.Context) ([]devloop.Session, error) {
+	return nil, errors.New("disk full")
+}
+
+func TestAnUnreadableSessionListStopsImportRecovery(t *testing.T) {
+	loop := devloop.Loop{
+		Store: failingSessions{}, Threads: newFakeThreads(),
+		Now: fakes.NewClock(time.Unix(0, 0)),
+	}
+	if _, err := loop.RecoverImports(context.Background(), "", "actor-1"); err == nil {
+		t.Fatal("an unreadable store read as no imports in flight")
+	}
+}
+
+func TestAMissingTranscriptStopsTheReplay(t *testing.T) {
+	// The reference is what a replay reproduces the request from. Without the
+	// file there is nothing to re-issue, and inventing one would send sutra a
+	// transcript it may already differ from.
+	store, threads := &memStore{}, newFakeThreads()
+	if err := store.Upsert(context.Background(), devloop.Session{
+		Run: "run-1", Ticket: "KRI-1", SessionID: "sess-42",
+		TranscriptRef: filepath.Join(t.TempDir(), "gone.json"),
+		ImportKey:     "key-1", ImportState: devloop.ImportImporting,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	loop := devloop.Loop{Store: store, Threads: threads, Now: fakes.NewClock(time.Unix(0, 0))}
+	if _, err := loop.RecoverImports(context.Background(), "", "actor-1"); err == nil {
+		t.Fatal("a replay with no transcript read as success")
+	}
+	if len(threads.calls) != 0 {
+		t.Error("an import was attempted with no transcript")
 	}
 }

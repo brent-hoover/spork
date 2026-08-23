@@ -34,6 +34,7 @@ type deps struct {
 	snap      planner.Snapshot
 	po        owner.Owner
 	submitter orchestrator.Submitter
+	queue     orchestrator.Queue
 
 	commandsFor  func(module string) map[string]string
 	criteriaFor  func(ticket string) []string
@@ -87,6 +88,8 @@ func buildStages(d deps) orchestrator.Stages {
 		orchestrator.StageValidate: validateStage(ws, po, criteriaFor),
 
 		orchestrator.StageSubmit: submitStage(ws, submitter, issueFor, sessionFor),
+
+		orchestrator.StageMerge: mergeStage(d.queue),
 
 		orchestrator.StageGates: gateStage(ws, runner, commandsFor),
 	}
@@ -219,6 +222,33 @@ func submitStage(
 			Issue: issueFor(run.Ticket), Branch: w.Branch, Session: session,
 			Summary: run.Ticket,
 		})
+	}
+}
+
+// mergeStage lands an approved run's work.
+//
+// The attempt was enqueued when the approval was observed; this stage runs it.
+// Splitting the two is what makes an approval durable before anything acts on
+// it — a crash between them leaves a queue entry recovery finishes.
+func mergeStage(q orchestrator.Queue) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		key, found, err := q.AttemptFor(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		if !found {
+			return run, fmt.Errorf("run %s is merging with no attempt enqueued", run.ID)
+		}
+		attempt, err := q.Run(ctx, key)
+		if err != nil {
+			return run, err
+		}
+		if attempt.State != orchestrator.AttemptMerged {
+			// A RESULT: the attempt aborted, and the run parks with the cause
+			// rather than looking merged.
+			return run, fmt.Errorf("merge attempt %s: %s", attempt.State, attempt.Note)
+		}
+		return run, nil
 	}
 }
 

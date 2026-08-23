@@ -59,3 +59,15 @@ func (t sutraReviews) Resubmit(
 		expectedRevision, expectedVerdictEvent, key)
 	return rv.Revision, err
 }
+
+// sutraApprovals adapts the sutra client to the merge queue's approval seam.
+type sutraApprovals struct{ c *trackerclient.Client }
+
+func (t sutraApprovals) Consume(
+	ctx context.Context, review, actor string, expectedRevision int,
+	expectedVerdictEvent, key string,
+) error {
+	_, err := t.c.ConsumeApproval(ctx, review, actor, expectedRevision,
+		expectedVerdictEvent, key)
+	return err
+}

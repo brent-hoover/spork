@@ -160,7 +160,8 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Now:   clock.System{},
 	}
 	if err := recovery.Run(ctx,
-		recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor), actor)); err != nil {
+		recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
+			mergeQueue(db, ws, actor), actor)); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -208,29 +209,10 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			Review: reviews,
 			Now:    clock.System{},
 		}
-		runner := gates.Runner{
-			Store:  gates.SQLStore{DB: db},
-			Review: reviewbridge.SQLStore{DB: db},
-			Now:    clock.System{},
-		}
 		o := orchestrator.Orchestrator{
-			Store: orchestrator.SQLStore{DB: db},
-			Stages: buildStages(deps{
-				ws: ws, loop: loop, runner: runner, snap: snap,
-				po: owner.Owner{
-					Agent: recorder(db, tiers, ticket.Title),
-					Store: owner.SQLStore{DB: db},
-					Gates: runner,
-					Now:   clock.System{},
-				},
-				submitter:    submitterOn(db, actor),
-				commandsFor:  commandsFromSnapshot(snap),
-				criteriaFor:  criteriaFromTickets([]planner.Ticket{ticket}),
-				issueFor:     issuesFromTickets([]planner.Ticket{ticket}),
-				sessionFor:   sessionFromStore(db),
-				instructions: operatorInstructions(target),
-			}),
-			Now: clock.System{},
+			Store:  orchestrator.SQLStore{DB: db},
+			Stages: buildStages(stageDeps(db, ws, loop, tiers, ticket, snap, target, actor)),
+			Now:    clock.System{},
 		}
 		run := orchestrator.BuildRun{
 			ID: uuid.NewString(), Ticket: ticket.Title,
@@ -242,7 +224,19 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		if err := o.Store.Upsert(ctx, run); err != nil {
 			return orchestrator.BuildRun{}, err
 		}
-		return o.Drive(ctx, run.ID, 16)
+		settled, err := o.Drive(ctx, run.ID, 16)
+		if err != nil || settled.State != orchestrator.StateReviewSubmitted {
+			return settled, err
+		}
+		// The run is waiting on a human. Look once: if the verdict is already
+		// in, the approval is enqueued and the table takes over again.
+		// POLLING, deliberately, and only here — the event-driven consumption
+		// REQ-run-to-complete describes is M5's, and a poll that observes the
+		// same approval enqueues the same attempt under the same key.
+		// The target path scopes the queue. It is stable for the life of a
+		// target, which is all the attempt key needs of it.
+		return observeApproval(ctx, o, mergeQueue(db, ws, actor),
+			trackerclient.New(sutraURL()), settled, target)
 	}
 }
 
@@ -272,6 +266,17 @@ func latestSnapshotHash(ctx context.Context, db *sql.DB, target string) string {
 		return ""
 	}
 	return m.SnapshotHash
+}
+
+// mergeQueue lands approved work against the target repository.
+func mergeQueue(db *sql.DB, ws workspace.Manager, actor string) orchestrator.Queue {
+	return orchestrator.Queue{
+		Store:     orchestrator.SQLAttempts{DB: db},
+		Runs:      orchestrator.SQLStore{DB: db},
+		Approvals: sutraApprovals{c: trackerclient.New(sutraURL())},
+		Git:       repoMerger{git: workspace.ShellGit{}, repo: ws.Repo, branch: ws.DefaultBranch},
+		Actor:     actor,
+	}
 }
 
 // submitterOn opens reviews against the configured tracker.
@@ -305,7 +310,8 @@ func recoveryLoop(db *sql.DB) devloop.Loop {
 // gain one as their module lands.
 func recoverySteps(
 	in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge,
-	loop devloop.Loop, submitter orchestrator.Submitter, actor string,
+	loop devloop.Loop, submitter orchestrator.Submitter,
+	queue orchestrator.Queue, actor string,
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
@@ -324,6 +330,12 @@ func recoverySteps(
 			return err
 		}},
 		{Stage: recovery.StageMerges, Owner: "orchestrator", Run: func(ctx context.Context) error {
+			// Attempts first: a merge left mid-flight holds the serialized
+			// section, and a submission replayed ahead of it would open a
+			// review for work that is already landing.
+			if _, err := queue.RecoverMerges(ctx); err != nil {
+				return err
+			}
 			// Replayed from the PERSISTED fields under the persisted key, so
 			// a branch that moved cannot smuggle an ungated commit in and a
 			// fresh session cannot displace the one feedback routes to.
@@ -396,6 +408,59 @@ func recorder(db *sql.DB, tiers agent.Tiers, build string) agent.Recording {
 		Now:    clock.System{},
 		Scope:  agent.Scope{Build: build},
 	}
+}
+
+// stageDeps wires every collaborator a run's stages delegate to.
+func stageDeps(
+	db *sql.DB, ws workspace.Manager, loop devloop.Loop, tiers agent.Tiers,
+	ticket planner.Ticket, snap planner.Snapshot, target, actor string,
+) deps {
+	runner := gates.Runner{
+		Store:  gates.SQLStore{DB: db},
+		Review: reviewbridge.SQLStore{DB: db},
+		Now:    clock.System{},
+	}
+	return deps{
+		ws: ws, loop: loop, runner: runner, snap: snap,
+		po: owner.Owner{
+			Agent: recorder(db, tiers, ticket.Title),
+			Store: owner.SQLStore{DB: db},
+			Gates: runner,
+			Now:   clock.System{},
+		},
+		submitter:    submitterOn(db, actor),
+		queue:        mergeQueue(db, ws, actor),
+		commandsFor:  commandsFromSnapshot(snap),
+		criteriaFor:  criteriaFromTickets([]planner.Ticket{ticket}),
+		issueFor:     issuesFromTickets([]planner.Ticket{ticket}),
+		sessionFor:   sessionFromStore(db),
+		instructions: operatorInstructions(target),
+	}
+}
+
+// observeApproval enqueues an approval that has already arrived.
+//
+// Nothing happens unless the review is approved: any other verdict leaves the
+// run exactly where it was, waiting, which is what a submitted run does.
+func observeApproval(
+	ctx context.Context, o orchestrator.Orchestrator, queue orchestrator.Queue,
+	reviews *trackerclient.Client, run orchestrator.BuildRun, targetKey string,
+) (orchestrator.BuildRun, error) {
+	rv, err := reviews.GetReview(ctx, run.ReviewID)
+	if err != nil {
+		return run, fmt.Errorf("read review %s: %w", run.ReviewID, err)
+	}
+	if rv.State != "approved" {
+		return run, nil
+	}
+	moved, _, err := queue.OnApproval(ctx, run, orchestrator.Approved{
+		Review: rv.ID, Revision: rv.Revision, Event: rv.LatestVerdictEvent,
+		Commit: run.ReviewCommit, TargetKey: targetKey,
+	})
+	if err != nil {
+		return run, err
+	}
+	return o.Drive(ctx, moved.ID, 4)
 }
 
 // roundLimit is the configured pair-loop round limit.

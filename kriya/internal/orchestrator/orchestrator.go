@@ -49,6 +49,7 @@ const (
 	StageGates     Stage = "gates"
 	StageValidate  Stage = "po-validation"
 	StageSubmit    Stage = "submit-review"
+	StageMerge     Stage = "merge"
 )
 
 // BuildRun is one ticket's journey through the chain.
@@ -121,6 +122,11 @@ var Table = []Transition{
 	// nothing a dev agent could do about it: the work is finished and the
 	// tracker would not take it.
 	{From: StateSubmitting, Stage: StageSubmit, OnOK: StateReviewSubmitted, OnFail: StateAwaitingOperator},
+	// review-submitted has NO transition: the run waits for a human, and the
+	// table has no way to express waiting. An observed approval moves it to
+	// merging through Queue.OnApproval, and from there the table takes over
+	// again.
+	{From: StateMerging, Stage: StageMerge, OnOK: StateMerged, OnFail: StateAwaitingOperator},
 }
 
 // Lookup returns the transition for a state.

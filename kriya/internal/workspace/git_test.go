@@ -179,3 +179,130 @@ func TestADirtyWorktreeIsNotRemoved(t *testing.T) {
 		t.Fatal("a worktree holding uncommitted work was removed")
 	}
 }
+
+// topicBranch cuts a branch with one extra commit and returns (base, topic).
+func topicBranch(t *testing.T, dir, name, file string) (string, string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	base := head(t, dir)
+	run("checkout", "-q", "-b", name, base)
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(name+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", name)
+	topic := head(t, dir)
+	run("checkout", "-q", "main")
+	return base, topic
+}
+
+func TestACleanMergeIsReportedAsSuch(t *testing.T) {
+	dir := tempRepo(t)
+	base, topic := topicBranch(t, dir, "topic", "new.txt")
+	clean, err := workspace.ShellGit{}.Preflight(context.Background(), dir, topic, base)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if !clean {
+		t.Error("a merge that applies cleanly was reported as conflicting")
+	}
+}
+
+func TestAConflictIsAnAnswerNotAnError(t *testing.T) {
+	// git exits non-zero to report conflicts. Treating that as a failure would
+	// abort the queue on the ordinary case it exists to detect.
+	dir := tempRepo(t)
+	base, first := topicBranch(t, dir, "first", "same.txt")
+	_, second := topicBranch(t, dir, "second", "same.txt")
+
+	clean, err := workspace.ShellGit{}.Preflight(context.Background(), dir, second, first)
+	if err != nil {
+		t.Fatalf("preflight returned an error for a conflict: %v", err)
+	}
+	if clean {
+		t.Error("two branches editing one file the same way reported as clean")
+	}
+	_ = base
+}
+
+func TestPreflightPublishesNothing(t *testing.T) {
+	// It must be safe to run BEFORE consuming an approval, which cannot be
+	// given back.
+	dir := tempRepo(t)
+	base, topic := topicBranch(t, dir, "topic", "new.txt")
+	before := head(t, dir)
+	if _, err := (workspace.ShellGit{}).Preflight(context.Background(), dir, topic, base); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if head(t, dir) != before {
+		t.Error("preflight moved the branch")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.txt")); err == nil {
+		t.Error("preflight wrote into the working tree")
+	}
+}
+
+func TestAMergeLandsThePinnedCommit(t *testing.T) {
+	dir := tempRepo(t)
+	base, topic := topicBranch(t, dir, "topic", "new.txt")
+	merged, err := workspace.ShellGit{}.MergeCAS(context.Background(), dir, "main", topic, base)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if merged == base || merged == topic {
+		t.Errorf("the merge commit is %s", merged)
+	}
+	if head(t, dir) != merged {
+		t.Errorf("main is at %s, want the merge commit %s", head(t, dir), merged)
+	}
+	// Both parents, so the merge really carries the topic's history.
+	cmd := exec.Command("git", "rev-list", "--parents", "-n", "1", merged)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("rev-list: %v", err)
+	}
+	for _, want := range []string{base, topic} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("the merge commit does not have %s as a parent: %s", want, out)
+		}
+	}
+}
+
+func TestAMovedBaseRefusesTheMerge(t *testing.T) {
+	// Between the preflight and the push another merge may have landed, and
+	// merging anyway would put work on a base no gate chain ran against.
+	dir := tempRepo(t)
+	base, topic := topicBranch(t, dir, "topic", "new.txt")
+	// Something else lands on main first.
+	_, other := topicBranch(t, dir, "other", "other.txt")
+	if _, err := (workspace.ShellGit{}).MergeCAS(context.Background(), dir, "main", other, base); err != nil {
+		t.Fatalf("first merge: %v", err)
+	}
+	moved := head(t, dir)
+
+	_, err := workspace.ShellGit{}.MergeCAS(context.Background(), dir, "main", topic, base)
+	if err == nil {
+		t.Fatal("a merge against a stale base was allowed")
+	}
+	if head(t, dir) != moved {
+		t.Error("the refused merge moved the branch anyway")
+	}
+}
+
+func TestAConflictingMergeIsRefused(t *testing.T) {
+	dir := tempRepo(t)
+	base, first := topicBranch(t, dir, "first", "same.txt")
+	_, second := topicBranch(t, dir, "second", "same.txt")
+	if _, err := (workspace.ShellGit{}).MergeCAS(context.Background(), dir, "first", second, first); err == nil {
+		t.Fatal("a conflicting merge produced a commit")
+	}
+	_ = base
+}
