@@ -177,7 +177,9 @@ func (o Orchestrator) Advance(ctx context.Context, id string) (BuildRun, error) 
 // defect, and looping forever would hide it behind a hang.
 func (o Orchestrator) Drive(ctx context.Context, id string, maxSteps int) (BuildRun, error) {
 	var run BuildRun
-	for step := range maxSteps {
+	for range maxSteps {
+		// Zero on the first pass, which no real state equals, so the first
+		// Advance is never mistaken for a stall.
 		before := run.State
 		var err error
 		if run, err = o.Advance(ctx, id); err != nil {
@@ -186,7 +188,7 @@ func (o Orchestrator) Drive(ctx context.Context, id string, maxSteps int) (Build
 		if Terminal(run.State) {
 			return run, nil
 		}
-		if step > 0 && run.State == before {
+		if run.State == before {
 			return run, fmt.Errorf("run %s stopped advancing in state %q", id, run.State)
 		}
 	}

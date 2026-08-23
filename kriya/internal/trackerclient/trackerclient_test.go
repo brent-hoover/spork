@@ -152,3 +152,24 @@ func TestAnInvalidBaseURLFailsBeforeSending(t *testing.T) {
 		t.Fatal("an unbuildable request must fail")
 	}
 }
+
+func TestTheClientCannotHangForever(t *testing.T) {
+	// An unbounded client hangs a build on a tracker that stops replying, and
+	// nothing above it has a deadline of its own.
+	if timeout := trackerclient.New("http://example.invalid").HTTP.Timeout; timeout <= 0 {
+		t.Errorf("timeout is %s", timeout)
+	}
+}
+
+func TestTheSuccessRangeIsExactlyTwoHundreds(t *testing.T) {
+	// 200 must succeed and 300 must not: a redirect kriya cannot follow is not
+	// a mutation that landed.
+	c, _ := serve(t, http.StatusOK, `{"id":"id-1"}`)
+	if _, err := c.CreateIdentity(context.Background(), "h", "agent", "d", "key-a"); err != nil {
+		t.Errorf("200 was rejected: %v", err)
+	}
+	c, _ = serve(t, http.StatusMultipleChoices, `{"id":"id-1"}`)
+	if _, err := c.CreateIdentity(context.Background(), "h", "agent", "d", "key-b"); err == nil {
+		t.Error("300 read as success")
+	}
+}

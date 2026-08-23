@@ -251,7 +251,11 @@ func recoverySteps(in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bri
 					"kriya: review round %s on %s is unresolved (%s); check roborev\n",
 					a.Round, a.Commit, a.Note)
 			}
-			return nil
+			// Rounds left mid-response ARE reconcilable — the payload was
+			// persisted before the call — so unlike an ambiguous enqueue they
+			// are finished rather than surfaced.
+			_, err = rb.RecoverRounds(ctx)
+			return err
 		}},
 	}
 }

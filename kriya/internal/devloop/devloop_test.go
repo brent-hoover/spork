@@ -3,6 +3,7 @@ package devloop_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -127,11 +128,12 @@ func (f *fakeCommitter) Commit(_ context.Context, _, message string) (string, er
 
 // fakeReviewer replies with a scripted verdict per round.
 type fakeReviewer struct {
-	verdicts []string
-	findings string
-	round    int
-	submits  int
-	settled  []string
+	verdicts  []string
+	findings  string
+	round     int
+	submits   int
+	settled   []string
+	responses []string
 }
 
 func (f *fakeReviewer) Submit(_ context.Context, run, roundID, commit string) (reviewbridge.Round, error) {
@@ -152,12 +154,13 @@ func (f *fakeReviewer) Poll(_ context.Context, r reviewbridge.Round) (reviewbrid
 	return r, nil
 }
 
-func (f *fakeReviewer) Settle(_ context.Context, r reviewbridge.Round) error {
+func (f *fakeReviewer) Settle(_ context.Context, r reviewbridge.Round, response string) error {
 	f.settled = append(f.settled, r.ID)
+	f.responses = append(f.responses, response)
 	return nil
 }
 
-func pairLoop(store *memStore, ag *fakes.Agent, c *fakeCommitter, rev *fakeReviewer, max int) devloop.Loop {
+func pairLoop(store *memStore, ag *fakes.Agent, c devloop.Committer, rev *fakeReviewer, max int) devloop.Loop {
 	return devloop.Loop{
 		Agent: ag, Store: store, Commit: c, Review: rev,
 		Now: fakes.NewClock(time.Unix(0, 0)), MaxRounds: max,
@@ -338,4 +341,125 @@ func TestACommitFailureStopsTheRound(t *testing.T) {
 	if rev.submits != 0 {
 		t.Error("a review was submitted for work that was never committed")
 	}
+}
+
+func TestTheResponseNamesTheCommitThatAddressedTheFindings(t *testing.T) {
+	// "Addressed" with no commit is not a trail. The honest answer names the
+	// commit, which is why a findings round settles only after the fix lands.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictClean},
+		findings: "- **Severity**: Low",
+	}
+	if _, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(rev.responses) != 2 {
+		t.Fatalf("settled %d rounds: %v", len(rev.responses), rev.responses)
+	}
+	if !strings.Contains(rev.responses[0], c.shas[1]) {
+		t.Errorf("the findings round was answered %q, which names no fix", rev.responses[0])
+	}
+	if !strings.Contains(rev.responses[1], c.shas[1]) {
+		t.Errorf("the clean round was answered %q", rev.responses[1])
+	}
+}
+
+func TestAStallLeavesItsLastRoundOpen(t *testing.T) {
+	// The unanswered round is the evidence of what was asked for and never
+	// addressed, so it must not be closed on the way out.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{
+			reviewbridge.VerdictFindings, reviewbridge.VerdictFindings,
+			reviewbridge.VerdictFindings,
+		},
+		findings: "- **Severity**: High",
+	}
+	if _, err := pairLoop(store, ag, c, rev, 2).Work(context.Background(), request()); err == nil {
+		t.Fatal("a review that never went clean read as success")
+	}
+	// Round one was answered by round two's commit; round two never was.
+	if len(rev.settled) != 1 || rev.settled[0] != "run-1-1" {
+		t.Errorf("settled %v, want only the round a later commit answered", rev.settled)
+	}
+}
+
+func TestRoundsAreNumberedFromOne(t *testing.T) {
+	// The round number is what the operator matches a commit to a review by.
+	// Off by one and the trail points at the wrong round.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictClean},
+		findings: "- **Severity**: Low",
+	}
+	got, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request())
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(c.messages) != 2 {
+		t.Fatalf("made %d commits", len(c.messages))
+	}
+	for i, want := range []string{"(round 1)", "(round 2)"} {
+		if !strings.HasSuffix(c.messages[i], want) {
+			t.Errorf("commit %d is %q, want it to end %q", i, c.messages[i], want)
+		}
+	}
+	if rev.settled[0] != "run-1-1" {
+		t.Errorf("the first round is %q", rev.settled[0])
+	}
+	if got.Rounds != 2 {
+		t.Errorf("recorded %d rounds", got.Rounds)
+	}
+}
+
+func TestAFailureNamesTheRoundItHappenedIn(t *testing.T) {
+	// "commit failed" without a round leaves the operator counting commits to
+	// work out where it stopped.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &failOnRound{n: 2}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictFindings},
+		findings: "- **Severity**: Low",
+	}
+	_, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request())
+	if err == nil || !strings.Contains(err.Error(), "commit round 2") {
+		t.Fatalf("got %v, want the round named", err)
+	}
+}
+
+func TestAnAgentFailureNamesItsRound(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Err: nil}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings},
+		findings: "- **Severity**: Low",
+	}
+	// One reply, no repeat: the fix invocation has nothing to return.
+	_, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request())
+	if err == nil || !strings.Contains(err.Error(), "round 1") {
+		t.Fatalf("got %v, want the round named", err)
+	}
+}
+
+// failOnRound commits until round n, then fails.
+type failOnRound struct {
+	n     int
+	calls int
+}
+
+func (f *failOnRound) Commit(context.Context, string, string) (string, error) {
+	f.calls++
+	if f.calls >= f.n {
+		return "", errors.New("index.lock exists")
+	}
+	return "sha-" + strconv.Itoa(f.calls), nil
 }

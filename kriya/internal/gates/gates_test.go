@@ -206,3 +206,35 @@ func TestOutputIsTruncatedFromTheHead(t *testing.T) {
 		t.Error("truncation was not marked, so the reader cannot tell output is missing")
 	}
 }
+
+func TestOutputAtTheLimitIsKeptWhole(t *testing.T) {
+	// Truncating output that fits would put an ellipsis in front of a complete
+	// capture and cost the dev agent the first line of it.
+	runner := gates.Runner{Store: &memStore{}, Now: fakes.NewClock(time.Unix(0, 0)), Limit: 64}
+	result, err := runner.Run(context.Background(), "run-1", "engine", "test", "sha-a", t.TempDir(),
+		map[string]string{"test": "printf '%064d' 0"})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(string(result.Detail), "truncated") {
+		t.Errorf("output of exactly the limit was truncated: %s", result.Detail)
+	}
+}
+
+func TestOutputOverTheLimitKeepsItsTail(t *testing.T) {
+	// A tool's verdict is at the end, and a head-truncated capture reliably
+	// discards the one line the dev agent needs.
+	runner := gates.Runner{Store: &memStore{}, Now: fakes.NewClock(time.Unix(0, 0)), Limit: 32}
+	result, err := runner.Run(context.Background(), "run-1", "engine", "test", "sha-a", t.TempDir(),
+		map[string]string{"test": "printf '%063d' 0; echo VERDICT"})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	detail := string(result.Detail)
+	if !strings.Contains(detail, "truncated") {
+		t.Fatalf("output over the limit was not truncated: %s", detail)
+	}
+	if !strings.Contains(detail, "VERDICT") {
+		t.Errorf("truncation discarded the tail: %s", detail)
+	}
+}

@@ -31,9 +31,7 @@ func projectKey(dir string) string {
 		}
 		return -1
 	}, strings.ToUpper(filepath.Base(dir)))
-	if len(base) > 8 {
-		base = base[:8]
-	}
+	base = base[:min(len(base), 8)]
 	if base == "" {
 		base = "TARGET"
 	}

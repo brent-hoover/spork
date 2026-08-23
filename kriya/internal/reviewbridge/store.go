@@ -31,6 +31,15 @@ CREATE TABLE review_round (
     findings TEXT NOT NULL DEFAULT ''
 )`
 
+// ResponseMigration adds the response lifecycle.
+//
+// A second migration rather than an edit to the first: the ledger records
+// which migrations ran, and rewriting an applied one leaves every existing
+// database claiming to have columns it does not have.
+const ResponseMigration = `
+ALTER TABLE review_round ADD COLUMN state TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE review_round ADD COLUMN response TEXT NOT NULL DEFAULT ''`
+
 // SQLStore persists rounds and attempts in SQLite.
 type SQLStore struct{ DB *sql.DB }
 
@@ -51,12 +60,13 @@ func (s SQLStore) UpsertAttempt(ctx context.Context, a EnqueueAttempt) error {
 // UpsertRound records a round and its verdict.
 func (s SQLStore) UpsertRound(ctx context.Context, r Round) error {
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO review_round (id, run, commit_sha, job_id, verdict, findings)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO review_round (id, run, commit_sha, job_id, verdict, findings, state, response)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   job_id = excluded.job_id, verdict = excluded.verdict,
-		   findings = excluded.findings`,
-		r.ID, r.Run, r.Commit, r.JobID, r.Verdict, r.Findings)
+		   findings = excluded.findings, state = excluded.state,
+		   response = excluded.response`,
+		r.ID, r.Run, r.Commit, r.JobID, r.Verdict, r.Findings, r.State, r.Response)
 	if err != nil {
 		return fmt.Errorf("upsert review round: %w", err)
 	}
@@ -90,6 +100,37 @@ func (s SQLStore) Unresolved(ctx context.Context) ([]EnqueueAttempt, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read unresolved attempts: %w", err)
+	}
+	return out, nil
+}
+
+// Unsettled lists rounds whose response lifecycle a crash left mid-flight.
+//
+// The state and its prepared payload are written in one statement, so a row
+// reading "commenting" carries exactly the response that was going to be sent.
+func (s SQLStore) Unsettled(ctx context.Context) ([]Round, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, run, commit_sha, job_id, verdict, findings, state, response
+		   FROM review_round WHERE state IN (?, ?) ORDER BY id`,
+		RoundCommenting, RoundClosing)
+	if err != nil {
+		return nil, fmt.Errorf("query unsettled rounds: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Round
+	for rows.Next() {
+		var r Round
+		if err := rows.Scan(&r.ID, &r.Run, &r.Commit, &r.JobID, &r.Verdict,
+			&r.Findings, &r.State, &r.Response); err != nil {
+			return nil, fmt.Errorf("scan unsettled round: %w", err)
+		}
+		out = append(out, r)
+	}
+	// Checked, because a cursor failing mid-iteration otherwise returns a
+	// SHORT list that reads exactly like "no round left open".
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate unsettled rounds: %w", err)
 	}
 	return out, nil
 }

@@ -49,7 +49,7 @@ type Committer interface {
 type Reviewer interface {
 	Submit(ctx context.Context, run, roundID, commit string) (reviewbridge.Round, error)
 	Poll(ctx context.Context, round reviewbridge.Round) (reviewbridge.Round, error)
-	Settle(ctx context.Context, round reviewbridge.Round) error
+	Settle(ctx context.Context, round reviewbridge.Round, response string) error
 }
 
 // Loop drives a dev agent through pair-programming rounds.
@@ -133,6 +133,10 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 	if rounds <= 0 {
 		rounds = 5
 	}
+	// answered is a round whose findings the agent has been given but whose
+	// response cannot be written yet: the honest answer names the commit that
+	// addressed it, and that commit does not exist until the next round.
+	var answered *reviewbridge.Round
 	for round := range rounds {
 		sha, err := l.Commit.Commit(ctx, req.Workspace,
 			fmt.Sprintf("%s (round %d)", req.Title, round+1))
@@ -140,6 +144,14 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 			return fmt.Errorf("commit round %d: %w", round+1, err)
 		}
 		session.Commits = append(session.Commits, sha)
+
+		if answered != nil {
+			// Not cleared afterwards: every path from here either returns or
+			// assigns the round this pass produced.
+			if err := l.Review.Settle(ctx, *answered, "Addressed in "+sha+"."); err != nil {
+				return err
+			}
+		}
 
 		roundID := fmt.Sprintf("%s-%d", req.Run, round+1)
 		reviewed, err := l.Review.Submit(ctx, req.Run, roundID, sha)
@@ -150,20 +162,14 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 		if err != nil {
 			return err
 		}
-		if reviewed.Verdict != reviewbridge.VerdictPending {
-			if err := l.Review.Settle(ctx, reviewed); err != nil {
-				return err
-			}
-		}
+		session.Rounds = round + 1
 		switch reviewed.Verdict {
 		case reviewbridge.VerdictClean:
-			session.Rounds = round + 1
-			return nil
+			return l.Review.Settle(ctx, reviewed, "Clean pass at "+sha+".")
 		case reviewbridge.VerdictPending:
 			// Still running. The caller polls again rather than the loop
 			// blocking: a run waiting on a review is a state the TUI shows,
 			// not a goroutine nobody can see.
-			session.Rounds = round + 1
 			return nil
 		}
 
@@ -177,10 +183,11 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 			return fmt.Errorf("dev agent fixing round %d: %w", round+1, err)
 		}
 		session.SessionID = res.SessionID
-		session.Rounds = round + 1
+		answered = &reviewed
 	}
 	// Out of rounds with findings outstanding. A stall, and the operator sees
-	// it rather than the loop grinding on.
+	// it — including the last round, still open, which is the evidence of what
+	// was asked for and never answered.
 	return fmt.Errorf("review still reporting findings after %d rounds", rounds)
 }
 

@@ -76,3 +76,25 @@ func TestAStageWithNoOwnerIsSkipped(t *testing.T) {
 		t.Fatalf("an empty plan must succeed: %v", err)
 	}
 }
+
+func TestStepsSharingAStageKeepTheirDeclaredOrder(t *testing.T) {
+	// Two modules can own work in one stage. Sorting must be stable, or the
+	// order the composition root declared becomes whatever the sort felt like.
+	var ran []string
+	steps := []recovery.Step{
+		{Stage: recovery.StageTargets, Owner: "first", Run: func(context.Context) error {
+			ran = append(ran, "first")
+			return nil
+		}},
+		{Stage: recovery.StageTargets, Owner: "second", Run: func(context.Context) error {
+			ran = append(ran, "second")
+			return nil
+		}},
+	}
+	if err := recovery.Run(context.Background(), steps); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(ran) != 2 || ran[0] != "first" || ran[1] != "second" {
+		t.Errorf("ran %v, want the declared order preserved", ran)
+	}
+}

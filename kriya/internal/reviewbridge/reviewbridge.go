@@ -29,6 +29,19 @@ const (
 	VerdictFindings = "findings"
 )
 
+// Round lifecycle states.
+//
+// The response lifecycle advances WRITE-AHEAD around each call: the state and
+// the prepared payload are persisted before the comment, and the closing state
+// before the close. A rare duplicate comment is benign; a missing or differing
+// response is not.
+const (
+	RoundOpen       = "open"
+	RoundCommenting = "commenting"
+	RoundClosing    = "closing"
+	RoundClosed     = "closed"
+)
+
 // Attempt states.
 const (
 	AttemptPending    = "pending"
@@ -62,6 +75,11 @@ type Round struct {
 	Verdict string
 	// Findings is roborev's own report, handed back to the dev agent verbatim.
 	Findings string
+	// State is where the response lifecycle got to.
+	State string
+	// Response is the prepared comment, persisted in the same write as the
+	// commenting state so recovery re-issues EXACTLY what was prepared.
+	Response string
 }
 
 // Store persists rounds and attempts.
@@ -69,6 +87,8 @@ type Store interface {
 	UpsertAttempt(ctx context.Context, a EnqueueAttempt) error
 	UpsertRound(ctx context.Context, r Round) error
 	Unresolved(ctx context.Context) ([]EnqueueAttempt, error)
+	// Unsettled lists rounds whose response lifecycle a crash left mid-flight.
+	Unsettled(ctx context.Context) ([]Round, error)
 }
 
 // Roborev is the slice of the tool this package drives.
@@ -77,8 +97,13 @@ type Roborev interface {
 	Enqueue(ctx context.Context, repo, commit string) (int, error)
 	// Status reports a job's status and its report when finished.
 	Status(ctx context.Context, repo string, jobID int) (status, report string, err error)
+	// Comment records kriya's response on the job.
+	Comment(ctx context.Context, repo string, jobID int, message string) error
 	// Close marks a job resolved.
 	Close(ctx context.Context, repo string, jobID int) error
+	// Closed reports whether a job is already closed, so recovery can treat a
+	// re-issued close as success rather than a failure.
+	Closed(ctx context.Context, repo string, jobID int) (bool, error)
 }
 
 // Bridge drives roborev for one repository.
@@ -114,7 +139,10 @@ func (b Bridge) Submit(ctx context.Context, run, roundID, commit string) (Round,
 	if err := b.Store.UpsertAttempt(ctx, attempt); err != nil {
 		return Round{}, err
 	}
-	round := Round{ID: roundID, Run: run, Commit: commit, JobID: jobID, Verdict: VerdictPending}
+	round := Round{
+		ID: roundID, Run: run, Commit: commit, JobID: jobID,
+		Verdict: VerdictPending, State: RoundOpen,
+	}
 	if err := b.Store.UpsertRound(ctx, round); err != nil {
 		return Round{}, err
 	}
@@ -147,29 +175,84 @@ func (b Bridge) Poll(ctx context.Context, round Round) (Round, error) {
 	} else {
 		round.Verdict = VerdictClean
 	}
-	if err := b.Store.UpsertRound(ctx, round); err != nil {
-		return round, err
-	}
-	return round, nil
+	return round, b.Store.UpsertRound(ctx, round)
 }
 
-// Settle closes a job kriya is done with.
+// Settle records kriya's response on a job and closes it.
 //
-// Called once a round has a terminal verdict: kriya has read the report and
-// either moves on or fixes and enqueues a NEW review on a NEW commit, so the
-// job is finished either way. Only jobs from kriya's own enqueue returns are
-// ever closed — R1 forbids touching a job it cannot prove is its own.
-func (b Bridge) Settle(ctx context.Context, round Round) error {
+// Comment BEFORE close, and each step is persisted before the call that
+// performs it. Only jobs from kriya's own enqueue returns are ever touched —
+// R1 forbids acting on a job it cannot prove is its own.
+func (b Bridge) Settle(ctx context.Context, round Round, response string) error {
 	if round.JobID == 0 {
 		return fmt.Errorf("round %s has no job id", round.ID)
 	}
 	if round.Verdict == VerdictPending {
 		return fmt.Errorf("round %s is still pending", round.ID)
 	}
-	if err := b.Rev.Close(ctx, b.Repo, round.JobID); err != nil {
-		return fmt.Errorf("close job %d: %w", round.JobID, err)
+	round.State = RoundCommenting
+	round.Response = response
+	if err := b.Store.UpsertRound(ctx, round); err != nil {
+		return err
+	}
+	return b.finish(ctx, round)
+}
+
+// finish issues the comment and the close for a round already in flight.
+//
+// Shared by Settle and recovery so a resumed round takes exactly the same path
+// as a fresh one. A recovery that issued its own sequence would be a second
+// implementation of the protocol, and only one of them would be tested.
+func (b Bridge) finish(ctx context.Context, round Round) error {
+	if round.State == RoundCommenting {
+		if err := b.Rev.Comment(ctx, b.Repo, round.JobID, round.Response); err != nil {
+			return fmt.Errorf("comment on job %d: %w", round.JobID, err)
+		}
+		round.State = RoundClosing
+		if err := b.Store.UpsertRound(ctx, round); err != nil {
+			return err
+		}
+	}
+	if err := b.close(ctx, round.JobID); err != nil {
+		return err
+	}
+	round.State = RoundClosed
+	return b.Store.UpsertRound(ctx, round)
+}
+
+// close closes a job, treating one already closed as success.
+//
+// Asked of roborev rather than inferred from the error text: a close that
+// failed because the job was already closed and one that failed because
+// roborev is unwell read identically from an exit code.
+func (b Bridge) close(ctx context.Context, jobID int) error {
+	err := b.Rev.Close(ctx, b.Repo, jobID)
+	if err == nil {
+		return nil
+	}
+	closed, checkErr := b.Rev.Closed(ctx, b.Repo, jobID)
+	if checkErr != nil || !closed {
+		return fmt.Errorf("close job %d: %w", jobID, err)
 	}
 	return nil
+}
+
+// RecoverRounds finishes response lifecycles a crash left mid-flight.
+//
+// Exactly the stored payload is re-issued, never a regenerated one: a rare
+// duplicate comment is benign, a response that differs from the one the
+// operator may already have seen is not.
+func (b Bridge) RecoverRounds(ctx context.Context) (int, error) {
+	rounds, err := b.Store.Unsettled(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list unsettled rounds: %w", err)
+	}
+	for _, round := range rounds {
+		if err := b.finish(ctx, round); err != nil {
+			return 0, fmt.Errorf("finish round %s: %w", round.ID, err)
+		}
+	}
+	return len(rounds), nil
 }
 
 // Recover reports enqueue attempts whose outcome kriya cannot establish.
@@ -259,6 +342,39 @@ func (c CLI) Status(ctx context.Context, repo string, jobID int) (string, string
 		return "done", string(report), nil
 	}
 	return "", "", fmt.Errorf("roborev knows no job %d", jobID)
+}
+
+// Comment records a response on a job.
+func (c CLI) Comment(ctx context.Context, repo string, jobID int, message string) error {
+	cmd := exec.CommandContext(ctx, c.bin(), "comment", "--job", strconv.Itoa(jobID), "-m", message)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("roborev comment %d: %s", jobID, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Closed reports whether roborev already considers a job closed.
+func (c CLI) Closed(ctx context.Context, repo string, jobID int) (bool, error) {
+	cmd := exec.CommandContext(ctx, c.bin(), "list", "--json", "--limit", "200")
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("roborev list: %w", err)
+	}
+	var jobs []struct {
+		ID     int  `json:"id"`
+		Closed bool `json:"closed"`
+	}
+	if err := json.Unmarshal(out, &jobs); err != nil {
+		return false, fmt.Errorf("parse roborev list: %w", err)
+	}
+	for _, j := range jobs {
+		if j.ID == jobID {
+			return j.Closed, nil
+		}
+	}
+	return false, fmt.Errorf("roborev knows no job %d", jobID)
 }
 
 // Close marks a job resolved.

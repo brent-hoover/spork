@@ -48,3 +48,24 @@ func TestANameWithNothingUsableStillKeys(t *testing.T) {
 		t.Errorf("key %q has no usable stem", got)
 	}
 }
+
+func TestEveryUsableCharacterSurvives(t *testing.T) {
+	// The boundaries are the whole rule: a range that excluded 'A', 'Z', '0'
+	// or '9' would silently drop characters and make two distinct directories
+	// key alike more often.
+	if got := projectKey("/repos/AZ09"); !strings.HasPrefix(got, "AZ09") {
+		t.Errorf("key %q dropped a character from AZ09", got)
+	}
+	if got := projectKey("/repos/az09"); !strings.HasPrefix(got, "AZ09") {
+		t.Errorf("key %q did not fold lowercase up", got)
+	}
+}
+
+func TestEightCharactersAreKeptWhole(t *testing.T) {
+	if got := projectKey("/repos/ABCDEFGH"); !strings.HasPrefix(got, "ABCDEFGH") {
+		t.Errorf("key %q truncated a name that fits", got)
+	}
+	if got := projectKey("/repos/ABCDEFGHI"); !strings.HasPrefix(got, "ABCDEFGH") {
+		t.Errorf("key %q did not truncate a name that does not fit", got)
+	}
+}

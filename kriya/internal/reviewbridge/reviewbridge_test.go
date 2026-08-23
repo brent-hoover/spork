@@ -32,6 +32,16 @@ func (m *memStore) UpsertRound(_ context.Context, r reviewbridge.Round) error {
 	return nil
 }
 
+func (m *memStore) Unsettled(context.Context) ([]reviewbridge.Round, error) {
+	var out []reviewbridge.Round
+	for _, r := range m.rounds {
+		if r.State == reviewbridge.RoundCommenting || r.State == reviewbridge.RoundClosing {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) Unresolved(context.Context) ([]reviewbridge.EnqueueAttempt, error) {
 	var out []reviewbridge.EnqueueAttempt
 	for _, a := range m.attempts {
@@ -50,6 +60,19 @@ type fakeRoborev struct {
 	statusErr  error
 	closed     []int
 	enqueued   int
+
+	comments      []comment
+	commentErr    error
+	closeErr      error
+	alreadyClosed bool
+	closedErr     error
+}
+
+// comment is what reached roborev, so a test can assert the payload rather
+// than merely that something was said.
+type comment struct {
+	job     int
+	message string
 }
 
 func (f *fakeRoborev) Enqueue(context.Context, string, string) (int, error) {
@@ -68,8 +91,23 @@ func (f *fakeRoborev) Status(context.Context, string, int) (string, string, erro
 }
 
 func (f *fakeRoborev) Close(_ context.Context, _ string, id int) error {
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	f.closed = append(f.closed, id)
 	return nil
+}
+
+func (f *fakeRoborev) Comment(_ context.Context, _ string, id int, message string) error {
+	if f.commentErr != nil {
+		return f.commentErr
+	}
+	f.comments = append(f.comments, comment{job: id, message: message})
+	return nil
+}
+
+func (f *fakeRoborev) Closed(context.Context, string, int) (bool, error) {
+	return f.alreadyClosed, f.closedErr
 }
 
 func bridge(store *memStore, rev *fakeRoborev) reviewbridge.Bridge {
@@ -215,7 +253,7 @@ func TestSettleClosesOnlyKriyasOwnJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
-	if err := b.Settle(context.Background(), round); err != nil {
+	if err := b.Settle(context.Background(), round, "Clean pass."); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	if len(rev.closed) != 1 || rev.closed[0] != 91 {
@@ -227,7 +265,8 @@ func TestSettleRefusesARoundWithNoProvenJob(t *testing.T) {
 	// R1: a job kriya cannot prove is its own must never be closed.
 	rev := &fakeRoborev{}
 	err := bridge(newMemStore(), rev).Settle(context.Background(),
-		reviewbridge.Round{ID: "round-1", Commit: "abc123", Verdict: reviewbridge.VerdictClean})
+		reviewbridge.Round{ID: "round-1", Commit: "abc123", Verdict: reviewbridge.VerdictClean},
+		"Clean pass.")
 	if err == nil {
 		t.Fatal("a round with no job id must not close anything")
 	}
@@ -239,7 +278,8 @@ func TestSettleRefusesARoundWithNoProvenJob(t *testing.T) {
 func TestSettleRefusesAJobStillRunning(t *testing.T) {
 	rev := &fakeRoborev{}
 	err := bridge(newMemStore(), rev).Settle(context.Background(),
-		reviewbridge.Round{ID: "round-1", JobID: 7, Verdict: reviewbridge.VerdictPending})
+		reviewbridge.Round{ID: "round-1", JobID: 7, Verdict: reviewbridge.VerdictPending},
+		"Clean pass.")
 	if err == nil {
 		t.Fatal("closing a review that has not reported is a lost verdict")
 	}
@@ -267,5 +307,158 @@ func TestRecoverSurfacesAmbiguousAttemptsWithoutGuessing(t *testing.T) {
 	}
 	if len(rev.closed) != 0 {
 		t.Errorf("recovery closed %v — it must resolve nothing on its own", rev.closed)
+	}
+}
+
+func TestTheResponseIsCommentedBeforeTheClose(t *testing.T) {
+	// The job's history must hold the full conversation, and a close that
+	// landed first would close a job with nothing said on it.
+	store, rev := newMemStore(), &fakeRoborev{jobID: 91, status: "done", report: "No issues found"}
+	b := bridge(store, rev)
+	round, err := b.Submit(context.Background(), "run-1", "round-1", "abc123")
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	round, err = b.Poll(context.Background(), round)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if err := b.Settle(context.Background(), round, "Clean pass at abc123."); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if len(rev.comments) != 1 || rev.comments[0].message != "Clean pass at abc123." {
+		t.Fatalf("commented %+v", rev.comments)
+	}
+	if len(rev.closed) != 1 {
+		t.Fatalf("closed %v", rev.closed)
+	}
+	if got := store.rounds["round-1"].State; got != reviewbridge.RoundClosed {
+		t.Errorf("round ended in state %q", got)
+	}
+}
+
+func TestTheResponseIsPersistedBeforeItIsSent(t *testing.T) {
+	// A crash between the write and the call must leave EXACTLY the payload
+	// that was going to be sent, so recovery re-issues it rather than
+	// inventing a new one.
+	store, rev := newMemStore(), &fakeRoborev{
+		jobID: 91, status: "done", report: "No issues found",
+		commentErr: errors.New("daemon down"),
+	}
+	b := bridge(store, rev)
+	round, err := b.Submit(context.Background(), "run-1", "round-1", "abc123")
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	round, err = b.Poll(context.Background(), round)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if err := b.Settle(context.Background(), round, "Addressed in def456."); err == nil {
+		t.Fatal("a comment that never landed read as success")
+	}
+	stored := store.rounds["round-1"]
+	if stored.State != reviewbridge.RoundCommenting {
+		t.Errorf("state is %q, so the crash window is invisible", stored.State)
+	}
+	if stored.Response != "Addressed in def456." {
+		t.Errorf("the prepared payload came back %q", stored.Response)
+	}
+}
+
+func TestRecoveryReIssuesExactlyTheStoredPayload(t *testing.T) {
+	store, rev := newMemStore(), &fakeRoborev{}
+	if err := store.UpsertRound(context.Background(), reviewbridge.Round{
+		ID: "round-1", Run: "run-1", Commit: "abc123", JobID: 91,
+		Verdict: reviewbridge.VerdictFindings,
+		State:   reviewbridge.RoundCommenting, Response: "Addressed in def456.",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	n, err := bridge(store, rev).RecoverRounds(context.Background())
+	if err != nil {
+		t.Fatalf("recover rounds: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("recovered %d rounds", n)
+	}
+	if len(rev.comments) != 1 || rev.comments[0].message != "Addressed in def456." {
+		t.Fatalf("re-issued %+v — a differing response is not benign", rev.comments)
+	}
+	if store.rounds["round-1"].State != reviewbridge.RoundClosed {
+		t.Error("the round was left open by the crash window")
+	}
+}
+
+func TestRecoveryOfAClosingRoundDoesNotCommentTwice(t *testing.T) {
+	// The comment already landed. Re-issuing it would be a duplicate the
+	// state machine exists to avoid.
+	store, rev := newMemStore(), &fakeRoborev{}
+	if err := store.UpsertRound(context.Background(), reviewbridge.Round{
+		ID: "round-1", JobID: 91, Verdict: reviewbridge.VerdictClean,
+		State: reviewbridge.RoundClosing, Response: "Clean pass.",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := bridge(store, rev).RecoverRounds(context.Background()); err != nil {
+		t.Fatalf("recover rounds: %v", err)
+	}
+	if len(rev.comments) != 0 {
+		t.Errorf("commented again: %+v", rev.comments)
+	}
+	if len(rev.closed) != 1 {
+		t.Errorf("closed %v", rev.closed)
+	}
+}
+
+func TestAnAlreadyClosedJobIsSuccessNotFailure(t *testing.T) {
+	// Asked of roborev rather than inferred from the error text: a job already
+	// closed and a roborev that is unwell read identically from an exit code.
+	store := newMemStore()
+	rev := &fakeRoborev{closeErr: errors.New("job 91 is closed"), alreadyClosed: true}
+	if err := store.UpsertRound(context.Background(), reviewbridge.Round{
+		ID: "round-1", JobID: 91, Verdict: reviewbridge.VerdictClean,
+		State: reviewbridge.RoundClosing, Response: "Clean pass.",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := bridge(store, rev).RecoverRounds(context.Background()); err != nil {
+		t.Fatalf("a re-issued close on a closed job failed: %v", err)
+	}
+	if store.rounds["round-1"].State != reviewbridge.RoundClosed {
+		t.Error("the round was not settled")
+	}
+}
+
+func TestACloseThatFailedForRealStaysFailed(t *testing.T) {
+	store := newMemStore()
+	rev := &fakeRoborev{closeErr: errors.New("daemon down"), alreadyClosed: false}
+	if err := store.UpsertRound(context.Background(), reviewbridge.Round{
+		ID: "round-1", JobID: 91, Verdict: reviewbridge.VerdictClean,
+		State: reviewbridge.RoundClosing, Response: "Clean pass.",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := bridge(store, rev).RecoverRounds(context.Background()); err == nil {
+		t.Fatal("a job that is still open read as closed")
+	}
+	if store.rounds["round-1"].State != reviewbridge.RoundClosing {
+		t.Error("a failed close advanced the state anyway")
+	}
+}
+
+func TestARoundThatSettledIsNotRecoveredAgain(t *testing.T) {
+	store, rev := newMemStore(), &fakeRoborev{}
+	if err := store.UpsertRound(context.Background(), reviewbridge.Round{
+		ID: "round-1", JobID: 91, State: reviewbridge.RoundClosed,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	n, err := bridge(store, rev).RecoverRounds(context.Background())
+	if err != nil {
+		t.Fatalf("recover rounds: %v", err)
+	}
+	if n != 0 || len(rev.closed) != 0 {
+		t.Errorf("recovered %d rounds and closed %v", n, rev.closed)
 	}
 }

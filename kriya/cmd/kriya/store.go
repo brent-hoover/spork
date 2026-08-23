@@ -130,6 +130,7 @@ func migrations() []migration {
 		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},
 		{module: "devloop", name: "0002_dev_session_rounds", stmts: splitSQL(devloop.RoundsMigration)},
 		{module: "reviewbridge", name: "0001_review_round", stmts: splitSQL(reviewbridge.Migration)},
+		{module: "reviewbridge", name: "0002_response_lifecycle", stmts: splitSQL(reviewbridge.ResponseMigration)},
 	}
 }
 
