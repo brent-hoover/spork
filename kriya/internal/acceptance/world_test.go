@@ -43,6 +43,8 @@ type world struct {
 	firstEpicID string
 	tracker     *recordingTracker
 	agent       *fakes.Agent
+	// pair is the pair-loop scenarios' state, nil until one starts.
+	pair *pairWorld
 }
 
 func newWorld() *world {
