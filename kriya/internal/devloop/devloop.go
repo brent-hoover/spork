@@ -13,6 +13,7 @@ import (
 
 	"kriya/internal/agent"
 	"kriya/internal/clock"
+	"kriya/internal/reviewbridge"
 )
 
 // Session is one dev-agent invocation against a ticket.
@@ -23,7 +24,11 @@ type Session struct {
 	// run's conversation is findable from its ticket.
 	SessionID string
 	Model     string
-	Ended     bool
+	// Commits records what the loop produced, so a review round and its
+	// commit stay linked after the fact.
+	Commits []string
+	Rounds  int
+	Ended   bool
 }
 
 // Store persists sessions.
@@ -31,11 +36,34 @@ type Store interface {
 	Upsert(ctx context.Context, s Session) error
 }
 
-// Loop drives a dev agent.
+// Committer commits the agent's work so a review has something to read.
+//
+// An interface this package declares rather than importing a git package:
+// what the loop needs is "turn the workspace into a reviewable commit", and
+// the composition root supplies it.
+type Committer interface {
+	Commit(ctx context.Context, dir, message string) (sha string, err error)
+}
+
+// Reviewer is the slice of the review bridge the loop drives.
+type Reviewer interface {
+	Submit(ctx context.Context, run, roundID, commit string) (reviewbridge.Round, error)
+	Poll(ctx context.Context, round reviewbridge.Round) (reviewbridge.Round, error)
+	Settle(ctx context.Context, round reviewbridge.Round) error
+}
+
+// Loop drives a dev agent through pair-programming rounds.
 type Loop struct {
-	Agent agent.Agent
-	Store Store
-	Now   clock.Clock
+	Agent  agent.Agent
+	Store  Store
+	Commit Committer
+	Review Reviewer
+	Now    clock.Clock
+	// MaxRounds bounds the fix-and-recommit cycle. A review that keeps finding
+	// the same thing is a stall the operator must see, not a loop to run
+	// forever — CON-pair-programming wants review latency in minutes, and an
+	// unbounded loop turns that into never.
+	MaxRounds int
 }
 
 // Request is what the loop needs to work a ticket.
@@ -80,11 +108,89 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 
 	session.SessionID = res.SessionID
 	session.Model = res.Model
+
+	if l.Commit != nil && l.Review != nil {
+		if err := l.pair(ctx, req, &session); err != nil {
+			return Session{}, err
+		}
+	}
+
 	session.Ended = true
 	if err := l.Store.Upsert(ctx, session); err != nil {
 		return Session{}, fmt.Errorf("record ended session: %w", err)
 	}
 	return session, nil
+}
+
+// pair runs commit -> review -> fix -> recommit until the review is clean.
+//
+// Small commits with review latency in minutes, not an end-stage pull request
+// (CON-pair-programming). The findings go back to the agent VERBATIM: they are
+// the next instruction, and summarising them drops the file and line the fix
+// needs.
+func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
+	rounds := l.MaxRounds
+	if rounds <= 0 {
+		rounds = 5
+	}
+	for round := range rounds {
+		sha, err := l.Commit.Commit(ctx, req.Workspace,
+			fmt.Sprintf("%s (round %d)", req.Title, round+1))
+		if err != nil {
+			return fmt.Errorf("commit round %d: %w", round+1, err)
+		}
+		session.Commits = append(session.Commits, sha)
+
+		roundID := fmt.Sprintf("%s-%d", req.Run, round+1)
+		reviewed, err := l.Review.Submit(ctx, req.Run, roundID, sha)
+		if err != nil {
+			return err
+		}
+		reviewed, err = l.Review.Poll(ctx, reviewed)
+		if err != nil {
+			return err
+		}
+		if reviewed.Verdict != reviewbridge.VerdictPending {
+			if err := l.Review.Settle(ctx, reviewed); err != nil {
+				return err
+			}
+		}
+		switch reviewed.Verdict {
+		case reviewbridge.VerdictClean:
+			session.Rounds = round + 1
+			return nil
+		case reviewbridge.VerdictPending:
+			// Still running. The caller polls again rather than the loop
+			// blocking: a run waiting on a review is a state the TUI shows,
+			// not a goroutine nobody can see.
+			session.Rounds = round + 1
+			return nil
+		}
+
+		res, err := l.Agent.Run(ctx, agent.Request{
+			Role:       agent.RoleDev,
+			Prompt:     fixPrompt(req, reviewed.Findings),
+			Workspace:  req.Workspace,
+			AllowRules: req.AllowRules,
+		})
+		if err != nil {
+			return fmt.Errorf("dev agent fixing round %d: %w", round+1, err)
+		}
+		session.SessionID = res.SessionID
+		session.Rounds = round + 1
+	}
+	// Out of rounds with findings outstanding. A stall, and the operator sees
+	// it rather than the loop grinding on.
+	return fmt.Errorf("review still reporting findings after %d rounds", rounds)
+}
+
+// fixPrompt hands the findings back unaltered.
+func fixPrompt(req Request, findings string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "The review of your work on %q reported findings.\n\n", req.Title)
+	b.WriteString("Address every one, then stop. Do not restate them back.\n\n")
+	b.WriteString(findings)
+	return b.String()
 }
 
 // prompt states the ticket and the bar it will be judged by.

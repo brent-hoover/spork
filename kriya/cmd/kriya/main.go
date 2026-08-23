@@ -25,6 +25,7 @@ import (
 	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 	"kriya/internal/recovery"
+	"kriya/internal/reviewbridge"
 	"kriya/internal/specverify"
 	"kriya/internal/trackerclient"
 	"kriya/internal/workspace"
@@ -146,7 +147,13 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 
 	// Recovery runs BEFORE any new work, in declared stage order. Nothing pops
 	// until every crash window a previous run left open is reconciled.
-	if err := recovery.Run(ctx, recoverySteps(in, ws)); err != nil {
+	reviews := reviewbridge.Bridge{
+		Repo:  repo,
+		Store: reviewbridge.SQLStore{DB: db},
+		Rev:   reviewbridge.CLI{},
+		Now:   clock.System{},
+	}
+	if err := recovery.Run(ctx, recoverySteps(in, ws, reviews)); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -158,7 +165,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		token = uuid.NewString()
 	}
 	return cli.Build(ctx, os.Stdout, in, target, actor, token,
-		driver(db, ws, tiers, repo, target))
+		driver(db, ws, tiers, reviews, repo, target))
 }
 
 // driver returns a cli.Drive, or nil when no repository is configured.
@@ -167,7 +174,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 // and stop, not create worktrees in whatever repository it happens to be
 // standing in. KRIYA_REPO moves to the target's declared repo_path once
 // intake reads it.
-func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, repo, target string) cli.Drive {
+func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewbridge.Bridge, repo, target string) cli.Drive {
 	if repo == "" {
 		return nil
 	}
@@ -183,8 +190,10 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, repo, target st
 				Tiers:  tiers, Now: clock.System{},
 				Scope: agent.Scope{Build: ticket.Title},
 			},
-			Store: devloop.SQLStore{DB: db},
-			Now:   clock.System{},
+			Store:  devloop.SQLStore{DB: db},
+			Commit: workspace.ShellGit{},
+			Review: reviews,
+			Now:    clock.System{},
 		}
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
@@ -219,7 +228,7 @@ func latestSnapshotHash(ctx context.Context, db *sql.DB, target string) string {
 // spread across the modules — which is the point of sequencing being a
 // composition-root concern. Stages with no owner yet simply have no step; they
 // gain one as their module lands.
-func recoverySteps(in planner.Intaker, ws workspace.Manager) []recovery.Step {
+func recoverySteps(in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
 			_, err := in.RecoverTargets(ctx)
@@ -228,6 +237,21 @@ func recoverySteps(in planner.Intaker, ws workspace.Manager) []recovery.Step {
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
 			_, err := ws.Recover(ctx)
 			return err
+		}},
+		{Stage: recovery.StageReviewRounds, Owner: "reviewbridge", Run: func(ctx context.Context) error {
+			stuck, err := rb.Recover(ctx)
+			if err != nil {
+				return err
+			}
+			// Surfaced, not resolved: kriya cannot prove which roborev job an
+			// ambiguous attempt created, and one of them must not block every
+			// future build.
+			for _, a := range stuck {
+				fmt.Fprintf(os.Stderr,
+					"kriya: review round %s on %s is unresolved (%s); check roborev\n",
+					a.Round, a.Commit, a.Note)
+			}
+			return nil
 		}},
 	}
 }

@@ -57,3 +57,25 @@ func (g ShellGit) HasUnmergedCommits(ctx context.Context, repo, branch, base str
 	// "do not delete".
 	return out != "0", nil
 }
+
+// Commit turns everything in dir into one commit and returns its sha.
+//
+// dir is a worktree, not the repository root: the dev loop commits where the
+// agent worked. A clean tree returns the current HEAD rather than an error —
+// an agent that changed nothing is a review round that finds the same thing
+// again, which the loop's round bound catches, not a crash.
+func (g ShellGit) Commit(ctx context.Context, dir, message string) (string, error) {
+	dirty, err := g.run(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	if dirty != "" {
+		if _, err := g.run(ctx, dir, "add", "-A"); err != nil {
+			return "", err
+		}
+		if _, err := g.run(ctx, dir, "commit", "-m", message); err != nil {
+			return "", err
+		}
+	}
+	return g.run(ctx, dir, "rev-parse", "HEAD")
+}

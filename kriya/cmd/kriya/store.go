@@ -11,6 +11,7 @@ import (
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
+	"kriya/internal/reviewbridge"
 	"kriya/internal/workspace"
 )
 
@@ -127,6 +128,8 @@ func migrations() []migration {
 		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
 		{module: "devloop", name: "0001_dev_session", stmts: []string{devloop.Migration}},
+		{module: "devloop", name: "0002_dev_session_rounds", stmts: splitSQL(devloop.RoundsMigration)},
+		{module: "reviewbridge", name: "0001_review_round", stmts: splitSQL(reviewbridge.Migration)},
 	}
 }
 
