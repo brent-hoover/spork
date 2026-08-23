@@ -88,6 +88,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerGenerations(sc, w)
 	registerDecompose(sc, w)
 	registerPairLoop(sc, w)
+	registerGates(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

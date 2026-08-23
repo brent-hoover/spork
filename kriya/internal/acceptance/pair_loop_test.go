@@ -30,8 +30,6 @@ type fakeRoborev struct {
 	// clean.
 	reports []string
 	closed  map[int]bool
-	// unowned is a job roborev lists that kriya never enqueued.
-	unowned int
 }
 
 func newFakeRoborev() *fakeRoborev {
@@ -66,17 +64,6 @@ func (f *fakeRoborev) Close(_ context.Context, _ string, jobID int) error {
 
 func (f *fakeRoborev) Closed(_ context.Context, _ string, jobID int) (bool, error) {
 	return f.closed[jobID], nil
-}
-
-// touched reports whether any call named this job.
-func (f *fakeRoborev) touched(jobID int) bool {
-	for _, call := range f.calls {
-		if strings.Contains(call, fmt.Sprintf(" %d", jobID)) ||
-			strings.HasSuffix(call, fmt.Sprintf("-> %d", jobID)) {
-			return true
-		}
-	}
-	return false
 }
 
 // memRounds is the bridge's store.

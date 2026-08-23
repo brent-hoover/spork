@@ -45,6 +45,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// gates is the gate scenarios' state, nil until one starts.
+	gates *gateWorld
 }
 
 func newWorld() *world {
