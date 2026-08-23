@@ -20,6 +20,7 @@ import (
 	"kriya/internal/agent"
 	"kriya/internal/cli"
 	"kriya/internal/clock"
+	kctx "kriya/internal/context"
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
@@ -190,7 +191,12 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 				Tiers:  tiers, Now: clock.System{},
 				Scope: agent.Scope{Build: ticket.Title},
 			},
-			Store:  devloop.SQLStore{DB: db},
+			Store: devloop.SQLStore{DB: db},
+			Context: kctx.Assembler{
+				Store:     kctx.SQLBundles{DB: db},
+				Learnings: kctx.SQLLearnings{DB: db},
+				Now:       clock.System{},
+			},
 			Commit: workspace.ShellGit{},
 			Review: reviews,
 			Now:    clock.System{},
@@ -203,7 +209,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 					Review: reviewbridge.SQLStore{DB: db},
 					Now:    clock.System{},
 				},
-				snap, commandsFromSnapshot(snap)),
+				snap, commandsFromSnapshot(snap), operatorInstructions(target)),
 			Now: clock.System{},
 		}
 		run := orchestrator.BuildRun{
@@ -215,6 +221,25 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		}
 		return o.Drive(ctx, run.ID, 16)
 	}
+}
+
+// operatorInstructions reads the target's hand-crafted project file.
+//
+// AC-context-instructions wants it VERBATIM, so it is read and passed through
+// rather than summarised. Absent is not an error — a project may have none —
+// but an unreadable one is silent context loss, so it is reported and the
+// build continues with what it could read.
+func operatorInstructions(target string) string {
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
+		body, err := os.ReadFile(filepath.Join(target, name))
+		if err == nil {
+			return string(body)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "kriya: cannot read %s: %v\n", name, err)
+		}
+	}
+	return ""
 }
 
 // latestSnapshotHash reads the snapshot the newest intake mapped.

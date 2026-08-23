@@ -125,3 +125,82 @@ def test_a_missing_manifest_exits_one_with_findings(tmp_path: Path) -> None:
     assert code == 1
     assert payload["ok"] is False
     assert payload["findings"], "a refusal must explain itself"
+
+
+def test_a_module_carries_its_own_law(tmp_path: Path) -> None:
+    """A build engine assembling an agent's context needs the module's law.
+
+    Which imports a module may make, and which contracts it publishes, are
+    stated in the manifest but not resolved anywhere a consumer can read
+    without parsing avspec.yaml itself.
+    """
+    write_manifest(
+        tmp_path,
+        {
+            "avspec": "0.3",
+            "project": {"name": "p", "status": "draft"},
+            "modules": [
+                {
+                    "id": "MOD-a",
+                    "name": "a",
+                    "boundaries": {"may_import": ["MOD-b"]},
+                    "contracts": [
+                        {"id": "CTR-a", "type": "openapi", "path": "contracts/a.yaml"}
+                    ],
+                },
+                {"id": "MOD-b", "name": "b"},
+            ],
+        },
+    )
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "a.yaml").write_text("openapi: 3.1.0\n")
+
+    code, payload = inspect(tmp_path)
+    assert code == 0
+    first, second = payload["modules"]
+    assert first["may_import"] == ["MOD-b"]
+    assert first["contracts"] == [
+        {"id": "CTR-a", "type": "openapi", "path": "contracts/a.yaml"}
+    ]
+    # Absent is an empty list, never a missing key: a consumer that had to
+    # distinguish "declared nothing" from "the field is not there" would be
+    # deciding what an unstated boundary means, which is avspec's job.
+    assert second["may_import"] == []
+    assert second["contracts"] == []
+
+
+def test_the_constitution_is_emitted_whole(tmp_path: Path) -> None:
+    """The constitution is law the whole project is judged by, so it travels
+    with the model rather than being read out of the manifest separately."""
+    write_manifest(
+        tmp_path,
+        {
+            "avspec": "0.3",
+            "project": {"name": "p", "status": "draft"},
+            "constitution": [
+                {"id": "CON-one", "statement": "Tests come first."},
+                {"id": "CON-two", "statement": "No untyped code lands."},
+            ],
+            "modules": [{"id": "MOD-a", "name": "a"}],
+        },
+    )
+    code, payload = inspect(tmp_path)
+    assert code == 0
+    assert payload["constitution"] == [
+        {"id": "CON-one", "statement": "Tests come first."},
+        {"id": "CON-two", "statement": "No untyped code lands."},
+    ]
+
+
+def test_a_spec_with_no_constitution_emits_an_empty_list(tmp_path: Path) -> None:
+    write_manifest(
+        tmp_path,
+        {
+            "avspec": "0.3",
+            "project": {"name": "p", "status": "draft"},
+            "modules": [{"id": "MOD-a", "name": "a"}],
+        },
+    )
+    code, payload = inspect(tmp_path)
+    assert code == 0
+    assert payload["constitution"] == []

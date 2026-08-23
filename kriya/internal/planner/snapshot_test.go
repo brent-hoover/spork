@@ -199,3 +199,97 @@ func TestAnArtifactSetWithoutTheManifestIsRefused(t *testing.T) {
 		t.Error("nothing may be pinned")
 	}
 }
+
+// pinWith admits a spec whose model carries the given law, and returns the
+// snapshot's hash.
+func pinWith(t *testing.T, law []specverify.Module, constitution []specverify.ConstitutionEntry) string {
+	t.Helper()
+	dir := specDir(t, "avspec: \"0.3\"\n")
+	cmds := map[string]string{}
+	for _, name := range specverify.RequiredCommands {
+		cmds[name] = "run-" + name
+	}
+	for i := range law {
+		law[i].Commands = cmds
+	}
+	v := fakes.NewVerifier(dir, specverify.Report{Status: "ready", OK: true})
+	v.Models = map[string]specverify.Model{dir: {
+		OK: true, Modules: law, Constitution: constitution,
+		Artifacts: []string{"avspec.yaml"},
+	}}
+	in := planner.Intaker{
+		Verify:    v,
+		Snapshots: newMemSnapshots(), Attempts: newMemAttempts(),
+		Now: fakes.NewClock(time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)),
+	}
+	snap, err := in.AdmitAndPin(context.Background(), dir, "token-1")
+	if err != nil {
+		t.Fatalf("admit and pin: %v", err)
+	}
+	return snap.Hash
+}
+
+func TestTheHashCoversTheModuleLaw(t *testing.T) {
+	// Two intakes of identical files whose modules declare different
+	// boundaries are different builds: an agent told a different law would
+	// write different code from the same spec.
+	narrow := pinWith(t, []specverify.Module{{ID: "MOD-a", Name: "a"}}, nil)
+	wide := pinWith(t, []specverify.Module{
+		{ID: "MOD-a", Name: "a", MayImport: []string{"MOD-anything"}},
+	}, nil)
+	if narrow == wide {
+		t.Error("widening a module's boundary did not change the snapshot hash")
+	}
+}
+
+func TestTheHashCoversAModulesContracts(t *testing.T) {
+	bare := pinWith(t, []specverify.Module{{ID: "MOD-a", Name: "a"}}, nil)
+	published := pinWith(t, []specverify.Module{{
+		ID: "MOD-a", Name: "a",
+		Contracts: []specverify.Contract{{ID: "CTR-a", Type: "openapi", Path: "c.yaml"}},
+	}}, nil)
+	if bare == published {
+		t.Error("publishing a contract did not change the snapshot hash")
+	}
+}
+
+func TestTheHashCoversTheConstitution(t *testing.T) {
+	none := pinWith(t, []specverify.Module{{ID: "MOD-a", Name: "a"}}, nil)
+	amended := pinWith(t, []specverify.Module{{ID: "MOD-a", Name: "a"}},
+		[]specverify.ConstitutionEntry{{ID: "CON-a", Statement: "Tests come first."}})
+	if none == amended {
+		t.Error("adding a constitution entry did not change the snapshot hash")
+	}
+}
+
+func TestTheLawTravelsOnThePinnedSnapshot(t *testing.T) {
+	dir := specDir(t, "avspec: \"0.3\"\n")
+	cmds := map[string]string{}
+	for _, name := range specverify.RequiredCommands {
+		cmds[name] = "run-" + name
+	}
+	v := fakes.NewVerifier(dir, specverify.Report{Status: "ready", OK: true})
+	v.Models = map[string]specverify.Model{dir: {
+		OK: true, Artifacts: []string{"avspec.yaml"},
+		Modules: []specverify.Module{{
+			ID: "MOD-a", Name: "a", Commands: cmds, MayImport: []string{"MOD-b"},
+			Contracts: []specverify.Contract{{ID: "CTR-a", Type: "openapi", Path: "c.yaml"}},
+		}},
+		Constitution: []specverify.ConstitutionEntry{{ID: "CON-a", Statement: "s"}},
+	}}
+	in := planner.Intaker{
+		Verify:    v,
+		Snapshots: newMemSnapshots(), Attempts: newMemAttempts(),
+		Now: fakes.NewClock(time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)),
+	}
+	snap, err := in.AdmitAndPin(context.Background(), dir, "token-1")
+	if err != nil {
+		t.Fatalf("admit and pin: %v", err)
+	}
+	if len(snap.Law) != 1 || snap.Law[0].MayImport[0] != "MOD-b" {
+		t.Errorf("law pinned as %+v", snap.Law)
+	}
+	if len(snap.Constitution) != 1 || snap.Constitution[0].ID != "CON-a" {
+		t.Errorf("constitution pinned as %+v", snap.Constitution)
+	}
+}

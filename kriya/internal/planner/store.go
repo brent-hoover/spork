@@ -19,6 +19,16 @@ CREATE TABLE spec_snapshot (
     created           TEXT NOT NULL
 )`
 
+// LawMigration pins each module's boundary and the project's constitution
+// alongside the files.
+//
+// A second migration rather than an edit to the first: the ledger records
+// which migrations ran, and rewriting an applied one leaves every existing
+// database claiming to have columns it does not have.
+const LawMigration = `
+ALTER TABLE spec_snapshot ADD COLUMN law TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE spec_snapshot ADD COLUMN constitution TEXT NOT NULL DEFAULT '[]'`
+
 // TargetMigration is planner's second table. Separate from the first because
 // a module's schema evolves across milestones and each migration is recorded
 // by its own id; folding it into the first would never run on a database that
@@ -50,10 +60,19 @@ func (s SQLSnapshots) Put(ctx context.Context, snap Snapshot) error {
 	if err != nil {
 		return fmt.Errorf("marshal resolved commands: %w", err)
 	}
+	law, err := json.Marshal(snap.Law)
+	if err != nil {
+		return fmt.Errorf("marshal law: %w", err)
+	}
+	constitution, err := json.Marshal(snap.Constitution)
+	if err != nil {
+		return fmt.Errorf("marshal constitution: %w", err)
+	}
 	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO spec_snapshot (hash, content, resolved_commands, created)
-		 VALUES (?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING`,
-		snap.Hash, string(content), string(commands), snap.Created.UTC().Format(time.RFC3339Nano))
+		`INSERT INTO spec_snapshot (hash, content, resolved_commands, law, constitution, created)
+		 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING`,
+		snap.Hash, string(content), string(commands), string(law), string(constitution),
+		snap.Created.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("insert snapshot: %w", err)
 	}
@@ -62,10 +81,11 @@ func (s SQLSnapshots) Put(ctx context.Context, snap Snapshot) error {
 
 // Get reads a snapshot by hash.
 func (s SQLSnapshots) Get(ctx context.Context, hash string) (Snapshot, error) {
-	var content, commands, created string
+	var content, commands, law, constitution, created string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT content, resolved_commands, created FROM spec_snapshot WHERE hash = ?`, hash).
-		Scan(&content, &commands, &created)
+		`SELECT content, resolved_commands, law, constitution, created
+		   FROM spec_snapshot WHERE hash = ?`, hash).
+		Scan(&content, &commands, &law, &constitution, &created)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read snapshot %s: %w", hash, err)
 	}
@@ -75,6 +95,12 @@ func (s SQLSnapshots) Get(ctx context.Context, hash string) (Snapshot, error) {
 	}
 	if err := json.Unmarshal([]byte(commands), &snap.ResolvedCommands); err != nil {
 		return Snapshot{}, fmt.Errorf("unmarshal resolved commands: %w", err)
+	}
+	if err := json.Unmarshal([]byte(law), &snap.Law); err != nil {
+		return Snapshot{}, fmt.Errorf("unmarshal law: %w", err)
+	}
+	if err := json.Unmarshal([]byte(constitution), &snap.Constitution); err != nil {
+		return Snapshot{}, fmt.Errorf("unmarshal constitution: %w", err)
 	}
 	if snap.Created, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return Snapshot{}, fmt.Errorf("parse created: %w", err)

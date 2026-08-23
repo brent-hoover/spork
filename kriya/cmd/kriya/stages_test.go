@@ -32,7 +32,7 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 	}
 	ws := workspaceManagerOn(t, db)
 	runner := gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}}
-	return buildStages(ws, loop, runner, planner.Snapshot{}, commandsFor), ws
+	return buildStages(ws, loop, runner, planner.Snapshot{}, commandsFor, ""), ws
 }
 
 func quietLoop() devloop.Loop {

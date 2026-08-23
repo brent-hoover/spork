@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"sort"
+
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
@@ -23,6 +25,7 @@ func buildStages(
 	runner gates.Runner,
 	snap planner.Snapshot,
 	commandsFor func(module string) map[string]string,
+	instructions string,
 ) orchestrator.Stages {
 	return orchestrator.Stages{
 		orchestrator.StageWorkspace: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
@@ -48,6 +51,12 @@ func buildStages(
 			_, err = loop.Work(ctx, devloop.Request{
 				Run: run.ID, Ticket: run.Ticket, Title: run.Ticket,
 				Workspace: w.Path, Commands: commandsFor(run.Ticket),
+				// The law comes from the PINNED snapshot, never the working
+				// tree: the agent is shown the spec the build was admitted
+				// against.
+				Spec:         specForContext(snap.Law, snap.Constitution, snap.Content),
+				Modules:      modulesFor(snap, run.Ticket),
+				Instructions: instructions,
 			})
 			return run, err
 		},
@@ -94,4 +103,22 @@ func commandsFromSnapshot(snap planner.Snapshot) func(string) map[string]string 
 		}
 		return nil
 	}
+}
+
+// modulesFor names the modules a ticket touches.
+//
+// The snapshot's module set when the ticket names none of them: a first build
+// is one module, and a context assembled for nothing would show the agent no
+// law at all. Ticket-level module attribution lands with REQ-decompose's
+// module tagging.
+func modulesFor(snap planner.Snapshot, ticket string) []string {
+	if _, ok := snap.ResolvedCommands[ticket]; ok {
+		return []string{ticket}
+	}
+	out := make([]string, 0, len(snap.Law))
+	for _, module := range snap.Law {
+		out = append(out, module.ID)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -106,7 +106,7 @@ def _artifacts(spec_dir: Path, manifest: Manifest) -> list[str]:
 def inspect(
     spec_dir: Path = typer.Argument(Path(".")),  # noqa: B008
 ) -> None:
-    """Print the spec's full resolved detail as JSON — commands and artifacts.
+    """Print the spec's full resolved detail as JSON — commands, law, artifacts.
 
     verify judges a spec; inspect shows it. A manifest is a compressed form —
     modules inherit their stack from the project, per field — so what a module
@@ -117,11 +117,12 @@ def inspect(
     Those two have a human format worth reading; this command exists only for
     machine consumption, so a second format would be dead weight.
 
-    A build engine needs two things the manifest states only indirectly: what
-    each module's commands actually resolve to after per-field override, and
-    which files make up the spec. Emitting them here keeps ONE parser for the
-    avspec format; a consumer that re-parsed avspec.yaml could disagree with
-    avspec about its own format.
+    A build engine needs several things the manifest states only indirectly:
+    what each module's commands actually resolve to after per-field override,
+    which files make up the spec, and each module's LAW — the imports it may
+    make and the contracts it publishes — alongside the project's constitution.
+    Emitting them here keeps ONE parser for the avspec format; a consumer that
+    re-parsed avspec.yaml could disagree with avspec about its own format.
 
     Exits 1 if the manifest cannot be loaded, printing the findings.
     """
@@ -145,8 +146,16 @@ def inspect(
                         "id": module.id,
                         "name": module.name,
                         "commands": _effective_commands(project_stack, module.stack),
+                        "may_import": module.boundaries.may_import if module.boundaries else [],
+                        "contracts": [
+                            {"id": c.id, "type": c.type, "path": c.path} for c in module.contracts
+                        ],
                     }
                     for module in manifest.modules
+                ],
+                "constitution": [
+                    {"id": entry.id, "statement": entry.statement}
+                    for entry in manifest.constitution
                 ],
                 "artifacts": _artifacts(spec_dir, manifest),
             },

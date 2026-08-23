@@ -13,6 +13,7 @@ import (
 
 	"kriya/internal/agent"
 	"kriya/internal/clock"
+	kctx "kriya/internal/context"
 	"kriya/internal/reviewbridge"
 )
 
@@ -28,7 +29,10 @@ type Session struct {
 	// commit stay linked after the fact.
 	Commits []string
 	Rounds  int
-	Ended   bool
+	// SystemFile is where the assembled context was written, so a fix round
+	// reads the same law the first round did.
+	SystemFile string
+	Ended      bool
 }
 
 // Store persists sessions.
@@ -52,13 +56,22 @@ type Reviewer interface {
 	Settle(ctx context.Context, round reviewbridge.Round, response string) error
 }
 
+// Contexts assembles what the dev agent is given.
+type Contexts interface {
+	Assemble(ctx context.Context, build string, spec kctx.Spec, ticket kctx.Ticket,
+		instructions string) (kctx.Bundle, error)
+}
+
 // Loop drives a dev agent through pair-programming rounds.
 type Loop struct {
-	Agent  agent.Agent
-	Store  Store
-	Commit Committer
-	Review Reviewer
-	Now    clock.Clock
+	// Context assembles the ticket's law, contracts, and learnings. Nil skips
+	// assembly, which is what a test of the loop's own protocol wants.
+	Context Contexts
+	Agent   agent.Agent
+	Store   Store
+	Commit  Committer
+	Review  Reviewer
+	Now     clock.Clock
 	// MaxRounds bounds the fix-and-recommit cycle. A review that keeps finding
 	// the same thing is a stall the operator must see, not a loop to run
 	// forever — CON-pair-programming wants review latency in minutes, and an
@@ -78,6 +91,14 @@ type Request struct {
 	// CONTENT so the agent knows what its work will be judged by; permission
 	// to run them is granted separately.
 	Commands map[string]string
+	// Spec is the pinned snapshot's law, for context assembly.
+	Spec kctx.Spec
+	// Instructions is the operator's hand-crafted project file.
+	Instructions string
+	// Modules are the module ids this ticket touches.
+	Modules []string
+	// Patterns are the failure patterns this ticket is prone to.
+	Patterns []string
 	// AllowRules are the generated permission rules. No bare Bash: what an
 	// agent may run is the ticket's business, and "tools irrelevant to the
 	// ticket are absent" has to be mechanically true rather than requested.
@@ -96,10 +117,17 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 		return Session{}, fmt.Errorf("record session: %w", err)
 	}
 
+	systemFile, err := l.assembleContext(ctx, req)
+	if err != nil {
+		return Session{}, err
+	}
+	session.SystemFile = systemFile
+
 	res, err := l.Agent.Run(ctx, agent.Request{
 		Role:       agent.RoleDev,
 		Prompt:     prompt(req),
 		Workspace:  req.Workspace,
+		SystemFile: systemFile,
 		AllowRules: req.AllowRules,
 	})
 	if err != nil {
@@ -120,6 +148,32 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 		return Session{}, fmt.Errorf("record ended session: %w", err)
 	}
 	return session, nil
+}
+
+// assembleContext produces the ticket's context and returns the file the
+// agent is pointed at.
+//
+// Assembled ONCE per session and reused across fix rounds: the ticket's law
+// does not change mid-session, and re-assembling would let the agent's view of
+// the spec drift between rounds of the same piece of work.
+func (l Loop) assembleContext(ctx context.Context, req Request) (string, error) {
+	if l.Context == nil {
+		return "", nil
+	}
+	bundle, err := l.Context.Assemble(ctx, req.Run, req.Spec, kctx.Ticket{
+		Title:    req.Title,
+		Criteria: req.Criteria,
+		Modules:  req.Modules,
+		Patterns: req.Patterns,
+	}, req.Instructions)
+	if err != nil {
+		return "", fmt.Errorf("assemble context for %s: %w", req.Ticket, err)
+	}
+	path, err := kctx.SystemFile(req.Workspace, bundle)
+	if err != nil {
+		return "", fmt.Errorf("write context for %s: %w", req.Ticket, err)
+	}
+	return path, nil
 }
 
 // pair runs commit -> review -> fix -> recommit until the review is clean.
@@ -177,6 +231,7 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session) error {
 			Role:       agent.RoleDev,
 			Prompt:     fixPrompt(req, reviewed.Findings),
 			Workspace:  req.Workspace,
+			SystemFile: session.SystemFile,
 			AllowRules: req.AllowRules,
 		})
 		if err != nil {

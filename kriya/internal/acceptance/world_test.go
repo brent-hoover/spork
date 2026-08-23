@@ -47,6 +47,8 @@ type world struct {
 	pair *pairWorld
 	// gates is the gate scenarios' state, nil until one starts.
 	gates *gateWorld
+	// ctxw is the context-assembly scenarios' state, nil until one starts.
+	ctxw *contextWorld
 }
 
 func newWorld() *world {

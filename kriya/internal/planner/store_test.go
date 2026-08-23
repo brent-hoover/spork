@@ -34,7 +34,7 @@ func sqlDB(t *testing.T, schemas ...string) *sql.DB {
 }
 
 func TestASnapshotSurvivesTheRoundTrip(t *testing.T) {
-	s := planner.SQLSnapshots{DB: sqlDB(t, planner.Migration)}
+	s := planner.SQLSnapshots{DB: sqlDB(t, planner.Migration, planner.LawMigration)}
 	want := planner.Snapshot{
 		Hash:    "hash-1",
 		Content: map[string]string{"avspec.yaml": "body"},
@@ -64,7 +64,7 @@ func TestASnapshotSurvivesTheRoundTrip(t *testing.T) {
 func TestPinningTheSameContentTwiceIsNotAnError(t *testing.T) {
 	// Snapshots are content-addressed, so an identical hash is the same
 	// snapshot and a re-intake of unchanged files must not fail.
-	s := planner.SQLSnapshots{DB: sqlDB(t, planner.Migration)}
+	s := planner.SQLSnapshots{DB: sqlDB(t, planner.Migration, planner.LawMigration)}
 	snap := planner.Snapshot{Hash: "hash-1", Created: time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)}
 	if err := s.Put(context.Background(), snap); err != nil {
 		t.Fatalf("first put: %v", err)
@@ -84,7 +84,7 @@ func TestPinningTheSameContentTwiceIsNotAnError(t *testing.T) {
 func TestAnUnpinnedHashIsAnError(t *testing.T) {
 	// Building against a snapshot nothing pinned would build against a spec
 	// that was never admitted.
-	s := planner.SQLSnapshots{DB: sqlDB(t, planner.Migration)}
+	s := planner.SQLSnapshots{DB: sqlDB(t, planner.Migration, planner.LawMigration)}
 	if _, err := s.Get(context.Background(), "hash-absent"); err == nil {
 		t.Fatal("a hash that was never pinned read as a snapshot")
 	}

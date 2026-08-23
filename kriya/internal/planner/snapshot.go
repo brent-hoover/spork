@@ -31,7 +31,13 @@ type Snapshot struct {
 	// ResolvedCommands maps module id to its effective commands, exactly as
 	// intake validated them.
 	ResolvedCommands map[string]map[string]string
-	Created          time.Time
+	// Law is each module's declared boundary and contracts, and the project's
+	// constitution. Pinned alongside the files because context assembly is
+	// judged against what was ADMITTED — a boundary edited since would let an
+	// agent be told law nothing validated.
+	Law          []specverify.Module
+	Constitution []specverify.ConstitutionEntry
+	Created      time.Time
 }
 
 // SnapshotStore persists pinned snapshots.
@@ -64,7 +70,12 @@ func readArtifacts(dir string, paths []string) (map[string]string, error) {
 // modules resolve different commands are different builds. Keys are sorted so
 // the hash depends on content rather than map iteration order, and each field
 // is length-prefixed so no concatenation of one input can imitate another.
-func hashSnapshot(content map[string]string, commands map[string]map[string]string) string {
+func hashSnapshot(
+	content map[string]string,
+	commands map[string]map[string]string,
+	law []specverify.Module,
+	constitution []specverify.ConstitutionEntry,
+) string {
 	h := sha256.New()
 	write := func(parts ...string) {
 		for _, p := range parts {
@@ -81,6 +92,22 @@ func hashSnapshot(content map[string]string, commands map[string]map[string]stri
 		for _, name := range sortedKeys(commands[module]) {
 			write("command", module, name, commands[module][name])
 		}
+	}
+	// The law is hashed too. It is derived from the manifest, which is already
+	// in the artifact set, but hashing what the snapshot STORES rather than
+	// what it could be re-derived from is what makes the hash an address for
+	// this snapshot rather than for its inputs.
+	for _, module := range law {
+		write("law", module.ID, module.Name)
+		for _, dep := range module.MayImport {
+			write("may-import", module.ID, dep)
+		}
+		for _, c := range module.Contracts {
+			write("contract", module.ID, c.ID, c.Type, c.Path)
+		}
+	}
+	for _, entry := range constitution {
+		write("constitution", entry.ID, entry.Statement)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -113,9 +140,11 @@ func (i Intaker) pin(ctx context.Context, dir string, model specverify.Model) (S
 		commands[m.ID] = m.Commands
 	}
 	s := Snapshot{
-		Hash:             hashSnapshot(content, commands),
+		Hash:             hashSnapshot(content, commands, model.Modules, model.Constitution),
 		Content:          content,
 		ResolvedCommands: commands,
+		Law:              model.Modules,
+		Constitution:     model.Constitution,
 		Created:          i.Now.Now(),
 	}
 	if err := i.Snapshots.Put(ctx, s); err != nil {

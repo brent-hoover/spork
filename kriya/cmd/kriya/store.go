@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"kriya/internal/agent"
+	kctx "kriya/internal/context"
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
@@ -123,6 +124,7 @@ func migrations() []migration {
 		{module: "planner", name: "0001_spec_snapshot", stmts: []string{planner.Migration}},
 		{module: "planner", name: "0002_build_target", stmts: []string{planner.TargetMigration}},
 		{module: "planner", name: "0003_intake_generation", stmts: splitSQL(planner.AttemptMigration)},
+		{module: "planner", name: "0004_snapshot_law", stmts: splitSQL(planner.LawMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
 		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
@@ -131,6 +133,7 @@ func migrations() []migration {
 		{module: "devloop", name: "0002_dev_session_rounds", stmts: splitSQL(devloop.RoundsMigration)},
 		{module: "reviewbridge", name: "0001_review_round", stmts: splitSQL(reviewbridge.Migration)},
 		{module: "reviewbridge", name: "0002_response_lifecycle", stmts: splitSQL(reviewbridge.ResponseMigration)},
+		{module: "context", name: "0001_context_and_learnings", stmts: splitSQL(kctx.Migration)},
 	}
 }
 

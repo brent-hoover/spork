@@ -21,6 +21,18 @@ type Module struct {
 	ID       string            `json:"id"`
 	Name     string            `json:"name"`
 	Commands map[string]string `json:"commands"`
+	// MayImport is the module's declared boundary. Context assembly needs it
+	// to decide which other modules the agent sees whole and which it sees
+	// only as a contract.
+	MayImport []string   `json:"may_import"`
+	Contracts []Contract `json:"contracts"`
+}
+
+// Contract is an interface a module publishes.
+type Contract struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Path string `json:"path"`
 }
 
 // Missing lists the required commands this module does not resolve.
@@ -47,6 +59,16 @@ type Model struct {
 	// the manifest, each acceptance criterion's feature file, and each
 	// module's contracts. This is the content set a SpecSnapshot must pin.
 	Artifacts []string `json:"artifacts"`
+	// Constitution is the law the whole project is judged by. It travels with
+	// the model rather than being read out of the manifest separately, so
+	// there stays ONE parser for the avspec format.
+	Constitution []ConstitutionEntry `json:"constitution"`
+}
+
+// ConstitutionEntry is one principle.
+type ConstitutionEntry struct {
+	ID        string `json:"id"`
+	Statement string `json:"statement"`
 }
 
 // Inspect runs `avspec inspect <dir>` and parses the build model.

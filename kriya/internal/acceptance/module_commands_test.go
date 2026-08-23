@@ -131,8 +131,17 @@ func (w *world) dropCommand(_, command string) error {
 	return w.writeFeature()
 }
 
-// moduleID is the module id for a module name in these fixtures.
-func moduleID(name string) string { return "MOD-" + name }
+// moduleID accepts either the spec's id or the bare name the scenarios use.
+//
+// The Gherkin speaks of "api" and "billing" because that is how a person names
+// a module; the spec addresses them as MOD-api. Normalising here keeps the
+// scenarios readable without teaching the production code two spellings.
+func moduleID(name string) string {
+	if strings.HasPrefix(name, "MOD-") {
+		return name
+	}
+	return "MOD-" + name
+}
 
 func (w *world) resolved(module string) (map[string]string, error) {
 	snap, err := w.store.only()
