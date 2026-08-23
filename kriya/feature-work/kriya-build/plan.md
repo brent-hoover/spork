@@ -474,6 +474,31 @@ the BuildRun **research path** · `planner` `completion_state` +
 `CompletionAdvance` · `recovery` stages 3, 8.
 **Proves:** po-validation, submit-review.
 
+**Status 2026-08-23 — 55 of 162 scenario runs green, all six gates
+passing.** Landed: `owner` (4/4), review submission and its two crash
+recoveries, resubmission and its two, and the merge queue's
+approve-consume-merge with re-approval and step-exact recovery
+(REQ-submit-review 7/23).
+
+What the remaining 16 submit-review scenarios need, none of it faked:
+
+| Scenarios | Needs |
+|---|---|
+| rework routes back by session | consuming sutra's verdict events, and routing a run by the review's session id |
+| successive fresh reviews, post-merge review, ticket close | the completion path — `completion_state` and `CompletionAdvance` |
+| the research path's finding reviews | the BuildRun research traversal |
+| serialization under contention | the per-target merge lock, which arrives with M5's parallelism |
+
+The approval is currently observed by POLLING once after a run settles,
+in the composition root only. M5 replaces the poll with event
+consumption; a poll that observes the same approval enqueues the same
+attempt under the same key, so nothing durable changes when it does.
+
+Two more spec-conformance points, on top of M3's three: `review-submitted`
+has no transition because the table cannot express waiting, and
+`trackerclient.do` carried two branches for a request shape no caller
+has.
+
 ### M5 — The outer loop
 `orchestrator` full transition table, parallelism, pop admission,
 `AttributionAmbiguity` · `recovery` stage 4 · learning loop feeding
