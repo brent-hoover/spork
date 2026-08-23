@@ -445,6 +445,29 @@ the gate chain and BuildRun recovery, both here)**, and **decompose's
 "retirement distinguishes pending from issued work"**, which needs a live
 BuildRun to stamp disposition `bound`.
 
+**Status 2026-08-23 — 44 of 162 scenario runs green, all six gates
+passing.** Landed: `workspace` (4/5), `reviewbridge` and the pair loop
+(4/6), `context` (6/6), all four gate REQs (11/11), `devloop` thread
+capture (3/5), `architect` (3/4).
+
+Five scenarios in this milestone's files turned out to need machinery
+that is NOT M3's, and are deferred rather than faked:
+
+| Scenario | Needs | Milestone |
+|---|---|---|
+| workspaces — cleanup never loses unmerged work | merge/completion path | M4 |
+| pair-loop — only provably owned jobs are touched | claim/lease protocol | M5 |
+| pair-loop — the exit is a clean pass on the head | round key tied to a gate attempt | M4 |
+| thread-capture — a resumed run continues under a fresh session | `dev_session` keyed by more than the run | M4 |
+| thread-capture — threads surface in session search | sutra's own search, tested there | — |
+| sa-agent — scope changes escalate to the operator | supersession and cancellation | M5 |
+
+Three spec-conformance defects were found and fixed while building this:
+the gate chain named the coverage gate `coverage` where the spec says
+`branch-coverage`; mutation ran without the review-pass precondition
+AC-mutation-after-review requires; and `ENT-workspace` declares exactly
+two states where the code carried three.
+
 ### M4 — Review, merge, completion
 `owner` (AC validation, anti-gaming) · `orchestrator` `MergeAttempt` and
 the BuildRun **research path** · `planner` `completion_state` +

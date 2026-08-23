@@ -76,3 +76,36 @@ func TestASessionWriteToAMissingTableFails(t *testing.T) {
 		t.Error("a write to a missing table reported success")
 	}
 }
+
+func TestASessionWithNoImportStateStoresTheDeclaredDefault(t *testing.T) {
+	// The column is an enum. A zero-valued Session must not put "" in it, or
+	// every later read finds a value the spec does not declare.
+	s := sqlSessionStore(t)
+	if err := s.Upsert(context.Background(), devloop.Session{Run: "run-1", Ticket: "T-1"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var state string
+	if err := s.DB.QueryRow(
+		`SELECT import_state FROM dev_session WHERE run = ?`, "run-1").Scan(&state); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if state != devloop.ImportNone {
+		t.Errorf("stored %q, want %q", state, devloop.ImportNone)
+	}
+}
+
+func TestASetImportStateIsStoredAsGiven(t *testing.T) {
+	s := sqlSessionStore(t)
+	if err := s.Upsert(context.Background(), devloop.Session{
+		Run: "run-1", Ticket: "T-1", ImportState: devloop.ImportImporting,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	open, err := s.Importing(context.Background())
+	if err != nil {
+		t.Fatalf("importing: %v", err)
+	}
+	if len(open) != 1 || open[0].Run != "run-1" {
+		t.Fatalf("importing listed %+v", open)
+	}
+}

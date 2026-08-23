@@ -107,6 +107,13 @@ func TestTheArchitectGetsEveryFindingInOrder(t *testing.T) {
 	if first >= second || second >= third {
 		t.Error("the findings did not reach the architect in order")
 	}
+	// Numbered from one, and the numbers are how the architect refers back to
+	// a round when it answers.
+	for _, want := range []string{"round 1", "round 2", "round 3"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt has no %q:\n%s", want, prompt)
+		}
+	}
 }
 
 func TestTheArchitectRunsAsItsOwnRole(t *testing.T) {
