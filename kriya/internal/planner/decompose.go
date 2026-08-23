@@ -51,6 +51,10 @@ type Ticket struct {
 	// Criteria are the AC ids this ticket satisfies. They are validated
 	// against the snapshot, not trusted.
 	Criteria []string `json:"criteria"`
+	// IssueID is the sutra issue this ticket became. Not from the agent —
+	// stamped after creation, so a review can hang off the right issue
+	// without anything having to look it up by title.
+	IssueID string `json:"-"`
 }
 
 type ticketReply struct {
@@ -93,6 +97,7 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 		if err != nil {
 			return nil, fmt.Errorf("create ticket %d: %w", n, err)
 		}
+		reply.Tickets[n].IssueID = issueID
 		if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
 			idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
 			return nil, fmt.Errorf("parent ticket %d under the epic: %w", n, err)

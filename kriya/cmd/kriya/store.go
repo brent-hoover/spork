@@ -132,6 +132,7 @@ func migrations() []migration {
 		{module: "workspace", name: "0002_removal", stmts: splitSQL(workspace.RemovalMigration)},
 		{module: "orchestrator", name: "0001_build_run", stmts: []string{orchestrator.Migration}},
 		{module: "orchestrator", name: "0002_round_limit", stmts: splitSQL(orchestrator.RoundLimitMigration)},
+		{module: "orchestrator", name: "0003_review_submission", stmts: splitSQL(orchestrator.SubmissionMigration)},
 		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
 		{module: "owner", name: "0001_validation", stmts: splitSQL(owner.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},

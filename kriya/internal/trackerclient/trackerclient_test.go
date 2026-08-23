@@ -2,6 +2,7 @@ package trackerclient_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -171,5 +172,80 @@ func TestTheSuccessRangeIsExactlyTwoHundreds(t *testing.T) {
 	c, _ = serve(t, http.StatusMultipleChoices, `{"id":"id-1"}`)
 	if _, err := c.CreateIdentity(context.Background(), "h", "agent", "d", "key-b"); err == nil {
 		t.Error("300 read as success")
+	}
+}
+
+func TestImportThreadOmitsAnAbsentAnchor(t *testing.T) {
+	// sutra distinguishes an absent anchor from a blank one, and a blank issue
+	// id is not "a thread anchored nowhere".
+	c, got := serve(t, http.StatusCreated, `{"id":"t-1"}`)
+	transcript := json.RawMessage(`[{"role":"dev","prompt":"go"}]`)
+	if _, err := c.ImportThread(context.Background(), "KRI-1", transcript, "", "", "actor-1", "k"); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	for _, field := range []string{`"session"`, `"issue"`} {
+		if strings.Contains(got.body, field) {
+			t.Errorf("body %s sent an empty %s", got.body, field)
+		}
+	}
+	if !strings.Contains(got.body, `"transcript"`) {
+		t.Errorf("body %s dropped the transcript", got.body)
+	}
+}
+
+func TestImportThreadSendsTheAnchorWhenThereIsOne(t *testing.T) {
+	c, got := serve(t, http.StatusCreated, `{"id":"t-1","session":"sess-42"}`)
+	transcript := json.RawMessage(`[]`)
+	thread, err := c.ImportThread(context.Background(), "KRI-1", transcript,
+		"sess-42", "issue-7", "actor-1", "key-1")
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if thread.ID != "t-1" || thread.Session != "sess-42" {
+		t.Errorf("decoded %+v", thread)
+	}
+	for _, want := range []string{`"session":"sess-42"`, `"issue":"issue-7"`} {
+		if !strings.Contains(got.body, want) {
+			t.Errorf("body %s is missing %s", got.body, want)
+		}
+	}
+	if got.key != "key-1" {
+		t.Errorf("Idempotency-Key was %q", got.key)
+	}
+}
+
+func TestCreateReviewPinsTheBranchAtACommit(t *testing.T) {
+	c, got := serve(t, http.StatusCreated, `{"id":"r-1","revision":1}`)
+	rv, err := c.CreateReview(context.Background(), "issue-7", "actor-1",
+		"Create a short link", "kriya/KRI-1/abcd", "C2", "sess-42", "key-1")
+	if err != nil {
+		t.Fatalf("create review: %v", err)
+	}
+	if rv.ID != "r-1" || rv.Revision != 1 {
+		t.Errorf("decoded %+v", rv)
+	}
+	for _, want := range []string{`"branch":"kriya/KRI-1/abcd"`, `"commit":"C2"`,
+		`"session":"sess-42"`, `"summary":"Create a short link"`} {
+		if !strings.Contains(got.body, want) {
+			t.Errorf("body %s is missing %s", got.body, want)
+		}
+	}
+	if got.key != "key-1" || got.path != "/reviews" {
+		t.Errorf("sent to %s with key %q", got.path, got.key)
+	}
+}
+
+func TestCreateReviewOmitsAnAbsentSummaryAndSession(t *testing.T) {
+	// sutra rejects an explicit null for these and distinguishes absent from
+	// blank.
+	c, got := serve(t, http.StatusCreated, `{"id":"r-1"}`)
+	if _, err := c.CreateReview(context.Background(), "issue-7", "actor-1",
+		"", "kriya/KRI-1/abcd", "C2", "", "key-1"); err != nil {
+		t.Fatalf("create review: %v", err)
+	}
+	for _, field := range []string{`"summary"`, `"session"`} {
+		if strings.Contains(got.body, field) {
+			t.Errorf("body %s sent an empty %s", got.body, field)
+		}
 	}
 }

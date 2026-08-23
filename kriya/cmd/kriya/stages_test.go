@@ -36,12 +36,31 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 	}
 	ws := workspaceManagerOn(t, db)
 	runner := gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}}
-	return buildStages(ws, loop, runner, planner.Snapshot{}, commandsFor, "",
-		owner.Owner{
+	return buildStages(deps{
+		ws: ws, loop: loop, runner: runner, snap: planner.Snapshot{},
+		po: owner.Owner{
 			Agent: &fakes.Agent{Replies: poReply(owner.VerdictSatisfied)},
 			Store: owner.SQLStore{DB: db}, Gates: runner, Now: clock.System{},
 		},
-		func(string) []string { return []string{"AC-x"} }), ws
+		submitter: orchestrator.Submitter{
+			Store:   orchestrator.SQLStore{DB: db},
+			Reviews: recordingReviews{},
+			Author:  "actor-1",
+		},
+		commandsFor: commandsFor,
+		criteriaFor: func(string) []string { return []string{"AC-x"} },
+		issueFor:    func(string) string { return "issue-1" },
+		sessionFor:  sessionFromStore(db),
+	}), ws
+}
+
+// recordingReviews stands in for sutra's review API.
+type recordingReviews struct{}
+
+func (recordingReviews) Create(
+	_ context.Context, _, _, _, _, commit, _, key string,
+) (string, error) {
+	return "review-" + key[:8] + "-" + commit, nil
 }
 
 func quietLoop() devloop.Loop {

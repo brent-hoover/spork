@@ -420,6 +420,10 @@ func findingReports(n int, body string) []string {
 }
 
 // memOrchStore round-trips a run, standing in for a restart.
+//
+// Deliberately NOT an orchestrator.Store: this scenario only needs a run to
+// survive a write and a read, and implementing the whole interface would add
+// a method nothing calls.
 type memOrchStore struct {
 	rows map[string]orchestrator.BuildRun
 }

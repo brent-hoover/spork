@@ -25,6 +25,7 @@ const (
 	StateDevLoop          State = "dev-loop"
 	StateGates            State = "gates"
 	StatePOValidation     State = "po-validation"
+	StateSubmitting       State = "submitting"
 	StateReviewSubmitted  State = "review-submitted"
 	StateAwaitingOperator State = "awaiting-operator"
 	StateMerging          State = "merging"
@@ -47,6 +48,7 @@ const (
 	StageDevLoop   Stage = "dev-loop"
 	StageGates     Stage = "gates"
 	StageValidate  Stage = "po-validation"
+	StageSubmit    Stage = "submit-review"
 )
 
 // BuildRun is one ticket's journey through the chain.
@@ -68,6 +70,16 @@ type BuildRun struct {
 	// configured limit affects only future runs; this one keeps the limit it
 	// started under, and recovery reads it from here rather than from config.
 	RoundLimit int
+	// ReviewKey, ReviewCommit and ReviewSession are written TOGETHER with
+	// ReviewState before sutra is called, so a replay reproduces the original
+	// request. They are immutable for the life of a submission: a branch that
+	// moved cannot smuggle an ungated commit under the old key, and a fresh
+	// recovery session cannot displace the one feedback routes to.
+	ReviewKey     string
+	ReviewCommit  string
+	ReviewSession string
+	ReviewState   string
+	ReviewID      string
 }
 
 // Transition is one row of the table.
@@ -97,7 +109,11 @@ var Table = []Transition{
 	// gate does: the findings are the next instruction. AC-po-verdict says so
 	// explicitly — fail returns the findings to the dev agent and the pair
 	// loop resumes.
-	{From: StatePOValidation, Stage: StageValidate, OnOK: StateReviewSubmitted, OnFail: StateDevLoop},
+	{From: StatePOValidation, Stage: StageValidate, OnOK: StateSubmitting, OnFail: StateDevLoop},
+	// A submission that fails PARKS. Unlike a gate or a PO rejection there is
+	// nothing a dev agent could do about it: the work is finished and the
+	// tracker would not take it.
+	{From: StateSubmitting, Stage: StageSubmit, OnOK: StateReviewSubmitted, OnFail: StateAwaitingOperator},
 }
 
 // Lookup returns the transition for a state.
@@ -120,6 +136,8 @@ func Terminal(s State) bool {
 type Store interface {
 	Upsert(ctx context.Context, r BuildRun) error
 	Find(ctx context.Context, id string) (BuildRun, bool, error)
+	// Submitting lists runs whose review submission a crash left in flight.
+	Submitting(ctx context.Context) ([]BuildRun, error)
 }
 
 // Stages maps a stage to the module that performs it.

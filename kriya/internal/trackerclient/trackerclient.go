@@ -62,26 +62,23 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("sutra %s: status %d: %s", e.Op, e.Status, e.Body)
 }
 
-// do sends a request and decodes a 2xx JSON body into out.
+// do sends a keyed mutation and decodes a 2xx JSON body into out.
+//
+// Every call this client makes is a keyed mutation with a JSON body — there is
+// no read path — so the body and the key are unconditional. Guarding them
+// would be validation for a shape no caller has, and the day a read lands it
+// will want its own helper rather than a branch inside this one.
 func (c *Client) do(ctx context.Context, op, method, path, key string, body, out any) error {
-	var payload io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("marshal %s: %w", op, err)
-		}
-		payload = bytes.NewReader(b)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", op, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, payload)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(b))
 	if err != nil {
 		return fmt.Errorf("build %s: %w", op, err)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if key != "" {
-		req.Header.Set("Idempotency-Key", key)
-	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", key)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -168,4 +165,38 @@ func (c *Client) ImportThread(
 	var t Thread
 	err := c.do(ctx, "importThread", http.MethodPost, "/threads", key, payload, &t)
 	return t, err
+}
+
+// Review is a sutra review as read back.
+type Review struct {
+	ID       string `json:"id"`
+	Issue    string `json:"issue"`
+	State    string `json:"state"`
+	Revision int    `json:"revision"`
+	Session  string `json:"session"`
+}
+
+// CreateReview opens a review over a branch pinned at a commit.
+//
+// The key is the caller's and is persisted before the call. sutra returns the
+// ORIGINAL review for a replayed key rather than opening a second one, which
+// is what makes exactly one review exist per submission across a crash.
+func (c *Client) CreateReview(
+	ctx context.Context, issue, author, summary, branch, commit, session, key string,
+) (Review, error) {
+	payload := map[string]any{
+		"issue": issue, "author": author,
+		"branch": branch, "commit": commit,
+	}
+	// Omitted rather than sent empty: sutra rejects an explicit null for these
+	// and distinguishes absent from blank.
+	if summary != "" {
+		payload["summary"] = summary
+	}
+	if session != "" {
+		payload["session"] = session
+	}
+	var rv Review
+	err := c.do(ctx, "createReview", http.MethodPost, "/reviews", key, payload, &rv)
+	return rv, err
 }

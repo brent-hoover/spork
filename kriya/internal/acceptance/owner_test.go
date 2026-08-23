@@ -238,9 +238,14 @@ func registerOwner(sc *godog.ScenarioContext, w *world) {
 			if saved.Notes == "" || saved.Commit != "C2" {
 				return fmt.Errorf("the record is incomplete: %+v", saved)
 			}
-			// The table, not this module, decides where a pass goes.
-			return transitionFrom(orchestrator.StatePOValidation,
-				orchestrator.StateReviewSubmitted, orchestrator.StateDevLoop)
+			// The table, not this module, decides where a pass goes: on to
+			// submission, and from there to review-submitted.
+			if err := transitionFrom(orchestrator.StatePOValidation,
+				orchestrator.StateSubmitting, orchestrator.StateDevLoop); err != nil {
+				return err
+			}
+			return transitionFrom(orchestrator.StateSubmitting,
+				orchestrator.StateReviewSubmitted, orchestrator.StateAwaitingOperator)
 		})
 
 	sc.Step(`^the PO fails a run$`, func() error {
@@ -263,7 +268,7 @@ func registerOwner(sc *godog.ScenarioContext, w *world) {
 				return fmt.Errorf("the findings were not recorded: %q", saved.Notes)
 			}
 			return transitionFrom(orchestrator.StatePOValidation,
-				orchestrator.StateReviewSubmitted, orchestrator.StateDevLoop)
+				orchestrator.StateSubmitting, orchestrator.StateDevLoop)
 		})
 }
 

@@ -159,7 +159,8 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Rev:   reviewbridge.CLI{},
 		Now:   clock.System{},
 	}
-	if err := recovery.Run(ctx, recoverySteps(in, ws, reviews, recoveryLoop(db), actor)); err != nil {
+	if err := recovery.Run(ctx,
+		recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor), actor)); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -171,7 +172,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		token = uuid.NewString()
 	}
 	return cli.Build(ctx, os.Stdout, in, target, actor, token,
-		driver(db, ws, tiers, reviews, repo, target))
+		driver(db, ws, tiers, reviews, repo, target, actor))
 }
 
 // driver returns a cli.Drive, or nil when no repository is configured.
@@ -180,7 +181,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 // and stop, not create worktrees in whatever repository it happens to be
 // standing in. KRIYA_REPO moves to the target's declared repo_path once
 // intake reads it.
-func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewbridge.Bridge, repo, target string) cli.Drive {
+func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewbridge.Bridge, repo, target, actor string) cli.Drive {
 	if repo == "" {
 		return nil
 	}
@@ -214,15 +215,21 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		}
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
-			Stages: buildStages(ws, loop, runner, snap, commandsFromSnapshot(snap),
-				operatorInstructions(target),
-				owner.Owner{
+			Stages: buildStages(deps{
+				ws: ws, loop: loop, runner: runner, snap: snap,
+				po: owner.Owner{
 					Agent: recorder(db, tiers, ticket.Title),
 					Store: owner.SQLStore{DB: db},
 					Gates: runner,
 					Now:   clock.System{},
 				},
-				criteriaFromTickets([]planner.Ticket{ticket})),
+				submitter:    submitterOn(db, actor),
+				commandsFor:  commandsFromSnapshot(snap),
+				criteriaFor:  criteriaFromTickets([]planner.Ticket{ticket}),
+				issueFor:     issuesFromTickets([]planner.Ticket{ticket}),
+				sessionFor:   sessionFromStore(db),
+				instructions: operatorInstructions(target),
+			}),
 			Now: clock.System{},
 		}
 		run := orchestrator.BuildRun{
@@ -267,6 +274,15 @@ func latestSnapshotHash(ctx context.Context, db *sql.DB, target string) string {
 	return m.SnapshotHash
 }
 
+// submitterOn opens reviews against the configured tracker.
+func submitterOn(db *sql.DB, actor string) orchestrator.Submitter {
+	return orchestrator.Submitter{
+		Store:   orchestrator.SQLStore{DB: db},
+		Reviews: sutraReviews{c: trackerclient.New(sutraURL())},
+		Author:  actor,
+	}
+}
+
 // recoveryLoop is the dev loop as recovery needs it.
 //
 // Only the seams an import replay touches: the session store and the thread
@@ -289,7 +305,7 @@ func recoveryLoop(db *sql.DB) devloop.Loop {
 // gain one as their module lands.
 func recoverySteps(
 	in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge,
-	loop devloop.Loop, actor string,
+	loop devloop.Loop, submitter orchestrator.Submitter, actor string,
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
@@ -305,6 +321,18 @@ func recoverySteps(
 			// key. sutra returns the original thread for one that did and
 			// creates otherwise, so exactly one thread exists either way.
 			_, err := loop.RecoverImports(ctx, "", actor)
+			return err
+		}},
+		{Stage: recovery.StageMerges, Owner: "orchestrator", Run: func(ctx context.Context) error {
+			// Replayed from the PERSISTED fields under the persisted key, so
+			// a branch that moved cannot smuggle an ungated commit in and a
+			// fresh session cannot displace the one feedback routes to.
+			_, err := submitter.RecoverSubmissions(ctx, func(run orchestrator.BuildRun) orchestrator.Submission {
+				return orchestrator.Submission{
+					Issue: run.Ticket, Branch: "", Session: run.ReviewSession,
+					Summary: run.Ticket,
+				}
+			})
 			return err
 		}},
 		{Stage: recovery.StageReviewRounds, Owner: "reviewbridge", Run: func(ctx context.Context) error {

@@ -10,6 +10,7 @@ import (
 	"kriya/internal/clock"
 	"kriya/internal/devloop"
 	"kriya/internal/fakes"
+	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 	"kriya/internal/reviewbridge"
 	"kriya/internal/specverify"
@@ -89,4 +90,13 @@ func intakerForTest(db *sql.DB) planner.Intaker {
 // that running work would need.
 func loopForTest(db *sql.DB) devloop.Loop {
 	return devloop.Loop{Store: devloop.SQLStore{DB: db}, Now: clock.System{}}
+}
+
+// submitterForTest opens reviews against a recording double.
+func submitterForTest(db *sql.DB) orchestrator.Submitter {
+	return orchestrator.Submitter{
+		Store:   orchestrator.SQLStore{DB: db},
+		Reviews: recordingReviews{},
+		Author:  "actor-1",
+	}
 }

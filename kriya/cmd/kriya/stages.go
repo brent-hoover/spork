@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"path/filepath"
@@ -21,16 +22,31 @@ import (
 // recovery ordering does: the orchestrator must reach the modules, and an
 // interface would make every module reach back. Reading this function tells
 // you which module does what, and reading orchestrator.Table tells you when.
-func buildStages(
-	ws workspace.Manager,
-	loop devloop.Loop,
-	runner gates.Runner,
-	snap planner.Snapshot,
-	commandsFor func(module string) map[string]string,
-	instructions string,
-	po owner.Owner,
-	criteriaFor func(ticket string) []string,
-) orchestrator.Stages {
+// deps is everything the stages delegate to.
+//
+// A struct rather than a parameter list: the composition root wires ten
+// collaborators, and ten positional arguments is a call nobody can read and a
+// place two of the same type can quietly swap.
+type deps struct {
+	ws        workspace.Manager
+	loop      devloop.Loop
+	runner    gates.Runner
+	snap      planner.Snapshot
+	po        owner.Owner
+	submitter orchestrator.Submitter
+
+	commandsFor  func(module string) map[string]string
+	criteriaFor  func(ticket string) []string
+	issueFor     func(ticket string) string
+	sessionFor   func(ctx context.Context, run string) (string, error)
+	instructions string
+}
+
+func buildStages(d deps) orchestrator.Stages {
+	ws, loop, runner := d.ws, d.loop, d.runner
+	snap, commandsFor, instructions := d.snap, d.commandsFor, d.instructions
+	po, criteriaFor := d.po, d.criteriaFor
+	submitter, issueFor, sessionFor := d.submitter, d.issueFor, d.sessionFor
 	return orchestrator.Stages{
 		orchestrator.StageWorkspace: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 			w, err := ws.Ensure(ctx, run.ID, run.Ticket)
@@ -69,6 +85,8 @@ func buildStages(
 		},
 
 		orchestrator.StageValidate: validateStage(ws, po, criteriaFor),
+
+		orchestrator.StageSubmit: submitStage(ws, submitter, issueFor, sessionFor),
 
 		orchestrator.StageGates: gateStage(ws, runner, commandsFor),
 	}
@@ -170,6 +188,31 @@ func validateStage(
 	}
 }
 
+// submitStage opens the sutra review a validated run has earned.
+func submitStage(
+	ws workspace.Manager, submitter orchestrator.Submitter,
+	issueFor func(string) string,
+	sessionFor func(context.Context, string) (string, error),
+) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		w, found, err := ws.Store.Find(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		if !found {
+			return run, fmt.Errorf("no workspace for run %s", run.ID)
+		}
+		session, err := sessionFor(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		return submitter.Submit(ctx, run, orchestrator.Submission{
+			Issue: issueFor(run.Ticket), Branch: w.Branch, Session: session,
+			Summary: run.Ticket,
+		})
+	}
+}
+
 // systemFileFor names the context bundle a workspace holds.
 //
 // The SAME file the dev agent read. The PO judging an AC's intent needs the
@@ -186,4 +229,29 @@ func criteriaFromTickets(tickets []planner.Ticket) func(string) []string {
 		byTitle[t.Title] = t.Criteria
 	}
 	return func(ticket string) []string { return byTitle[ticket] }
+}
+
+// issuesFromTickets maps a ticket title to the sutra issue it became.
+func issuesFromTickets(tickets []planner.Ticket) func(string) string {
+	byTitle := make(map[string]string, len(tickets))
+	for _, t := range tickets {
+		byTitle[t.Title] = t.IssueID
+	}
+	return func(ticket string) string { return byTitle[ticket] }
+}
+
+// sessionFromStore reads the session that did a run's work.
+//
+// From the RECORDED session, never a fresh one: a review is stamped with it so
+// feedback routes back to the agent instance that wrote the code.
+func sessionFromStore(db *sql.DB) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, run string) (string, error) {
+		var session string
+		err := db.QueryRowContext(ctx,
+			`SELECT session_id FROM dev_session WHERE run = ?`, run).Scan(&session)
+		if err != nil {
+			return "", fmt.Errorf("read session for run %s: %w", run, err)
+		}
+		return session, nil
+	}
 }

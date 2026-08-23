@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -32,13 +33,24 @@ func (m *memStore) Find(_ context.Context, id string) (orchestrator.BuildRun, bo
 	return r, ok, nil
 }
 
+func (m *memStore) Submitting(context.Context) ([]orchestrator.BuildRun, error) {
+	var out []orchestrator.BuildRun
+	for _, r := range m.rows {
+		if r.ReviewState == orchestrator.SubmitSubmitting {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // recordingStages logs which stages ran, so a test asserts the traversal
 // rather than only the final state.
 func recordingStages(log *[]orchestrator.Stage, failures map[orchestrator.Stage]error) orchestrator.Stages {
 	s := orchestrator.Stages{}
 	for _, stage := range []orchestrator.Stage{
 		orchestrator.StageWorkspace, orchestrator.StageDevLoop, orchestrator.StageGates,
-		orchestrator.StageValidate,
+		orchestrator.StageValidate, orchestrator.StageSubmit,
 	} {
 		stage := stage
 		s[stage] = func(_ context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
@@ -165,7 +177,7 @@ func TestDriveWalksTheWholeTraversal(t *testing.T) {
 	}
 	want := []orchestrator.Stage{
 		orchestrator.StageWorkspace, orchestrator.StageDevLoop, orchestrator.StageGates,
-		orchestrator.StageValidate,
+		orchestrator.StageValidate, orchestrator.StageSubmit,
 	}
 	if len(log) != len(want) {
 		t.Fatalf("ran %v, want %v", log, want)
@@ -213,9 +225,17 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 	t.Cleanup(func() { _ = db.Close() })
 	// The real migration text, as the composition root applies it: a test that
 	// rebuilt the DDL by hand would pass while production had other columns.
-	for _, stmt := range []string{orchestrator.Migration, orchestrator.RoundLimitMigration} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("migrate: %v", err)
+	for _, schema := range []string{
+		orchestrator.Migration, orchestrator.RoundLimitMigration,
+		orchestrator.SubmissionMigration,
+	} {
+		for _, stmt := range strings.Split(schema, ";") {
+			if strings.TrimSpace(stmt) == "" {
+				continue
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
 		}
 	}
 	return orchestrator.SQLStore{DB: db}
@@ -226,7 +246,7 @@ func TestARunSurvivesTheRoundTrip(t *testing.T) {
 	want := orchestrator.BuildRun{
 		ID: "run-1", Ticket: "T-1", Plan: "/target", State: orchestrator.StateGates,
 		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
-		RoundLimit: 4,
+		RoundLimit: 4, ReviewState: orchestrator.SubmitNone,
 	}
 	if err := s.Upsert(context.Background(), want); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -272,5 +292,71 @@ func TestAdvanceRefusesARunItCannotFind(t *testing.T) {
 	o := orchestrator.Orchestrator{Store: sqlOrchStore(t), Now: clock.System{}}
 	if _, err := o.Advance(context.Background(), "run-absent"); err == nil {
 		t.Fatal("an unknown run was advanced")
+	}
+}
+
+func TestSubmittingRunsComeBackWholeAndInOrder(t *testing.T) {
+	// Recovery rebuilds the original request from these fields, so every one
+	// of them has to survive the round trip.
+	s := sqlOrchStore(t)
+	for _, r := range []orchestrator.BuildRun{
+		{
+			ID: "run-b", Ticket: "T-2", State: orchestrator.StateSubmitting,
+			GatedBase: "C2", Attempt: 1, ReviewKey: "key-b", ReviewCommit: "C2",
+			ReviewSession: "sess-b", ReviewState: orchestrator.SubmitSubmitting,
+		},
+		{
+			ID: "run-a", Ticket: "T-1", State: orchestrator.StateSubmitting,
+			GatedBase: "C1", Attempt: 2, ReviewKey: "key-a", ReviewCommit: "C1",
+			ReviewSession: "sess-a", ReviewState: orchestrator.SubmitSubmitting,
+		},
+		{
+			ID: "run-c", Ticket: "T-3", ReviewState: orchestrator.SubmitSubmitted,
+			ReviewID: "review-1",
+		},
+	} {
+		if err := s.Upsert(context.Background(), r); err != nil {
+			t.Fatalf("upsert %s: %v", r.ID, err)
+		}
+	}
+	got, err := s.Submitting(context.Background())
+	if err != nil {
+		t.Fatalf("submitting: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "run-a" || got[1].ID != "run-b" {
+		t.Fatalf("listed %+v", got)
+	}
+	if got[0].ReviewKey != "key-a" || got[0].ReviewCommit != "C1" ||
+		got[0].ReviewSession != "sess-a" || got[0].Attempt != 2 {
+		t.Errorf("run-a came back %+v", got[0])
+	}
+	if got[0].State != orchestrator.StateSubmitting {
+		t.Errorf("the run state came back %q", got[0].State)
+	}
+}
+
+func TestARunWithNoReviewStateStoresTheDeclaredDefault(t *testing.T) {
+	// The column is an enum. A zero-valued BuildRun must not put "" in it.
+	s := sqlOrchStore(t)
+	if err := s.Upsert(context.Background(), orchestrator.BuildRun{ID: "run-1"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _, err := s.Find(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got.ReviewState != orchestrator.SubmitNone {
+		t.Errorf("stored %q, want %q", got.ReviewState, orchestrator.SubmitNone)
+	}
+}
+
+func TestARunStoreThatCannotBeListedIsNotEmpty(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bare.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := (orchestrator.SQLStore{DB: db}).Submitting(context.Background()); err == nil {
+		t.Error("a missing table listed as no submissions in flight")
 	}
 }

@@ -184,7 +184,7 @@ func TestLatestSnapshotHashIsEmptyBeforeAnyIntake(t *testing.T) {
 func TestNoRepositoryMeansNoDriver(t *testing.T) {
 	// A build engine with nowhere to work says so and stops, rather than
 	// cutting branches in whatever repository it is standing in.
-	if driver(nil, workspaceManagerForTest(t), tiersForTest(t), bridgeForTest(t), "", "/target") != nil {
+	if driver(nil, workspaceManagerForTest(t), tiersForTest(t), bridgeForTest(t), "", "/target", "actor-1") != nil {
 		t.Fatal("a driver was returned with no repository configured")
 	}
 }
@@ -194,13 +194,13 @@ func TestRecoveryStepsRunInDeclaredOrder(t *testing.T) {
 	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), "actor-1")
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), submitterForTest(db), "actor-1")
 	var stages []string
 	for _, s := range steps {
 		stages = append(stages, s.Stage.String())
 	}
 	got := strings.Join(stages, ",")
-	if got != "targets,workspaces,dev-sessions,review-rounds" {
+	if got != "targets,workspaces,dev-sessions,merges,review-rounds" {
 		t.Errorf("stages %s — the order is declared, not discovered", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestReviewRecoverySurfacesRatherThanBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), "actor-1")
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), "actor-1")
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
 			continue
@@ -234,7 +234,7 @@ func TestReviewRecoveryPropagatesAStoreFailure(t *testing.T) {
 	// Errors should never pass silently: a store kriya cannot read is not the
 	// same as a store with nothing in it.
 	db := openTemp(t)
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), "actor-1")
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), "actor-1")
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
 			continue

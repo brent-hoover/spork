@@ -40,3 +40,13 @@ func (t sutraThreads) Import(
 	thread, err := t.c.ImportThread(ctx, title, transcript, session, issue, actor, key)
 	return thread.ID, err
 }
+
+// sutraReviews adapts the sutra client to the orchestrator's review seam.
+type sutraReviews struct{ c *trackerclient.Client }
+
+func (t sutraReviews) Create(
+	ctx context.Context, issue, author, summary, branch, commit, session, key string,
+) (string, error) {
+	rv, err := t.c.CreateReview(ctx, issue, author, summary, branch, commit, session, key)
+	return rv.ID, err
+}

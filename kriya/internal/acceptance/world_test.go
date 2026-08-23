@@ -57,6 +57,8 @@ type world struct {
 	sa *saWorld
 	// po is the product-owner scenarios' state, nil until one starts.
 	po *poWorld
+	// submit is the review-submission scenarios' state, nil until one starts.
+	submit *submitWorld
 }
 
 func newWorld() *world {
