@@ -350,3 +350,151 @@ func TestAReviewReadAcceptsExactlyTheTwoHundreds(t *testing.T) {
 		t.Error("300 read as a review")
 	}
 }
+
+func TestTheEventFeedIsReadFromACursor(t *testing.T) {
+	// The cursor is what makes the feed resumable: a restart picks up exactly
+	// where it left off rather than re-reading or skipping.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		if r.Header.Get("Idempotency-Key") != "" {
+			t.Error("a read sent an Idempotency-Key")
+		}
+		_, _ = io.WriteString(w,
+			`{"events":[{"id":"e-1","kind":"review.verdict","payload":{"verdict":"approved"}}],`+
+				`"next_cursor":"c-2","drained":true}`)
+	}))
+	defer srv.Close()
+
+	page, err := trackerclient.New(srv.URL).
+		Events(context.Background(), "c-1", "review.verdict", 50)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].ID != "e-1" {
+		t.Errorf("decoded %+v", page.Events)
+	}
+	if page.NextCursor != "c-2" || !page.Drained {
+		t.Errorf("decoded cursor %q drained=%v", page.NextCursor, page.Drained)
+	}
+	for _, want := range []string{"cursor=c-1", "kind=review.verdict", "limit=50"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("query %q is missing %s", gotQuery, want)
+		}
+	}
+}
+
+func TestAFirstReadCarriesNoCursor(t *testing.T) {
+	// A consumer that has read nothing is at the START of the feed, and
+	// sending an empty cursor parameter would ask sutra to interpret one.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"events":[],"next_cursor":"c-1","drained":true}`)
+	}))
+	defer srv.Close()
+
+	if _, err := trackerclient.New(srv.URL).
+		Events(context.Background(), "", "", 0); err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	for _, unwanted := range []string{"cursor=", "kind=", "limit="} {
+		if strings.Contains(gotQuery, unwanted) {
+			t.Errorf("query %q sent an empty %s", gotQuery, unwanted)
+		}
+	}
+}
+
+func TestAFeedFailureSurfaces(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"detail":"try later"}`)
+	}))
+	defer srv.Close()
+
+	_, err := trackerclient.New(srv.URL).Events(context.Background(), "", "", 0)
+	var apiErr *trackerclient.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusServiceUnavailable {
+		t.Fatalf("got %v, want a 503 APIError", err)
+	}
+}
+
+func TestAnUnparseableFeedIsAnError(t *testing.T) {
+	c, _ := serve(t, http.StatusOK, "not json")
+	if _, err := c.Events(context.Background(), "", "", 0); err == nil {
+		t.Fatal("an unparseable feed read as a page")
+	}
+}
+
+func TestAnUnreachableFeedFails(t *testing.T) {
+	if _, err := trackerclient.New("http://127.0.0.1:1").
+		Events(context.Background(), "", "", 0); err == nil {
+		t.Fatal("an unreachable tracker must fail loudly")
+	}
+	if _, err := trackerclient.New("://nonsense").
+		Events(context.Background(), "", "", 0); err == nil {
+		t.Fatal("an unbuildable request must fail")
+	}
+}
+
+func TestPopClaimsTheNextTicket(t *testing.T) {
+	c, got := serve(t, http.StatusOK,
+		`{"issue":{"id":"i-1","title":"Create a short link"},"feed_watermark":7}`)
+	popped, err := c.Pop(context.Background(), "actor-1", "key-1")
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	if popped.Issue.ID != "i-1" || popped.FeedWatermark != 7 {
+		t.Errorf("decoded %+v", popped)
+	}
+	if got.path != "/identities/actor-1/work-stack/pop" || got.key != "key-1" {
+		t.Errorf("sent to %s with key %q", got.path, got.key)
+	}
+}
+
+func TestAnEmptyPopIsNotAnError(t *testing.T) {
+	// Idling is the ordinary state of a plan whose remaining tickets are
+	// blocked or in flight.
+	c, _ := serve(t, http.StatusOK, `{"feed_watermark":7}`)
+	popped, err := c.Pop(context.Background(), "actor-1", "key-1")
+	if err != nil {
+		t.Fatalf("an empty work stack was treated as a failure: %v", err)
+	}
+	if popped.Issue.ID != "" {
+		t.Errorf("decoded an issue %q from an empty pop", popped.Issue.ID)
+	}
+}
+
+func TestCompleteIssueNamesTheApprovingReview(t *testing.T) {
+	c, got := serve(t, http.StatusOK, `{}`)
+	err := c.CompleteIssue(context.Background(), "i-1", "review-1", 2,
+		"event-9", "actor-1", "key-1")
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, want := range []string{`"status":"complete"`, `"review":"review-1"`,
+		`"review_revision":2`, `"review_verdict_event":"event-9"`} {
+		if !strings.Contains(got.body, want) {
+			t.Errorf("body %s is missing %s", got.body, want)
+		}
+	}
+	if got.path != "/issues/i-1/status" || got.key != "key-1" {
+		t.Errorf("sent to %s with key %q", got.path, got.key)
+	}
+}
+
+func TestConsumeApprovalCarriesItsFences(t *testing.T) {
+	c, got := serve(t, http.StatusOK, `{"id":"r-1","revision":2}`)
+	if _, err := c.ConsumeApproval(context.Background(), "r-1", "actor-1", 2,
+		"event-9", "key-1"); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	for _, want := range []string{`"expected_revision":2`, `"expected_verdict_event":"event-9"`} {
+		if !strings.Contains(got.body, want) {
+			t.Errorf("body %s is missing %s", got.body, want)
+		}
+	}
+	if got.path != "/reviews/r-1/consume" {
+		t.Errorf("sent to %s", got.path)
+	}
+}

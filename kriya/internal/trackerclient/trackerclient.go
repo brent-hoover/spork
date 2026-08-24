@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -320,4 +322,58 @@ func (c *Client) Pop(ctx context.Context, identity, key string) (Popped, error) 
 	err := c.do(ctx, "popWorkStack", http.MethodPost,
 		"/identities/"+identity+"/work-stack/pop", key, map[string]any{}, &p)
 	return p, err
+}
+
+// Event is one entry in sutra's feed.
+type Event struct {
+	ID      string          `json:"id"`
+	Kind    string          `json:"kind"`
+	Subject string          `json:"subject"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// EventPage is a cursor-bounded slice of the feed.
+type EventPage struct {
+	Events     []Event `json:"events"`
+	NextCursor string  `json:"next_cursor"`
+	Drained    bool    `json:"drained"`
+}
+
+// Events reads the feed from a cursor.
+//
+// A read, so it carries no idempotency key. The CURSOR is what makes it
+// resumable: kriya persists the one it has consumed to, and a restart picks up
+// exactly where it left off rather than re-reading from the beginning or
+// skipping what it never saw.
+func (c *Client) Events(ctx context.Context, cursor, kind string, limit int) (EventPage, error) {
+	q := url.Values{}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	if kind != "" {
+		q.Set("kind", kind)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.BaseURL+"/events?"+q.Encode(), nil)
+	if err != nil {
+		return EventPage{}, fmt.Errorf("build listEvents: %w", err)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return EventPage{}, fmt.Errorf("send listEvents: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return EventPage{}, &APIError{Status: resp.StatusCode, Body: string(b), Op: "listEvents"}
+	}
+	var page EventPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return EventPage{}, fmt.Errorf("decode listEvents: %w", err)
+	}
+	return page, nil
 }

@@ -189,12 +189,29 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 	// The pop loop is the outer loop: it claims the next workable ticket and
 	// builds it, until the tracker has nothing to give. Idling is not exiting.
 	return func(ctx context.Context) (orchestrator.Result, error) {
+		// Verdicts first. A changes-requested review returns its run to the
+		// pair loop, and a pass that popped new work before reading them would
+		// leave a rejected run waiting behind tickets it does not need.
+		if _, err := verdictRouter(db, actor).Consume(ctx); err != nil {
+			return orchestrator.Result{}, err
+		}
 		return orchestrator.Loop{
 			Pops:      sutraPops{c: trackerclient.New(sutraURL()), identity: actor},
 			Build:     buildOne(db, ws, tiers, reviews, target, actor),
 			Ordinals:  orchestrator.SQLOrdinals{DB: db},
 			TargetKey: target,
 		}.Run(ctx)
+	}
+}
+
+// verdictRouter consumes review verdicts and routes each to its run.
+func verdictRouter(db *sql.DB, actor string) orchestrator.Router {
+	return orchestrator.Router{
+		Feed:    sutraFeed{c: trackerclient.New(sutraURL())},
+		Cursors: orchestrator.SQLCursors{DB: db},
+		Routes:  orchestrator.SQLStore{DB: db},
+		Store:   orchestrator.SQLStore{DB: db},
+		Name:    "verdicts:" + actor,
 	}
 }
 

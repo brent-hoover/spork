@@ -103,6 +103,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerMergeRefusals(sc, w)
 	registerAttemptScoping(sc, w)
 	registerPopLoop(sc, w)
+	registerRework(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

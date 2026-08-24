@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"kriya/internal/orchestrator"
 	"kriya/internal/trackerclient"
 )
 
@@ -98,4 +99,29 @@ func (t sutraPops) Pop(ctx context.Context, key string) (string, string, error) 
 		return "", "", err
 	}
 	return got.Issue.ID, got.Issue.Title, nil
+}
+
+// sutraFeed adapts sutra's event feed to the verdict router's seam.
+//
+// It reads only review verdicts. The feed carries every event sutra emits, and
+// filtering at the source is what keeps kriya from paging through work it has
+// no opinion about.
+type sutraFeed struct{ c *trackerclient.Client }
+
+func (f sutraFeed) Since(
+	ctx context.Context, cursor string,
+) ([]orchestrator.VerdictEvent, string, error) {
+	page, err := f.c.Events(ctx, cursor, "review.verdict", 100)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]orchestrator.VerdictEvent, 0, len(page.Events))
+	for _, e := range page.Events {
+		v, err := orchestrator.ParseVerdict(e.ID, e.Payload)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, v)
+	}
+	return out, page.NextCursor, nil
 }

@@ -136,6 +136,7 @@ func migrations() []migration {
 		{module: "orchestrator", name: "0004_merge_attempt", stmts: splitSQL(orchestrator.MergeMigration)},
 		{module: "orchestrator", name: "0005_completion", stmts: splitSQL(orchestrator.CompletionMigration)},
 		{module: "orchestrator", name: "0006_pop_ordinal", stmts: splitSQL(orchestrator.PopMigration)},
+		{module: "orchestrator", name: "0007_feed_cursor", stmts: splitSQL(orchestrator.CursorMigration)},
 		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
 		{module: "owner", name: "0001_validation", stmts: splitSQL(owner.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},

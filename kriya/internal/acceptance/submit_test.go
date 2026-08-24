@@ -11,6 +11,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
 )
 
@@ -168,6 +169,8 @@ type submitWorld struct {
 	run       orchestrator.BuildRun
 	sub       orchestrator.Submission
 	rework    orchestrator.Rework
+	feed      *verdictFeed
+	router    orchestrator.Router
 	err       error
 }
 
@@ -737,4 +740,200 @@ func integrateRerunHolds(s *submitWorld) error {
 		return errors.New("a rejected operation left the run looking submitted")
 	}
 	return nil
+}
+
+// verdictFeed hands out review verdicts from a cursor.
+type verdictFeed struct {
+	verdicts []orchestrator.VerdictEvent
+	handed   bool
+}
+
+func (f *verdictFeed) Since(
+	context.Context, string,
+) ([]orchestrator.VerdictEvent, string, error) {
+	if f.handed {
+		return nil, "cursor-1", nil
+	}
+	f.handed = true
+	return f.verdicts, "cursor-1", nil
+}
+
+// feedCursor persists a consumer's position.
+type feedCursor struct{ at map[string]string }
+
+func (c *feedCursor) Current(_ context.Context, name string) (string, error) {
+	return c.at[name], nil
+}
+
+func (c *feedCursor) Advance(_ context.Context, name, cursor string) error {
+	c.at[name] = cursor
+	return nil
+}
+
+// sessionIndex finds a run by the session its review was stamped with.
+type sessionIndex struct{ runs *runStore }
+
+func (s sessionIndex) BySession(
+	_ context.Context, session string,
+) (orchestrator.BuildRun, bool, error) {
+	for _, run := range s.runs.rows {
+		if run.ReviewSession == session {
+			return run, true, nil
+		}
+	}
+	return orchestrator.BuildRun{}, false, nil
+}
+
+func registerRework(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^a review receives a changes-requested verdict$`, func() error {
+		s := w.newSubmit()
+		s.run = orchestrator.BuildRun{
+			ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateReviewSubmitted,
+			GatedBase: "C2", Attempt: 1, ReviewID: "review-1",
+			ReviewSession: "sess-42", ReviewRevision: 1,
+			ReviewState: orchestrator.SubmitSubmitted,
+		}
+		if err := s.store.Upsert(context.Background(), s.run); err != nil {
+			return err
+		}
+		s.feed = &verdictFeed{verdicts: []orchestrator.VerdictEvent{{
+			ID: "event-9", Review: "review-1", Session: "sess-42",
+			Verdict: orchestrator.VerdictChangesRequested, Revision: 1,
+		}}}
+		s.router = orchestrator.Router{
+			Feed: s.feed, Cursors: &feedCursor{at: map[string]string{}},
+			Routes: sessionIndex{runs: s.store}, Store: s.store, Name: "verdicts",
+		}
+		return nil
+	})
+
+	sc.Step(`^the feedback reaches the run identified by the review's session id — the same agent instance where possible$`,
+		func() error {
+			s := w.submit
+			routed, err := s.router.Consume(context.Background())
+			if err != nil {
+				return err
+			}
+			if len(routed) != 1 || !routed[0].Reworked {
+				return fmt.Errorf("routed %+v", routed)
+			}
+			if routed[0].Run.ID != "run-1" {
+				return fmt.Errorf("routed to %q", routed[0].Run.ID)
+			}
+			// By SESSION: a router that matched on the review id would find
+			// the same run here, so the fixture gives the session its own
+			// value and the run is found by it.
+			if routed[0].Verdict.Session != "sess-42" {
+				return fmt.Errorf("matched on %q", routed[0].Verdict.Session)
+			}
+			s.run = routed[0].Run
+			return nil
+		})
+
+	sc.Step(`^the pair loop resumes$`, func() error {
+		s := w.submit
+		if s.store.rows["run-1"].State != orchestrator.StateDevLoop {
+			return fmt.Errorf("the run is in %q", s.store.rows["run-1"].State)
+		}
+		// The event and revision are persisted so the resubmission can name
+		// them: one that could not would answer whatever the review said last.
+		row := s.store.rows["run-1"]
+		if row.ReviewVerdictEvent != "event-9" || row.ReviewRevision != 1 {
+			return fmt.Errorf("the run records event %q at revision %d",
+				row.ReviewVerdictEvent, row.ReviewRevision)
+		}
+		return nil
+	})
+
+	sc.Step(`^the agent finishes rework at a new head commit$`, func() error {
+		s := w.submit
+		s.run = s.store.rows["run-1"]
+		s.run.GatedBase = "C3"
+		s.run.Attempt = 2
+		return s.store.Upsert(context.Background(), s.run)
+	})
+
+	sc.Step(`^every machine gate — review, test, structure, typing, arch, branch coverage, mutation — and PO validation pass again at the new head commit$`,
+		func() error {
+			// Mechanically: the chain and the PO are asked about the NEW
+			// attempt, and attempt 1's results satisfy none of it.
+			g, err := w.newGates()
+			if err != nil {
+				return err
+			}
+			g.commit = "C3"
+			g.modules["api"] = commandsFor()
+			for _, gate := range gates.Chain {
+				if _, err := g.runner.Run(context.Background(), "run-1", "api", gate,
+					g.commit, g.dir, g.modules["api"], 2); err != nil {
+					return err
+				}
+			}
+			passed, missing, err := g.runner.AllPassed(context.Background(), "run-1", "api", "C3", 2)
+			if err != nil {
+				return err
+			}
+			if !passed {
+				return fmt.Errorf("the chain is missing %q at the new head", missing)
+			}
+			return nil
+		})
+
+	sc.Step(`^the resubmitting state, its key, expected revision, answered verdict event, and pinned commit persist transactionally before sutra is called$`,
+		func() error {
+			s := w.submit
+			s.rework = orchestrator.Rework{
+				Branch: s.sub.Branch, Session: "sess-42", Summary: "Create a short link",
+				Revision: s.run.ReviewRevision, VerdictEvent: s.run.ReviewVerdictEvent,
+			}
+			s.catalog.revision = s.run.ReviewRevision
+			// Persisted BEFORE: proven by a call that fails, leaving exactly
+			// the row a replay needs.
+			s.catalog.err = errors.New("sutra unreachable")
+			if _, err := s.submitter.Resubmit(context.Background(), s.run, s.rework); err == nil {
+				return errors.New("a resubmission that never landed read as success")
+			}
+			row := s.store.rows["run-1"]
+			if row.ReviewState != orchestrator.SubmitResubmitting {
+				return fmt.Errorf("the row is in state %q", row.ReviewState)
+			}
+			if row.ReviewKey == "" || row.ReviewCommit != "C3" ||
+				row.ReviewVerdictEvent != "event-9" {
+				return fmt.Errorf("the row cannot rebuild its own call: %+v", row)
+			}
+			s.catalog.err = nil
+			return nil
+		})
+
+	sc.Step(`^resubmission goes through sutra's resubmit path and the review's revision increments$`,
+		func() error {
+			s := w.submit
+			before := s.catalog.revision
+			got, err := s.submitter.Resubmit(context.Background(), s.store.rows["run-1"], s.rework)
+			if err != nil {
+				return err
+			}
+			if s.catalog.revision != before+1 {
+				return fmt.Errorf("the revision went from %d to %d", before, s.catalog.revision)
+			}
+			if got.ReviewID != "review-1" {
+				return fmt.Errorf("a second review %q was opened", got.ReviewID)
+			}
+			return nil
+		})
+
+	sc.Step(`^no resubmission happens before those gates pass$`, func() error {
+		// The table is what enforces it: a reworked run re-enters at the dev
+		// loop and reaches submitting only through gates and PO validation.
+		if err := transitionFrom(orchestrator.StateDevLoop,
+			orchestrator.StateGates, orchestrator.StateAwaitingOperator); err != nil {
+			return err
+		}
+		if err := transitionFrom(orchestrator.StateGates,
+			orchestrator.StatePOValidation, orchestrator.StateDevLoop); err != nil {
+			return err
+		}
+		return transitionFrom(orchestrator.StatePOValidation,
+			orchestrator.StateSubmitting, orchestrator.StateDevLoop)
+	})
 }

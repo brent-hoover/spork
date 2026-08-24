@@ -209,3 +209,53 @@ func (s SQLOrdinals) Advance(ctx context.Context, targetKey string, to int) erro
 	}
 	return nil
 }
+
+// CursorMigration records how far a feed consumer has read.
+const CursorMigration = `
+CREATE TABLE feed_cursor (
+    name   TEXT PRIMARY KEY,
+    cursor TEXT NOT NULL
+)`
+
+// SQLCursors persists feed cursors in SQLite.
+type SQLCursors struct{ DB *sql.DB }
+
+// Current reads a consumer's position. No row is the start of the feed, which
+// is where a consumer that has read nothing genuinely is.
+func (s SQLCursors) Current(ctx context.Context, name string) (string, error) {
+	var cursor string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT cursor FROM feed_cursor WHERE name = ?`, name).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read feed cursor: %w", err)
+	}
+	return cursor, nil
+}
+
+// Advance records a consumer's new position.
+func (s SQLCursors) Advance(ctx context.Context, name, cursor string) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO feed_cursor (name, cursor) VALUES (?, ?)
+		 ON CONFLICT(name) DO UPDATE SET cursor = excluded.cursor`, name, cursor)
+	if err != nil {
+		return fmt.Errorf("advance feed cursor: %w", err)
+	}
+	return nil
+}
+
+// BySession returns the run whose review was stamped with a session.
+func (s SQLStore) BySession(ctx context.Context, session string) (BuildRun, bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT id FROM build_run WHERE review_session = ?`, session).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BuildRun{}, false, nil
+	}
+	if err != nil {
+		return BuildRun{}, false, fmt.Errorf("find run by session: %w", err)
+	}
+	return s.Find(ctx, id)
+}
