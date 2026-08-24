@@ -150,16 +150,20 @@ func (f *fakeCommitter) Commit(_ context.Context, _, message string) (string, er
 
 // fakeReviewer replies with a scripted verdict per round.
 type fakeReviewer struct {
-	verdicts  []string
-	findings  string
-	round     int
-	submits   int
+	verdicts []string
+	findings string
+	round    int
+	submits  int
+	// submitted records every round id, so two sessions reusing one is
+	// visible rather than silently overwriting a job.
+	submitted []string
 	settled   []string
 	responses []string
 }
 
 func (f *fakeReviewer) Submit(_ context.Context, run, roundID, commit string) (reviewbridge.Round, error) {
 	f.submits++
+	f.submitted = append(f.submitted, roundID)
 	return reviewbridge.Round{ID: roundID, Run: run, Commit: commit, JobID: f.submits}, nil
 }
 
@@ -408,7 +412,7 @@ func TestAStallLeavesItsLastRoundOpen(t *testing.T) {
 		t.Fatal("a review that never went clean read as success")
 	}
 	// Round one was answered by round two's commit; round two never was.
-	if len(rev.settled) != 1 || rev.settled[0] != "run-1-0-1" {
+	if len(rev.settled) != 1 || rev.settled[0] != "run-1-0-1-1" {
 		t.Errorf("settled %v, want only the round a later commit answered", rev.settled)
 	}
 }
@@ -435,7 +439,7 @@ func TestRoundsAreNumberedFromOne(t *testing.T) {
 			t.Errorf("commit %d is %q, want it to end %q", i, c.messages[i], want)
 		}
 	}
-	if rev.settled[0] != "run-1-0-1" {
+	if rev.settled[0] != "run-1-0-1-1" {
 		t.Errorf("the first round is %q", rev.settled[0])
 	}
 	if got.Rounds != 2 {
@@ -1035,7 +1039,7 @@ func TestAResumedPassPollsItsPendingRoundInsteadOfCommittingAgain(t *testing.T) 
 	if rev.submits != submits {
 		t.Errorf("the resumed pass submitted a second job: %d then %d", submits, rev.submits)
 	}
-	if len(rev.settled) != 1 || rev.settled[0] != "run-1-0-1" {
+	if len(rev.settled) != 1 || rev.settled[0] != "run-1-0-1-1" {
 		t.Errorf("settled %v, want the round that was pending", rev.settled)
 	}
 	got, _ := sessionFor(store, "run-1")
@@ -1070,7 +1074,7 @@ func TestAResumedPassContinuesTheRoundNumbering(t *testing.T) {
 	if rev.settled[0] == rev.settled[1] {
 		t.Errorf("the resumed round reused id %q", rev.settled[0])
 	}
-	if rev.settled[1] != "run-1-0-2" {
+	if rev.settled[1] != "run-1-0-1-2" {
 		t.Errorf("the resumed round is %q, want the second", rev.settled[1])
 	}
 }

@@ -31,6 +31,13 @@ type Session struct {
 	// commit stay linked after the fact.
 	Commits []string
 	Rounds  int
+	// Sequence is the nth session this run has had. An architect handoff ends
+	// a session and the next pass opens a fresh one at the SAME gate attempt
+	// with its round count back at zero, so the attempt alone does not
+	// separate their round ids. Local and deterministic, deliberately: the
+	// agent's own session id would do, but a local invariant should not
+	// depend on an external identifier being unique.
+	Sequence int
 	// SystemFile is where the assembled context was written, so a fix round
 	// reads the same law the first round did.
 	SystemFile string
@@ -203,7 +210,12 @@ func (l Loop) round(
 		}
 	}
 
-	roundID := fmt.Sprintf("%s-%d-%d", req.Run, req.Attempt, round+1)
+	// The SESSION ORDINAL, not just the attempt. An architect handoff ends a
+	// session and the next pass opens a fresh one at the same gate attempt
+	// with its round count back at zero — so (run, attempt, round) repeats,
+	// and the review store overwrites the first session's job while keeping
+	// its commit: a trail pointing at the wrong work.
+	roundID := fmt.Sprintf("%s-%d-%d-%d", req.Run, req.Attempt, session.Sequence, round+1)
 	reviewed, err := l.Review.Submit(ctx, req.Run, roundID, sha)
 	if err != nil {
 		return reviewbridge.Round{}, "", err
@@ -218,14 +230,6 @@ func (l Loop) fixRound(
 	reviewed reviewbridge.Round, direction string, round int,
 ) (agent.Result, error) {
 	fix := fixPrompt(req, reviewed.Findings, direction)
-	if direction != "" {
-		// Delivered. The intervention closes here, not when the direction was
-		// looked up: a pass that read it and never reached a prompt would
-		// otherwise close it with the direction given to nobody.
-		if err := l.markDirectionDelivered(ctx, req.Run); err != nil {
-			return agent.Result{}, err
-		}
-	}
 	res, err := l.Agent.Run(ctx, agent.Request{
 		Role:      agent.RoleDev,
 		Prompt:    fix,
@@ -240,6 +244,15 @@ func (l Loop) fixRound(
 	})
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("dev agent fixing round %d: %w", round+1, err)
+	}
+	// Delivered — and the invocation RETURNED. The intervention closes here
+	// rather than when the direction was looked up: a pass that read it and
+	// never reached a prompt, or whose agent then failed, would otherwise
+	// close it with the direction given to nobody.
+	if direction != "" {
+		if err := l.markDirectionDelivered(ctx, req.Run); err != nil {
+			return agent.Result{}, err
+		}
 	}
 	*turns = append(*turns, Exchange{
 		Role: string(agent.RoleDev), Prompt: fix, Reply: res.Text, Model: res.Model,
@@ -266,7 +279,9 @@ func (l Loop) open(ctx context.Context, req Request, direction string) (Session,
 		return existing, nil
 	}
 
-	session := Session{Run: req.Run, Ticket: req.Ticket}
+	// The next ordinal for this run. A previous session's number is what the
+	// fresh one must not reuse.
+	session := Session{Run: req.Run, Ticket: req.Ticket, Sequence: existing.Sequence + 1}
 	if err := l.Store.Upsert(ctx, session); err != nil {
 		return Session{}, fmt.Errorf("record session: %w", err)
 	}
@@ -277,11 +292,6 @@ func (l Loop) open(ctx context.Context, req Request, direction string) (Session,
 	session.SystemFile = systemFile
 
 	implement := prompt(req, direction)
-	if direction != "" {
-		if err := l.markDirectionDelivered(ctx, req.Run); err != nil {
-			return Session{}, err
-		}
-	}
 	res, err := l.Agent.Run(ctx, agent.Request{
 		Role:       agent.RoleDev,
 		Prompt:     implement,
@@ -291,6 +301,14 @@ func (l Loop) open(ctx context.Context, req Request, direction string) (Session,
 	})
 	if err != nil {
 		return Session{}, fmt.Errorf("dev agent on %s: %w", req.Ticket, err)
+	}
+	// Closed AFTER the invocation returned. Marking it before meant an agent
+	// that then failed left the intervention permanently resumed with its
+	// direction delivered to nobody, and a retry could not retrieve it.
+	if direction != "" {
+		if err := l.markDirectionDelivered(ctx, req.Run); err != nil {
+			return Session{}, err
+		}
 	}
 	session.SessionID = res.SessionID
 	session.Model = res.Model

@@ -153,6 +153,7 @@ func migrations() []migration {
 		{module: "devloop", name: "0003_thread_capture", stmts: splitSQL(devloop.CaptureMigration)},
 		{module: "devloop", name: "0004_session_system_file", stmts: splitSQL(devloop.SystemFileMigration)},
 		{module: "devloop", name: "0005_session_resume", stmts: splitSQL(devloop.ResumeMigration)},
+		{module: "devloop", name: "0006_session_sequence", stmts: splitSQL(devloop.SequenceMigration)},
 		{module: "reviewbridge", name: "0001_review_round", stmts: splitSQL(reviewbridge.Migration)},
 		{module: "reviewbridge", name: "0002_response_lifecycle", stmts: splitSQL(reviewbridge.ResponseMigration)},
 		{module: "context", name: "0001_context_and_learnings", stmts: splitSQL(kctx.Migration)},

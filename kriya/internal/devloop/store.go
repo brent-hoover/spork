@@ -56,10 +56,18 @@ const ResumeMigration = `
 ALTER TABLE dev_session ADD COLUMN turns TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE dev_session ADD COLUMN pending_round TEXT NOT NULL DEFAULT '{}'`
 
+// SequenceMigration numbers a run's sessions.
+//
+// A run has more than one: an architect handoff ends a session and the next
+// pass opens a fresh one at the same gate attempt. Without an ordinal their
+// round ids collide, and the second overwrites the first's job.
+const SequenceMigration = `
+ALTER TABLE dev_session ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0`
+
 // sessionColumns is every column a Session reads back, in scan order.
 const sessionColumns = `ticket, session_id, model, ended, rounds, commits,
 	system_file, transcript_ref, import_key, import_state, thread_ref,
-	turns, pending_round`
+	turns, pending_round, sequence`
 
 // SQLStore stores sessions in SQLite.
 type SQLStore struct{ DB *sql.DB }
@@ -82,8 +90,8 @@ func (s SQLStore) Upsert(ctx context.Context, sess Session) error {
 		`INSERT INTO dev_session
 		   (run, ticket, session_id, model, ended, rounds, commits,
 		    system_file, transcript_ref, import_key, import_state, thread_ref,
-		    turns, pending_round)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    turns, pending_round, sequence)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run) DO UPDATE SET
 		   ticket = excluded.ticket, session_id = excluded.session_id,
 		   model = excluded.model, ended = excluded.ended,
@@ -93,10 +101,11 @@ func (s SQLStore) Upsert(ctx context.Context, sess Session) error {
 		   import_key = excluded.import_key,
 		   import_state = excluded.import_state,
 		   thread_ref = excluded.thread_ref,
-		   turns = excluded.turns, pending_round = excluded.pending_round`,
+		   turns = excluded.turns, pending_round = excluded.pending_round,
+		   sequence = excluded.sequence`,
 		sess.Run, sess.Ticket, sess.SessionID, sess.Model, sess.Ended,
 		sess.Rounds, string(commits), sess.SystemFile, sess.TranscriptRef, sess.ImportKey,
-		importStateOf(sess), sess.ThreadRef, string(turns), string(pending))
+		importStateOf(sess), sess.ThreadRef, string(turns), string(pending), sess.Sequence)
 	if err != nil {
 		return fmt.Errorf("upsert dev session: %w", err)
 	}
@@ -111,7 +120,7 @@ func (s SQLStore) Find(ctx context.Context, run string) (Session, bool, error) {
 		`SELECT `+sessionColumns+` FROM dev_session WHERE run = ?`, run).
 		Scan(&sess.Ticket, &sess.SessionID, &sess.Model, &sess.Ended, &sess.Rounds,
 			&commits, &sess.SystemFile, &sess.TranscriptRef, &sess.ImportKey,
-			&sess.ImportState, &sess.ThreadRef, &turns, &pending)
+			&sess.ImportState, &sess.ThreadRef, &turns, &pending, &sess.Sequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, false, nil
 	}
