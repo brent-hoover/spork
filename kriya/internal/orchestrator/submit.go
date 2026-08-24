@@ -208,6 +208,11 @@ func (s Submitter) finishRework(ctx context.Context, run BuildRun, rw Rework) (B
 			run.ReviewID, revision, run.ReviewRevision+1)
 	}
 	run.ReviewRevision = revision
+	// CLEARED: the verdict has been answered. Its presence is what says a
+	// rework is outstanding — which is the only thing that distinguishes
+	// rework at an unchanged head from a replay of a submission that already
+	// landed. Leaving it set makes every later pass resubmit again.
+	run.ReviewVerdictEvent = ""
 	run.ReviewState = SubmitSubmitted
 	if err := s.Store.Upsert(ctx, run); err != nil {
 		return BuildRun{}, fmt.Errorf("record resubmitted review: %w", err)

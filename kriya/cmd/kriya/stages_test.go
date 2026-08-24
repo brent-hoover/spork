@@ -49,7 +49,7 @@ func stagesAndReviews(
 	// Every run these stages drive has a session: the submit stage stamps the
 	// review with it so feedback routes back to the agent that wrote the code.
 	for _, run := range []string{"run-1", "run-2", "run-3", "run-po-1", "run-po-2",
-		"run-sub-1", "run-sub-2", "run-sub-3", "run-sub-4", "run-merge-1", "run-merge-2", "run-complete-1", "run-nowhere"} {
+		"run-sub-1", "run-sub-2", "run-sub-3", "run-sub-4", "run-sub-5", "run-merge-1", "run-merge-2", "run-complete-1", "run-nowhere"} {
 		if err := (devloop.SQLStore{DB: db}).Upsert(context.Background(), devloop.Session{
 			Run: run, Ticket: "T-1", SessionID: "sess-" + run,
 		}); err != nil {
@@ -649,5 +649,48 @@ func TestAnAbortedMergeReleasesTheSpentReview(t *testing.T) {
 	}
 	if again.ReviewID == run.ReviewID {
 		t.Error("the new work reused the spent review")
+	}
+}
+
+func TestReworkAtTheSameHeadStillResubmits(t *testing.T) {
+	// The dev loop can legitimately produce no new commit — a round that only
+	// answered a question, or a fix that reverted to what was there. Matching
+	// head against ReviewCommit alone then read that as a replay of the
+	// landed submission, so the run advanced to review-submitted with the
+	// human's findings never answered.
+	stages, _, reviews := stagesAndReviews(t, quietLoop(), passingCommands)
+	run, err := runThrough(t, stages,
+		orchestrator.BuildRun{ID: "run-sub-5", Ticket: "T-1", Issue: "issue-7", Head: "C2"},
+		orchestrator.StageWorkspace, orchestrator.StageGates,
+		orchestrator.StageValidate, orchestrator.StageSubmit)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	opened := len(reviews.issues)
+
+	// Changes requested. The head has NOT moved.
+	run.ReviewVerdictEvent = "event-9"
+	run.ReviewRevision = 1
+	again, err := stages[orchestrator.StageSubmit](context.Background(), run)
+	if err != nil {
+		t.Fatalf("resubmit stage: %v", err)
+	}
+	if len(reviews.issues) != opened {
+		t.Errorf("a rework opened a second review: %v", reviews.issues)
+	}
+	if again.ReviewRevision <= run.ReviewRevision {
+		t.Errorf("the rework did not advance the revision: %d", again.ReviewRevision)
+	}
+	// And the answered verdict is cleared, so the NEXT pass at the same head
+	// is recognised as the replay it is.
+	if again.ReviewVerdictEvent != "" {
+		t.Errorf("the answered verdict is still pending: %q", again.ReviewVerdictEvent)
+	}
+	third, err := stages[orchestrator.StageSubmit](context.Background(), again)
+	if err != nil {
+		t.Fatalf("replayed submit stage: %v", err)
+	}
+	if third.ReviewRevision != again.ReviewRevision {
+		t.Errorf("the replay advanced the revision to %d", third.ReviewRevision)
 	}
 }

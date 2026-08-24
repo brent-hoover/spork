@@ -83,35 +83,54 @@ type Routed struct {
 
 // Consume reads new verdicts and routes each to its run.
 //
-// The cursor advances only after every verdict in a page has been routed. A
-// cursor advanced first would lose the ones that had not been acted on yet,
-// and a verdict nobody acted on is a review waiting forever.
-func (r Router) Consume(ctx context.Context) ([]Routed, error) {
+// It returns the cursor to resume from WITHOUT advancing it. Routing is only
+// half the work — the caller still enqueues merges and drives runs — and a
+// cursor advanced here is advanced before any of that, so a failure in the
+// caller loses the events permanently: the feed never offers them again and
+// the reviews wait forever. The caller calls Advance once it has acted.
+//
+// Re-delivery is the safe direction. Every act these events lead to is keyed:
+// an approval enqueues under the event's own key and collides rather than
+// duplicating, and a rework rewrites the same fields with the same values.
+func (r Router) Consume(ctx context.Context) ([]Routed, string, error) {
 	cursor, err := r.Cursors.Current(ctx, r.Name)
 	if err != nil {
-		return nil, fmt.Errorf("read feed cursor: %w", err)
+		return nil, "", fmt.Errorf("read feed cursor: %w", err)
 	}
 	verdicts, next, err := r.Feed.Since(ctx, cursor)
 	if err != nil {
-		return nil, fmt.Errorf("read verdicts: %w", err)
+		return nil, "", fmt.Errorf("read verdicts: %w", err)
 	}
 
 	var out []Routed
 	for _, v := range verdicts {
 		routed, err := r.route(ctx, v)
 		if err != nil {
-			return out, err
+			return out, "", err
 		}
 		if routed != nil {
 			out = append(out, *routed)
 		}
 	}
-	if next != "" && next != cursor {
-		if err := r.Cursors.Advance(ctx, r.Name, next); err != nil {
-			return out, fmt.Errorf("advance feed cursor: %w", err)
-		}
+	if next == cursor {
+		// Nothing new. Reported as no cursor at all, so a caller that advances
+		// unconditionally writes nothing.
+		return out, "", nil
 	}
-	return out, nil
+	return out, next, nil
+}
+
+// Advance moves the cursor past a page the caller has finished acting on.
+//
+// An empty cursor advances nothing: there was no new page.
+func (r Router) Advance(ctx context.Context, cursor string) error {
+	if cursor == "" {
+		return nil
+	}
+	if err := r.Cursors.Advance(ctx, r.Name, cursor); err != nil {
+		return fmt.Errorf("advance feed cursor: %w", err)
+	}
+	return nil
 }
 
 // route sends one verdict to its run.

@@ -104,7 +104,7 @@ func TestAChangesRequestedVerdictReturnsItsRunToThePairLoop(t *testing.T) {
 	routes := &sessionRoutes{bySession: map[string]orchestrator.BuildRun{
 		"sess-42": submittedFor("sess-42"),
 	}}
-	got, err := router(feed, newMemCursors(), routes, store).Consume(context.Background())
+	got, _, err := router(feed, newMemCursors(), routes, store).Consume(context.Background())
 	if err != nil {
 		t.Fatalf("consume: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestAnApprovalIsNotThePairLoopsBusiness(t *testing.T) {
 	routes := &sessionRoutes{bySession: map[string]orchestrator.BuildRun{
 		"sess-42": submittedFor("sess-42"),
 	}}
-	got, err := router(feed, newMemCursors(), routes, store).Consume(context.Background())
+	got, _, err := router(feed, newMemCursors(), routes, store).Consume(context.Background())
 	if err != nil {
 		t.Fatalf("consume: %v", err)
 	}
@@ -157,12 +157,16 @@ func TestAVerdictForAnUnknownSessionIsSkipped(t *testing.T) {
 		next: map[string]string{"": "cursor-1"},
 	}
 	cursors := newMemCursors()
-	got, err := router(feed, cursors, &sessionRoutes{}, newMemStore()).Consume(context.Background())
+	r := router(feed, cursors, &sessionRoutes{}, newMemStore())
+	got, next, err := r.Consume(context.Background())
 	if err != nil {
 		t.Fatalf("consume: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("routed %+v", got)
+	}
+	if err := r.Advance(context.Background(), next); err != nil {
+		t.Fatalf("advance: %v", err)
 	}
 	if cursors.at["verdicts"] != "cursor-1" {
 		t.Error("the cursor stalled on a verdict that was not kriya's")
@@ -182,11 +186,14 @@ func TestTheCursorResumesWhereItLeftOff(t *testing.T) {
 		"sess-42": submittedFor("sess-42"),
 	}}
 	r := router(feed, cursors, routes, newMemStore())
-	if _, err := r.Consume(context.Background()); err != nil {
-		t.Fatalf("consume: %v", err)
-	}
-	if _, err := r.Consume(context.Background()); err != nil {
-		t.Fatalf("consume again: %v", err)
+	for i := range 2 {
+		_, next, err := r.Consume(context.Background())
+		if err != nil {
+			t.Fatalf("consume %d: %v", i, err)
+		}
+		if err := r.Advance(context.Background(), next); err != nil {
+			t.Fatalf("advance %d: %v", i, err)
+		}
 	}
 	if len(feed.asked) != 2 || feed.asked[1] != "cursor-1" {
 		t.Errorf("the feed was asked from %v", feed.asked)
@@ -215,7 +222,7 @@ func TestTheCursorAdvancesOnlyAfterEveryVerdictIsRouted(t *testing.T) {
 		Feed: feed, Cursors: cursors, Routes: routes,
 		Reviews: &reviewRevisions{at: 2}, Store: store, Name: "verdicts",
 	}
-	if _, err := r.Consume(context.Background()); err == nil {
+	if _, _, err := r.Consume(context.Background()); err == nil {
 		t.Fatal("a verdict that could not be recorded read as routed")
 	}
 	if cursors.at["verdicts"] != "" {
@@ -226,7 +233,7 @@ func TestTheCursorAdvancesOnlyAfterEveryVerdictIsRouted(t *testing.T) {
 func TestAnUnreadableFeedStopsTheConsumer(t *testing.T) {
 	feed := &verdictFeed{err: errors.New("tracker unavailable")}
 	cursors := newMemCursors()
-	if _, err := router(feed, cursors, &sessionRoutes{}, newMemStore()).
+	if _, _, err := router(feed, cursors, &sessionRoutes{}, newMemStore()).
 		Consume(context.Background()); err == nil {
 		t.Fatal("an unreachable tracker read as an empty feed")
 	}
@@ -244,7 +251,7 @@ func TestAnUnreadableRouteStopsTheConsumer(t *testing.T) {
 	}
 	routes := &sessionRoutes{err: errors.New("store unavailable")}
 	cursors := newMemCursors()
-	if _, err := router(feed, cursors, routes, newMemStore()).
+	if _, _, err := router(feed, cursors, routes, newMemStore()).
 		Consume(context.Background()); err == nil {
 		t.Fatal("an unreadable route read as an unknown session")
 	}
@@ -257,21 +264,21 @@ func TestAnUnadvanceableCursorIsAFailure(t *testing.T) {
 	// A cursor that could not advance means the next pass re-reads the same
 	// verdicts, which is survivable — but reporting success would hide that
 	// the position was never saved.
-	feed := &verdictFeed{
-		pages: map[string][]orchestrator.VerdictEvent{"": {}},
-		next:  map[string]string{"": "cursor-1"},
-	}
 	cursors := newMemCursors()
 	cursors.err = errors.New("disk full")
-	if _, err := router(feed, cursors, &sessionRoutes{}, newMemStore()).
-		Consume(context.Background()); err == nil {
+	r := router(&verdictFeed{}, cursors, &sessionRoutes{}, newMemStore())
+	if err := r.Advance(context.Background(), "cursor-1"); err == nil {
 		t.Fatal("a cursor that was never saved read as advanced")
+	}
+	// Advancing nothing writes nothing, so it cannot fail.
+	if err := r.Advance(context.Background(), ""); err != nil {
+		t.Errorf("advancing an empty cursor failed: %v", err)
 	}
 }
 
 func TestAnEmptyFeedIsNotAnError(t *testing.T) {
 	feed := &verdictFeed{pages: map[string][]orchestrator.VerdictEvent{}}
-	got, err := router(feed, newMemCursors(), &sessionRoutes{}, newMemStore()).
+	got, _, err := router(feed, newMemCursors(), &sessionRoutes{}, newMemStore()).
 		Consume(context.Background())
 	if err != nil {
 		t.Fatalf("an empty feed was treated as a failure: %v", err)
@@ -333,7 +340,7 @@ func TestTheRevisionComesFromTheReview(t *testing.T) {
 		Feed: feed, Cursors: newMemCursors(), Routes: routes,
 		Reviews: revisions, Store: store, Name: "verdicts",
 	}
-	if _, err := r.Consume(context.Background()); err != nil {
+	if _, _, err := r.Consume(context.Background()); err != nil {
 		t.Fatalf("consume: %v", err)
 	}
 	if len(revisions.asked) != 1 || revisions.asked[0] != "review-1" {
@@ -361,7 +368,7 @@ func TestAnUnreadableRevisionStopsTheConsumer(t *testing.T) {
 		Reviews: &reviewRevisions{err: errors.New("tracker unavailable")},
 		Store:   newMemStore(), Name: "verdicts",
 	}
-	if _, err := r.Consume(context.Background()); err == nil {
+	if _, _, err := r.Consume(context.Background()); err == nil {
 		t.Fatal("an unreadable revision read as zero")
 	}
 	if cursors.at["verdicts"] != "" {
@@ -390,7 +397,7 @@ func TestAnApprovalCarriesTheRevisionItApproved(t *testing.T) {
 	run.ReviewRevision = 0
 	routes := &sessionRoutes{bySession: map[string]orchestrator.BuildRun{"sess-1": run}}
 
-	routed, err := router(feed, newMemCursors(), routes, &memStore{}).
+	routed, _, err := router(feed, newMemCursors(), routes, &memStore{}).
 		Consume(context.Background())
 	if err != nil {
 		t.Fatalf("consume: %v", err)
@@ -404,5 +411,46 @@ func TestAnApprovalCarriesTheRevisionItApproved(t *testing.T) {
 	}
 	if routed[0].Reworked {
 		t.Error("an approval was routed as rework")
+	}
+}
+
+func TestTheCursorDoesNotAdvanceUntilTheCallerHasActed(t *testing.T) {
+	// Consume routes; the caller enqueues merges and drives runs. A cursor
+	// advanced inside Consume is advanced before any of that, so an enqueue
+	// or drive failure loses the events permanently — the feed never offers
+	// them again and the reviews wait forever.
+	feed := &verdictFeed{
+		pages: map[string][]orchestrator.VerdictEvent{"": {{
+			ID: "event-9", Review: "review-1", Session: "sess-1",
+			Verdict: orchestrator.VerdictApproved,
+		}}},
+		next: map[string]string{"": "c-1"},
+	}
+	cursors := newMemCursors()
+	routes := &sessionRoutes{
+		bySession: map[string]orchestrator.BuildRun{"sess-1": submittedFor("sess-1")},
+	}
+	r := router(feed, cursors, routes, &memStore{})
+
+	routed, next, err := r.Consume(context.Background())
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if len(routed) != 1 {
+		t.Fatalf("routed %d", len(routed))
+	}
+	if cursors.at["verdicts"] != "" {
+		t.Errorf("the cursor advanced to %q before the caller acted", cursors.at["verdicts"])
+	}
+	if next != "c-1" {
+		t.Fatalf("Consume reported next cursor %q", next)
+	}
+
+	// The caller acted; now it advances.
+	if err := r.Advance(context.Background(), next); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if cursors.at["verdicts"] != "c-1" {
+		t.Errorf("the cursor is at %q after the caller acted", cursors.at["verdicts"])
 	}
 }

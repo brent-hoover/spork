@@ -304,16 +304,21 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		// Verdicts first. A changes-requested review returns its run to the
 		// pair loop, and a pass that popped new work before reading them would
 		// leave a rejected run waiting behind tickets it does not need.
-		routed, err := verdictRouter(db, actor).Consume(ctx)
+		router := verdictRouter(db, actor)
+		routed, next, err := router.Consume(ctx)
 		if err != nil {
 			return orchestrator.Result{}, err
 		}
-		// ACTED ON, not merely read. The cursor advances past these events and
-		// never offers them again, so a verdict routed and then dropped is a
-		// run that waits forever — approved work that never merges, rework
-		// that never restarts.
+		// ACTED ON before the cursor moves. The feed never offers a consumed
+		// page again, so a verdict routed and then dropped is a run that waits
+		// forever — approved work that never merges, rework that never
+		// restarts. Re-reading a page is the safe direction: every act these
+		// events lead to is keyed.
 		if err := actOnVerdicts(ctx, db, ws, tiers, reviews,
 			mergeQueue(db, ws, actor), routed, target, actor); err != nil {
+			return orchestrator.Result{}, err
+		}
+		if err := router.Advance(ctx, next); err != nil {
 			return orchestrator.Result{}, err
 		}
 		return orchestrator.Loop{

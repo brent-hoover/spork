@@ -481,8 +481,11 @@ func registerResubmit(sc *godog.ScenarioContext, w *world) {
 		if err != nil {
 			return err
 		}
-		// Rewind: sutra advanced the revision, kriya never recorded it.
+		// Rewind to the row the write-ahead left: sutra advanced the revision
+		// and kriya never recorded ANY of what success writes — not the
+		// revision, and not the clearing of the verdict the rework answers.
 		got.ReviewRevision, got.ReviewState = 1, orchestrator.SubmitResubmitting
+		got.ReviewVerdictEvent = s.rework.VerdictEvent
 		return s.store.Upsert(context.Background(), got)
 	})
 
@@ -826,7 +829,7 @@ func registerRework(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^the feedback reaches the run identified by the review's session id — the same agent instance where possible$`,
 		func() error {
 			s := w.submit
-			routed, err := s.router.Consume(context.Background())
+			routed, _, err := s.router.Consume(context.Background())
 			if err != nil {
 				return err
 			}
