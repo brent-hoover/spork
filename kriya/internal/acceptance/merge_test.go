@@ -724,3 +724,111 @@ func integrateRerunRoutes() error {
 	return transitionFrom(orchestrator.StateMerging,
 		orchestrator.StateMerged, orchestrator.StateDevLoop)
 }
+
+func registerSerialization(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^two runs for the same target both enter approved and both enqueue merge attempts$`,
+		func() error {
+			m := w.newMerge()
+			if err := m.runs.Upsert(context.Background(), m.run); err != nil {
+				return err
+			}
+			_, first, err := m.queue.OnApproval(context.Background(), m.run, m.approved())
+			if err != nil {
+				return err
+			}
+			m.key = first
+
+			other := m.run
+			other.ID, other.State = "run-2", orchestrator.StateReviewSubmitted
+			if err := m.runs.Upsert(context.Background(), other); err != nil {
+				return err
+			}
+			later := m.approved()
+			later.Review, later.Event = "review-2", "event-10"
+			_, second, err := m.queue.OnApproval(context.Background(), other, later)
+			if err != nil {
+				return err
+			}
+			m.laterKey = second
+			return nil
+		})
+
+	sc.Step(`^the queue head acquires the target's merge lock$`, func() error {
+		m := w.merge
+		// The queue ORDER is the lock: the second attempt is asked first and
+		// declines, which is what proves the head holds it.
+		waiting, err := m.queue.Run(context.Background(), m.laterKey)
+		if err != nil {
+			return err
+		}
+		if waiting.State != orchestrator.AttemptQueued {
+			return fmt.Errorf("the waiting attempt is in %q", waiting.State)
+		}
+		_, m.err = m.queue.Run(context.Background(), m.key)
+		return m.err
+	})
+
+	sc.Step(`^only the lock holder preflights, consumes, and merges$`, func() error {
+		m := w.merge
+		if len(m.git.merges) != 1 {
+			return fmt.Errorf("merged %v", m.git.merges)
+		}
+		if len(m.approvals.calls) != 1 {
+			return fmt.Errorf("consumed %d approvals", len(m.approvals.calls))
+		}
+		if m.approvals.calls[0].review != "review-1" {
+			return fmt.Errorf("consumed %q, not the head's", m.approvals.calls[0].review)
+		}
+		return nil
+	})
+
+	sc.Step(`^the second attempt waits queued, consuming nothing$`, func() error {
+		m := w.merge
+		if got := m.store.rows[m.laterKey].State; got != orchestrator.AttemptQueued {
+			return fmt.Errorf("the second attempt is in %q", got)
+		}
+		for _, call := range m.approvals.calls {
+			if call.review == "review-2" {
+				return errors.New("the waiting attempt's approval was consumed")
+			}
+		}
+		return nil
+	})
+
+	sc.Step(`^the first merge completes and moves the default head$`, func() error {
+		m := w.merge
+		if m.store.rows[m.key].State != orchestrator.AttemptMerged {
+			return fmt.Errorf("the head attempt is in %q", m.store.rows[m.key].State)
+		}
+		if m.git.head == m.run.GatedBase {
+			return errors.New("the merge did not move the default head")
+		}
+		return nil
+	})
+
+	sc.Step(`^the second attempt's preflight fails against the moved base$`, func() error {
+		m := w.merge
+		got, err := m.queue.Run(context.Background(), m.laterKey)
+		if err != nil {
+			return err
+		}
+		if got.State != orchestrator.AttemptAborted {
+			return fmt.Errorf("the second attempt settled as %q", got.State)
+		}
+		if !strings.Contains(got.Note, "base-1") {
+			return fmt.Errorf("the cause does not name the frozen base: %q", got.Note)
+		}
+		return nil
+	})
+
+	sc.Step(`^it takes the integrate-rerun-fresh-review path with its approval unconsumed$`,
+		func() error {
+			m := w.merge
+			for _, call := range m.approvals.calls {
+				if call.review == "review-2" {
+					return errors.New("the aborted attempt's approval was consumed")
+				}
+			}
+			return integrateRerunRoutes()
+		})
+}

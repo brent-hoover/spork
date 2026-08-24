@@ -413,3 +413,111 @@ func TestAnUnreadableHeadStopsBeforeConsuming(t *testing.T) {
 		t.Error("an approval was consumed without a base check")
 	}
 }
+
+func TestOnlyTheQueueHeadMerges(t *testing.T) {
+	// Two merges racing on one default branch would have one landing against
+	// a base the other just moved.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	first := attempt()
+	firstKey := enqueued(t, q, first)
+	second := attempt()
+	second.Build, second.Review, second.ApprovalEvent = "run-2", "review-2", "event-10"
+	secondKey := enqueued(t, q, second)
+
+	// The second attempt is asked first, and declines: it is not the head.
+	waiting, err := q.Run(context.Background(), secondKey)
+	if err != nil {
+		t.Fatalf("run second: %v", err)
+	}
+	if waiting.State != orchestrator.AttemptQueued {
+		t.Errorf("the waiting attempt is in %q, want queued", waiting.State)
+	}
+	if len(ap.calls) != 0 {
+		t.Error("a waiting attempt consumed an approval")
+	}
+	if len(git.merges) != 0 {
+		t.Error("a waiting attempt merged")
+	}
+
+	// The head runs.
+	if _, err := q.Run(context.Background(), firstKey); err != nil {
+		t.Fatalf("run first: %v", err)
+	}
+	if len(git.merges) != 1 {
+		t.Errorf("merged %v", git.merges)
+	}
+}
+
+func TestTheSecondAttemptPreflightsAgainstTheMovedBase(t *testing.T) {
+	// Once the first merge moves the default head, the second's frozen base is
+	// stale: it aborts with its approval UNCONSUMED and takes the
+	// integrate-rerun-fresh-review path.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	firstKey := enqueued(t, q, attempt())
+	second := attempt()
+	second.Build, second.Review, second.ApprovalEvent = "run-2", "review-2", "event-10"
+	secondKey := enqueued(t, q, second)
+
+	if _, err := q.Run(context.Background(), firstKey); err != nil {
+		t.Fatalf("run first: %v", err)
+	}
+	// The first merge moved the head.
+	git.head = git.merged
+
+	got, err := q.Run(context.Background(), secondKey)
+	if err != nil {
+		t.Fatalf("run second: %v", err)
+	}
+	if got.State != orchestrator.AttemptAborted {
+		t.Errorf("the second attempt settled as %q", got.State)
+	}
+	if len(ap.calls) != 1 {
+		t.Errorf("consumed %d approvals — the second's must be untouched", len(ap.calls))
+	}
+	if len(git.merges) != 1 {
+		t.Errorf("merged %v", git.merges)
+	}
+}
+
+func TestAttemptsForOtherTargetsDoNotBlockEachOther(t *testing.T) {
+	// The lock is PER TARGET. One target's queue must not stall another's.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	enqueued(t, q, attempt())
+	other := attempt()
+	other.TargetKey, other.Build = "OTHER0b", "run-2"
+	other.Review, other.ApprovalEvent = "review-2", "event-10"
+	otherKey := enqueued(t, q, other)
+
+	got, err := q.Run(context.Background(), otherKey)
+	if err != nil {
+		t.Fatalf("run other target: %v", err)
+	}
+	if got.State != orchestrator.AttemptMerged {
+		t.Errorf("another target's attempt settled as %q", got.State)
+	}
+}
+
+func TestRecoveryResumesOneAttemptPerTarget(t *testing.T) {
+	// The same serialization Run enforces: recovery cannot do what running
+	// work is forbidden from doing.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	enqueued(t, q, attempt())
+	second := attempt()
+	second.Build, second.Review, second.ApprovalEvent = "run-2", "review-2", "event-10"
+	enqueued(t, q, second)
+
+	n, err := q.RecoverMerges(context.Background())
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("resumed %d attempts for one target", n)
+	}
+	if len(git.merges) != 1 {
+		t.Errorf("merged %v", git.merges)
+	}
+}

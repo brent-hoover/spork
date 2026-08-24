@@ -147,7 +147,35 @@ func (q Queue) Run(ctx context.Context, key string) (MergeAttempt, error) {
 		// again, and an aborted attempt stays a terminal historical record.
 		return a, nil
 	}
+	head, err := q.head(ctx, a.TargetKey)
+	if err != nil {
+		return MergeAttempt{}, err
+	}
+	if head != a.Key {
+		// Another attempt for this target holds the section. This one waits
+		// QUEUED, consuming nothing: two merges racing on one default branch
+		// would have one landing against a base the other just moved.
+		return a, nil
+	}
 	return q.advance(ctx, a)
+}
+
+// head returns the oldest unfinished attempt's key for a target.
+//
+// The queue ORDER is the lock. A separate lock row would be a second thing to
+// keep in step with the queue, and a crash between taking it and recording the
+// step it guards would leave it held by nobody.
+func (q Queue) head(ctx context.Context, targetKey string) (string, error) {
+	open, err := q.Store.Unfinished(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list unfinished merge attempts: %w", err)
+	}
+	for _, a := range open {
+		if a.TargetKey == targetKey {
+			return a.Key, nil
+		}
+	}
+	return "", nil
 }
 
 // advance resumes an attempt from whatever step it is at.
@@ -255,12 +283,22 @@ func (q Queue) RecoverMerges(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list unfinished merge attempts: %w", err)
 	}
+	// In queue order, and one target at a time: the same serialization Run
+	// enforces, so recovery cannot do what running work is forbidden from
+	// doing.
+	held := map[string]bool{}
+	var resumed int
 	for _, a := range open {
+		if held[a.TargetKey] {
+			continue
+		}
+		held[a.TargetKey] = true
 		if _, err := q.advance(ctx, a); err != nil {
 			return 0, err
 		}
+		resumed++
 	}
-	return len(open), nil
+	return resumed, nil
 }
 
 // consumeKey derives the consumption's idempotency key from the attempt's own.

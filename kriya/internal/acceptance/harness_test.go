@@ -104,6 +104,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerAttemptScoping(sc, w)
 	registerPopLoop(sc, w)
 	registerRework(sc, w)
+	registerSerialization(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.
