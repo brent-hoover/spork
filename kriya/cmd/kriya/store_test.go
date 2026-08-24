@@ -146,6 +146,7 @@ context/0001_context_and_learnings bd3bd3d13bc91ec0
 context/0002_learning_provenance 1f18c63a80d00a65
 devloop/0001_dev_session c79edf04cf3376f1
 devloop/0002_dev_session_rounds 23309c1fa0a8e2a3
+devloop/0005_session_resume f26b6709d8f336f0
 devloop/0004_session_system_file 27d939451710f4d2
 devloop/0003_thread_capture b57ee76136258e3f
 gates/0001_gate_result d6e82772accb1bd2

@@ -41,7 +41,15 @@ type Session struct {
 	ImportKey     string
 	ImportState   string
 	ThreadRef     string
-	Ended         bool
+	// Turns is the conversation so far. Persisted because a pass that comes
+	// back resumes this session, and turns held only in memory would leave
+	// the eventual import carrying only what happened after the last resume.
+	Turns []Exchange
+	// Pending is the review round this session is waiting on. A resumed pass
+	// POLLS it rather than committing again and submitting under the same
+	// round id, which would replace the stored job and orphan the review.
+	Pending reviewbridge.Round
+	Ended   bool
 }
 
 // Store persists sessions.
@@ -82,6 +90,9 @@ type Architects interface {
 	Resolve(ctx context.Context, build, ticket, trigger string,
 		findings []string, systemFile string) (architect.Intervention, error)
 	Resume(ctx context.Context, build string) (architect.Intervention, bool, error)
+	// MarkResumed closes the intervention, once its direction has actually
+	// been put in front of the agent.
+	MarkResumed(ctx context.Context, build string) error
 }
 
 // Learnings records what a correction taught.
@@ -161,12 +172,60 @@ type Request struct {
 // nothing about a job that has not finished.
 var ErrReviewPending = errors.New("the review round is still running")
 
+// round produces one reviewed commit, or picks up the one being waited on.
+//
+// A session resumed with a pending round POLLS it. Committing again and
+// submitting under the same round id would replace the stored job and orphan
+// the review the previous pass was waiting for.
+func (l Loop) round(
+	ctx context.Context, req Request, session *Session,
+	round int, answered *reviewbridge.Round,
+) (reviewbridge.Round, string, error) {
+	if session.Pending.ID != "" {
+		waiting := session.Pending
+		session.Pending = reviewbridge.Round{}
+		reviewed, err := l.Review.Poll(ctx, waiting)
+		return reviewed, waiting.Commit, err
+	}
+
+	sha, err := l.Commit.Commit(ctx, req.Workspace,
+		fmt.Sprintf("%s (round %d)", req.Title, round+1))
+	if err != nil {
+		return reviewbridge.Round{}, "", fmt.Errorf("commit round %d: %w", round+1, err)
+	}
+	session.Commits = append(session.Commits, sha)
+
+	if answered != nil {
+		// The honest answer names the commit that addressed the findings, and
+		// that commit does not exist until this round.
+		if err := l.Review.Settle(ctx, *answered, "Addressed in "+sha+"."); err != nil {
+			return reviewbridge.Round{}, "", err
+		}
+	}
+
+	roundID := fmt.Sprintf("%s-%d-%d", req.Run, req.Attempt, round+1)
+	reviewed, err := l.Review.Submit(ctx, req.Run, roundID, sha)
+	if err != nil {
+		return reviewbridge.Round{}, "", err
+	}
+	reviewed, err = l.Review.Poll(ctx, reviewed)
+	return reviewed, sha, err
+}
+
 // fixRound hands one review's findings back to the agent that wrote the code.
 func (l Loop) fixRound(
 	ctx context.Context, req Request, session *Session, turns *[]Exchange,
 	reviewed reviewbridge.Round, direction string, round int,
 ) (agent.Result, error) {
 	fix := fixPrompt(req, reviewed.Findings, direction)
+	if direction != "" {
+		// Delivered. The intervention closes here, not when the direction was
+		// looked up: a pass that read it and never reached a prompt would
+		// otherwise close it with the direction given to nobody.
+		if err := l.markDirectionDelivered(ctx, req.Run); err != nil {
+			return agent.Result{}, err
+		}
+	}
 	res, err := l.Agent.Run(ctx, agent.Request{
 		Role:      agent.RoleDev,
 		Prompt:    fix,
@@ -195,30 +254,34 @@ func (l Loop) fixRound(
 // direction — left a session with an id, a transcript and a round count. A new
 // invocation would start a fresh conversation, commit the same work again, and
 // submit it under an id nothing routes feedback to.
-func (l Loop) open(
-	ctx context.Context, req Request, direction string,
-) (Session, []Exchange, error) {
+func (l Loop) open(ctx context.Context, req Request, direction string) (Session, error) {
 	existing, found, err := l.Store.Find(ctx, req.Run)
 	if err != nil {
-		return Session{}, nil, fmt.Errorf("read session: %w", err)
+		return Session{}, fmt.Errorf("read session: %w", err)
 	}
 	if found && !existing.Ended && existing.SessionID != "" {
 		// Resumed. No new invocation: the agent already has the ticket, and
-		// the pair loop picks up at the round it left.
-		return existing, nil, nil
+		// the pair loop picks up at the round it left with the conversation
+		// it left.
+		return existing, nil
 	}
 
 	session := Session{Run: req.Run, Ticket: req.Ticket}
 	if err := l.Store.Upsert(ctx, session); err != nil {
-		return Session{}, nil, fmt.Errorf("record session: %w", err)
+		return Session{}, fmt.Errorf("record session: %w", err)
 	}
 	systemFile, err := l.assembleContext(ctx, req)
 	if err != nil {
-		return Session{}, nil, err
+		return Session{}, err
 	}
 	session.SystemFile = systemFile
 
 	implement := prompt(req, direction)
+	if direction != "" {
+		if err := l.markDirectionDelivered(ctx, req.Run); err != nil {
+			return Session{}, err
+		}
+	}
 	res, err := l.Agent.Run(ctx, agent.Request{
 		Role:       agent.RoleDev,
 		Prompt:     implement,
@@ -227,21 +290,29 @@ func (l Loop) open(
 		AllowRules: req.AllowRules,
 	})
 	if err != nil {
-		return Session{}, nil, fmt.Errorf("dev agent on %s: %w", req.Ticket, err)
+		return Session{}, fmt.Errorf("dev agent on %s: %w", req.Ticket, err)
 	}
 	session.SessionID = res.SessionID
 	session.Model = res.Model
-	return session, []Exchange{{
+	session.Turns = []Exchange{{
 		Role: string(agent.RoleDev), Prompt: implement, Reply: res.Text, Model: res.Model,
-	}}, nil
+	}}
+	return session, nil
 }
 
-// stillRunning reports whether a pass ended without settling the session.
+// stillRunning reports whether a pass ended mid-session.
 //
-// Both cases come back: the review job has not finished, or the architect gave
-// direction the next pass starts from. Neither is an outcome to import.
+// Only a pending review does. The session continues — the same conversation
+// resumes and polls the same round — so importing a partial transcript under
+// its own key would return that thread for every later import and lose
+// everything after it.
+//
+// An architect handoff is NOT this. The impasse ENDS the session: its rounds
+// are spent, and the next pass opens a fresh one whose first prompt carries
+// the direction. Treating it as mid-session left a resumed session with no
+// round budget, which did nothing at all and reported it as a clean pass.
 func stillRunning(err error) bool {
-	return errors.Is(err, ErrReviewPending) || errors.Is(err, ErrArchitectDirected)
+	return errors.Is(err, ErrReviewPending)
 }
 
 // ErrArchitectDirected reports that the loop stalled and the architect gave
@@ -270,19 +341,22 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 		return Session{}, err
 	}
 
-	session, turns, err := l.open(ctx, req, direction)
+	session, err := l.open(ctx, req, direction)
 	if err != nil {
 		return Session{}, err
 	}
+	turns := session.Turns
 
 	var pairErr error
 	if l.Commit != nil && l.Review != nil {
 		pairErr = l.pair(ctx, req, &session, &turns, direction)
 	}
+	session.Turns = turns
 	if stillRunning(pairErr) {
-		// PERSISTED on the way out. The pass comes back, and a session id and
-		// round count that existed only in memory would leave the next pass
-		// starting a fresh conversation and re-committing the same work.
+		// PERSISTED on the way out — the conversation, the round count and the
+		// round still being waited on. A pass that comes back resumes from
+		// exactly these, and anything held only in memory would leave the next
+		// pass starting a fresh conversation and re-committing the same work.
 		if err := l.Store.Upsert(ctx, session); err != nil {
 			return Session{}, fmt.Errorf("record resuming session: %w", err)
 		}
@@ -302,13 +376,16 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 		}
 		return Session{}, err
 	}
-	if pairErr != nil {
-		return Session{}, pairErr
-	}
-
 	session.Ended = true
 	if err := l.Store.Upsert(ctx, session); err != nil {
 		return Session{}, fmt.Errorf("record ended session: %w", err)
+	}
+	if pairErr != nil {
+		// Stamped ended FIRST. A failed pass and an architect handoff both end
+		// this session — the next one is new work with a new conversation —
+		// and a row left unended would have that next pass resume a session
+		// that already reported itself done.
+		return Session{}, pairErr
 	}
 	return session, nil
 }
@@ -356,28 +433,19 @@ func (l Loop) pair(
 	// response cannot be written yet: the honest answer names the commit that
 	// addressed it, and that commit does not exist until the next round.
 	var answered *reviewbridge.Round
-	for round := range rounds {
-		sha, err := l.Commit.Commit(ctx, req.Workspace,
-			fmt.Sprintf("%s (round %d)", req.Title, round+1))
-		if err != nil {
-			return fmt.Errorf("commit round %d: %w", round+1, err)
-		}
-		session.Commits = append(session.Commits, sha)
-
-		if answered != nil {
-			// Not cleared afterwards: every path from here either returns or
-			// assigns the round this pass produced.
-			if err := l.Review.Settle(ctx, *answered, "Addressed in "+sha+"."); err != nil {
-				return err
-			}
-		}
-
-		roundID := fmt.Sprintf("%s-%d-%d", req.Run, req.Attempt, round+1)
-		reviewed, err := l.Review.Submit(ctx, req.Run, roundID, sha)
-		if err != nil {
-			return err
-		}
-		reviewed, err = l.Review.Poll(ctx, reviewed)
+	// Continued from the round this session reached, not restarted. A resumed
+	// pass beginning at zero would reuse the round ids the previous pass
+	// already recorded, replacing their jobs and verdicts.
+	//
+	// A pending round is RE-ENTERED rather than followed: the count was
+	// stamped when it was submitted, so the round still being waited on is
+	// the last one counted.
+	start := session.Rounds
+	if session.Pending.ID != "" {
+		start--
+	}
+	for round := start; round < rounds; round++ {
+		reviewed, sha, err := l.round(ctx, req, session, round, answered)
 		if err != nil {
 			return err
 		}
@@ -395,7 +463,10 @@ func (l Loop) pair(
 			//
 			// A DISTINCT error, not nil: reporting success stamped the session
 			// ended and let the orchestrator advance the run to the gates with
-			// a review job still running and nothing that would read it.
+			// a review job still running and nothing that would read it. The
+			// round is recorded so the resumed pass POLLS it rather than
+			// committing again and submitting under the same id.
+			session.Pending = reviewed
 			return ErrReviewPending
 		}
 
@@ -446,6 +517,18 @@ func (l Loop) direction(ctx context.Context, run string) (string, error) {
 		return "", nil
 	}
 	return resumed.Direction, nil
+}
+
+// markDirectionDelivered closes the intervention whose direction just reached
+// a prompt.
+func (l Loop) markDirectionDelivered(ctx context.Context, run string) error {
+	if l.Architect == nil {
+		return nil
+	}
+	if err := l.Architect.MarkResumed(ctx, run); err != nil {
+		return fmt.Errorf("close intervention for %s: %w", run, err)
+	}
+	return nil
 }
 
 // impasse hands a stalled run to the architect.

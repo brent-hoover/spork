@@ -47,9 +47,19 @@ ALTER TABLE dev_session ADD COLUMN commits TEXT NOT NULL DEFAULT '[]'`
 const SystemFileMigration = `
 ALTER TABLE dev_session ADD COLUMN system_file TEXT NOT NULL DEFAULT ''`
 
+// ResumeMigration records what a pass that comes back resumes from.
+//
+// The conversation and the round still being waited on. Held only in memory,
+// a resumed pass started a fresh conversation and re-submitted under a round
+// id whose job was already running.
+const ResumeMigration = `
+ALTER TABLE dev_session ADD COLUMN turns TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE dev_session ADD COLUMN pending_round TEXT NOT NULL DEFAULT '{}'`
+
 // sessionColumns is every column a Session reads back, in scan order.
 const sessionColumns = `ticket, session_id, model, ended, rounds, commits,
-	system_file, transcript_ref, import_key, import_state, thread_ref`
+	system_file, transcript_ref, import_key, import_state, thread_ref,
+	turns, pending_round`
 
 // SQLStore stores sessions in SQLite.
 type SQLStore struct{ DB *sql.DB }
@@ -60,11 +70,20 @@ func (s SQLStore) Upsert(ctx context.Context, sess Session) error {
 	if err != nil {
 		return fmt.Errorf("encode commits: %w", err)
 	}
+	turns, err := json.Marshal(sess.Turns)
+	if err != nil {
+		return fmt.Errorf("encode turns: %w", err)
+	}
+	pending, err := json.Marshal(sess.Pending)
+	if err != nil {
+		return fmt.Errorf("encode pending round: %w", err)
+	}
 	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO dev_session
 		   (run, ticket, session_id, model, ended, rounds, commits,
-		    system_file, transcript_ref, import_key, import_state, thread_ref)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    system_file, transcript_ref, import_key, import_state, thread_ref,
+		    turns, pending_round)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run) DO UPDATE SET
 		   ticket = excluded.ticket, session_id = excluded.session_id,
 		   model = excluded.model, ended = excluded.ended,
@@ -73,10 +92,11 @@ func (s SQLStore) Upsert(ctx context.Context, sess Session) error {
 		   transcript_ref = excluded.transcript_ref,
 		   import_key = excluded.import_key,
 		   import_state = excluded.import_state,
-		   thread_ref = excluded.thread_ref`,
+		   thread_ref = excluded.thread_ref,
+		   turns = excluded.turns, pending_round = excluded.pending_round`,
 		sess.Run, sess.Ticket, sess.SessionID, sess.Model, sess.Ended,
 		sess.Rounds, string(commits), sess.SystemFile, sess.TranscriptRef, sess.ImportKey,
-		importStateOf(sess), sess.ThreadRef)
+		importStateOf(sess), sess.ThreadRef, string(turns), string(pending))
 	if err != nil {
 		return fmt.Errorf("upsert dev session: %w", err)
 	}
@@ -86,12 +106,12 @@ func (s SQLStore) Upsert(ctx context.Context, sess Session) error {
 // Find reads a run's session.
 func (s SQLStore) Find(ctx context.Context, run string) (Session, bool, error) {
 	sess := Session{Run: run}
-	var commits string
+	var commits, turns, pending string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+sessionColumns+` FROM dev_session WHERE run = ?`, run).
 		Scan(&sess.Ticket, &sess.SessionID, &sess.Model, &sess.Ended, &sess.Rounds,
 			&commits, &sess.SystemFile, &sess.TranscriptRef, &sess.ImportKey,
-			&sess.ImportState, &sess.ThreadRef)
+			&sess.ImportState, &sess.ThreadRef, &turns, &pending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, false, nil
 	}
@@ -100,6 +120,12 @@ func (s SQLStore) Find(ctx context.Context, run string) (Session, bool, error) {
 	}
 	if err := json.Unmarshal([]byte(commits), &sess.Commits); err != nil {
 		return Session{}, false, fmt.Errorf("decode commits: %w", err)
+	}
+	if err := json.Unmarshal([]byte(turns), &sess.Turns); err != nil {
+		return Session{}, false, fmt.Errorf("decode turns: %w", err)
+	}
+	if err := json.Unmarshal([]byte(pending), &sess.Pending); err != nil {
+		return Session{}, false, fmt.Errorf("decode pending round: %w", err)
 	}
 	return sess, true, nil
 }

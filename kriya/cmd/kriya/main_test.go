@@ -647,3 +647,19 @@ func TestAnotherTargetsVerdictIsLeftForItsOwnBuild(t *testing.T) {
 		t.Error("another target's approval was enqueued in this target's queue")
 	}
 }
+
+func TestEachTargetKeepsItsOwnVerdictCursor(t *testing.T) {
+	// The feed is actor-wide and each target skips what is not its own. One
+	// shared cursor would have the first target to read a page advance past
+	// every other target's verdicts, which are then never offered again.
+	db := openTemp(t)
+	mine := verdictRouter(db, "actor-1", "/mine")
+	theirs := verdictRouter(db, "actor-1", "/theirs")
+	if mine.Name == theirs.Name {
+		t.Fatalf("both targets consume under cursor %q", mine.Name)
+	}
+	// And the same target under the same actor keeps one position.
+	if again := verdictRouter(db, "actor-1", "/mine"); again.Name != mine.Name {
+		t.Errorf("the same target read under %q then %q", mine.Name, again.Name)
+	}
+}

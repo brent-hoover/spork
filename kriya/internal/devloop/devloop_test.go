@@ -494,6 +494,7 @@ type fakeArchitect struct {
 	direction string
 	resumeErr error
 	resumed   int
+	delivered int
 }
 
 func (f *fakeArchitect) Resolve(
@@ -520,6 +521,11 @@ func (f *fakeArchitect) Resume(context.Context, string) (architect.Intervention,
 		return architect.Intervention{}, false, nil
 	}
 	return architect.Intervention{Direction: f.direction, State: architect.StateDirected}, true, nil
+}
+
+func (f *fakeArchitect) MarkResumed(context.Context, string) error {
+	f.delivered++
+	return nil
 }
 
 func findingsLoop(store *memStore, ag *fakes.Agent, c *fakeCommitter, rev *fakeReviewer,
@@ -787,6 +793,7 @@ type recordingArchitect struct {
 	direction string
 	err       error
 	resolved  int
+	delivered int
 	resume    architect.Intervention
 	found     bool
 }
@@ -808,6 +815,12 @@ func (a *recordingArchitect) Resume(
 	context.Context, string,
 ) (architect.Intervention, bool, error) {
 	return a.resume, a.found, nil
+}
+
+func (a *recordingArchitect) MarkResumed(context.Context, string) error {
+	a.delivered++
+	a.found = false
+	return nil
 }
 
 func TestASessionThatFailedMidLoopStillReachesTheCatalog(t *testing.T) {
@@ -987,4 +1000,207 @@ func TestAFinishedSessionIsNotResumed(t *testing.T) {
 func sessionFor(store *memStore, run string) (devloop.Session, bool) {
 	got, found, _ := store.Find(context.Background(), run)
 	return got, found
+}
+
+func TestAResumedPassPollsItsPendingRoundInsteadOfCommittingAgain(t *testing.T) {
+	// The previous pass left a review job running. Committing again and
+	// submitting under the same round id would replace the stored job and
+	// orphan the review the run is actually waiting for.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictPending}}
+	loop := pairLoop(store, ag, c, rev, 5)
+
+	if _, err := loop.Work(context.Background(), request()); !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("first pass: %v", err)
+	}
+	commits, submits := len(c.messages), rev.submits
+	saved, _ := sessionFor(store, "run-1")
+	if saved.Pending.ID == "" {
+		t.Fatalf("the round being waited on was not recorded: %+v", saved.Pending)
+	}
+	if len(saved.Turns) == 0 {
+		t.Error("the conversation so far was not persisted")
+	}
+
+	// It has finished this time.
+	rev.round, rev.verdicts = 0, []string{reviewbridge.VerdictClean}
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(c.messages) != commits {
+		t.Errorf("the resumed pass committed again: %d then %d", commits, len(c.messages))
+	}
+	if rev.submits != submits {
+		t.Errorf("the resumed pass submitted a second job: %d then %d", submits, rev.submits)
+	}
+	if len(rev.settled) != 1 || rev.settled[0] != "run-1-0-1" {
+		t.Errorf("settled %v, want the round that was pending", rev.settled)
+	}
+	got, _ := sessionFor(store, "run-1")
+	if got.Pending.ID != "" {
+		t.Errorf("the round is still marked pending: %+v", got.Pending)
+	}
+}
+
+func TestAResumedPassContinuesTheRoundNumbering(t *testing.T) {
+	// A resumed pass that begins at round zero reuses the round ids the
+	// previous pass already recorded, replacing their jobs and verdicts.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictPending}, findings: "- **Severity**: High",
+	}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+
+	if _, err := loop.Work(context.Background(), request()); !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("first pass: %v", err)
+	}
+	// The pending round comes back with findings, so the loop fixes and runs
+	// a SECOND round — which must not reuse the first round's id.
+	rev.round = 0
+	rev.verdicts = []string{reviewbridge.VerdictFindings, reviewbridge.VerdictClean}
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(rev.settled) != 2 {
+		t.Fatalf("settled %v", rev.settled)
+	}
+	if rev.settled[0] == rev.settled[1] {
+		t.Errorf("the resumed round reused id %q", rev.settled[0])
+	}
+	if rev.settled[1] != "run-1-0-2" {
+		t.Errorf("the resumed round is %q, want the second", rev.settled[1])
+	}
+}
+
+func TestAResumedPassKeepsEveryTurnItHasHad(t *testing.T) {
+	// Turns appended during the pair loop lived only in memory, so a pass that
+	// came back after a fix round lost the correction exchange entirely.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictPending},
+		findings: "- **Severity**: High",
+	}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	if _, err := loop.Work(context.Background(), request()); !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("work: %v", err)
+	}
+	saved, _ := sessionFor(store, "run-1")
+	if len(saved.Turns) != 2 {
+		t.Fatalf("persisted %d turns, want the implement prompt and the fix", len(saved.Turns))
+	}
+	if !strings.Contains(saved.Turns[1].Prompt, "Severity") {
+		t.Errorf("the fix exchange is not the one persisted: %q", saved.Turns[1].Prompt)
+	}
+}
+
+func TestAResumedPassKeepsTheWholeConversation(t *testing.T) {
+	// Turns held only in memory would leave the eventual import carrying only
+	// what happened after the last resume — often nothing at all, for a
+	// pending-then-clean review.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictPending}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	threads := &recordingThreads{}
+	loop.Threads = threads
+	req := request()
+	req.Workspace = t.TempDir()
+
+	if _, err := loop.Work(context.Background(), req); !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("first pass: %v", err)
+	}
+	rev.round, rev.verdicts = 0, []string{reviewbridge.VerdictClean}
+	if _, err := loop.Work(context.Background(), req); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(threads.imported) != 1 {
+		t.Fatalf("imported %d transcripts", len(threads.imported))
+	}
+	if !strings.Contains(threads.imported[0], "Implement this ticket") {
+		t.Errorf("the original conversation is missing from the import:\n%s",
+			threads.imported[0])
+	}
+}
+
+func TestAnInterventionClosesOnDeliveryNotOnLookup(t *testing.T) {
+	// A pass that read the direction and never reached a prompt closed the
+	// intervention anyway, so the direction the impasse was raised to get was
+	// given to nobody and could never be given again.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	sa := &recordingArchitect{
+		found:  true,
+		resume: architect.Intervention{Direction: "extract the port boundary"},
+	}
+	loop.Architect = sa
+
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if sa.delivered != 1 {
+		t.Errorf("the intervention was closed %d times", sa.delivered)
+	}
+	if !strings.Contains(ag.Requests[0].Prompt, "extract the port boundary") {
+		t.Error("it was closed without the direction reaching a prompt")
+	}
+}
+
+func TestNoDirectionClosesNothing(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	sa := &recordingArchitect{}
+	loop.Architect = sa
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if sa.delivered != 0 {
+		t.Errorf("an intervention that does not exist was closed %d times", sa.delivered)
+	}
+}
+
+func TestAfterAnArchitectHandoffTheNextPassStartsFresh(t *testing.T) {
+	// The impasse spends the session's rounds. Resuming it would leave no
+	// budget at all — the loop would do nothing and report a clean pass. The
+	// next pass opens a NEW session whose first prompt carries the direction.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictFindings},
+		findings: "- **Severity**: High",
+	}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 2)
+	sa := &recordingArchitect{direction: "extract the port boundary"}
+	loop.Architect = sa
+
+	if _, err := loop.Work(context.Background(), request()); !errors.Is(err, devloop.ErrArchitectDirected) {
+		t.Fatalf("first pass: %v", err)
+	}
+	ended, _ := sessionFor(store, "run-1")
+	if !ended.Ended {
+		t.Error("the handed-off session was left open, so the next pass resumes it")
+	}
+	invocations := len(ag.Requests)
+
+	// The next pass. The architect's direction is now recorded.
+	sa.found = true
+	sa.resume = architect.Intervention{Direction: sa.direction}
+	rev.round, rev.verdicts = 0, []string{reviewbridge.VerdictClean}
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(ag.Requests) <= invocations {
+		t.Fatal("the second pass invoked nothing: it resumed a spent session")
+	}
+	if !strings.Contains(ag.Requests[invocations].Prompt, "extract the port boundary") {
+		t.Errorf("the fresh session's first prompt lacks the direction:\n%s",
+			ag.Requests[invocations].Prompt)
+	}
 }

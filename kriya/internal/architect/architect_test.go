@@ -177,8 +177,27 @@ func TestResumeReadsTheRowRatherThanMemory(t *testing.T) {
 	if got.Direction != "Split the handler." {
 		t.Errorf("resumed with %q", got.Direction)
 	}
+	// Reading does not close it. The lifecycle moves on DELIVERY: a pass that
+	// read the direction and never reached a prompt would otherwise close the
+	// intervention with its direction given to nobody.
+	if store.rows["run-1"].State != architect.StateDirected {
+		t.Errorf("reading the direction closed the intervention: %q",
+			store.rows["run-1"].State)
+	}
+	if err := resolver(store, &fakes.Agent{}).
+		MarkResumed(context.Background(), "run-1"); err != nil {
+		t.Fatalf("mark resumed: %v", err)
+	}
 	if store.rows["run-1"].State != architect.StateResumed {
-		t.Errorf("the row is in state %q after resume", store.rows["run-1"].State)
+		t.Errorf("the row is in state %q after delivery", store.rows["run-1"].State)
+	}
+	// And marking again is harmless: a replayed pass must not reopen it.
+	if err := resolver(store, &fakes.Agent{}).
+		MarkResumed(context.Background(), "run-1"); err != nil {
+		t.Fatalf("mark resumed again: %v", err)
+	}
+	if store.rows["run-1"].State != architect.StateResumed {
+		t.Errorf("a second mark moved it to %q", store.rows["run-1"].State)
 	}
 }
 

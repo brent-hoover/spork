@@ -105,6 +105,10 @@ func (a Architect) Resolve(
 //
 // Read from the row rather than carried in memory: a run that restarted
 // between the direction and the resume must still get it.
+// A pure READ: the lifecycle moves on delivery, not on lookup. Marking it
+// resumed here meant a pass that read the direction and then never reached a
+// prompt — a resumed session whose next review came back clean — left the
+// intervention closed with its direction given to nobody.
 func (a Architect) Resume(ctx context.Context, build string) (Intervention, bool, error) {
 	in, found, err := a.Store.Find(ctx, build)
 	if err != nil {
@@ -113,11 +117,23 @@ func (a Architect) Resume(ctx context.Context, build string) (Intervention, bool
 	if !found || in.State != StateDirected {
 		return Intervention{}, false, nil
 	}
+	return in, true, nil
+}
+
+// MarkResumed closes the intervention, once its direction has been delivered.
+func (a Architect) MarkResumed(ctx context.Context, build string) error {
+	in, found, err := a.Store.Find(ctx, build)
+	if err != nil {
+		return fmt.Errorf("find intervention: %w", err)
+	}
+	if !found || in.State != StateDirected {
+		return nil
+	}
 	in.State = StateResumed
 	if err := a.Store.Upsert(ctx, in); err != nil {
-		return Intervention{}, false, fmt.Errorf("record resumed intervention: %w", err)
+		return fmt.Errorf("record resumed intervention: %w", err)
 	}
-	return in, true, nil
+	return nil
 }
 
 // prompt states the impasse.

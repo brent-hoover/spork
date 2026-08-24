@@ -304,7 +304,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		// Verdicts first. A changes-requested review returns its run to the
 		// pair loop, and a pass that popped new work before reading them would
 		// leave a rejected run waiting behind tickets it does not need.
-		router := verdictRouter(db, actor)
+		router := verdictRouter(db, actor, target)
 		routed, next, err := router.Consume(ctx)
 		if err != nil {
 			return orchestrator.Result{}, err
@@ -399,14 +399,20 @@ func actOnVerdicts(
 }
 
 // verdictRouter consumes review verdicts and routes each to its run.
-func verdictRouter(db *sql.DB, actor string) orchestrator.Router {
+//
+// The cursor is named for the actor AND the target. The feed is actor-wide and
+// each target skips what is not its own — so one shared cursor would have the
+// first target to read a page advance past every other target's verdicts,
+// which are then never offered again. Each target keeps its own position and
+// reads the whole feed.
+func verdictRouter(db *sql.DB, actor, target string) orchestrator.Router {
 	return orchestrator.Router{
 		Feed:    sutraFeed{c: trackerclient.New(sutraURL())},
 		Cursors: orchestrator.SQLCursors{DB: db},
 		Routes:  orchestrator.SQLStore{DB: db},
 		Reviews: sutraRevisions{c: trackerclient.New(sutraURL())},
 		Store:   orchestrator.SQLStore{DB: db},
-		Name:    "verdicts:" + actor,
+		Name:    "verdicts:" + actor + ":" + target,
 	}
 }
 
