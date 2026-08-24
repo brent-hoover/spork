@@ -192,8 +192,12 @@ func truncate(s string, limit int) string {
 // Stopping is not an optimisation: coverage is judged only over a passing
 // suite, and running mutation against code whose tests fail measures nothing
 // while costing the most.
+// The base is the DEFAULT BRANCH head the attempt froze, which is not the
+// commit under test: the commit is the branch's own work head, and comparing
+// that against the default head would report "the base moved" on every chain
+// that has any work in it at all.
 func (r Runner) RunChain(
-	ctx context.Context, build, module, commit, dir string,
+	ctx context.Context, build, module, commit, base, dir string,
 	commands map[string]string, attempt int,
 ) ([]Result, error) {
 	var out []Result
@@ -202,7 +206,7 @@ func (r Runner) RunChain(
 		// ground moved between the third and fourth gate would otherwise
 		// record a mixed-base pass — some results against the old base, some
 		// against the new — which says nothing about either.
-		if err := r.baseHolds(ctx, commit); err != nil {
+		if err := r.baseHolds(ctx, base); err != nil {
 			return out, err
 		}
 		// AC-mutation-after-review: mutation is the most expensive gate and

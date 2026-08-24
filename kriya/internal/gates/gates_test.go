@@ -118,7 +118,7 @@ func TestTheChainStopsAtTheFirstFailure(t *testing.T) {
 	store := &memStore{}
 	cmds := allPassing()
 	cmds["test"] = "exit 1"
-	results, err := runner(store).RunChain(context.Background(), "b1", "MOD-a", "c1", t.TempDir(), cmds, 0)
+	results, err := runner(store).RunChain(context.Background(), "b1", "MOD-a", "c1", "D1", t.TempDir(), cmds, 0)
 	if err != nil {
 		t.Fatalf("chain: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestTheChainStopsAtTheFirstFailure(t *testing.T) {
 
 func TestAFullChainRunsEveryGateInOrder(t *testing.T) {
 	store := &memStore{}
-	results, err := runner(store).RunChain(context.Background(), "b1", "MOD-a", "c1", t.TempDir(), allPassing(), 0)
+	results, err := runner(store).RunChain(context.Background(), "b1", "MOD-a", "c1", "D1", t.TempDir(), allPassing(), 0)
 	if err != nil {
 		t.Fatalf("chain: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestTheReviewGatesOnlyMutation(t *testing.T) {
 	store := &memStore{}
 	review := &noReview{}
 	runner := gates.Runner{Store: store, Review: review, Now: fakes.NewClock(time.Unix(0, 0))}
-	results, err := runner.RunChain(context.Background(), "run-1", "MOD-a", "sha-a",
+	results, err := runner.RunChain(context.Background(), "run-1", "MOD-a", "sha-a", "D1",
 		t.TempDir(), allPassing(), 0)
 	if err != nil {
 		t.Fatalf("run chain: %v", err)
@@ -283,7 +283,7 @@ func TestAReviewThatCannotBeReadStopsTheChain(t *testing.T) {
 	runner := gates.Runner{
 		Store: store, Review: brokenReview{}, Now: fakes.NewClock(time.Unix(0, 0)),
 	}
-	_, err := runner.RunChain(context.Background(), "run-1", "MOD-a", "sha-a",
+	_, err := runner.RunChain(context.Background(), "run-1", "MOD-a", "sha-a", "D1",
 		t.TempDir(), allPassing(), 0)
 	if err == nil {
 		t.Fatal("an unreadable review verdict was treated as a pass")
@@ -446,7 +446,10 @@ func TestAChainAbortsWhenItsBaseMovesMidRun(t *testing.T) {
 	store := &memStore{}
 	base := &movingBase{head: "D1", moved: "D2", after: 3}
 	r := gates.Runner{Store: store, Base: base, Now: fakes.NewClock(time.Unix(0, 0))}
-	results, err := r.RunChain(context.Background(), "b1", "MOD-a", "D1",
+	// The work commit is C2 and the frozen base is D1: distinct, because a
+	// runner that checked the COMMIT against the default head would report
+	// "moved" on every chain that has any work in it.
+	results, err := r.RunChain(context.Background(), "b1", "MOD-a", "C2", "D1",
 		t.TempDir(), allPassing(), 1)
 	if !errors.Is(err, gates.ErrBaseMoved) {
 		t.Fatalf("got %v, want ErrBaseMoved", err)
@@ -463,7 +466,7 @@ func TestAChainOnAStableBaseRunsThrough(t *testing.T) {
 	store := &memStore{}
 	base := &movingBase{head: "D1"}
 	r := gates.Runner{Store: store, Base: base, Now: fakes.NewClock(time.Unix(0, 0))}
-	results, err := r.RunChain(context.Background(), "b1", "MOD-a", "D1",
+	results, err := r.RunChain(context.Background(), "b1", "MOD-a", "C2", "D1",
 		t.TempDir(), allPassing(), 1)
 	if err != nil {
 		t.Fatalf("run chain: %v", err)
@@ -482,7 +485,7 @@ func TestAnUnreadableBaseStopsTheChain(t *testing.T) {
 	store := &memStore{}
 	base := &movingBase{err: errors.New("git unavailable")}
 	r := gates.Runner{Store: store, Base: base, Now: fakes.NewClock(time.Unix(0, 0))}
-	if _, err := r.RunChain(context.Background(), "b1", "MOD-a", "D1",
+	if _, err := r.RunChain(context.Background(), "b1", "MOD-a", "C2", "D1",
 		t.TempDir(), allPassing(), 1); err == nil {
 		t.Fatal("an unreadable head read as an unmoved one")
 	}

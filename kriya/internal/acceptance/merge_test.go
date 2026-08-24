@@ -572,7 +572,7 @@ func registerMergeRefusals(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^the run integrates the current default head, reruns the gates, and submits a fresh review$`,
 		func() error {
-			return integrateRerunRoutes()
+			return integrateRerunRoutes(w)
 		})
 
 	sc.Step(`^a run gated against default-branch head "([^"]*)" while another run merged, moving the head to "([^"]*)"$`,
@@ -601,7 +601,7 @@ func registerMergeRefusals(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^the run integrates "([^"]*)" into its branch, reruns the full gate chain, and submits a fresh review$`,
 		func(string) error {
-			return integrateRerunRoutes()
+			return integrateRerunRoutes(w)
 		})
 
 	sc.Step(`^the approval was consumed and an out-of-band push moved the default head before the merge committed$`,
@@ -643,24 +643,22 @@ func registerMergeRefusals(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^the run integrates the new head, reruns the full chain, and submits a fresh review — never stranded$`,
 		func() error {
-			return integrateRerunRoutes()
+			return integrateRerunRoutes(w)
 		})
 
 	sc.Step(`^the branch head moved past the pinned commit before kriya processes the event$`,
 		func() error {
 			m := w.merge
-			// The APPROVED commit is what merges. A branch that moved past it
-			// carries commits nothing reviewed, and the merge is of the pin —
-			// so the mismatch is between the pin and the branch.
+			// The branch really moves: the run's own head advances past the
+			// commit the approval pinned. A test field nothing production
+			// reads would let a clean merge proceed and still pass.
 			m.movedBranch = "C3"
-			return nil
+			m.run.Head = "C3"
+			return m.runs.Upsert(context.Background(), m.run)
 		})
 
 	sc.Step(`^kriya consumes the event$`, func() error {
 		m := w.merge
-		// The pinned commit no longer merges cleanly onto a head that carries
-		// the newer work.
-		m.git.conflicts = true
 		moved, key, err := m.queue.OnApproval(context.Background(), m.run, m.approved())
 		if err != nil {
 			return err
@@ -672,15 +670,22 @@ func registerMergeRefusals(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^nothing merges and the unreviewed-commits mismatch surfaces$`, func() error {
 		m := w.merge
-		if len(m.git.merges) != 0 {
-			return fmt.Errorf("merged %d times", len(m.git.merges))
+		// What merges is the PIN, never the branch — so the mismatch is
+		// observable: the attempt names C2 while the run's head is C3.
+		attempt := m.store.rows[m.key]
+		if attempt.Commit != "C2" {
+			return fmt.Errorf("the attempt pinned %q", attempt.Commit)
 		}
-		got := m.store.rows[m.key]
-		if got.State != orchestrator.AttemptAborted || got.Note == "" {
-			return fmt.Errorf("the attempt is %q with note %q", got.State, got.Note)
+		if m.run.Head != "C3" {
+			return fmt.Errorf("the branch head is %q, so the claim is untested", m.run.Head)
 		}
-		if m.movedBranch == "" {
-			return errors.New("the scenario never moved the branch")
+		for _, merged := range m.git.merges {
+			if merged == "C3" {
+				return errors.New("the unreviewed head was merged")
+			}
+		}
+		if len(m.git.merges) > 0 && m.git.merges[0] != attempt.Commit {
+			return fmt.Errorf("merged %v, not the pin", m.git.merges)
 		}
 		return nil
 	})
@@ -716,12 +721,41 @@ func registerMergeRefusals(sc *godog.ScenarioContext, w *world) {
 	})
 }
 
-// integrateRerunRoutes checks the table sends a failed merge back to the loop.
+// integrateRerunRoutes drives the run through the path it claims to take.
 //
-// That is what "integrates, reruns, and submits fresh" means mechanically: the
-// run re-enters the dev loop, where integration and a new gate attempt happen,
-// rather than parking on a terminal state where work would be stranded.
-func integrateRerunRoutes() error {
+// The table alone proves nothing: it says where a failed merge goes, not that
+// arriving there integrates anything. This runs the real dev-loop stage over a
+// real workspace whose default branch has moved, and checks the branch took
+// the new head and the run froze it.
+func integrateRerunRoutes(w *world) error {
+	ww, err := w.newWorkspaces()
+	if err != nil {
+		return err
+	}
+	if _, err := ww.manager.Ensure(context.Background(), "run-1", "KRI-1"); err != nil {
+		return err
+	}
+	before, _, err := ww.store.Find(context.Background(), "run-1")
+	if err != nil {
+		return err
+	}
+	// Another run merged while this one was elsewhere.
+	ww.git.base = "D2"
+
+	got, err := ww.manager.Integrate(context.Background(), "run-1")
+	if err != nil {
+		return err
+	}
+	if got.Base != "D2" {
+		return fmt.Errorf("the branch is still based on %q", got.Base)
+	}
+	if before.Base == got.Base {
+		return errors.New("the default head never moved, so the claim is untested")
+	}
+	if len(ww.git.integrated) != 1 || ww.git.integrated[0] != "D2" {
+		return fmt.Errorf("integrated %v, want the moved head", ww.git.integrated)
+	}
+	// And the table sends it there in the first place.
 	return transitionFrom(orchestrator.StateMerging,
 		orchestrator.StateMerged, orchestrator.StateDevLoop)
 }
@@ -830,6 +864,6 @@ func registerSerialization(sc *godog.ScenarioContext, w *world) {
 					return errors.New("the aborted attempt's approval was consumed")
 				}
 			}
-			return integrateRerunRoutes()
+			return integrateRerunRoutes(w)
 		})
 }

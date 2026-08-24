@@ -70,6 +70,8 @@ type countingGit struct {
 	// branches records every branch that was cut, so a surviving one can be
 	// shown never to have been touched again.
 	branches []string
+	// integrated records every commit merged into a run's branch.
+	integrated []string
 }
 
 func (g *countingGit) DefaultBranchCommit(context.Context, string, string) (string, error) {
@@ -93,7 +95,10 @@ func (g *countingGit) RemoveWorktree(_ context.Context, _, path string) error {
 	return os.RemoveAll(path)
 }
 
-func (g *countingGit) Integrate(context.Context, string, string, string) error { return nil }
+func (g *countingGit) Integrate(_ context.Context, _, _, commit string) error {
+	g.integrated = append(g.integrated, commit)
+	return nil
+}
 
 func (g *countingGit) HasUnmergedCommits(context.Context, string, string, string) (bool, error) {
 	return true, nil

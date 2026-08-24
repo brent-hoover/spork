@@ -86,7 +86,7 @@ func (g *gateWorld) chain() ([]gates.Result, error) {
 	var out []gates.Result
 	for module, cmds := range g.modules {
 		results, err := g.runner.RunChain(context.Background(), "run-1", module,
-			g.commit, g.dir, cmds, 0)
+			g.commit, g.frozen, g.dir, cmds, 0)
 		if err != nil {
 			return nil, fmt.Errorf("chain for %s: %w", module, err)
 		}
@@ -823,7 +823,46 @@ func registerAttemptScoping(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^the new gate-chain attempt starts and increments the run's attempt counter$`,
 		func() error {
-			w.gates.attempt = 2
+			// Driven through the orchestrator rather than assigned. The
+			// counter lives on the run, and a stage that increments it is
+			// worth nothing if Advance writes back the copy it loaded before
+			// the stage ran — every later round would reuse attempt 1 and be
+			// satisfied by attempt 1's results.
+			store := &runStore{rows: map[string]orchestrator.BuildRun{}}
+			run := orchestrator.BuildRun{
+				ID: "run-1", Ticket: "api", State: orchestrator.StateGates, Attempt: 1,
+			}
+			if err := store.Upsert(context.Background(), run); err != nil {
+				return err
+			}
+			o := orchestrator.Orchestrator{
+				Store: store, Now: fakes.NewClock(time.Unix(0, 0)),
+				Stages: orchestrator.Stages{
+					"gates": func(
+						_ context.Context, r orchestrator.BuildRun,
+					) (orchestrator.BuildRun, error) {
+						r.Attempt++
+						// A FAILING chain, which is the case the increment has
+						// to survive: a passing one would advance the run and
+						// carry the field along regardless.
+						return r, errors.New("gate test failed for api")
+					},
+				},
+			}
+			if _, err := o.Advance(context.Background(), "run-1"); err != nil {
+				return err
+			}
+			got, found, err := store.Find(context.Background(), "run-1")
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("the run vanished")
+			}
+			if got.Attempt != 2 {
+				return fmt.Errorf("the durable attempt is %d, want 2", got.Attempt)
+			}
+			w.gates.attempt = got.Attempt
 			return nil
 		})
 
@@ -867,7 +906,7 @@ func registerAttemptScoping(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^the full chain reruns and records results under the new attempt$`, func() error {
 		g := w.gates
 		results, err := g.runner.RunChain(context.Background(), "run-1", "api", g.commit,
-			g.dir, g.modules["api"], g.attempt)
+			g.frozen, g.dir, g.modules["api"], g.attempt)
 		if err != nil {
 			return err
 		}
@@ -909,8 +948,8 @@ func registerAttemptScoping(sc *godog.ScenarioContext, w *world) {
 			// After three gates, which is what makes this a MID-chain move
 			// rather than a precondition failure.
 			g.base.moved, g.base.after = moved, 3
-			_, g.err = g.runner.RunChain(context.Background(), "run-1", "api", g.frozen,
-				g.dir, g.modules["api"], 1)
+			_, g.err = g.runner.RunChain(context.Background(), "run-1", "api", g.commit,
+				g.frozen, g.dir, g.modules["api"], 1)
 			return nil
 		})
 
@@ -921,7 +960,7 @@ func registerAttemptScoping(sc *godog.ScenarioContext, w *world) {
 		}
 		// Some gates ran, none of the later ones did, and nothing claims the
 		// chain passed.
-		passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", g.frozen, 1)
+		passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", g.commit, 1)
 		if err != nil {
 			return err
 		}
@@ -937,15 +976,18 @@ func registerAttemptScoping(sc *godog.ScenarioContext, w *world) {
 			// A new frozen base, a new attempt: the whole chain runs again and
 			// every result carries the new attempt.
 			g.base.head, g.base.after, g.base.reads = moved, 0, 0
-			results, err := g.runner.RunChain(context.Background(), "run-1", "api", moved,
-				g.dir, g.modules["api"], 2)
+			g.frozen = moved
+			// The WORK commit does not change: integrating a new base can
+			// leave the branch head exactly where it was.
+			results, err := g.runner.RunChain(context.Background(), "run-1", "api", g.commit,
+				g.frozen, g.dir, g.modules["api"], 2)
 			if err != nil {
 				return err
 			}
 			if len(results) != len(gates.Chain) {
 				return fmt.Errorf("reran %d gates, want the full chain", len(results))
 			}
-			passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", moved, 2)
+			passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", g.commit, 2)
 			if err != nil {
 				return err
 			}

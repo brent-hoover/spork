@@ -167,8 +167,8 @@ func gateStage(
 		// attempt it belongs to. Stamping afterwards would record results
 		// under the previous attempt and let them satisfy it.
 		run.Attempt++
-		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.Head, w.Path,
-			commandsFor(run.Ticket), run.Attempt)
+		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.Head, run.GatedBase,
+			w.Path, commandsFor(run.Ticket), run.Attempt)
 		if errors.Is(err, gates.ErrBaseMoved) {
 			// A RESULT, not a malfunction: the run integrates the new base and
 			// the complete chain reruns against it. Recording a mixed-base
