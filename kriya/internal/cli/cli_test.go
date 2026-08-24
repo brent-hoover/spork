@@ -230,3 +230,9 @@ func TestOutputThatVanishedIsAnError(t *testing.T) {
 		t.Fatalf("got %v, want the write failure alongside the refusal", err)
 	}
 }
+
+// AssignIssue puts a ticket on the popping identity's work stack. Without it
+// the tracker's pop never offers it to anyone.
+func (stubTracker) AssignIssue(context.Context, string, string, string, string) error {
+	return nil
+}

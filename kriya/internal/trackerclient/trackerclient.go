@@ -380,3 +380,13 @@ func (c *Client) Events(ctx context.Context, cursor, kind string, limit int) (Ev
 	}
 	return page, nil
 }
+
+// AssignIssue puts a ticket on an identity's work stack.
+//
+// sutra's pop selects only issues ASSIGNED to the popping identity, so a
+// ticket created and left unassigned is one nothing will ever claim: the build
+// decomposes, reports its tickets, and then idles forever.
+func (c *Client) AssignIssue(ctx context.Context, issue, assignee, actor, key string) error {
+	return c.do(ctx, "assignIssue", http.MethodPost, "/issues/"+issue+"/assign", key,
+		map[string]any{"assignee": assignee, "actor": actor}, nil)
+}

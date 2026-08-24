@@ -294,14 +294,8 @@ func buildOne(
 			Stages: buildStages(stageDeps(db, ws, loop, tiers, ticket, snap, target, actor)),
 			Now:    clock.System{},
 		}
-		run := orchestrator.BuildRun{
-			ID: uuid.NewString(), Ticket: ticket.Title,
-			Plan: target, State: orchestrator.StateQueued,
-			// Snapshotted here, at creation. Changing KRIYA_ROUND_LIMIT later
-			// affects only runs created after the change.
-			RoundLimit: roundLimit(),
-		}
-		if err := o.Store.Upsert(ctx, run); err != nil {
+		run, err := resumeOrStart(ctx, o.Store, ticket.Title, target)
+		if err != nil {
 			return orchestrator.BuildRun{}, err
 		}
 		settled, err := o.Drive(ctx, run.ID, 16)
@@ -594,6 +588,35 @@ func reportAdvance(
 		fmt.Fprintf(os.Stderr,
 			"kriya: %s advanced past the completed head %s; reopen it in sutra to review the new work\n",
 			w.Branch, run.CompletedHead)
+	}
+	return run, nil
+}
+
+// resumeOrStart returns the run this ticket already has, or a fresh one.
+//
+// A pop can hand back a ticket a run already exists for — after a rework moved
+// it to dev-loop, or after a crash that left the claim standing. Starting a
+// second run would abandon the first along with its review, its attempt count
+// and everything the tracker already points at.
+func resumeOrStart(
+	ctx context.Context, store orchestrator.Store, ticket, target string,
+) (orchestrator.BuildRun, error) {
+	existing, found, err := store.ForTicket(ctx, ticket)
+	if err != nil {
+		return orchestrator.BuildRun{}, err
+	}
+	if found {
+		return existing, nil
+	}
+	run := orchestrator.BuildRun{
+		ID: uuid.NewString(), Ticket: ticket,
+		Plan: target, State: orchestrator.StateQueued,
+		// Snapshotted here, at creation. Changing KRIYA_ROUND_LIMIT later
+		// affects only runs created after the change.
+		RoundLimit: roundLimit(),
+	}
+	if err := store.Upsert(ctx, run); err != nil {
+		return orchestrator.BuildRun{}, err
 	}
 	return run, nil
 }

@@ -144,3 +144,7 @@ func (r sutraRevisions) Revision(ctx context.Context, review string) (int, error
 	}
 	return rv.Revision, nil
 }
+
+func (t sutraTracker) AssignIssue(ctx context.Context, issueID, assignee, actor, idem string) error {
+	return t.c.AssignIssue(ctx, issueID, assignee, actor, idem)
+}

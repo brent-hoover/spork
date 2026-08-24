@@ -3,6 +3,7 @@ package planner_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"kriya/internal/planner"
@@ -32,6 +33,10 @@ type countingTracker struct {
 	// keys records the idempotency keys presented, which is what makes a
 	// replay safe on sutra's side.
 	keys []string
+	// assigned records which identity each ticket went to. sutra's pop offers
+	// only issues assigned to the popping identity.
+	assigned  map[string]string
+	assignErr error
 }
 
 func (c *countingTracker) CreateProject(_ context.Context, _, _, _, idem string) (string, error) {
@@ -52,7 +57,12 @@ func (c *countingTracker) CreateIssue(_ context.Context, _, _, _, _, idem string
 	if c.failIssue != nil {
 		return "", c.failIssue
 	}
-	return "epic-1", nil
+	// Distinct ids, because two tickets are two issues: a fake handing back
+	// one id would hide anything that keys work by issue.
+	if c.issues == 1 {
+		return "epic-1", nil
+	}
+	return fmt.Sprintf("issue-%d", c.issues), nil
 }
 
 func epicIntaker(store *memTargets, tr planner.Tracker) planner.Intaker {
@@ -270,4 +280,17 @@ func TestRecoveryDoesNotAdoptChangedInputs(t *testing.T) {
 	if row.SpecHash != "originalhash1234" {
 		t.Errorf("the pending row adopted a new spec hash: %q", row.SpecHash)
 	}
+}
+
+// AssignIssue puts a ticket on the popping identity's work stack. Without it
+// the tracker's pop never offers it to anyone.
+func (c *countingTracker) AssignIssue(_ context.Context, issue, assignee, _, _ string) error {
+	if c.assignErr != nil {
+		return c.assignErr
+	}
+	if c.assigned == nil {
+		c.assigned = map[string]string{}
+	}
+	c.assigned[issue] = assignee
+	return nil
 }

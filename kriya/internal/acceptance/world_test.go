@@ -383,3 +383,9 @@ func (m *memAttempts) Mapping(_ context.Context, targetKey string) (planner.Spec
 	s, ok := m.mapping[targetKey]
 	return s, ok, nil
 }
+
+// AssignIssue puts a ticket on the popping identity's work stack. Without it
+// the tracker's pop never offers it to anyone.
+func (r *recordingTracker) AssignIssue(context.Context, string, string, string, string) error {
+	return nil
+}

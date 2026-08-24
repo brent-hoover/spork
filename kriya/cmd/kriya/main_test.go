@@ -432,3 +432,47 @@ func TestLearnNeedsASubcommand(t *testing.T) {
 		}
 	}
 }
+
+func TestAPoppedTicketResumesItsExistingRun(t *testing.T) {
+	// Starting a second run would abandon the first along with its review, its
+	// attempt count and everything the tracker already points at.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := orchestrator.SQLStore{DB: db}
+	existing := orchestrator.BuildRun{
+		ID: "run-existing", Ticket: "issue-7", Plan: "/target",
+		State: orchestrator.StateDevLoop, ReviewID: "review-1", Attempt: 3,
+	}
+	if err := store.Upsert(t.Context(), existing); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := resumeOrStart(t.Context(), store, "issue-7", "/target")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if got.ID != "run-existing" || got.Attempt != 3 {
+		t.Errorf("started %+v instead of resuming", got)
+	}
+}
+
+func TestAFreshTicketStartsANewRun(t *testing.T) {
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := orchestrator.SQLStore{DB: db}
+	got, err := resumeOrStart(t.Context(), store, "issue-new", "/target")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got.ID == "" || got.State != orchestrator.StateQueued {
+		t.Errorf("started %+v", got)
+	}
+	// And it is durable before anything drives it: a run only in memory is
+	// one a crash loses along with its claim.
+	if _, found, err := store.Find(t.Context(), got.ID); err != nil || !found {
+		t.Errorf("the new run was not recorded: %v found=%v", err, found)
+	}
+}

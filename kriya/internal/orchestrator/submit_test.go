@@ -398,6 +398,10 @@ func (f *failingRuns) Completing(context.Context) ([]orchestrator.BuildRun, erro
 	return nil, f.listErr
 }
 
+func (f *failingRuns) ForTicket(context.Context, string) (orchestrator.BuildRun, bool, error) {
+	return orchestrator.BuildRun{}, false, f.listErr
+}
+
 func submittedRun() orchestrator.BuildRun {
 	return orchestrator.BuildRun{
 		ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateSubmitting,

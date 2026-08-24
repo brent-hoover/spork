@@ -139,6 +139,15 @@ func (r *runStore) Resubmitting(context.Context) ([]orchestrator.BuildRun, error
 	return r.inReviewState(orchestrator.SubmitResubmitting), nil
 }
 
+func (r *runStore) ForTicket(_ context.Context, issue string) (orchestrator.BuildRun, bool, error) {
+	for _, run := range r.rows {
+		if run.Ticket == issue && run.State != orchestrator.StateClosed {
+			return run, true, nil
+		}
+	}
+	return orchestrator.BuildRun{}, false, nil
+}
+
 func (r *runStore) Completing(context.Context) ([]orchestrator.BuildRun, error) {
 	var out []orchestrator.BuildRun
 	for _, run := range r.rows {

@@ -254,6 +254,29 @@ func (s SQLCursors) Advance(ctx context.Context, name, cursor string) error {
 	return nil
 }
 
+// ForTicket returns the unsettled run for an issue, if there is one.
+//
+// A pop can hand back a ticket a run already exists for — after a rework, or
+// after a crash that left the claim standing — and starting a second run for
+// it would abandon the first with its review, its attempt count and its
+// history. At most one run per issue is unsettled; a closed one is history and
+// a new claim on the same issue is genuinely new work.
+func (s SQLStore) ForTicket(ctx context.Context, issue string) (BuildRun, bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT id FROM build_run
+		   WHERE ticket = ? AND state NOT IN (?, ?, ?)
+		   ORDER BY rowid DESC LIMIT 1`,
+		issue, string(StateClosed), string(StateMerged), string(StateCancelled)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BuildRun{}, false, nil
+	}
+	if err != nil {
+		return BuildRun{}, false, fmt.Errorf("find run for ticket: %w", err)
+	}
+	return s.Find(ctx, id)
+}
+
 // BySession returns the run whose review was stamped with a session.
 func (s SQLStore) BySession(ctx context.Context, session string) (BuildRun, bool, error) {
 	var id string

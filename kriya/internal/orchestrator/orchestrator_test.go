@@ -41,6 +41,15 @@ func (m *memStore) Resubmitting(context.Context) ([]orchestrator.BuildRun, error
 	return m.inReviewState(orchestrator.SubmitResubmitting), nil
 }
 
+func (m *memStore) ForTicket(_ context.Context, issue string) (orchestrator.BuildRun, bool, error) {
+	for _, run := range m.rows {
+		if run.Ticket == issue && run.State != orchestrator.StateClosed {
+			return run, true, nil
+		}
+	}
+	return orchestrator.BuildRun{}, false, nil
+}
+
 func (m *memStore) Completing(context.Context) ([]orchestrator.BuildRun, error) {
 	var out []orchestrator.BuildRun
 	for _, r := range m.rows {
@@ -639,5 +648,70 @@ func TestAnAttemptStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
 	}
 	if err := s.Update(context.Background(), orchestrator.MergeAttempt{Key: "k"}); err == nil {
 		t.Error("an update on a missing table reported success")
+	}
+}
+
+func TestARunIsFoundByItsTicketWhileUnsettled(t *testing.T) {
+	// A pop can hand back a ticket a run already exists for — after a rework,
+	// or after a crash that left the claim standing. Starting a second run
+	// would abandon the first with its review and its attempt count.
+	s := sqlOrchStore(t)
+	if err := s.Upsert(context.Background(), orchestrator.BuildRun{
+		ID: "run-1", Ticket: "issue-7", State: orchestrator.StateDevLoop,
+		ReviewID: "review-1", Attempt: 3,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, found, err := s.ForTicket(context.Background(), "issue-7")
+	if err != nil || !found {
+		t.Fatalf("for ticket: %v found=%v", err, found)
+	}
+	if got.ID != "run-1" || got.Attempt != 3 || got.ReviewID != "review-1" {
+		t.Errorf("found %+v", got)
+	}
+}
+
+func TestASettledRunIsNotResumed(t *testing.T) {
+	// A closed run is history. A new claim on the same issue is genuinely new
+	// work, and resuming the old one would reopen something finished.
+	s := sqlOrchStore(t)
+	for _, state := range []orchestrator.State{
+		orchestrator.StateClosed, orchestrator.StateMerged, orchestrator.StateCancelled,
+	} {
+		if err := s.Upsert(context.Background(), orchestrator.BuildRun{
+			ID: "run-" + string(state), Ticket: "issue-settled-" + string(state), State: state,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		_, found, err := s.ForTicket(context.Background(), "issue-settled-"+string(state))
+		if err != nil {
+			t.Fatalf("for ticket: %v", err)
+		}
+		if found {
+			t.Errorf("a run in %q was offered for resumption", state)
+		}
+	}
+}
+
+func TestATicketWithNoRunIsNotFound(t *testing.T) {
+	s := sqlOrchStore(t)
+	_, found, err := s.ForTicket(context.Background(), "issue-fresh")
+	if err != nil {
+		t.Fatalf("for ticket: %v", err)
+	}
+	if found {
+		t.Error("a ticket nothing has built found a run")
+	}
+}
+
+func TestForTicketFailsRatherThanReadingAsFresh(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bare.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, _, err := (orchestrator.SQLStore{DB: db}).
+		ForTicket(context.Background(), "issue-7"); err == nil {
+		t.Error("a missing table read as a ticket with no run")
 	}
 }

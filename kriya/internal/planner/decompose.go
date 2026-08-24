@@ -111,6 +111,14 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 			idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
 			return nil, fmt.Errorf("parent ticket %d under the epic: %w", n, err)
 		}
+		// Assigned to the actor that will pop it. The tracker's work stack
+		// offers only issues assigned to the popping identity, so an
+		// unassigned ticket is one nothing ever claims — the build would
+		// decompose, report its tickets, and idle forever.
+		if err := i.Tracker.AssignIssue(ctx, issueID, actor, actor,
+			idempotencyKey(fmt.Sprintf("assign-%d", n), target.TargetKey, target.SpecHash)); err != nil {
+			return nil, fmt.Errorf("assign ticket %d: %w", n, err)
+		}
 	}
 	return reply.Tickets, nil
 }

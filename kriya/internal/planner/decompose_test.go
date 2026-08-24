@@ -2,6 +2,7 @@ package planner_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -102,5 +103,38 @@ func TestASnapshotWithNoCriteriaCannotBeDecomposed(t *testing.T) {
 	_, err := in.Decompose(context.Background(), target(), snapshotWith("project: {}\n"), "actor")
 	if err == nil {
 		t.Fatal("a snapshot citing no criteria has nothing to decompose against")
+	}
+}
+
+func TestEveryTicketIsAssignedToTheActorThatWillPopIt(t *testing.T) {
+	// sutra's work stack offers only issues ASSIGNED to the popping identity.
+	// An unassigned ticket is one nothing ever claims: the build decomposes,
+	// reports its tickets, and idles forever.
+	in, tr, _ := decomposer(t, `{"tickets":[
+		{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]},
+		{"title":"reject bad urls","body":"","criteria":["AC-bad-url"]}]}`)
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
+	if err != nil {
+		t.Fatalf("decompose: %v", err)
+	}
+	if len(tr.assigned) != len(tickets) {
+		t.Fatalf("assigned %d of %d tickets", len(tr.assigned), len(tickets))
+	}
+	for _, assignee := range tr.assigned {
+		if assignee != "actor" {
+			t.Errorf("a ticket was assigned to %q", assignee)
+		}
+	}
+}
+
+func TestATicketThatCannotBeAssignedFailsDecomposition(t *testing.T) {
+	// Reporting success would leave a ticket nothing can ever pop, which looks
+	// exactly like a plan whose work is blocked.
+	in, tr, _ := decomposer(t, `{"tickets":[
+		{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]}]}`)
+	tr.assignErr = errors.New("tracker unavailable")
+	if _, err := in.Decompose(context.Background(), target(),
+		snapshotWith(twoCriteria), "actor"); err == nil {
+		t.Fatal("a ticket nothing can pop read as decomposed")
 	}
 }

@@ -187,6 +187,8 @@ type Store interface {
 	Resubmitting(ctx context.Context) ([]BuildRun, error)
 	// Completing lists runs whose ticket close a crash left in flight.
 	Completing(ctx context.Context) ([]BuildRun, error)
+	// ForTicket returns the unsettled run for an issue, if there is one.
+	ForTicket(ctx context.Context, issue string) (BuildRun, bool, error)
 }
 
 // Stages maps a stage to the module that performs it.

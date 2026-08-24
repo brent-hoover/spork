@@ -51,6 +51,9 @@ type Tracker interface {
 	CreateProject(ctx context.Context, key, name, actor, idempotencyKey string) (projectID string, err error)
 	CreateIssue(ctx context.Context, projectID, title, body, actor, idempotencyKey string) (issueID string, err error)
 	AddRelation(ctx context.Context, issueID, kind, to, actor, idempotencyKey string) error
+	// AssignIssue puts a ticket on an identity's work stack. Without it the
+	// tracker's pop never offers the ticket to anyone.
+	AssignIssue(ctx context.Context, issueID, assignee, actor, idempotencyKey string) error
 }
 
 // idempotencyKey derives a stable key for one step of one target.
