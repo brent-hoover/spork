@@ -498,3 +498,16 @@ func TestConsumeApprovalCarriesItsFences(t *testing.T) {
 		t.Errorf("sent to %s", got.path)
 	}
 }
+
+func TestTheFeedAcceptsExactlyTheTwoHundreds(t *testing.T) {
+	// 200 must succeed and 300 must not: a redirect kriya cannot follow is not
+	// a page of events.
+	c, _ := serve(t, http.StatusOK, `{"events":[],"next_cursor":"c-1"}`)
+	if _, err := c.Events(context.Background(), "", "", 0); err != nil {
+		t.Errorf("200 was rejected: %v", err)
+	}
+	c, _ = serve(t, http.StatusMultipleChoices, `{"events":[]}`)
+	if _, err := c.Events(context.Background(), "", "", 0); err == nil {
+		t.Error("300 read as a page of events")
+	}
+}
