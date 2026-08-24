@@ -380,3 +380,46 @@ func TestARunStoreThatCannotBeListedIsNotEmpty(t *testing.T) {
 		t.Error("a missing table listed as no submissions in flight")
 	}
 }
+
+func TestARunWithNoCompletionStateStoresTheDeclaredDefault(t *testing.T) {
+	// The column is an enum. A zero-valued BuildRun must not put "" in it, or
+	// every later read finds a value the spec does not declare.
+	s := sqlOrchStore(t)
+	if err := s.Upsert(context.Background(), orchestrator.BuildRun{ID: "run-1"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _, err := s.Find(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got.CompletionState != orchestrator.CompleteNone {
+		t.Errorf("stored %q, want %q", got.CompletionState, orchestrator.CompleteNone)
+	}
+}
+
+func TestASetCompletionStateIsStoredAsGiven(t *testing.T) {
+	s := sqlOrchStore(t)
+	if err := s.Upsert(context.Background(), orchestrator.BuildRun{
+		ID: "run-1", CompletionState: orchestrator.CompleteCompleting, CloseKey: "key-1",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	open, err := s.Completing(context.Background())
+	if err != nil {
+		t.Fatalf("completing: %v", err)
+	}
+	if len(open) != 1 || open[0].CloseKey != "key-1" {
+		t.Fatalf("completing listed %+v", open)
+	}
+}
+
+func TestACompletingListThatCannotBeReadIsNotEmpty(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bare.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := (orchestrator.SQLStore{DB: db}).Completing(context.Background()); err == nil {
+		t.Error("a missing table listed as no completions in flight")
+	}
+}
