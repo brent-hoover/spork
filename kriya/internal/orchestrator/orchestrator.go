@@ -50,6 +50,7 @@ const (
 	StageValidate  Stage = "po-validation"
 	StageSubmit    Stage = "submit-review"
 	StageMerge     Stage = "merge"
+	StageComplete  Stage = "complete"
 )
 
 // BuildRun is one ticket's journey through the chain.
@@ -88,6 +89,12 @@ type BuildRun struct {
 	// resubmission answers. Persisted with the key so a later verdict cannot
 	// change what a replay requests.
 	ReviewVerdictEvent string
+	// CloseKey, CompletedHead and CompletionState carry the ticket close
+	// across its crash window. The key is scoped to the review, its approved
+	// revision and its approval's verdict event.
+	CloseKey        string
+	CompletedHead   string
+	CompletionState string
 }
 
 // Transition is one row of the table.
@@ -126,7 +133,14 @@ var Table = []Transition{
 	// table has no way to express waiting. An observed approval moves it to
 	// merging through Queue.OnApproval, and from there the table takes over
 	// again.
-	{From: StateMerging, Stage: StageMerge, OnOK: StateMerged, OnFail: StateAwaitingOperator},
+	// A merge that does not land returns to the dev loop, not the operator:
+	// every way it can fail — a moved base, a conflict, a lost CAS — is
+	// answered by integrating the current head and rerunning, and the cause is
+	// recorded on the run either way.
+	{From: StateMerging, Stage: StageMerge, OnOK: StateMerged, OnFail: StateDevLoop},
+	// A completion whose head advanced likewise returns to the pair loop for
+	// the unreviewed commits.
+	{From: StateMerged, Stage: StageComplete, OnOK: StateClosed, OnFail: StateDevLoop},
 }
 
 // Lookup returns the transition for a state.
@@ -155,6 +169,8 @@ type Store interface {
 	// flight. Separate from Submitting because the two replay differently:
 	// one creates a review, the other advances one.
 	Resubmitting(ctx context.Context) ([]BuildRun, error)
+	// Completing lists runs whose ticket close a crash left in flight.
+	Completing(ctx context.Context) ([]BuildRun, error)
 }
 
 // Stages maps a stage to the module that performs it.

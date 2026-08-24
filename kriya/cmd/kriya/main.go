@@ -161,7 +161,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	}
 	if err := recovery.Run(ctx,
 		recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
-			mergeQueue(db, ws, actor), actor)); err != nil {
+			mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor)); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -235,8 +235,15 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		// same approval enqueues the same attempt under the same key.
 		// The target path scopes the queue. It is stable for the life of a
 		// target, which is all the attempt key needs of it.
-		return observeApproval(ctx, o, mergeQueue(db, ws, actor),
+		merged, err := observeApproval(ctx, o, mergeQueue(db, ws, actor),
 			trackerclient.New(sutraURL()), settled, target)
+		if err != nil || merged.CompletionState != orchestrator.CompleteClosed {
+			return merged, err
+		}
+		// Closed. An out-of-band commit landing on the branch now is work
+		// nothing reviewed, and the operator hears about it rather than kriya
+		// merging it silently.
+		return reportAdvance(ctx, completerOn(db, ws, actor), ws, merged)
 	}
 }
 
@@ -279,6 +286,17 @@ func mergeQueue(db *sql.DB, ws workspace.Manager, actor string) orchestrator.Que
 	}
 }
 
+// completerOn closes tickets against the configured tracker.
+func completerOn(db *sql.DB, ws workspace.Manager, actor string) orchestrator.Completer {
+	return orchestrator.Completer{
+		Store:    orchestrator.SQLStore{DB: db},
+		Tickets:  sutraTickets{c: trackerclient.New(sutraURL()), actor: actor},
+		Branches: branchHeads{git: workspace.ShellGit{}, repo: ws.Repo},
+		Sessions: sessionEnder{db: db},
+		Actor:    actor,
+	}
+}
+
 // submitterOn opens reviews against the configured tracker.
 func submitterOn(db *sql.DB, actor string) orchestrator.Submitter {
 	return orchestrator.Submitter{
@@ -311,7 +329,7 @@ func recoveryLoop(db *sql.DB) devloop.Loop {
 func recoverySteps(
 	in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge,
 	loop devloop.Loop, submitter orchestrator.Submitter,
-	queue orchestrator.Queue, actor string,
+	queue orchestrator.Queue, completer orchestrator.Completer, actor string,
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
@@ -344,6 +362,12 @@ func recoverySteps(
 					return orchestrator.Submission{
 						Issue: run.Ticket, Session: run.ReviewSession, Summary: run.Ticket,
 					}
+				}); err != nil {
+				return err
+			}
+			if _, err := completer.RecoverCompletions(ctx,
+				func(run orchestrator.BuildRun) orchestrator.Completion {
+					return orchestrator.Completion{Issue: run.Ticket, Merged: run.CompletedHead}
 				}); err != nil {
 				return err
 			}
@@ -431,6 +455,7 @@ func stageDeps(
 			Now:   clock.System{},
 		},
 		submitter:    submitterOn(db, actor),
+		completer:    completerOn(db, ws, actor),
 		queue:        mergeQueue(db, ws, actor),
 		commandsFor:  commandsFromSnapshot(snap),
 		criteriaFor:  criteriaFromTickets([]planner.Ticket{ticket}),
@@ -463,6 +488,30 @@ func observeApproval(
 		return run, err
 	}
 	return o.Drive(ctx, moved.ID, 4)
+}
+
+// reportAdvance surfaces a commit that landed after the ticket closed.
+//
+// Detected against the RECORDED head, not against anything re-derived: the
+// point is that the branch is no longer where completion left it.
+func reportAdvance(
+	ctx context.Context, c orchestrator.Completer, ws workspace.Manager,
+	run orchestrator.BuildRun,
+) (orchestrator.BuildRun, error) {
+	w, found, err := ws.Store.Find(ctx, run.ID)
+	if err != nil || !found {
+		return run, err
+	}
+	advanced, err := c.Advanced(ctx, run, w.Branch)
+	if err != nil {
+		return run, err
+	}
+	if advanced {
+		fmt.Fprintf(os.Stderr,
+			"kriya: %s advanced past the completed head %s; reopen it in sutra to review the new work\n",
+			w.Branch, run.CompletedHead)
+	}
+	return run, nil
 }
 
 // roundLimit is the configured pair-loop round limit.

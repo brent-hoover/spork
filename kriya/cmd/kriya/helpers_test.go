@@ -119,3 +119,22 @@ type noApprovals struct{}
 func (noApprovals) Consume(context.Context, string, string, int, string, string) error {
 	return nil
 }
+
+// completerForTest closes tickets against doubles.
+func completerForTest(t *testing.T, db *sql.DB) orchestrator.Completer {
+	t.Helper()
+	return orchestrator.Completer{
+		Store:    orchestrator.SQLStore{DB: db},
+		Tickets:  noTickets{},
+		Branches: branchHeads{git: workspace.ShellGit{}, repo: t.TempDir()},
+		Sessions: sessionEnder{db: db},
+		Actor:    "actor-1",
+	}
+}
+
+// noTickets closes nothing; these tests never reach a completion.
+type noTickets struct{}
+
+func (noTickets) Complete(context.Context, string, string, int, string, string) error {
+	return nil
+}

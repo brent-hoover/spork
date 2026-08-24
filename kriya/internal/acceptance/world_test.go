@@ -61,6 +61,8 @@ type world struct {
 	submit *submitWorld
 	// merge is the merge-queue scenarios' state, nil until one starts.
 	merge *mergeWorld
+	// complete is the completion scenarios' state, nil until one starts.
+	complete *completeWorld
 }
 
 func newWorld() *world {

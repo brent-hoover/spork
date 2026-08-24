@@ -73,3 +73,15 @@ func (t sutraApprovals) Consume(
 		expectedVerdictEvent, key)
 	return err
 }
+
+// sutraTickets adapts the sutra client to the completer's ticket seam.
+type sutraTickets struct {
+	c     *trackerclient.Client
+	actor string
+}
+
+func (t sutraTickets) Complete(
+	ctx context.Context, issue, review string, revision int, verdictEvent, key string,
+) error {
+	return t.c.CompleteIssue(ctx, issue, review, revision, verdictEvent, t.actor, key)
+}

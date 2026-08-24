@@ -41,6 +41,17 @@ func (m *memStore) Resubmitting(context.Context) ([]orchestrator.BuildRun, error
 	return m.inReviewState(orchestrator.SubmitResubmitting), nil
 }
 
+func (m *memStore) Completing(context.Context) ([]orchestrator.BuildRun, error) {
+	var out []orchestrator.BuildRun
+	for _, r := range m.rows {
+		if r.CompletionState == orchestrator.CompleteCompleting {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (m *memStore) inReviewState(state string) []orchestrator.BuildRun {
 	var out []orchestrator.BuildRun
 	for _, r := range m.rows {
@@ -235,7 +246,7 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 	// rebuilt the DDL by hand would pass while production had other columns.
 	for _, schema := range []string{
 		orchestrator.Migration, orchestrator.RoundLimitMigration,
-		orchestrator.SubmissionMigration,
+		orchestrator.SubmissionMigration, orchestrator.CompletionMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
@@ -255,6 +266,7 @@ func TestARunSurvivesTheRoundTrip(t *testing.T) {
 		ID: "run-1", Ticket: "T-1", Plan: "/target", State: orchestrator.StateGates,
 		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
 		RoundLimit: 4, ReviewState: orchestrator.SubmitNone,
+		CompletionState: orchestrator.CompleteNone,
 	}
 	if err := s.Upsert(context.Background(), want); err != nil {
 		t.Fatalf("upsert: %v", err)

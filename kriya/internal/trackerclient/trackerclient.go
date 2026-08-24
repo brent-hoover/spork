@@ -285,3 +285,21 @@ func (c *Client) ConsumeApproval(
 		"/reviews/"+id+"/consume", key, payload, &rv)
 	return rv, err
 }
+
+// CompleteIssue transitions a ticket to complete, naming the review that
+// approved it.
+//
+// All three of review, revision and verdict event travel: sutra stamps the
+// review close-used against exactly them, so a stale revision rejects and the
+// merge-time consumption — a different claim on the same approval — never
+// blocks it.
+func (c *Client) CompleteIssue(
+	ctx context.Context, issue, review string, revision int,
+	verdictEvent, actor, key string,
+) error {
+	return c.do(ctx, "completeIssue", http.MethodPost, "/issues/"+issue+"/status", key,
+		map[string]any{
+			"status": "complete", "review": review, "review_revision": revision,
+			"review_verdict_event": verdictEvent, "actor": actor,
+		}, nil)
+}

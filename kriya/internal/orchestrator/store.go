@@ -37,10 +37,16 @@ ALTER TABLE build_run ADD COLUMN review_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN review_revision INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE build_run ADD COLUMN review_verdict_event TEXT NOT NULL DEFAULT ''`
 
+// CompletionMigration adds the ticket close's write-ahead columns.
+const CompletionMigration = `
+ALTER TABLE build_run ADD COLUMN close_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE build_run ADD COLUMN completed_head TEXT NOT NULL DEFAULT '';
+ALTER TABLE build_run ADD COLUMN completion_state TEXT NOT NULL DEFAULT 'none'`
+
 // runColumns is every column a BuildRun reads back, in scan order.
 const runColumns = `ticket, plan, state, gated_base, error, attempt, round_limit,
 	review_key, review_commit, review_session, review_state, review_id,
-	review_revision, review_verdict_event`
+	review_revision, review_verdict_event, close_key, completed_head, completion_state`
 
 // SQLStore stores build runs in SQLite.
 type SQLStore struct{ DB *sql.DB }
@@ -50,8 +56,8 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO build_run (id, ticket, plan, state, gated_base, error, attempt,
 		   round_limit, review_key, review_commit, review_session, review_state, review_id,
-		   review_revision, review_verdict_event)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   review_revision, review_verdict_event, close_key, completed_head, completion_state)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ticket = excluded.ticket, plan = excluded.plan, state = excluded.state,
 		   gated_base = excluded.gated_base, error = excluded.error,
@@ -60,10 +66,14 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 		   review_session = excluded.review_session, review_state = excluded.review_state,
 		   review_id = excluded.review_id,
 		   review_revision = excluded.review_revision,
-		   review_verdict_event = excluded.review_verdict_event`,
+		   review_verdict_event = excluded.review_verdict_event,
+		   close_key = excluded.close_key,
+		   completed_head = excluded.completed_head,
+		   completion_state = excluded.completion_state`,
 		r.ID, r.Ticket, r.Plan, string(r.State), r.GatedBase, r.Error, r.Attempt,
 		r.RoundLimit, r.ReviewKey, r.ReviewCommit, r.ReviewSession,
-		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent)
+		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent,
+		r.CloseKey, r.CompletedHead, completionStateOf(r))
 	if err != nil {
 		return fmt.Errorf("upsert build run: %w", err)
 	}
@@ -78,7 +88,8 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 		`SELECT `+runColumns+` FROM build_run WHERE id = ?`, id).
 		Scan(&r.Ticket, &r.Plan, &state, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
 			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID,
-			&r.ReviewRevision, &r.ReviewVerdictEvent)
+			&r.ReviewRevision, &r.ReviewVerdictEvent,
+			&r.CloseKey, &r.CompletedHead, &r.CompletionState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return BuildRun{}, false, nil
 	}
@@ -110,9 +121,23 @@ func (s SQLStore) Resubmitting(ctx context.Context) ([]BuildRun, error) {
 	return s.inReviewState(ctx, SubmitResubmitting)
 }
 
+// Completing lists runs whose ticket close a crash left in flight.
+func (s SQLStore) Completing(ctx context.Context) ([]BuildRun, error) {
+	return s.listRuns(ctx, "completion_state", CompleteCompleting)
+}
+
 func (s SQLStore) inReviewState(ctx context.Context, state string) ([]BuildRun, error) {
+	return s.listRuns(ctx, "review_state", state)
+}
+
+// listRuns lists runs whose column holds state.
+//
+// The column name is a CONSTANT from this file, never caller input: it is
+// interpolated because a placeholder cannot name a column, and only a fixed
+// set of names ever reaches it.
+func (s SQLStore) listRuns(ctx context.Context, column, state string) ([]BuildRun, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, `+runColumns+` FROM build_run WHERE review_state = ? ORDER BY id`, state)
+		`SELECT id, `+runColumns+` FROM build_run WHERE `+column+` = ? ORDER BY id`, state)
 	if err != nil {
 		return nil, fmt.Errorf("query %s runs: %w", state, err)
 	}
@@ -125,7 +150,8 @@ func (s SQLStore) inReviewState(ctx context.Context, state string) ([]BuildRun, 
 		if err := rows.Scan(&r.ID, &r.Ticket, &r.Plan, &runState, &r.GatedBase, &r.Error,
 			&r.Attempt, &r.RoundLimit, &r.ReviewKey, &r.ReviewCommit,
 			&r.ReviewSession, &r.ReviewState, &r.ReviewID,
-			&r.ReviewRevision, &r.ReviewVerdictEvent); err != nil {
+			&r.ReviewRevision, &r.ReviewVerdictEvent,
+			&r.CloseKey, &r.CompletedHead, &r.CompletionState); err != nil {
 			return nil, fmt.Errorf("scan %s run: %w", state, err)
 		}
 		r.State = State(runState)
@@ -137,4 +163,12 @@ func (s SQLStore) inReviewState(ctx context.Context, state string) ([]BuildRun, 
 		return nil, fmt.Errorf("iterate %s runs: %w", state, err)
 	}
 	return out, nil
+}
+
+// completionStateOf defaults an unset state.
+func completionStateOf(r BuildRun) string {
+	if r.CompletionState == "" {
+		return CompleteNone
+	}
+	return r.CompletionState
 }

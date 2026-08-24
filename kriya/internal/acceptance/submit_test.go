@@ -138,6 +138,17 @@ func (r *runStore) Resubmitting(context.Context) ([]orchestrator.BuildRun, error
 	return r.inReviewState(orchestrator.SubmitResubmitting), nil
 }
 
+func (r *runStore) Completing(context.Context) ([]orchestrator.BuildRun, error) {
+	var out []orchestrator.BuildRun
+	for _, run := range r.rows {
+		if run.CompletionState == orchestrator.CompleteCompleting {
+			out = append(out, run)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (r *runStore) inReviewState(state string) []orchestrator.BuildRun {
 	var out []orchestrator.BuildRun
 	for _, run := range r.rows {

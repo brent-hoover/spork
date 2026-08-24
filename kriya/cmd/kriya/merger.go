@@ -28,3 +28,21 @@ func (m repoMerger) Head(ctx context.Context) (string, error) {
 func (m repoMerger) Merge(ctx context.Context, commit, expectedBase string) (string, error) {
 	return m.git.MergeCAS(ctx, m.repo, m.branch, commit, expectedBase)
 }
+
+// Head resolves a named branch's current commit.
+//
+// The completion check reads the RUN's branch, not the default one: a commit
+// landing there after the merge is work nothing reviewed.
+func (m repoMerger) BranchHead(ctx context.Context, branch string) (string, error) {
+	return m.git.DefaultBranchCommit(ctx, m.repo, branch)
+}
+
+// branchHeads resolves a branch in the target repository.
+type branchHeads struct {
+	git  workspace.ShellGit
+	repo string
+}
+
+func (b branchHeads) Head(ctx context.Context, branch string) (string, error) {
+	return b.git.DefaultBranchCommit(ctx, b.repo, branch)
+}

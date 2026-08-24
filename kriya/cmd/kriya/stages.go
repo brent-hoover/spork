@@ -36,6 +36,7 @@ type deps struct {
 	po        owner.Owner
 	submitter orchestrator.Submitter
 	queue     orchestrator.Queue
+	completer orchestrator.Completer
 
 	commandsFor  func(module string) map[string]string
 	criteriaFor  func(ticket string) []string
@@ -91,6 +92,8 @@ func buildStages(d deps) orchestrator.Stages {
 		orchestrator.StageSubmit: submitStage(ws, submitter, issueFor, sessionFor),
 
 		orchestrator.StageMerge: mergeStage(d.queue),
+
+		orchestrator.StageComplete: completeStage(ws, d.completer, issueFor),
 
 		orchestrator.StageGates: gateStage(ws, runner, commandsFor),
 	}
@@ -259,6 +262,26 @@ func mergeStage(q orchestrator.Queue) func(context.Context, orchestrator.BuildRu
 			return run, fmt.Errorf("merge attempt %s: %s", attempt.State, attempt.Note)
 		}
 		return run, nil
+	}
+}
+
+// completeStage closes a merged run's ticket through the tracker's own gate.
+func completeStage(
+	ws workspace.Manager, c orchestrator.Completer, issueFor func(string) string,
+) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		w, found, err := ws.Store.Find(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		if !found {
+			return run, fmt.Errorf("no workspace for run %s", run.ID)
+		}
+		// The APPROVED commit, which is what the run's branch must still point
+		// at. A commit landing on it after the merge is work nothing reviewed.
+		return c.Complete(ctx, run, orchestrator.Completion{
+			Issue: issueFor(run.Ticket), Branch: w.Branch, Merged: run.ReviewCommit,
+		})
 	}
 }
 

@@ -99,6 +99,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerResubmit(sc, w)
 	registerMerge(sc, w)
 	registerFences(sc, w)
+	registerComplete(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

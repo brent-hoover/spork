@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"encoding/json"
+	"errors"
+	"os/exec"
 
 	"kriya/internal/agent"
 	"kriya/internal/clock"
@@ -34,6 +36,16 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// Every run these stages drive has a session: the submit stage stamps the
+	// review with it so feedback routes back to the agent that wrote the code.
+	for _, run := range []string{"run-1", "run-2", "run-3", "run-po-1", "run-po-2",
+		"run-sub-1", "run-sub-2", "run-merge-1", "run-complete-1", "run-nowhere"} {
+		if err := (devloop.SQLStore{DB: db}).Upsert(context.Background(), devloop.Session{
+			Run: run, Ticket: "T-1", SessionID: "sess-" + run,
+		}); err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+	}
 	ws := workspaceManagerOn(t, db)
 	runner := gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}}
 	return buildStages(deps{
@@ -47,6 +59,8 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 			Reviews: recordingReviews{},
 			Author:  "actor-1",
 		},
+		queue:       queueForTest(t, db),
+		completer:   completerForTest(t, db),
 		commandsFor: commandsFor,
 		criteriaFor: func(string) []string { return []string{"AC-x"} },
 		issueFor:    func(string) string { return "issue-1" },
@@ -224,4 +238,132 @@ func TestAPassingProductOwnerAdvancesTheRun(t *testing.T) {
 	if _, err := stages[orchestrator.StageValidate](context.Background(), run); err != nil {
 		t.Fatalf("validation stage: %v", err)
 	}
+}
+
+// runThrough drives a run from the workspace stage as far as the named stage.
+func runThrough(
+	t *testing.T, stages orchestrator.Stages, run orchestrator.BuildRun,
+	through ...orchestrator.Stage,
+) (orchestrator.BuildRun, error) {
+	t.Helper()
+	var err error
+	for _, stage := range through {
+		if run, err = stages[stage](context.Background(), run); err != nil {
+			return run, err
+		}
+	}
+	return run, nil
+}
+
+func TestASubmissionOpensAReviewForAValidatedRun(t *testing.T) {
+	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	got, err := runThrough(t, stages,
+		orchestrator.BuildRun{ID: "run-sub-1", Ticket: "T-1"},
+		orchestrator.StageWorkspace, orchestrator.StageGates,
+		orchestrator.StageValidate, orchestrator.StageSubmit)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	if got.ReviewID == "" || got.ReviewState != orchestrator.SubmitSubmitted {
+		t.Errorf("the run records %q in state %q", got.ReviewID, got.ReviewState)
+	}
+	if got.ReviewCommit != got.GatedBase {
+		t.Errorf("the review pinned %q, not the gated %q", got.ReviewCommit, got.GatedBase)
+	}
+}
+
+func TestARunWithAReviewResubmitsRatherThanOpeningASecond(t *testing.T) {
+	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	run, err := runThrough(t, stages,
+		orchestrator.BuildRun{ID: "run-sub-2", Ticket: "T-1"},
+		orchestrator.StageWorkspace, orchestrator.StageGates,
+		orchestrator.StageValidate, orchestrator.StageSubmit)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	first := run.ReviewID
+	run.ReviewVerdictEvent = "event-9"
+	again, err := stages[orchestrator.StageSubmit](context.Background(), run)
+	if err != nil {
+		t.Fatalf("resubmit stage: %v", err)
+	}
+	if again.ReviewID != first {
+		t.Errorf("rework opened review %q instead of advancing %q", again.ReviewID, first)
+	}
+	if again.ReviewRevision != run.ReviewRevision+1 {
+		t.Errorf("the revision went to %d", again.ReviewRevision)
+	}
+}
+
+func TestASubmissionNeedsAWorkspace(t *testing.T) {
+	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	for _, stage := range []orchestrator.Stage{
+		orchestrator.StageSubmit, orchestrator.StageMerge, orchestrator.StageComplete,
+	} {
+		_, err := stages[stage](context.Background(),
+			orchestrator.BuildRun{ID: "run-nowhere", Ticket: "T-1"})
+		if err == nil {
+			t.Errorf("the %s stage ran with no workspace", stage)
+		}
+	}
+}
+
+func TestAMergingRunWithNoAttemptIsADefect(t *testing.T) {
+	// The attempt is enqueued when the approval is observed. A run in merging
+	// with none is a run nothing can advance.
+	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	run, err := stages[orchestrator.StageWorkspace](context.Background(),
+		orchestrator.BuildRun{ID: "run-merge-1", Ticket: "T-1"})
+	if err != nil {
+		t.Fatalf("workspace stage: %v", err)
+	}
+	_, err = stages[orchestrator.StageMerge](context.Background(), run)
+	if err == nil || !strings.Contains(err.Error(), "no attempt") {
+		t.Fatalf("got %v, want a refusal naming the missing attempt", err)
+	}
+}
+
+func TestACompletionChecksTheApprovedCommit(t *testing.T) {
+	// The APPROVED commit is what the branch must still point at; anything
+	// past it is work nothing reviewed. A real repository, because what the
+	// check reads is git.
+	db := openTemp(t)
+	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := realRepo(t)
+	c := orchestrator.Completer{
+		Store:    orchestrator.SQLStore{DB: db},
+		Tickets:  noTickets{},
+		Branches: branchHeads{git: workspace.ShellGit{}, repo: repo},
+		Sessions: sessionEnder{db: db},
+		Actor:    "actor-1",
+	}
+	_, err := c.Complete(context.Background(), orchestrator.BuildRun{
+		ID: "run-complete-1", Ticket: "T-1", ReviewID: "review-1",
+	}, orchestrator.Completion{
+		Issue: "issue-7", Branch: "main", Merged: "not-the-branch-head",
+	})
+	if !errors.Is(err, orchestrator.ErrHeadAdvanced) {
+		t.Fatalf("got %v, want ErrHeadAdvanced", err)
+	}
+}
+
+// realRepo makes a repository with one commit on main.
+func realRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "kriya@example.test"},
+		{"config", "user.name", "kriya"},
+		{"commit", "-q", "--allow-empty", "-m", "root"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
 }

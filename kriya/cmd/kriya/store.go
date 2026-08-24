@@ -134,6 +134,7 @@ func migrations() []migration {
 		{module: "orchestrator", name: "0002_round_limit", stmts: splitSQL(orchestrator.RoundLimitMigration)},
 		{module: "orchestrator", name: "0003_review_submission", stmts: splitSQL(orchestrator.SubmissionMigration)},
 		{module: "orchestrator", name: "0004_merge_attempt", stmts: splitSQL(orchestrator.MergeMigration)},
+		{module: "orchestrator", name: "0005_completion", stmts: splitSQL(orchestrator.CompletionMigration)},
 		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
 		{module: "owner", name: "0001_validation", stmts: splitSQL(owner.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},
@@ -159,4 +160,19 @@ func splitSQL(migration string) []string {
 		}
 	}
 	return out
+}
+
+// sessionEnder stamps a run's dev session ended.
+//
+// The branch's only in-protocol writer, so the completion check terminates it
+// BEFORE reading the head: a check racing the session proves nothing about the
+// moment after.
+type sessionEnder struct{ db *sql.DB }
+
+func (s sessionEnder) Terminate(ctx context.Context, run string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE dev_session SET ended = 1 WHERE run = ?`, run); err != nil {
+		return fmt.Errorf("end session for run %s: %w", run, err)
+	}
+	return nil
 }

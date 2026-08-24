@@ -387,6 +387,10 @@ func (f *failingRuns) Resubmitting(context.Context) ([]orchestrator.BuildRun, er
 	return nil, f.listErr
 }
 
+func (f *failingRuns) Completing(context.Context) ([]orchestrator.BuildRun, error) {
+	return nil, f.listErr
+}
+
 func submittedRun() orchestrator.BuildRun {
 	return orchestrator.BuildRun{
 		ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateSubmitting,
