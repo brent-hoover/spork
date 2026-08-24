@@ -111,17 +111,36 @@ type sutraFeed struct{ c *trackerclient.Client }
 func (f sutraFeed) Since(
 	ctx context.Context, cursor string,
 ) ([]orchestrator.VerdictEvent, string, error) {
-	page, err := f.c.Events(ctx, cursor, "review.verdict", 100)
+	// UNFILTERED, and filtered here. sutra's kind filter takes one value, and
+	// a verdict is two kinds — approved and changes-requested — so a filtered
+	// read would silently see only half of them. Reading the whole feed and
+	// keeping what kriya recognises is the only way to see both while the
+	// cursor still advances past everything else.
+	page, err := f.c.Events(ctx, cursor, "", 100)
 	if err != nil {
 		return nil, "", err
 	}
-	out := make([]orchestrator.VerdictEvent, 0, len(page.Events))
+	var out []orchestrator.VerdictEvent
 	for _, e := range page.Events {
-		v, err := orchestrator.ParseVerdict(e.ID, e.Payload)
+		if e.Kind != orchestrator.KindApproved && e.Kind != orchestrator.KindChangesRequested {
+			continue
+		}
+		v, err := orchestrator.ParseVerdict(e.ID, e.Kind, e.Payload)
 		if err != nil {
 			return nil, "", err
 		}
 		out = append(out, v)
 	}
 	return out, page.NextCursor, nil
+}
+
+// sutraRevisions reads a review's current revision.
+type sutraRevisions struct{ c *trackerclient.Client }
+
+func (r sutraRevisions) Revision(ctx context.Context, review string) (int, error) {
+	rv, err := r.c.GetReview(ctx, review)
+	if err != nil {
+		return 0, err
+	}
+	return rv.Revision, nil
 }

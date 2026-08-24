@@ -73,7 +73,7 @@ func buildStages(d deps) orchestrator.Stages {
 			if !found {
 				return run, fmt.Errorf("no workspace for run %s", run.ID)
 			}
-			_, err = loop.Work(ctx, devloop.Request{
+			session, err := loop.Work(ctx, devloop.Request{
 				Run: run.ID, Ticket: run.Ticket, Title: run.Ticket,
 				Workspace: w.Path, Commands: commandsFor(run.Ticket),
 				// The law comes from the PINNED snapshot, never the working
@@ -87,7 +87,16 @@ func buildStages(d deps) orchestrator.Stages {
 				// now: a config change affects only future runs.
 				RoundLimit: run.RoundLimit,
 			})
-			return run, err
+			if err != nil {
+				return run, err
+			}
+			// The branch head the session produced. Everything after this —
+			// gates, validation, review, merge — is about THIS commit, not the
+			// base the branch was cut from.
+			if n := len(session.Commits); n > 0 {
+				run.Head = session.Commits[n-1]
+			}
+			return run, nil
 		},
 
 		orchestrator.StageValidate: validateStage(ws, po, criteriaFor, d.learnings),
@@ -155,7 +164,7 @@ func gateStage(
 		// attempt it belongs to. Stamping afterwards would record results
 		// under the previous attempt and let them satisfy it.
 		run.Attempt++
-		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.GatedBase, w.Path,
+		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.Head, w.Path,
 			commandsFor(run.Ticket), run.Attempt)
 		if errors.Is(err, gates.ErrBaseMoved) {
 			// A RESULT, not a malfunction: the run integrates the new base and
@@ -205,7 +214,7 @@ func validateStage(
 		}
 		v, err := po.Validate(ctx, owner.Request{
 			Build: run.ID, Module: run.Ticket, Ticket: run.Ticket,
-			Commit: run.GatedBase, Attempt: run.Attempt,
+			Commit: run.Head, Attempt: run.Attempt,
 			Criteria: criteriaFor(run.Ticket), Workspace: w.Path,
 			SystemFile: systemFileFor(w.Path),
 		})
@@ -325,13 +334,19 @@ func systemFileFor(workspace string) string {
 	return filepath.Join(workspace, ".kriya", "context.json")
 }
 
-// criteriaFromTickets maps a ticket title to the criteria it cites.
-func criteriaFromTickets(tickets []planner.Ticket) func(string) []string {
-	byTitle := make(map[string][]string, len(tickets))
-	for _, t := range tickets {
-		byTitle[t.Title] = t.Criteria
+// criteriaFromStore reads a ticket's acceptance criteria from the plan.
+//
+// From the STORE, not from whatever the pop happened to return: a pop carries
+// an id and a title, and a run built from those alone reaches the product
+// owner with nothing to validate against.
+func criteriaFromStore(db *sql.DB, issue string) func(string) []string {
+	return func(string) []string {
+		t, found, err := (planner.SQLTickets{DB: db}).Find(context.Background(), issue)
+		if err != nil || !found {
+			return nil
+		}
+		return t.Criteria
 	}
-	return func(ticket string) []string { return byTitle[ticket] }
 }
 
 // issuesFromTickets maps a ticket title to the sutra issue it became.
@@ -385,7 +400,7 @@ func recordLearning(
 	c.Scope = kctx.ScopeProject
 	c.ProjectKey = projectKeyOf(run.Plan)
 	c.SourceRun = run.ID
-	c.SourceCommit = run.GatedBase
+	c.SourceCommit = run.Head
 	if err := learnings.Record(ctx, c); err != nil {
 		return fmt.Errorf("record learning for %s: %w", run.Ticket, err)
 	}

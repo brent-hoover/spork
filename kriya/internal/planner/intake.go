@@ -32,7 +32,16 @@ type Intaker struct {
 	Attempts  AttemptStore
 	Tracker   Tracker
 	Agent     agent.Agent
-	Now       clock.Clock
+	// Tickets records what a decomposition produced. Nil records nothing,
+	// which is what a test of decomposition's own output wants.
+	Tickets TicketStore
+	Now     clock.Clock
+}
+
+// TicketStore persists the tickets a decomposition produced.
+type TicketStore interface {
+	Put(ctx context.Context, targetKey string, t Ticket) error
+	Find(ctx context.Context, issue string) (Ticket, bool, error)
 }
 
 // admitReport applies the three report-level checks.

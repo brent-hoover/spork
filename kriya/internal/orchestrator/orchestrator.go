@@ -60,6 +60,13 @@ type BuildRun struct {
 	Ticket string
 	Plan   string
 	State  State
+	// Head is the branch's head commit — the DEVELOPED WORK. It is what the
+	// gate chain runs against, what the review names, and what merges.
+	//
+	// Distinct from GatedBase, which is the default-branch commit the branch
+	// was cut from and the chain ran on top of. Conflating them means gating,
+	// reviewing and merging the base instead of the work.
+	Head string
 	// GatedBase is the commit the gate chain ran at. A result from any other
 	// commit never satisfies the chain.
 	GatedBase string

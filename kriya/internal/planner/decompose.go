@@ -98,6 +98,15 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 			return nil, fmt.Errorf("create ticket %d: %w", n, err)
 		}
 		reply.Tickets[n].IssueID = issueID
+		// Recorded HERE, because this is the only moment the ticket's criteria
+		// and the issue they became are both in hand. A pop later returns an
+		// id and a title, and a run built from those alone reaches the product
+		// owner with nothing to validate against.
+		if i.Tickets != nil {
+			if err := i.Tickets.Put(ctx, target.TargetKey, reply.Tickets[n]); err != nil {
+				return nil, fmt.Errorf("record ticket %d: %w", n, err)
+			}
+		}
 		if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
 			idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
 			return nil, fmt.Errorf("parent ticket %d under the epic: %w", n, err)

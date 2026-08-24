@@ -206,8 +206,10 @@ func TestASettledPassDoesNotReplayItself(t *testing.T) {
 	if _, err := loop.Run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if ordinals.settled["/target"] != 2 {
-		t.Errorf("the ordinal is %d after two settled builds", ordinals.settled["/target"])
+	// Two builds and the empty pop that ended the pass.
+	if ordinals.settled["/target"] != 3 {
+		t.Errorf("the ordinal is %d after two settled builds and an empty pop",
+			ordinals.settled["/target"])
 	}
 
 	second := &builds{}
@@ -310,5 +312,41 @@ func TestAnUnsetBoundStillBounds(t *testing.T) {
 	}
 	if len(b.seen) == 0 || len(b.seen) >= 100 {
 		t.Errorf("built %d tickets with no bound set", len(b.seen))
+	}
+}
+
+func TestAnEmptyPopStillAdvancesTheOrdinal(t *testing.T) {
+	// The tracker settles an empty pop under its key like any other response,
+	// so a stalled ordinal replays "nothing workable" forever — even after a
+	// ticket unblocks. Nothing was claimed, so nothing is lost by moving past.
+	stack, b := newWorkStack(), &builds{}
+	ordinals := newMemOrdinals()
+	loop := orchestrator.Loop{
+		Pops: stack, Build: b.build, Ordinals: ordinals,
+		TargetKey: "/target", MaxTickets: 8,
+	}
+	got, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !got.Idle {
+		t.Fatal("the loop did not idle")
+	}
+	if ordinals.settled["/target"] != 1 {
+		t.Errorf("the ordinal is %d after an empty pop", ordinals.settled["/target"])
+	}
+
+	// A ticket unblocks. The next pass must present a NEW key, or the tracker
+	// hands back the settled empty response again.
+	stack.tickets = append(stack.tickets, "i-9")
+	before := len(stack.keys)
+	if _, err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("run again: %v", err)
+	}
+	if stack.keys[before] == stack.keys[before-1] {
+		t.Error("the resumed pass reused the empty pop's key")
+	}
+	if len(b.seen) != 1 || b.seen[0] != "i-9" {
+		t.Errorf("built %v after the unblock", b.seen)
 	}
 }

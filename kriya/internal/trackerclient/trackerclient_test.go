@@ -438,13 +438,15 @@ func TestAnUnreachableFeedFails(t *testing.T) {
 }
 
 func TestPopClaimsTheNextTicket(t *testing.T) {
+	// feed_watermark is a STRING on the wire. Decoding it as a number failed
+	// every pop, which is to say every build.
 	c, got := serve(t, http.StatusOK,
-		`{"issue":{"id":"i-1","title":"Create a short link"},"feed_watermark":7}`)
+		`{"issue":{"id":"i-1","title":"Create a short link"},"feed_watermark":"7"}`)
 	popped, err := c.Pop(context.Background(), "actor-1", "key-1")
 	if err != nil {
 		t.Fatalf("pop: %v", err)
 	}
-	if popped.Issue.ID != "i-1" || popped.FeedWatermark != 7 {
+	if popped.Issue.ID != "i-1" || popped.FeedWatermark != "7" {
 		t.Errorf("decoded %+v", popped)
 	}
 	if got.path != "/identities/actor-1/work-stack/pop" || got.key != "key-1" {
@@ -455,7 +457,7 @@ func TestPopClaimsTheNextTicket(t *testing.T) {
 func TestAnEmptyPopIsNotAnError(t *testing.T) {
 	// Idling is the ordinary state of a plan whose remaining tickets are
 	// blocked or in flight.
-	c, _ := serve(t, http.StatusOK, `{"feed_watermark":7}`)
+	c, _ := serve(t, http.StatusOK, `{"feed_watermark":"7"}`)
 	popped, err := c.Pop(context.Background(), "actor-1", "key-1")
 	if err != nil {
 		t.Fatalf("an empty work stack was treated as a failure: %v", err)

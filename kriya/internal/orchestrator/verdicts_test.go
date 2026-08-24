@@ -63,9 +63,23 @@ func (s *sessionRoutes) BySession(
 	return run, ok, nil
 }
 
+// reviewRevisions answers what revision a review is at. The verdict event
+// carries none, so the review is asked.
+type reviewRevisions struct {
+	at    int
+	err   error
+	asked []string
+}
+
+func (r *reviewRevisions) Revision(_ context.Context, review string) (int, error) {
+	r.asked = append(r.asked, review)
+	return r.at, r.err
+}
+
 func router(feed *verdictFeed, cursors *memCursors, routes *sessionRoutes, store *memStore) orchestrator.Router {
 	return orchestrator.Router{
-		Feed: feed, Cursors: cursors, Routes: routes, Store: store, Name: "verdicts",
+		Feed: feed, Cursors: cursors, Routes: routes,
+		Reviews: &reviewRevisions{at: 2}, Store: store, Name: "verdicts",
 	}
 }
 
@@ -82,7 +96,7 @@ func TestAChangesRequestedVerdictReturnsItsRunToThePairLoop(t *testing.T) {
 	feed := &verdictFeed{
 		pages: map[string][]orchestrator.VerdictEvent{"": {{
 			ID: "event-9", Review: "review-1", Session: "sess-42",
-			Verdict: orchestrator.VerdictChangesRequested, Revision: 2,
+			Verdict: orchestrator.VerdictChangesRequested,
 		}}},
 		next: map[string]string{"": "cursor-1"},
 	}
@@ -112,7 +126,7 @@ func TestAnApprovalIsNotThePairLoopsBusiness(t *testing.T) {
 	feed := &verdictFeed{
 		pages: map[string][]orchestrator.VerdictEvent{"": {{
 			ID: "event-9", Review: "review-1", Session: "sess-42",
-			Verdict: orchestrator.VerdictApproved, Revision: 2,
+			Verdict: orchestrator.VerdictApproved,
 		}}},
 		next: map[string]string{"": "cursor-1"},
 	}
@@ -198,7 +212,8 @@ func TestTheCursorAdvancesOnlyAfterEveryVerdictIsRouted(t *testing.T) {
 	}}
 	store := &failingRuns{after: 1}
 	r := orchestrator.Router{
-		Feed: feed, Cursors: cursors, Routes: routes, Store: store, Name: "verdicts",
+		Feed: feed, Cursors: cursors, Routes: routes,
+		Reviews: &reviewRevisions{at: 2}, Store: store, Name: "verdicts",
 	}
 	if _, err := r.Consume(context.Background()); err == nil {
 		t.Fatal("a verdict that could not be recorded read as routed")
@@ -267,22 +282,95 @@ func TestAnEmptyFeedIsNotAnError(t *testing.T) {
 }
 
 func TestAVerdictPayloadIsParsed(t *testing.T) {
-	got, err := orchestrator.ParseVerdict("event-9", json.RawMessage(
-		`{"review":"review-1","session":"sess-42","verdict":"changes-requested","revision":2}`))
+	// The KIND is the verdict. The payload carries the review and the session
+	// and neither the verdict nor a revision, so reading either from it would
+	// find nothing.
+	got, err := orchestrator.ParseVerdict("event-9", orchestrator.KindChangesRequested,
+		json.RawMessage(`{"review":"review-1","issue":"i-1","session":"sess-42"}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	want := orchestrator.VerdictEvent{
 		ID: "event-9", Review: "review-1", Session: "sess-42",
-		Verdict: orchestrator.VerdictChangesRequested, Revision: 2,
+		Verdict: orchestrator.VerdictChangesRequested,
 	}
 	if got != want {
 		t.Errorf("parsed %+v", got)
 	}
+	approved, err := orchestrator.ParseVerdict("event-10", orchestrator.KindApproved,
+		json.RawMessage(`{"review":"review-1"}`))
+	if err != nil {
+		t.Fatalf("parse approved: %v", err)
+	}
+	if approved.Verdict != orchestrator.VerdictApproved {
+		t.Errorf("an approval parsed as %q", approved.Verdict)
+	}
+}
+
+func TestAnEventThatIsNotAVerdictIsRefused(t *testing.T) {
+	if _, err := orchestrator.ParseVerdict("e-1", "review.created",
+		json.RawMessage(`{"review":"review-1"}`)); err == nil {
+		t.Fatal("a non-verdict event parsed as a verdict")
+	}
+}
+
+func TestTheRevisionComesFromTheReview(t *testing.T) {
+	// The event carries none. A resubmission fenced on a guessed revision
+	// would be refused, or worse advance one the human never saw.
+	feed := &verdictFeed{
+		pages: map[string][]orchestrator.VerdictEvent{"": {{
+			ID: "event-9", Review: "review-1", Session: "sess-42",
+			Verdict: orchestrator.VerdictChangesRequested,
+		}}},
+		next: map[string]string{"": "cursor-1"},
+	}
+	store := newMemStore()
+	routes := &sessionRoutes{bySession: map[string]orchestrator.BuildRun{
+		"sess-42": submittedFor("sess-42"),
+	}}
+	revisions := &reviewRevisions{at: 4}
+	r := orchestrator.Router{
+		Feed: feed, Cursors: newMemCursors(), Routes: routes,
+		Reviews: revisions, Store: store, Name: "verdicts",
+	}
+	if _, err := r.Consume(context.Background()); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if len(revisions.asked) != 1 || revisions.asked[0] != "review-1" {
+		t.Errorf("asked %v", revisions.asked)
+	}
+	if store.rows["run-sess-42"].ReviewRevision != 4 {
+		t.Errorf("recorded revision %d", store.rows["run-sess-42"].ReviewRevision)
+	}
+}
+
+func TestAnUnreadableRevisionStopsTheConsumer(t *testing.T) {
+	feed := &verdictFeed{
+		pages: map[string][]orchestrator.VerdictEvent{"": {{
+			ID: "event-9", Review: "review-1", Session: "sess-42",
+			Verdict: orchestrator.VerdictChangesRequested,
+		}}},
+		next: map[string]string{"": "cursor-1"},
+	}
+	routes := &sessionRoutes{bySession: map[string]orchestrator.BuildRun{
+		"sess-42": submittedFor("sess-42"),
+	}}
+	cursors := newMemCursors()
+	r := orchestrator.Router{
+		Feed: feed, Cursors: cursors, Routes: routes,
+		Reviews: &reviewRevisions{err: errors.New("tracker unavailable")},
+		Store:   newMemStore(), Name: "verdicts",
+	}
+	if _, err := r.Consume(context.Background()); err == nil {
+		t.Fatal("an unreadable revision read as zero")
+	}
+	if cursors.at["verdicts"] != "" {
+		t.Error("the cursor advanced past a verdict that was never routed")
+	}
 }
 
 func TestAnUnreadablePayloadIsAnError(t *testing.T) {
-	if _, err := orchestrator.ParseVerdict("event-9", json.RawMessage("not json")); err == nil {
+	if _, err := orchestrator.ParseVerdict("event-9", orchestrator.KindApproved, json.RawMessage("not json")); err == nil {
 		t.Fatal("an unparseable payload read as a verdict")
 	}
 }

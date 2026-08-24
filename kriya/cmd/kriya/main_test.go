@@ -368,9 +368,24 @@ func TestATicketsIssueAndCriteriaAreLookedUpByTitle(t *testing.T) {
 	if got := issuesFromTickets(tickets)("Redirect"); got != "issue-8" {
 		t.Errorf("resolved %q", got)
 	}
-	if got := criteriaFromTickets(tickets)("Create a short link"); len(got) != 1 ||
+	// Criteria come from the STORE, not from a title lookup: a popped ticket
+	// carries an id and a title, and a run built from those alone reaches the
+	// product owner with nothing to validate against.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/target", tickets[0]); err != nil {
+		t.Fatalf("put ticket: %v", err)
+	}
+	if got := criteriaFromStore(db, "issue-7")("Create a short link"); len(got) != 1 ||
 		got[0] != "AC-valid-url" {
 		t.Errorf("resolved %v", got)
+	}
+	// An issue nothing recorded resolves to nothing rather than to another
+	// ticket's criteria.
+	if got := criteriaFromStore(db, "issue-absent")("anything"); got != nil {
+		t.Errorf("an unknown issue resolved to %v", got)
 	}
 	// An unknown title resolves to nothing rather than to another ticket's.
 	if got := issuesFromTickets(tickets)("Unknown"); got != "" {

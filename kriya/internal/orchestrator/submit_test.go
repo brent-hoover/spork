@@ -106,7 +106,9 @@ func submitter(store *memStore, api *reviewAPI) orchestrator.Submitter {
 func gatedRun() orchestrator.BuildRun {
 	return orchestrator.BuildRun{
 		ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateSubmitting,
-		GatedBase: "C2", Attempt: 1,
+		// The WORK is C2; the branch was cut from D1. A review that named D1
+		// would show the human the code before anything was written.
+		Head: "C2", GatedBase: "D1", Attempt: 1,
 	}
 }
 
@@ -303,9 +305,14 @@ func TestARunWithNoGatedCommitCannotBeSubmitted(t *testing.T) {
 	// would open a review over code nothing verified.
 	store, api := newMemStore(), newReviewAPI()
 	run := gatedRun()
-	run.GatedBase = ""
+	run.Head = ""
 	if _, err := submitter(store, api).Submit(context.Background(), run, submission()); err == nil {
-		t.Fatal("a run with no gated commit was submitted")
+		t.Fatal("a run with no work was submitted")
+	}
+	unfenced := gatedRun()
+	unfenced.GatedBase = ""
+	if _, err := submitter(store, api).Submit(context.Background(), unfenced, submission()); err == nil {
+		t.Fatal("a run with no gated base was submitted")
 	}
 	if len(api.calls) != 0 {
 		t.Error("sutra was called for an ungated run")
@@ -394,7 +401,7 @@ func (f *failingRuns) Completing(context.Context) ([]orchestrator.BuildRun, erro
 func submittedRun() orchestrator.BuildRun {
 	return orchestrator.BuildRun{
 		ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateSubmitting,
-		GatedBase: "C3", Attempt: 2, ReviewID: "review-x",
+		Head: "C3", GatedBase: "D1", Attempt: 2, ReviewID: "review-x",
 		ReviewState: orchestrator.SubmitSubmitted,
 	}
 }
@@ -524,10 +531,10 @@ func TestAResubmissionNeedsAReviewAndAVerdictEvent(t *testing.T) {
 	if _, err := s.Resubmit(context.Background(), noReview, rework()); err == nil {
 		t.Error("a run with no review was resubmitted")
 	}
-	noCommit := submittedRun()
-	noCommit.GatedBase = ""
-	if _, err := s.Resubmit(context.Background(), noCommit, rework()); err == nil {
-		t.Error("a run with no gated commit was resubmitted")
+	noWork := submittedRun()
+	noWork.Head = ""
+	if _, err := s.Resubmit(context.Background(), noWork, rework()); err == nil {
+		t.Error("a run with no work was resubmitted")
 	}
 	// Without an event sutra cannot fence the call, and the rework could
 	// answer a verdict the human has since replaced.
@@ -582,9 +589,14 @@ func TestASubmissionCarriesBothBaseFences(t *testing.T) {
 		t.Fatalf("submit: %v", err)
 	}
 	call := api.calls[0]
-	if call.expectedBase != "C2" || call.expectedDefaultHead != "C2" {
-		t.Errorf("fenced on base %q and head %q, want the run's gated C2",
+	if call.expectedBase != "D1" || call.expectedDefaultHead != "D1" {
+		t.Errorf("fenced on base %q and head %q, want the run's gated D1",
 			call.expectedBase, call.expectedDefaultHead)
+	}
+	// The fence is the BASE; the commit is the WORK. Fencing on the work
+	// would compare it with itself and catch nothing.
+	if call.commit != "C2" {
+		t.Errorf("submitted commit %q, want the work C2", call.commit)
 	}
 }
 
@@ -596,8 +608,11 @@ func TestAResubmissionCarriesThemToo(t *testing.T) {
 		t.Fatalf("resubmit: %v", err)
 	}
 	call := api.calls[len(api.calls)-1]
-	if call.expectedBase != "C3" || call.expectedDefaultHead != "C3" {
+	if call.expectedBase != "D1" || call.expectedDefaultHead != "D1" {
 		t.Errorf("fenced on base %q and head %q", call.expectedBase, call.expectedDefaultHead)
+	}
+	if call.commit != "C3" {
+		t.Errorf("resubmitted commit %q, want the work C3", call.commit)
 	}
 }
 

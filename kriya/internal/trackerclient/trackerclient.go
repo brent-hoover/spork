@@ -312,8 +312,11 @@ func (c *Client) CompleteIssue(
 // ordinary state of a plan whose remaining tickets are blocked or in flight,
 // and treating it as one would exit a build that is merely waiting.
 type Popped struct {
-	Issue         Issue `json:"issue"`
-	FeedWatermark int64 `json:"feed_watermark"`
+	Issue Issue `json:"issue"`
+	// FeedWatermark is a STRING on the wire — sutra formats the sequence
+	// rather than emitting a number — and decoding it as an integer fails
+	// every pop, which is to say every build.
+	FeedWatermark string `json:"feed_watermark"`
 }
 
 // Pop claims the next workable ticket for an identity.

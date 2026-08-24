@@ -83,7 +83,17 @@ func (l Loop) Run(ctx context.Context) (Result, error) {
 			// Nothing workable. The plan is not finished — its remaining
 			// tickets are blocked or in flight — so the loop idles rather than
 			// reporting completion.
+			//
+			// The ordinal ADVANCES anyway. The tracker settles an empty pop
+			// under its key like any other response, so leaving the ordinal
+			// where it is would replay "nothing workable" forever, even after
+			// a ticket unblocks. Nothing was claimed, so nothing is lost by
+			// moving past it.
 			out.Idle = true
+			ordinal++
+			if err := l.Ordinals.Advance(ctx, l.TargetKey, ordinal); err != nil {
+				return out, fmt.Errorf("advance pop ordinal: %w", err)
+			}
 			return out, nil
 		}
 		run, buildErr := l.Build(ctx, issue, title)

@@ -43,8 +43,16 @@ ALTER TABLE build_run ADD COLUMN close_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN completed_head TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN completion_state TEXT NOT NULL DEFAULT 'none'`
 
+// HeadMigration records the branch head — the developed work.
+//
+// Separate from gated_base, which is the commit the branch was cut from. The
+// two were one column, which meant the chain gated the base and the review
+// named it: the work was never looked at.
+const HeadMigration = `
+ALTER TABLE build_run ADD COLUMN head TEXT NOT NULL DEFAULT ''`
+
 // runColumns is every column a BuildRun reads back, in scan order.
-const runColumns = `ticket, plan, state, gated_base, error, attempt, round_limit,
+const runColumns = `ticket, plan, state, head, gated_base, error, attempt, round_limit,
 	review_key, review_commit, review_session, review_state, review_id,
 	review_revision, review_verdict_event, close_key, completed_head, completion_state`
 
@@ -54,13 +62,13 @@ type SQLStore struct{ DB *sql.DB }
 // Upsert writes a run.
 func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO build_run (id, ticket, plan, state, gated_base, error, attempt,
+		`INSERT INTO build_run (id, ticket, plan, state, head, gated_base, error, attempt,
 		   round_limit, review_key, review_commit, review_session, review_state, review_id,
 		   review_revision, review_verdict_event, close_key, completed_head, completion_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ticket = excluded.ticket, plan = excluded.plan, state = excluded.state,
-		   gated_base = excluded.gated_base, error = excluded.error,
+		   head = excluded.head, gated_base = excluded.gated_base, error = excluded.error,
 		   attempt = excluded.attempt, round_limit = excluded.round_limit,
 		   review_key = excluded.review_key, review_commit = excluded.review_commit,
 		   review_session = excluded.review_session, review_state = excluded.review_state,
@@ -70,7 +78,7 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 		   close_key = excluded.close_key,
 		   completed_head = excluded.completed_head,
 		   completion_state = excluded.completion_state`,
-		r.ID, r.Ticket, r.Plan, string(r.State), r.GatedBase, r.Error, r.Attempt,
+		r.ID, r.Ticket, r.Plan, string(r.State), r.Head, r.GatedBase, r.Error, r.Attempt,
 		r.RoundLimit, r.ReviewKey, r.ReviewCommit, r.ReviewSession,
 		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent,
 		r.CloseKey, r.CompletedHead, completionStateOf(r))
@@ -86,7 +94,7 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 	var state string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM build_run WHERE id = ?`, id).
-		Scan(&r.Ticket, &r.Plan, &state, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
+		Scan(&r.Ticket, &r.Plan, &state, &r.Head, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
 			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,
 			&r.CloseKey, &r.CompletedHead, &r.CompletionState)
@@ -147,7 +155,7 @@ func (s SQLStore) listRuns(ctx context.Context, column, state string) ([]BuildRu
 	for rows.Next() {
 		var r BuildRun
 		var runState string
-		if err := rows.Scan(&r.ID, &r.Ticket, &r.Plan, &runState, &r.GatedBase, &r.Error,
+		if err := rows.Scan(&r.ID, &r.Ticket, &r.Plan, &runState, &r.Head, &r.GatedBase, &r.Error,
 			&r.Attempt, &r.RoundLimit, &r.ReviewKey, &r.ReviewCommit,
 			&r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,

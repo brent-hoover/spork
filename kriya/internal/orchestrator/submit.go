@@ -73,11 +73,16 @@ type Submission struct {
 // the old key, and a fresh recovery session cannot displace the session
 // feedback must route to.
 func (s Submitter) Submit(ctx context.Context, run BuildRun, sub Submission) (BuildRun, error) {
-	if run.GatedBase == "" {
-		return BuildRun{}, fmt.Errorf("run %s has no gated commit to submit", run.ID)
+	if run.Head == "" {
+		return BuildRun{}, fmt.Errorf("run %s has no work to submit", run.ID)
 	}
-	run.ReviewKey = submissionKey(run.ID, run.GatedBase, run.Attempt)
-	run.ReviewCommit = run.GatedBase
+	if run.GatedBase == "" {
+		return BuildRun{}, fmt.Errorf("run %s has no gated base to fence on", run.ID)
+	}
+	// The HEAD is what the review names — the developed work. The gated base
+	// is what it is fenced against.
+	run.ReviewKey = submissionKey(run.ID, run.Head, run.Attempt)
+	run.ReviewCommit = run.Head
 	run.ReviewSession = sub.Session
 	run.ReviewState = SubmitSubmitting
 	if err := s.Store.Upsert(ctx, run); err != nil {
@@ -165,8 +170,8 @@ func (s Submitter) Resubmit(ctx context.Context, run BuildRun, rw Rework) (Build
 	if run.ReviewID == "" {
 		return BuildRun{}, fmt.Errorf("run %s has no review to resubmit", run.ID)
 	}
-	if run.GatedBase == "" {
-		return BuildRun{}, fmt.Errorf("run %s has no gated commit to resubmit", run.ID)
+	if run.Head == "" {
+		return BuildRun{}, fmt.Errorf("run %s has no work to resubmit", run.ID)
 	}
 	if rw.VerdictEvent == "" {
 		// Without it sutra cannot fence the call, and a rework could answer a
@@ -174,8 +179,8 @@ func (s Submitter) Resubmit(ctx context.Context, run BuildRun, rw Rework) (Build
 		return BuildRun{}, fmt.Errorf("run %s names no verdict event to answer", run.ID)
 	}
 	run.ReviewKey = resubmissionKey(
-		submissionKey(run.ID, run.GatedBase, run.Attempt), rw.Revision, rw.VerdictEvent)
-	run.ReviewCommit = run.GatedBase
+		submissionKey(run.ID, run.Head, run.Attempt), rw.Revision, rw.VerdictEvent)
+	run.ReviewCommit = run.Head
 	run.ReviewSession = rw.Session
 	run.ReviewRevision = rw.Revision
 	run.ReviewVerdictEvent = rw.VerdictEvent

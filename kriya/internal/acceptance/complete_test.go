@@ -324,14 +324,14 @@ func registerComplete(sc *godog.ScenarioContext, w *world) {
 			// only produce a key nothing has used.
 			probe := freshSubmit()
 			probe.run = orchestrator.BuildRun{
-				ID: "run-1", Ticket: "KRI-1", GatedBase: "C3", Attempt: 2,
+				ID: "run-1", Ticket: "KRI-1", Head: "C3", GatedBase: "D1", Attempt: 2,
 			}
 			first, err := probe.submitter.Submit(context.Background(), probe.run, probe.sub)
 			if err != nil {
 				return err
 			}
 			older := orchestrator.BuildRun{
-				ID: "run-1", Ticket: "KRI-1", GatedBase: "C2", Attempt: 1,
+				ID: "run-1", Ticket: "KRI-1", Head: "C2", GatedBase: "D1", Attempt: 1,
 			}
 			second, err := probe.submitter.Submit(context.Background(), older, probe.sub)
 			if err != nil {

@@ -213,7 +213,7 @@ func registerSubmit(sc *godog.ScenarioContext, w *world) {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
 			ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateSubmitting,
-			GatedBase: commit, Attempt: 1,
+			Head: commit, GatedBase: "D1", Attempt: 1,
 		}
 		return nil
 	})
@@ -230,7 +230,7 @@ func registerSubmit(sc *godog.ScenarioContext, w *world) {
 			// leaves exactly the row the replay needs.
 			probe := freshSubmit()
 			probe.run = orchestrator.BuildRun{
-				ID: "run-probe", Ticket: "KRI-1", GatedBase: "C2", Attempt: 1,
+				ID: "run-probe", Ticket: "KRI-1", Head: "C2", GatedBase: "D1", Attempt: 1,
 			}
 			probe.catalog.err = errors.New("sutra unreachable")
 			if _, err := probe.submitter.Submit(context.Background(), probe.run, probe.sub); err == nil {
@@ -308,7 +308,7 @@ func registerSubmit(sc *godog.ScenarioContext, w *world) {
 		func(state string) error {
 			s := w.newSubmit()
 			s.run = orchestrator.BuildRun{
-				ID: "run-1", Ticket: "KRI-1", GatedBase: "C2", Attempt: 1,
+				ID: "run-1", Ticket: "KRI-1", Head: "C2", GatedBase: "D1", Attempt: 1,
 			}
 			s.catalog.err = errors.New("sutra unreachable")
 			if _, err := s.submitter.Submit(context.Background(), s.run, s.sub); err == nil {
@@ -352,7 +352,7 @@ func registerSubmit(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^sutra accepted the review but the crash hit before the id was recorded$`, func() error {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
-			ID: "run-1", Ticket: "KRI-1", GatedBase: "C2", Attempt: 1,
+			ID: "run-1", Ticket: "KRI-1", Head: "C2", GatedBase: "D1", Attempt: 1,
 		}
 		got, err := s.submitter.Submit(context.Background(), s.run, s.sub)
 		if err != nil {
@@ -417,7 +417,7 @@ func registerResubmit(sc *godog.ScenarioContext, w *world) {
 		func() error {
 			s := w.newSubmit()
 			s.run = orchestrator.BuildRun{
-				ID: "run-1", Ticket: "KRI-1", GatedBase: "C3", Attempt: 2,
+				ID: "run-1", Ticket: "KRI-1", Head: "C3", GatedBase: "D1", Attempt: 2,
 				ReviewID: "review-1", ReviewState: orchestrator.SubmitSubmitted,
 			}
 			s.catalog.revision = 1
@@ -460,7 +460,7 @@ func registerResubmit(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^sutra accepted the resubmission and the crash hit before kriya recorded it$`, func() error {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
-			ID: "run-1", Ticket: "KRI-1", GatedBase: "C3", Attempt: 2,
+			ID: "run-1", Ticket: "KRI-1", Head: "C3", GatedBase: "D1", Attempt: 2,
 			ReviewID: "review-1", ReviewState: orchestrator.SubmitSubmitted,
 		}
 		s.catalog.revision = 1
@@ -517,7 +517,7 @@ func registerFences(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^the run's chain was gated at default head "([^"]*)"$`, func(head string) error {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
-			ID: "run-1", Ticket: "KRI-1", GatedBase: head, Attempt: 1,
+			ID: "run-1", Ticket: "KRI-1", Head: "C2", GatedBase: head, Attempt: 1,
 		}
 		return nil
 	})
@@ -565,7 +565,7 @@ func registerFences(sc *godog.ScenarioContext, w *world) {
 			// head. Fencing on the base alone would let it through.
 			probe := freshSubmit()
 			probe.run = orchestrator.BuildRun{
-				ID: "run-ff", Ticket: "KRI-1", GatedBase: "D1", Attempt: 1,
+				ID: "run-ff", Ticket: "KRI-1", Head: "C2", GatedBase: "D1", Attempt: 1,
 			}
 			probe.catalog.fenceBase = "D1" // unchanged by the fast-forward
 			probe.catalog.fenceHead = "D2" // moved
@@ -584,7 +584,7 @@ func registerFences(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^the run's chain was gated with default head and base both at "([^"]*)"$`, func(at string) error {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
-			ID: "run-1", Ticket: "KRI-1", GatedBase: at, Attempt: 1,
+			ID: "run-1", Ticket: "KRI-1", Head: "C2", GatedBase: at, Attempt: 1,
 			ReviewID: "review-1", ReviewState: orchestrator.SubmitSubmitted,
 		}
 		s.rework = orchestrator.Rework{
@@ -639,7 +639,7 @@ func registerFences(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^the default branch still stands at the gated base "([^"]*)"$`, func(at string) error {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
-			ID: "run-1", Ticket: "KRI-1", GatedBase: at, Attempt: 1,
+			ID: "run-1", Ticket: "KRI-1", Head: "C2", GatedBase: at, Attempt: 1,
 		}
 		s.catalog.fenceHead = at
 		return nil
@@ -758,6 +758,12 @@ func (f *verdictFeed) Since(
 	return f.verdicts, "cursor-1", nil
 }
 
+// reviewAt answers what revision a review is at. The verdict event carries
+// none, so the review itself is asked.
+type reviewAt struct{ n int }
+
+func (r reviewAt) Revision(context.Context, string) (int, error) { return r.n, nil }
+
 // feedCursor persists a consumer's position.
 type feedCursor struct{ at map[string]string }
 
@@ -789,7 +795,7 @@ func registerRework(sc *godog.ScenarioContext, w *world) {
 		s := w.newSubmit()
 		s.run = orchestrator.BuildRun{
 			ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateReviewSubmitted,
-			GatedBase: "C2", Attempt: 1, ReviewID: "review-1",
+			Head: "C2", GatedBase: "D1", Attempt: 1, ReviewID: "review-1",
 			ReviewSession: "sess-42", ReviewRevision: 1,
 			ReviewState: orchestrator.SubmitSubmitted,
 		}
@@ -798,11 +804,12 @@ func registerRework(sc *godog.ScenarioContext, w *world) {
 		}
 		s.feed = &verdictFeed{verdicts: []orchestrator.VerdictEvent{{
 			ID: "event-9", Review: "review-1", Session: "sess-42",
-			Verdict: orchestrator.VerdictChangesRequested, Revision: 1,
+			Verdict: orchestrator.VerdictChangesRequested,
 		}}}
 		s.router = orchestrator.Router{
 			Feed: s.feed, Cursors: &feedCursor{at: map[string]string{}},
-			Routes: sessionIndex{runs: s.store}, Store: s.store, Name: "verdicts",
+			Routes: sessionIndex{runs: s.store}, Reviews: reviewAt{n: 1},
+			Store: s.store, Name: "verdicts",
 		}
 		return nil
 	})
@@ -848,7 +855,7 @@ func registerRework(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^the agent finishes rework at a new head commit$`, func() error {
 		s := w.submit
 		s.run = s.store.rows["run-1"]
-		s.run.GatedBase = "C3"
+		s.run.Head = "C3"
 		s.run.Attempt = 2
 		return s.store.Upsert(context.Background(), s.run)
 	})

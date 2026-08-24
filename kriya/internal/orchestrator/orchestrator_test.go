@@ -248,7 +248,7 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 		orchestrator.Migration, orchestrator.RoundLimitMigration,
 		orchestrator.SubmissionMigration, orchestrator.CompletionMigration,
 		orchestrator.PopMigration, orchestrator.CursorMigration,
-		orchestrator.MergeMigration,
+		orchestrator.MergeMigration, orchestrator.HeadMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {

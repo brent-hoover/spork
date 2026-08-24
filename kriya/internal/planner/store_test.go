@@ -166,3 +166,66 @@ func TestATargetStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
 		t.Error("a write to a missing table reported success")
 	}
 }
+
+func TestAPlannedTicketKeepsItsCriteria(t *testing.T) {
+	// A pop returns an id and a title. The criteria are what the product owner
+	// validates against, and they exist nowhere else kriya can read.
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	want := planner.Ticket{
+		Title: "Create a short link", Body: "the walking skeleton",
+		Criteria: []string{"AC-valid-url", "AC-redirect"}, IssueID: "issue-7",
+	}
+	if err := s.Put(context.Background(), "/target", want); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, found, err := s.Find(context.Background(), "issue-7")
+	if err != nil || !found {
+		t.Fatalf("find: %v found=%v", err, found)
+	}
+	if got.Title != want.Title || got.Body != want.Body {
+		t.Errorf("read back %+v", got)
+	}
+	if len(got.Criteria) != 2 || got.Criteria[0] != "AC-valid-url" {
+		t.Errorf("criteria came back %v", got.Criteria)
+	}
+}
+
+func TestReDecomposingATicketReplacesIt(t *testing.T) {
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	ticket := planner.Ticket{Title: "first", IssueID: "issue-7", Criteria: []string{"AC-a"}}
+	if err := s.Put(context.Background(), "/target", ticket); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	ticket.Title, ticket.Criteria = "second", []string{"AC-b"}
+	if err := s.Put(context.Background(), "/target", ticket); err != nil {
+		t.Fatalf("re-put: %v", err)
+	}
+	got, _, err := s.Find(context.Background(), "issue-7")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got.Title != "second" || got.Criteria[0] != "AC-b" {
+		t.Errorf("read back %+v", got)
+	}
+}
+
+func TestAnIssueNothingPlannedIsNotFound(t *testing.T) {
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	_, found, err := s.Find(context.Background(), "issue-absent")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if found {
+		t.Error("an issue no decomposition produced was found")
+	}
+}
+
+func TestATicketStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
+	s := planner.SQLTickets{DB: sqlDB(t)}
+	if _, _, err := s.Find(context.Background(), "issue-7"); err == nil {
+		t.Error("a missing table read as an unplanned issue")
+	}
+	if err := s.Put(context.Background(), "/target", planner.Ticket{IssueID: "i"}); err == nil {
+		t.Error("a write to a missing table reported success")
+	}
+}

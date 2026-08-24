@@ -187,3 +187,59 @@ func (s SQLTargets) Pending(ctx context.Context) ([]BuildTarget, error) {
 	}
 	return out, nil
 }
+
+// TicketMigration records the tickets a decomposition produced.
+//
+// Without it a popped ticket is an id and a title, and its acceptance criteria
+// — which are the whole of what the product owner validates against — exist
+// only in the tracker's issue body. Recording them here is what lets a run
+// built from a pop be validated at all.
+const TicketMigration = `
+CREATE TABLE planned_ticket (
+    issue      TEXT PRIMARY KEY,
+    target_key TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    criteria   TEXT NOT NULL DEFAULT '[]'
+)`
+
+// SQLTickets persists planned tickets in SQLite.
+type SQLTickets struct{ DB *sql.DB }
+
+// Put records a ticket a decomposition produced.
+func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
+	criteria, err := json.Marshal(t.Criteria)
+	if err != nil {
+		return fmt.Errorf("marshal criteria: %w", err)
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`INSERT INTO planned_ticket (issue, target_key, title, body, criteria)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(issue) DO UPDATE SET
+		   target_key = excluded.target_key, title = excluded.title,
+		   body = excluded.body, criteria = excluded.criteria`,
+		t.IssueID, targetKey, t.Title, t.Body, string(criteria))
+	if err != nil {
+		return fmt.Errorf("record planned ticket: %w", err)
+	}
+	return nil
+}
+
+// Find reads a ticket by the issue it became.
+func (s SQLTickets) Find(ctx context.Context, issue string) (Ticket, bool, error) {
+	t := Ticket{IssueID: issue}
+	var criteria string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT title, body, criteria FROM planned_ticket WHERE issue = ?`, issue).
+		Scan(&t.Title, &t.Body, &criteria)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Ticket{}, false, nil
+	}
+	if err != nil {
+		return Ticket{}, false, fmt.Errorf("read planned ticket: %w", err)
+	}
+	if err := json.Unmarshal([]byte(criteria), &t.Criteria); err != nil {
+		return Ticket{}, false, fmt.Errorf("unmarshal criteria: %w", err)
+	}
+	return t, true, nil
+}

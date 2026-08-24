@@ -21,9 +21,8 @@ type VerdictEvent struct {
 	Review string
 	// Session is the dev session the review was stamped with. Feedback routes
 	// back by it — to the same agent instance where possible.
-	Session  string
-	Verdict  string
-	Revision int
+	Session string
+	Verdict string
 }
 
 // Feed reads review verdicts from the tracker.
@@ -46,11 +45,21 @@ type Routes interface {
 	BySession(ctx context.Context, session string) (BuildRun, bool, error)
 }
 
+// Revisions reads a review's current revision.
+//
+// The verdict event does not carry one, so the review is asked. A resubmission
+// fenced on a guessed revision would be refused, or worse advance a revision
+// the human never saw.
+type Revisions interface {
+	Revision(ctx context.Context, review string) (int, error)
+}
+
 // Router turns review verdicts into work.
 type Router struct {
 	Feed    Feed
 	Cursors Cursors
 	Routes  Routes
+	Reviews Revisions
 	Store   Store
 	// Name scopes the cursor, so two consumers of one feed do not advance
 	// each other's position.
@@ -114,11 +123,19 @@ func (r Router) route(ctx context.Context, v VerdictEvent) (*Routed, error) {
 		// An approval is the merge queue's business, not the pair loop's.
 		return &Routed{Run: run, Verdict: v}, nil
 	}
-	// The event and revision are persisted BEFORE the run moves: a
-	// resubmission answers this verdict, and one that could not name it would
-	// be answering whatever the review said last.
+	// The event is persisted BEFORE the run moves: a resubmission answers
+	// this verdict, and one that could not name it would be answering
+	// whatever the review said last.
+	//
+	// The revision comes from the REVIEW, not the event — the payload has none
+	// — and a resubmission fenced on a stale revision is refused by the
+	// tracker rather than advancing the wrong one.
+	revision, err := r.Reviews.Revision(ctx, v.Review)
+	if err != nil {
+		return nil, fmt.Errorf("read revision of %s: %w", v.Review, err)
+	}
 	run.ReviewVerdictEvent = v.ID
-	run.ReviewRevision = v.Revision
+	run.ReviewRevision = revision
 	run.State = StateDevLoop
 	if err := r.Store.Upsert(ctx, run); err != nil {
 		return nil, fmt.Errorf("record reworking run: %w", err)
@@ -126,25 +143,40 @@ func (r Router) route(ctx context.Context, v VerdictEvent) (*Routed, error) {
 	return &Routed{Run: run, Verdict: v, Reworked: true}, nil
 }
 
+// Event kinds the tracker emits for a verdict.
+//
+// The KIND is the verdict. The payload carries the review, its issue and the
+// session — never the verdict itself and never a revision, so neither can be
+// read from it.
+const (
+	KindApproved         = "review.approved"
+	KindChangesRequested = "review.changes-requested"
+)
+
 // verdictPayload is what a review verdict event carries.
 type verdictPayload struct {
-	Review   string `json:"review"`
-	Session  string `json:"session"`
-	Verdict  string `json:"verdict"`
-	Revision int    `json:"revision"`
+	Review  string `json:"review"`
+	Session string `json:"session"`
 }
 
-// ParseVerdict reads a feed event's payload.
+// ParseVerdict reads a feed event into this package's shape.
 //
-// Exported because the composition root maps the tracker's events onto this
-// package's shape, and the mapping is the one place that knows both.
-func ParseVerdict(id string, payload json.RawMessage) (VerdictEvent, error) {
+// The verdict comes from the KIND, and the revision from the review itself:
+// the payload has neither. Exported because the composition root maps the
+// tracker's events, and the mapping is the one place that knows both shapes.
+func ParseVerdict(id, kind string, payload json.RawMessage) (VerdictEvent, error) {
 	var p verdictPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return VerdictEvent{}, fmt.Errorf("parse verdict event %s: %w", id, err)
 	}
-	return VerdictEvent{
-		ID: id, Review: p.Review, Session: p.Session,
-		Verdict: p.Verdict, Revision: p.Revision,
-	}, nil
+	var verdict string
+	switch kind {
+	case KindApproved:
+		verdict = VerdictApproved
+	case KindChangesRequested:
+		verdict = VerdictChangesRequested
+	default:
+		return VerdictEvent{}, fmt.Errorf("event %s is not a verdict: %q", id, kind)
+	}
+	return VerdictEvent{ID: id, Review: p.Review, Session: p.Session, Verdict: verdict}, nil
 }

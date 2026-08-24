@@ -102,6 +102,26 @@ func openStore(ctx context.Context) (*sql.DB, error) {
 	return db, nil
 }
 
+// intaker wires the planner for one target.
+func intaker(db *sql.DB, tiers agent.Tiers, target string) planner.Intaker {
+	return planner.Intaker{
+		Verify:    verifier(),
+		Snapshots: planner.SQLSnapshots{DB: db},
+		Targets:   planner.SQLTargets{DB: db},
+		Attempts:  planner.SQLAttempts{DB: db},
+		Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
+		Tickets:   planner.SQLTickets{DB: db},
+		Agent: agent.Recording{
+			Inner:  agent.Claude{Tiers: tiers},
+			Ledger: agent.Ledger{DB: db, Now: clock.System{}},
+			Tiers:  tiers,
+			Now:    clock.System{},
+			Scope:  agent.Scope{Plan: target},
+		},
+		Now: clock.System{},
+	}
+}
+
 // learn is the `kriya learn` command surface.
 //
 // One subcommand today. It is a subcommand rather than a flag on build because
@@ -161,21 +181,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		return err
 	}
 
-	in := planner.Intaker{
-		Verify:    verifier(),
-		Snapshots: planner.SQLSnapshots{DB: db},
-		Targets:   planner.SQLTargets{DB: db},
-		Attempts:  planner.SQLAttempts{DB: db},
-		Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
-		Agent: agent.Recording{
-			Inner:  agent.Claude{Tiers: tiers},
-			Ledger: agent.Ledger{DB: db, Now: clock.System{}},
-			Tiers:  tiers,
-			Now:    clock.System{},
-			Scope:  agent.Scope{Plan: target},
-		},
-		Now: clock.System{},
-	}
+	in := intaker(db, tiers, target)
 
 	repo := os.Getenv("KRIYA_REPO")
 	ws := workspace.Manager{
@@ -247,6 +253,7 @@ func verdictRouter(db *sql.DB, actor string) orchestrator.Router {
 		Feed:    sutraFeed{c: trackerclient.New(sutraURL())},
 		Cursors: orchestrator.SQLCursors{DB: db},
 		Routes:  orchestrator.SQLStore{DB: db},
+		Reviews: sutraRevisions{c: trackerclient.New(sutraURL())},
 		Store:   orchestrator.SQLStore{DB: db},
 		Name:    "verdicts:" + actor,
 	}
@@ -535,7 +542,7 @@ func stageDeps(
 		completer:    completerOn(db, ws, actor),
 		queue:        mergeQueue(db, ws, actor),
 		commandsFor:  commandsFromSnapshot(snap),
-		criteriaFor:  criteriaFromTickets([]planner.Ticket{ticket}),
+		criteriaFor:  criteriaFromStore(db, ticket.IssueID),
 		issueFor:     issuesFromTickets([]planner.Ticket{ticket}),
 		sessionFor:   sessionFromStore(db),
 		instructions: operatorInstructions(target),

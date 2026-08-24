@@ -83,6 +83,9 @@ func (recordingReviews) Resubmit(
 	return expectedRevision + 1, nil
 }
 
+// quietLoop invokes the agent once and commits nothing. A run driven through
+// it has no head, which is what a run whose dev session produced nothing
+// genuinely is.
 func quietLoop() devloop.Loop {
 	return devloop.Loop{
 		Agent: &fakes.Agent{Repeat: true},
@@ -258,7 +261,7 @@ func runThrough(
 func TestASubmissionOpensAReviewForAValidatedRun(t *testing.T) {
 	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
 	got, err := runThrough(t, stages,
-		orchestrator.BuildRun{ID: "run-sub-1", Ticket: "T-1"},
+		orchestrator.BuildRun{ID: "run-sub-1", Ticket: "T-1", Head: "C2"},
 		orchestrator.StageWorkspace, orchestrator.StageGates,
 		orchestrator.StageValidate, orchestrator.StageSubmit)
 	if err != nil {
@@ -267,15 +270,19 @@ func TestASubmissionOpensAReviewForAValidatedRun(t *testing.T) {
 	if got.ReviewID == "" || got.ReviewState != orchestrator.SubmitSubmitted {
 		t.Errorf("the run records %q in state %q", got.ReviewID, got.ReviewState)
 	}
-	if got.ReviewCommit != got.GatedBase {
-		t.Errorf("the review pinned %q, not the gated %q", got.ReviewCommit, got.GatedBase)
+	// The review names the WORK, not the base the branch was cut from.
+	if got.ReviewCommit != got.Head {
+		t.Errorf("the review pinned %q, not the head %q", got.ReviewCommit, got.Head)
+	}
+	if got.ReviewCommit == got.GatedBase {
+		t.Error("the review pinned the base the branch was cut from")
 	}
 }
 
 func TestARunWithAReviewResubmitsRatherThanOpeningASecond(t *testing.T) {
 	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
 	run, err := runThrough(t, stages,
-		orchestrator.BuildRun{ID: "run-sub-2", Ticket: "T-1"},
+		orchestrator.BuildRun{ID: "run-sub-2", Ticket: "T-1", Head: "C2"},
 		orchestrator.StageWorkspace, orchestrator.StageGates,
 		orchestrator.StageValidate, orchestrator.StageSubmit)
 	if err != nil {
