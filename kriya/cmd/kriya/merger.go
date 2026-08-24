@@ -29,6 +29,11 @@ func (m repoMerger) Merge(ctx context.Context, commit, expectedBase string) (str
 	return m.git.MergeCAS(ctx, m.repo, m.branch, commit, expectedBase)
 }
 
+// Landed reports whether the pinned commit is already on the default branch.
+func (m repoMerger) Landed(ctx context.Context, commit string) (bool, error) {
+	return m.git.Reachable(ctx, m.repo, commit, m.branch)
+}
+
 // Head resolves a named branch's current commit.
 //
 // The completion check reads the RUN's branch, not the default one: a commit

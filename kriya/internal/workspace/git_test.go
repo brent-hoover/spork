@@ -375,3 +375,48 @@ func TestAConflictingIntegrationCarriesGitsReport(t *testing.T) {
 		t.Errorf("the error does not say who resolves it: %v", err)
 	}
 }
+
+func TestReachableDistinguishesLandedFromNotLanded(t *testing.T) {
+	// Against real git, because the answer IS the exit status: 0 yes, 1 no,
+	// anything else a real failure. A "no" read as an error would strand a
+	// merge; an error read as a "no" would merge the same work twice.
+	dir := tempRepo(t)
+	root := head(t, dir)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("checkout", "-q", "-b", "work")
+	git("commit", "-q", "--allow-empty", "-m", "work")
+	work := head(t, dir)
+	git("checkout", "-q", "main")
+
+	sg := workspace.ShellGit{}
+	// The root is on main; the work commit is not.
+	if got, err := sg.Reachable(context.Background(), dir, root, "main"); err != nil || !got {
+		t.Errorf("the root read as unreachable from main: %v %v", got, err)
+	}
+	if got, err := sg.Reachable(context.Background(), dir, work, "main"); err != nil || got {
+		t.Errorf("unmerged work read as landed: %v %v", got, err)
+	}
+	// And once it lands, it reads as landed.
+	git("merge", "-q", "--no-edit", "work")
+	if got, err := sg.Reachable(context.Background(), dir, work, "main"); err != nil || !got {
+		t.Errorf("merged work read as unlanded: %v %v", got, err)
+	}
+}
+
+func TestReachableReportsAFailureRatherThanANo(t *testing.T) {
+	// A commit git cannot resolve exits nonzero with a code that is NOT 1.
+	// Reading that as "has not landed" would merge work a second time.
+	dir := tempRepo(t)
+	_, err := workspace.ShellGit{}.Reachable(context.Background(), dir,
+		"0000000000000000000000000000000000000000", "main")
+	if err == nil {
+		t.Error("an unresolvable commit read as a clean 'not landed'")
+	}
+}

@@ -108,6 +108,8 @@ type gitDouble struct {
 	mergeErr   error
 	// casFails makes the merge refuse as a moved ref would.
 	casFails bool
+	// landed is every commit already reachable from the default head.
+	landed map[string]bool
 }
 
 func (g *gitDouble) Preflight(context.Context, string, string) (bool, error) {
@@ -120,6 +122,10 @@ func (g *gitDouble) Head(context.Context) (string, error) {
 		return "", g.headErr
 	}
 	return g.head, nil
+}
+
+func (g *gitDouble) Landed(_ context.Context, commit string) (bool, error) {
+	return g.landed[commit], nil
 }
 
 func (g *gitDouble) Merge(_ context.Context, commit, expectedBase string) (string, error) {
@@ -349,6 +355,57 @@ func TestRecoveryResumesAMergingAttemptWithoutConsumingAgain(t *testing.T) {
 	}
 	if store.rows[key].State != orchestrator.AttemptMerged {
 		t.Errorf("settled as %q", store.rows[key].State)
+	}
+}
+
+func TestAMergeThatLandedBeforeItWasRecordedIsNotMergedAgain(t *testing.T) {
+	// The narrowest crash window there is: the CAS moved the branch and the
+	// process died before AttemptMerged was written. Replaying the merge
+	// would build a second merge commit and CAS it against a base the first
+	// merge already moved past — which fails forever, stranding an approval
+	// that was consumed and work that is already on the branch.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "merge-C2"}
+	q := queue(store, ap, git)
+	key := enqueued(t, q, attempt())
+	stuck := store.rows[key]
+	stuck.State = orchestrator.AttemptMerging
+	stuck.ConsumeKey = "consume-key"
+	if err := store.Update(context.Background(), stuck); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// The pinned commit is already reachable from the default head.
+	git.landed = map[string]bool{stuck.MergeSource(): true}
+
+	settled, err := q.Run(context.Background(), key)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(git.merges) != 0 {
+		t.Errorf("merged again: %v", git.merges)
+	}
+	if settled.State != orchestrator.AttemptMerged {
+		t.Errorf("the attempt settled as %q", settled.State)
+	}
+	if settled.MergeCommit != "merge-C2" {
+		t.Errorf("recorded merge commit %q, want the head the merge produced",
+			settled.MergeCommit)
+	}
+	if store.rows[key].State != orchestrator.AttemptMerged {
+		t.Errorf("the durable attempt is %q", store.rows[key].State)
+	}
+}
+
+func TestAMergeThatHasNotLandedStillMerges(t *testing.T) {
+	// The control: "already reachable" must not be assumed of an attempt that
+	// simply has not run yet.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	key := enqueued(t, q, attempt())
+	if _, err := q.Run(context.Background(), key); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(git.merges) != 1 {
+		t.Errorf("merged %d times", len(git.merges))
 	}
 }
 

@@ -95,6 +95,8 @@ type repo struct {
 	conflicts bool
 	merges    []string
 	casFails  bool
+	// landed is every commit already reachable from the default head.
+	landed map[string]bool
 }
 
 func (r *repo) Preflight(context.Context, string, string) (bool, error) {
@@ -102,6 +104,10 @@ func (r *repo) Preflight(context.Context, string, string) (bool, error) {
 }
 
 func (r *repo) Head(context.Context) (string, error) { return r.head, nil }
+
+func (r *repo) Landed(_ context.Context, commit string) (bool, error) {
+	return r.landed[commit], nil
+}
 
 func (r *repo) Merge(_ context.Context, commit, expectedBase string) (string, error) {
 	if r.head != expectedBase || r.casFails {

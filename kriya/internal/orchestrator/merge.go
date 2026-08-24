@@ -107,6 +107,11 @@ type Merger interface {
 	// Merge lands commit under a compare-and-swap on the default-branch head:
 	// it must still be expectedBase, or the merge does not happen.
 	Merge(ctx context.Context, commit, expectedBase string) (string, error)
+	// Landed reports whether commit is already reachable from the default
+	// branch. It answers the one question a replayed merge has to ask: the
+	// CAS is not idempotent, so an attempt resuming in the merging state
+	// must know whether its own merge already happened.
+	Landed(ctx context.Context, commit string) (bool, error)
 }
 
 // Queue merges approved work, one attempt at a time per target.
@@ -252,6 +257,16 @@ func (q Queue) consume(ctx context.Context, a MergeAttempt) (MergeAttempt, error
 
 // merge lands the pinned commit under a CAS on the default-branch head.
 func (q Queue) merge(ctx context.Context, a MergeAttempt) (MergeAttempt, error) {
+	if a.State == AttemptMerging {
+		// Resuming. The CAS is not idempotent — it swaps against a base its
+		// own success moved past — so merging again would build a second
+		// merge commit and fail forever against the old base, stranding a
+		// consumed approval and work that is already on the branch.
+		settled, done, err := q.alreadyLanded(ctx, a)
+		if err != nil || done {
+			return settled, err
+		}
+	}
 	if a.State != AttemptMerging {
 		a.State = AttemptMerging
 		if err := q.Store.Update(ctx, a); err != nil {
@@ -271,6 +286,32 @@ func (q Queue) merge(ctx context.Context, a MergeAttempt) (MergeAttempt, error) 
 		return a, fmt.Errorf("record merged attempt: %w", err)
 	}
 	return a, nil
+}
+
+// alreadyLanded settles a resumed attempt whose merge already happened.
+//
+// The current head is recorded as the merge commit. It is not necessarily the
+// commit the first merge produced — another attempt may have landed behind it
+// — but it is the commit this work is reachable from, which is what completion
+// needs to name.
+func (q Queue) alreadyLanded(ctx context.Context, a MergeAttempt) (MergeAttempt, bool, error) {
+	landed, err := q.Git.Landed(ctx, a.MergeSource())
+	if err != nil {
+		return a, false, fmt.Errorf("read whether %s landed: %w", a.MergeSource(), err)
+	}
+	if !landed {
+		return a, false, nil
+	}
+	head, err := q.Git.Head(ctx)
+	if err != nil {
+		return a, false, fmt.Errorf("resolve default head: %w", err)
+	}
+	a.MergeCommit = head
+	a.State = AttemptMerged
+	if err := q.Store.Update(ctx, a); err != nil {
+		return a, false, fmt.Errorf("record merged attempt: %w", err)
+	}
+	return a, true, nil
 }
 
 // abort settles an attempt that cannot proceed.

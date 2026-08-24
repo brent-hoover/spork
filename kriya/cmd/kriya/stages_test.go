@@ -49,7 +49,7 @@ func stagesAndReviews(
 	// Every run these stages drive has a session: the submit stage stamps the
 	// review with it so feedback routes back to the agent that wrote the code.
 	for _, run := range []string{"run-1", "run-2", "run-3", "run-po-1", "run-po-2",
-		"run-sub-1", "run-sub-2", "run-merge-1", "run-complete-1", "run-nowhere"} {
+		"run-sub-1", "run-sub-2", "run-sub-3", "run-sub-4", "run-merge-1", "run-complete-1", "run-nowhere"} {
 		if err := (devloop.SQLStore{DB: db}).Upsert(context.Background(), devloop.Session{
 			Run: run, Ticket: "T-1", SessionID: "sess-" + run,
 		}); err != nil {
@@ -331,6 +331,10 @@ func TestARunWithAReviewResubmitsRatherThanOpeningASecond(t *testing.T) {
 		t.Fatalf("submit stage: %v", err)
 	}
 	first := run.ReviewID
+	// Rework has a NEW head: a changes-requested verdict sends the run back
+	// through the dev loop, which commits. A resubmission at the same head is
+	// a replay of the submission that already landed, not rework.
+	run.Head = "C3"
 	run.ReviewVerdictEvent = "event-9"
 	again, err := stages[orchestrator.StageSubmit](context.Background(), run)
 	if err != nil {
@@ -547,5 +551,59 @@ func TestTheDevAgentIsToldWhichModulesItTouched(t *testing.T) {
 	captured := captureDevRequest(t)
 	if len(captured.Modules) != 1 || captured.Modules[0] != "MOD-api" {
 		t.Errorf("the touched modules are %v, want the snapshot's own ids", captured.Modules)
+	}
+}
+
+func TestASubmissionThatLandedBeforeTheCrashIsNotSubmittedTwice(t *testing.T) {
+	// The window: sutra created the review and the run recorded it, then the
+	// process died before the table wrote the advanced state. The run comes
+	// back in "submitting" with a review that already exists — and resubmitting
+	// it would advance a revision nothing reworked, against a verdict event
+	// there has not been.
+	stages, _, reviews := stagesAndReviews(t, quietLoop(), passingCommands)
+	run, err := runThrough(t, stages,
+		orchestrator.BuildRun{ID: "run-sub-3", Ticket: "T-1", Issue: "issue-7", Head: "C2"},
+		orchestrator.StageWorkspace, orchestrator.StageGates,
+		orchestrator.StageValidate, orchestrator.StageSubmit)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	opened := len(reviews.issues)
+
+	again, err := stages[orchestrator.StageSubmit](context.Background(), run)
+	if err != nil {
+		t.Fatalf("replayed submit stage: %v", err)
+	}
+	if len(reviews.issues) != opened {
+		t.Errorf("the replay opened another review: %v", reviews.issues)
+	}
+	if again.ReviewID != run.ReviewID {
+		t.Errorf("the replay replaced review %q with %q", run.ReviewID, again.ReviewID)
+	}
+	if again.ReviewRevision != run.ReviewRevision {
+		t.Errorf("the replay advanced the revision to %d", again.ReviewRevision)
+	}
+}
+
+func TestNewWorkAfterAVerdictStillResubmits(t *testing.T) {
+	// The control for the test above: a run whose head MOVED since its review
+	// was opened has genuine rework to submit, and must not be mistaken for a
+	// replay of the submission that already landed.
+	stages, _, _ := stagesAndReviews(t, quietLoop(), passingCommands)
+	run, err := runThrough(t, stages,
+		orchestrator.BuildRun{ID: "run-sub-4", Ticket: "T-1", Issue: "issue-7", Head: "C2"},
+		orchestrator.StageWorkspace, orchestrator.StageGates,
+		orchestrator.StageValidate, orchestrator.StageSubmit)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	run.Head = "C3"
+	run.ReviewVerdictEvent = "event-9"
+	again, err := stages[orchestrator.StageSubmit](context.Background(), run)
+	if err != nil {
+		t.Fatalf("resubmit stage: %v", err)
+	}
+	if again.ReviewRevision <= run.ReviewRevision {
+		t.Errorf("the reworked head did not advance the revision: %d", again.ReviewRevision)
 	}
 }

@@ -348,10 +348,19 @@ func submitStage(
 		if err != nil {
 			return run, err
 		}
+		if run.ReviewID != "" && run.ReviewState == orchestrator.SubmitSubmitted &&
+			run.ReviewCommit == run.Head {
+			// The review for THIS head already exists. That is the crash
+			// window between recording the review and the table writing the
+			// advanced state: the run comes back in submitting with a landed
+			// submission, and resubmitting would advance a revision nothing
+			// reworked, against a verdict event there has not been.
+			return run, nil
+		}
 		if run.ReviewID != "" {
-			// A review already exists, so this is rework reaching the human
-			// again. Resubmission advances its revision rather than opening a
-			// second review over the same ticket.
+			// A review exists and the head has MOVED, so this is rework
+			// reaching the human again. Resubmission advances its revision
+			// rather than opening a second review over the same ticket.
 			return submitter.Resubmit(ctx, run, orchestrator.Rework{
 				Branch: w.Branch, Session: session, Summary: run.Ticket,
 				Revision: run.ReviewRevision, VerdictEvent: run.ReviewVerdictEvent,

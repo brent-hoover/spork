@@ -58,6 +58,28 @@ func (g ShellGit) HasUnmergedCommits(ctx context.Context, repo, branch, base str
 	return out != "0", nil
 }
 
+// Reachable reports whether commit is an ancestor of branch.
+//
+// The question a replayed merge asks: the CAS is not idempotent, so an attempt
+// resuming mid-merge has to know whether its own merge already happened.
+// git merge-base --is-ancestor answers with an exit status — 0 yes, 1 no —
+// and any other failure is a real error rather than a "no".
+func (ShellGit) Reachable(ctx context.Context, repo, commit, branch string) (bool, error) {
+	// Not through run: it collapses every failure into a message, and the
+	// answer here IS the exit status. A "no" read as an error would strand a
+	// merge; an error read as a "no" would merge one twice.
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", commit, branch)
+	cmd.Dir = repo
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if ok := asExitError(err, &ee); ok && ee.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", commit, branch, err)
+	}
+	return true, nil
+}
+
 // Commit turns everything in dir into one commit and returns its sha.
 //
 // dir is a worktree, not the repository root: the dev loop commits where the
