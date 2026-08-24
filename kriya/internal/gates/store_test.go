@@ -35,14 +35,14 @@ func TestAPassIsOnlyAPassAtItsOwnCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	at, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a")
+	at, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a", 1)
 	if err != nil {
 		t.Fatalf("passed: %v", err)
 	}
 	if !at {
 		t.Error("a pass recorded at sha-a did not satisfy at sha-a")
 	}
-	stale, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-b")
+	stale, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-b", 1)
 	if err != nil {
 		t.Fatalf("passed: %v", err)
 	}
@@ -51,7 +51,10 @@ func TestAPassIsOnlyAPassAtItsOwnCommit(t *testing.T) {
 	}
 }
 
-func TestTheLatestAttemptWins(t *testing.T) {
+func TestAnAttemptsResultIsItsOwn(t *testing.T) {
+	// Integrating a new base can leave the branch head unchanged: same commit,
+	// different ground. A result from the previous attempt says nothing about
+	// the new one, so each attempt is asked about separately.
 	s := sqlGateStore(t)
 	for attempt, passed := range map[int]bool{1: true, 2: false} {
 		err := s.Upsert(context.Background(), gates.Result{
@@ -62,12 +65,27 @@ func TestTheLatestAttemptWins(t *testing.T) {
 			t.Fatalf("upsert attempt %d: %v", attempt, err)
 		}
 	}
-	got, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a")
+	first, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a", 1)
 	if err != nil {
 		t.Fatalf("passed: %v", err)
 	}
-	if got {
-		t.Error("an earlier passing attempt outranked a later failing one")
+	if !first {
+		t.Error("attempt 1's pass was lost")
+	}
+	second, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a", 2)
+	if err != nil {
+		t.Fatalf("passed: %v", err)
+	}
+	if second {
+		t.Error("attempt 1's pass satisfied attempt 2")
+	}
+	// And an attempt that never ran has not passed.
+	third, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a", 3)
+	if err != nil {
+		t.Fatalf("passed: %v", err)
+	}
+	if third {
+		t.Error("an attempt that never ran reported as passed")
 	}
 }
 
@@ -84,7 +102,7 @@ func TestReRecordingAnAttemptReplacesIt(t *testing.T) {
 	if err := s.Upsert(context.Background(), result); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
-	got, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a")
+	got, err := s.Passed(context.Background(), "run-1", "engine", "test", "sha-a", 1)
 	if err != nil {
 		t.Fatalf("passed: %v", err)
 	}
@@ -96,7 +114,7 @@ func TestReRecordingAnAttemptReplacesIt(t *testing.T) {
 func TestAGateNeverRunHasNotPassed(t *testing.T) {
 	// Absence is not failure: the chain needs "has not passed", not an error.
 	s := sqlGateStore(t)
-	got, err := s.Passed(context.Background(), "run-1", "engine", "mutation", "sha-a")
+	got, err := s.Passed(context.Background(), "run-1", "engine", "mutation", "sha-a", 1)
 	if err != nil {
 		t.Fatalf("passed: %v", err)
 	}

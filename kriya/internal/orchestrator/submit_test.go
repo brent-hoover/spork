@@ -19,10 +19,16 @@ type reviewAPI struct {
 	// revision is the review's current revision, advanced once per new key.
 	revision  int
 	revisions map[string]int
+	// fenceBase and fenceHead are what sutra RESOLVES. When set and different
+	// from what a call expects, the call is rejected and nothing is created.
+	fenceBase string
+	fenceHead string
 }
 
 type reviewCall struct {
 	issue, author, summary, branch, commit, session, key string
+	// The base fences every submission and resubmission carries.
+	expectedBase, expectedDefaultHead string
 	// Set on a resubmission.
 	expectedRevision int
 	verdictEvent     string
@@ -33,12 +39,22 @@ func newReviewAPI() *reviewAPI {
 }
 
 func (r *reviewAPI) Create(
-	_ context.Context, issue, author, summary, branch, commit, session, key string,
+	_ context.Context, issue, author, summary, branch, commit, session string,
+	expectedBase, expectedDefaultHead, key string,
 ) (string, error) {
 	r.calls = append(r.calls, reviewCall{
 		issue: issue, author: author, summary: summary, branch: branch,
 		commit: commit, session: session, key: key,
+		expectedBase: expectedBase, expectedDefaultHead: expectedDefaultHead,
 	})
+	if r.fenceBase != "" && r.fenceBase != expectedBase {
+		// sutra resolving a different actual base: rejected atomically, and
+		// nothing is created.
+		return "", errors.New("base fence: the branch is not based on " + expectedBase)
+	}
+	if r.fenceHead != "" && r.fenceHead != expectedDefaultHead {
+		return "", errors.New("head fence: the default branch is not at " + expectedDefaultHead)
+	}
 	if r.err != nil {
 		return "", r.err
 	}
@@ -54,13 +70,20 @@ func (r *reviewAPI) Create(
 // Resubmit advances a revision once per key, as sutra does.
 func (r *reviewAPI) Resubmit(
 	_ context.Context, id, author, summary, branch, commit, session string,
-	expectedRevision int, verdictEvent, key string,
+	expectedRevision int, verdictEvent, expectedBase, expectedDefaultHead, key string,
 ) (int, error) {
 	r.calls = append(r.calls, reviewCall{
 		issue: id, author: author, summary: summary, branch: branch,
 		commit: commit, session: session, key: key,
+		expectedBase: expectedBase, expectedDefaultHead: expectedDefaultHead,
 		expectedRevision: expectedRevision, verdictEvent: verdictEvent,
 	})
+	if r.fenceBase != "" && r.fenceBase != expectedBase {
+		return 0, errors.New("base fence: the branch is not based on " + expectedBase)
+	}
+	if r.fenceHead != "" && r.fenceHead != expectedDefaultHead {
+		return 0, errors.New("head fence: the default branch is not at " + expectedDefaultHead)
+	}
 	if r.err != nil {
 		return 0, r.err
 	}
@@ -543,5 +566,61 @@ func TestAnUnreadableResubmitListStopsRecovery(t *testing.T) {
 			func(orchestrator.BuildRun) orchestrator.Rework { return rework() })
 	if err == nil {
 		t.Fatal("an unreadable store read as no resubmissions in flight")
+	}
+}
+
+func TestASubmissionCarriesBothBaseFences(t *testing.T) {
+	// sutra resolves the branch's actual base and the default branch's actual
+	// head, and rejects atomically when either differs — so a diff whose base
+	// was never gated cannot reach a human at all.
+	store, api := newMemStore(), newReviewAPI()
+	if _, err := submitter(store, api).Submit(context.Background(), gatedRun(), submission()); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	call := api.calls[0]
+	if call.expectedBase != "C2" || call.expectedDefaultHead != "C2" {
+		t.Errorf("fenced on base %q and head %q, want the run's gated C2",
+			call.expectedBase, call.expectedDefaultHead)
+	}
+}
+
+func TestAResubmissionCarriesThemToo(t *testing.T) {
+	// Rework is no more entitled to put an ungated diff in front of a human.
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	if _, err := submitter(store, api).Resubmit(context.Background(), submittedRun(), rework()); err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	call := api.calls[len(api.calls)-1]
+	if call.expectedBase != "C3" || call.expectedDefaultHead != "C3" {
+		t.Errorf("fenced on base %q and head %q", call.expectedBase, call.expectedDefaultHead)
+	}
+}
+
+func TestAFencedSubmissionCreatesNothing(t *testing.T) {
+	store, api := newMemStore(), newReviewAPI()
+	api.fenceHead = "D2"
+	if _, err := submitter(store, api).Submit(context.Background(), gatedRun(), submission()); err == nil {
+		t.Fatal("an ungated submission was accepted")
+	}
+	if len(api.byKey) != 0 {
+		t.Errorf("%d reviews were created", len(api.byKey))
+	}
+	// The write-ahead row survives, which is what lets the run be seen as
+	// having tried.
+	if store.rows["run-1"].ReviewState != orchestrator.SubmitSubmitting {
+		t.Errorf("the run is in %q", store.rows["run-1"].ReviewState)
+	}
+}
+
+func TestAFencedResubmissionLeavesTheRevisionAlone(t *testing.T) {
+	store, api := newMemStore(), newReviewAPI()
+	api.revision = 1
+	api.fenceBase = "D0"
+	if _, err := submitter(store, api).Resubmit(context.Background(), submittedRun(), rework()); err == nil {
+		t.Fatal("an ungated resubmission was accepted")
+	}
+	if api.revision != 1 {
+		t.Errorf("the revision moved to %d", api.revision)
 	}
 }

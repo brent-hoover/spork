@@ -34,10 +34,13 @@ func (m *memGates) Upsert(_ context.Context, r gates.Result) error {
 	return nil
 }
 
-func (m *memGates) Passed(_ context.Context, build, module, gate, commit string) (bool, error) {
+func (m *memGates) Passed(
+	_ context.Context, build, module, gate, commit string, attempt int,
+) (bool, error) {
 	for i := len(m.rows) - 1; i >= 0; i-- {
 		r := m.rows[i]
-		if r.Build == build && r.Module == module && r.Gate == gate && r.Commit == commit {
+		if r.Build == build && r.Module == module && r.Gate == gate &&
+			r.Commit == commit && r.Attempt == attempt {
 			return r.Passed, nil
 		}
 	}
@@ -77,7 +80,7 @@ func (g *gateWorld) chain() ([]gates.Result, error) {
 	var out []gates.Result
 	for module, cmds := range g.modules {
 		results, err := g.runner.RunChain(context.Background(), "run-1", module,
-			g.commit, g.dir, cmds)
+			g.commit, g.dir, cmds, 0)
 		if err != nil {
 			return nil, fmt.Errorf("chain for %s: %w", module, err)
 		}
@@ -119,7 +122,7 @@ func commandsFor(failing ...string) map[string]string {
 func (g *gateWorld) run(gate string) error {
 	for module, cmds := range g.modules {
 		result, err := g.runner.Run(context.Background(), "run-1", module, gate,
-			g.commit, g.dir, cmds)
+			g.commit, g.dir, cmds, 0)
 		if err != nil {
 			return fmt.Errorf("run %s for %s: %w", gate, module, err)
 		}
@@ -278,7 +281,7 @@ func registerGates(sc *godog.ScenarioContext, w *world) {
 		amended := commandsFor()
 		amended["lint"] = "echo 'amended lint' "
 		result, err := g.runner.Run(context.Background(), "run-1", module, "structure",
-			g.commit, g.dir, amended)
+			g.commit, g.dir, amended, 0)
 		if err != nil {
 			return err
 		}
@@ -299,7 +302,7 @@ func registerGates(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^it does not satisfy the gate at the current head$`, func() error {
 		g := w.gates
 		passed, err := g.store.Passed(context.Background(), "run-1", onlyModule(g),
-			"structure", g.commit)
+			"structure", g.commit, 0)
 		if err != nil {
 			return err
 		}
@@ -433,7 +436,7 @@ func pinnedTo(g *gateWorld, gate, commit string) error {
 // staleNeverSatisfies asks the store about a commit no gate ran at.
 func staleNeverSatisfies(g *gateWorld, gate string) error {
 	for module := range g.modules {
-		passed, err := g.store.Passed(context.Background(), "run-1", module, gate, "C1")
+		passed, err := g.store.Passed(context.Background(), "run-1", module, gate, "C1", 0)
 		if err != nil {
 			return err
 		}

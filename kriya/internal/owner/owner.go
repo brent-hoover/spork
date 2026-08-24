@@ -53,7 +53,7 @@ type Store interface {
 type Gates interface {
 	// AllPassed reports whether every gate in the chain passed at this exact
 	// commit, and names the first that did not.
-	AllPassed(ctx context.Context, build, module, commit string) (bool, string, error)
+	AllPassed(ctx context.Context, build, module, commit string, attempt int) (bool, string, error)
 }
 
 // Owner validates a run against its ticket.
@@ -117,7 +117,7 @@ var Schema = json.RawMessage(`{
 // gap, so the precondition is checked here rather than assumed by the caller —
 // a caller that forgot would otherwise produce a verdict on ungated code.
 func (o Owner) Validate(ctx context.Context, req Request) (Validation, error) {
-	passed, missing, err := o.Gates.AllPassed(ctx, req.Build, req.Module, req.Commit)
+	passed, missing, err := o.Gates.AllPassed(ctx, req.Build, req.Module, req.Commit, req.Attempt)
 	if err != nil {
 		return Validation{}, fmt.Errorf("read gate results at %s: %w", req.Commit, err)
 	}

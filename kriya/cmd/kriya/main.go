@@ -418,7 +418,9 @@ func stageDeps(
 	runner := gates.Runner{
 		Store:  gates.SQLStore{DB: db},
 		Review: reviewbridge.SQLStore{DB: db},
-		Now:    clock.System{},
+		// The chain checks before every gate that the ground has not moved.
+		Base: repoMerger{git: workspace.ShellGit{}, repo: ws.Repo, branch: ws.DefaultBranch},
+		Now:  clock.System{},
 	}
 	return deps{
 		ws: ws, loop: loop, runner: runner, snap: snap,

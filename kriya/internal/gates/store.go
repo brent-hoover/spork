@@ -41,16 +41,21 @@ func (s SQLStore) Upsert(ctx context.Context, r Result) error {
 	return nil
 }
 
-// Passed reports whether a gate passed at this exact commit.
+// Passed reports whether a gate passed at this exact commit under this
+// attempt.
 //
-// The commit is in the WHERE clause, which is what makes a stale pass
-// unusable: a result recorded at an older commit simply does not match.
-func (s SQLStore) Passed(ctx context.Context, build, module, gate, commit string) (bool, error) {
+// Both are in the WHERE clause, which is what makes a stale pass unusable: a
+// result recorded at an older commit does not match, and neither does one from
+// a previous attempt — which matters because integrating a new base can leave
+// the branch head unchanged.
+func (s SQLStore) Passed(
+	ctx context.Context, build, module, gate, commit string, attempt int,
+) (bool, error) {
 	var passed bool
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT passed FROM gate_result
-		 WHERE build = ? AND module = ? AND gate = ? AND commit_sha = ?
-		 ORDER BY attempt DESC LIMIT 1`, build, module, gate, commit).Scan(&passed)
+		 WHERE build = ? AND module = ? AND gate = ? AND commit_sha = ? AND attempt = ?`,
+		build, module, gate, commit, attempt).Scan(&passed)
 	if err != nil {
 		// Absence is not failure: a gate never run at this commit has not
 		// passed, which is the answer the chain needs.

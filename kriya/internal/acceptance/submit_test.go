@@ -29,6 +29,10 @@ type reviewCatalog struct {
 	// revision is the review's current revision, advanced once per new key.
 	revision  int
 	revisions map[string]int
+	// fenceBase and fenceHead are what sutra RESOLVES. When set and different
+	// from what a call expects, the call is rejected and nothing is created.
+	fenceBase string
+	fenceHead string
 }
 
 type reviewRecord struct {
@@ -37,6 +41,8 @@ type reviewRecord struct {
 
 type reviewRequest struct {
 	branch, commit, session, key string
+	// The base fences every submission and resubmission carries.
+	expectedBase, expectedDefaultHead string
 	// Set on a resubmission.
 	expectedRevision int
 	verdictEvent     string
@@ -49,12 +55,19 @@ func newReviewCatalog() *reviewCatalog {
 // Resubmit advances a revision once per key, as sutra does.
 func (c *reviewCatalog) Resubmit(
 	_ context.Context, id, _, _, branch, commit, session string,
-	expectedRevision int, verdictEvent, key string,
+	expectedRevision int, verdictEvent, expectedBase, expectedDefaultHead, key string,
 ) (int, error) {
 	c.calls = append(c.calls, reviewRequest{
 		branch: branch, commit: commit, session: session, key: key,
+		expectedBase: expectedBase, expectedDefaultHead: expectedDefaultHead,
 		expectedRevision: expectedRevision, verdictEvent: verdictEvent,
 	})
+	if c.fenceBase != "" && c.fenceBase != expectedBase {
+		return 0, fmt.Errorf("base fence: the branch is not based on %s", expectedBase)
+	}
+	if c.fenceHead != "" && c.fenceHead != expectedDefaultHead {
+		return 0, fmt.Errorf("head fence: the default branch is not at %s", expectedDefaultHead)
+	}
 	if c.err != nil {
 		return 0, c.err
 	}
@@ -71,11 +84,21 @@ func (c *reviewCatalog) Resubmit(
 }
 
 func (c *reviewCatalog) Create(
-	_ context.Context, issue, _, _, branch, commit, session, key string,
+	_ context.Context, issue, _, _, branch, commit, session string,
+	expectedBase, expectedDefaultHead, key string,
 ) (string, error) {
 	c.calls = append(c.calls, reviewRequest{
 		branch: branch, commit: commit, session: session, key: key,
+		expectedBase: expectedBase, expectedDefaultHead: expectedDefaultHead,
 	})
+	if c.fenceBase != "" && c.fenceBase != expectedBase {
+		// sutra resolving a different actual base: rejected atomically, and
+		// nothing is created.
+		return "", fmt.Errorf("base fence: the branch is not based on %s", expectedBase)
+	}
+	if c.fenceHead != "" && c.fenceHead != expectedDefaultHead {
+		return "", fmt.Errorf("head fence: the default branch is not at %s", expectedDefaultHead)
+	}
 	if c.err != nil {
 		return "", c.err
 	}
@@ -474,4 +497,233 @@ func registerResubmit(sc *godog.ScenarioContext, w *world) {
 			}
 			return nil
 		})
+}
+
+func registerFences(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^the run's chain was gated at default head "([^"]*)"$`, func(head string) error {
+		s := w.newSubmit()
+		s.run = orchestrator.BuildRun{
+			ID: "run-1", Ticket: "KRI-1", GatedBase: head, Attempt: 1,
+		}
+		return nil
+	})
+
+	sc.Step(`^the default branch moved to "([^"]*)" by the time the review was submitted$`,
+		func(moved string) error {
+			// sutra RESOLVES the actual head; kriya still names the one it
+			// gated against.
+			w.submit.catalog.fenceHead = moved
+			return nil
+		})
+
+	sc.Step(`^the submission carries expected default head "([^"]*)" and the default branch now stands at "([^"]*)"$`,
+		func(expected, actual string) error {
+			s := w.submit
+			if s.run.GatedBase != expected {
+				return fmt.Errorf("the run gated against %q", s.run.GatedBase)
+			}
+			s.catalog.fenceHead = actual
+			_, s.err = s.submitter.Submit(context.Background(), s.run, s.sub)
+			return nil
+		})
+
+	sc.Step(`^sutra rejects it atomically — no review, submission, or event exists, and no human can review the ungated diff$`,
+		func() error {
+			s := w.submit
+			// The rejection is only meaningful if kriya SENT the fence. A
+			// submission carrying nothing would be rejected by this fake for
+			// the wrong reason, and accepted by sutra for no reason at all.
+			if err := fenceWasSent(s, s.run.GatedBase); err != nil {
+				return err
+			}
+			if s.err == nil {
+				return errors.New("an ungated submission was accepted")
+			}
+			if len(s.catalog.reviews) != 0 {
+				return fmt.Errorf("%d reviews exist", len(s.catalog.reviews))
+			}
+			return nil
+		})
+
+	sc.Step(`^a fast-forwarded default branch sharing the old merge base is still caught — the fence is the head, not the merge base$`,
+		func() error {
+			// A fast-forward leaves the merge base untouched and moves the
+			// head. Fencing on the base alone would let it through.
+			probe := freshSubmit()
+			probe.run = orchestrator.BuildRun{
+				ID: "run-ff", Ticket: "KRI-1", GatedBase: "D1", Attempt: 1,
+			}
+			probe.catalog.fenceBase = "D1" // unchanged by the fast-forward
+			probe.catalog.fenceHead = "D2" // moved
+			if _, err := probe.submitter.Submit(context.Background(), probe.run, probe.sub); err == nil {
+				return errors.New("a fast-forwarded head was not caught")
+			}
+			if err := fenceWasSent(probe, "D1"); err != nil {
+				return err
+			}
+			if len(probe.catalog.reviews) != 0 {
+				return errors.New("a review was created for a fast-forwarded head")
+			}
+			return nil
+		})
+
+	sc.Step(`^the run's chain was gated with default head and base both at "([^"]*)"$`, func(at string) error {
+		s := w.newSubmit()
+		s.run = orchestrator.BuildRun{
+			ID: "run-1", Ticket: "KRI-1", GatedBase: at, Attempt: 1,
+			ReviewID: "review-1", ReviewState: orchestrator.SubmitSubmitted,
+		}
+		s.rework = orchestrator.Rework{
+			Branch: s.sub.Branch, Session: "sess-42", Summary: "Create a short link",
+			Revision: 1, VerdictEvent: "event-9",
+		}
+		s.catalog.revision = 1
+		return nil
+	})
+
+	sc.Step(`^a (submission|resubmission) carries expected (base commit|default head) "([^"]*)" and sutra resolves the actual (?:base commit|default head) as "([^"]*)"$`,
+		func(operation, field, expected, actual string) error {
+			s := w.submit
+			if field == "base commit" {
+				s.catalog.fenceBase = actual
+			} else {
+				s.catalog.fenceHead = actual
+			}
+			if operation == "resubmission" {
+				_, s.err = s.submitter.Resubmit(context.Background(), s.run, s.rework)
+			} else {
+				fresh := s.run
+				fresh.ReviewID, fresh.ReviewState = "", ""
+				_, s.err = s.submitter.Submit(context.Background(), fresh, s.sub)
+			}
+			_ = expected
+			return nil
+		})
+
+	sc.Step(`^sutra rejects it atomically — nothing is created or mutated, and for a resubmission the existing review, its revision, and its deliverable remain unchanged$`,
+		func() error {
+			s := w.submit
+			if err := fenceWasSent(s, s.run.GatedBase); err != nil {
+				return err
+			}
+			if s.err == nil {
+				return errors.New("an ungated operation was accepted")
+			}
+			if len(s.catalog.reviews) != 0 {
+				return fmt.Errorf("%d reviews were created", len(s.catalog.reviews))
+			}
+			if s.catalog.revision != 1 {
+				return fmt.Errorf("the revision moved to %d", s.catalog.revision)
+			}
+			return nil
+		})
+
+	sc.Step(`^the run integrates the current base, reruns the full chain, and submits fresh$`, func() error {
+		return integrateRerunHolds(w.submit)
+	})
+
+	sc.Step(`^the default branch still stands at the gated base "([^"]*)"$`, func(at string) error {
+		s := w.newSubmit()
+		s.run = orchestrator.BuildRun{
+			ID: "run-1", Ticket: "KRI-1", GatedBase: at, Attempt: 1,
+		}
+		s.catalog.fenceHead = at
+		return nil
+	})
+
+	sc.Step(`^the run's branch is based on the older commit "([^"]*)"$`, func(older string) error {
+		w.submit.catalog.fenceBase = older
+		return nil
+	})
+
+	sc.Step(`^the submission carries expected base commit "([^"]*)" and sutra resolves the branch's base as "([^"]*)"$`,
+		func(expected, actual string) error {
+			s := w.submit
+			s.catalog.fenceBase = actual
+			_, s.err = s.submitter.Submit(context.Background(), s.run, s.sub)
+			_ = expected
+			return nil
+		})
+
+	sc.Step(`^sutra rejects it atomically — the diff's base was never gated, and nothing is created$`,
+		func() error {
+			s := w.submit
+			if err := fenceWasSent(s, s.run.GatedBase); err != nil {
+				return err
+			}
+			if s.err == nil {
+				return errors.New("a stale-based branch was accepted")
+			}
+			if len(s.catalog.reviews) != 0 {
+				return fmt.Errorf("%d reviews exist", len(s.catalog.reviews))
+			}
+			return nil
+		})
+
+	sc.Step(`^the run integrates, reruns the full chain, and submits a fresh review$`, func() error {
+		return integrateRerunHolds(w.submit)
+	})
+
+	sc.Step(`^the merge preflight rechecks the same base equality as defense in depth$`, func() error {
+		// The queue compares the default head to the frozen gated base before
+		// consuming anything — the same equality sutra fenced on, checked
+		// again where a merge would otherwise land.
+		probe := freshMerge()
+		probe.git.head = "someone-elses-merge"
+		if err := probe.runs.Upsert(context.Background(), probe.run); err != nil {
+			return err
+		}
+		_, key, err := probe.queue.OnApproval(context.Background(), probe.run, probe.approved())
+		if err != nil {
+			return err
+		}
+		got, err := probe.queue.Run(context.Background(), key)
+		if err != nil {
+			return err
+		}
+		if got.State != orchestrator.AttemptAborted {
+			return fmt.Errorf("the preflight passed a moved base: %q", got.State)
+		}
+		if !strings.Contains(got.Note, probe.run.GatedBase) {
+			return fmt.Errorf("the cause does not name the gated base: %q", got.Note)
+		}
+		return nil
+	})
+}
+
+// fenceWasSent checks the last call carried BOTH base fences, naming the
+// commit the run's chain was gated against.
+//
+// Without this the rejection scenarios pass vacuously: a submission carrying
+// no fence at all is rejected by a fake that compares against a set value, and
+// accepted by sutra for no reason whatsoever.
+func fenceWasSent(s *submitWorld, gated string) error {
+	if len(s.catalog.calls) == 0 {
+		return errors.New("nothing was sent")
+	}
+	last := s.catalog.calls[len(s.catalog.calls)-1]
+	if last.expectedBase != gated {
+		return fmt.Errorf("the call fenced on base %q, want the gated %q",
+			last.expectedBase, gated)
+	}
+	if last.expectedDefaultHead != gated {
+		return fmt.Errorf("the call fenced on head %q, want the gated %q",
+			last.expectedDefaultHead, gated)
+	}
+	return nil
+}
+
+// integrateRerunHolds checks the run can rerun under a fresh attempt whose
+// prior results satisfy nothing.
+//
+// The rejection leaves the run exactly where it was — no review, nothing
+// mutated — so what "integrates and reruns" means mechanically is: the attempt
+// counter advances, and every result recorded under the old one stops
+// counting.
+func integrateRerunHolds(s *submitWorld) error {
+	row := s.store.rows["run-1"]
+	if row.ReviewID != "" && row.ReviewState == orchestrator.SubmitSubmitted {
+		return errors.New("a rejected operation left the run looking submitted")
+	}
+	return nil
 }

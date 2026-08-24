@@ -24,13 +24,14 @@ const (
 type Reviews interface {
 	// Create opens a review and returns its id. The key is sent as the
 	// Idempotency-Key: a replay returns the original review.
-	Create(ctx context.Context, issue, author, summary, branch, commit,
-		session, key string) (string, error)
+	Create(ctx context.Context, issue, author, summary, branch, commit, session string,
+		expectedBase, expectedDefaultHead, key string) (string, error)
 	// Resubmit advances a review to its next revision and returns that
 	// revision. expectedRevision and expectedVerdictEvent are fences sutra
 	// enforces; the key makes a replay idempotent.
 	Resubmit(ctx context.Context, id, author, summary, branch, commit, session string,
-		expectedRevision int, expectedVerdictEvent, key string) (int, error)
+		expectedRevision int, expectedVerdictEvent, expectedBase, expectedDefaultHead,
+		key string) (int, error)
 }
 
 // submissionKey is deterministic per (run, head commit, gate attempt).
@@ -91,8 +92,12 @@ func (s Submitter) Submit(ctx context.Context, run BuildRun, sub Submission) (Bu
 // submission — two implementations of one protocol would leave only one
 // tested.
 func (s Submitter) finish(ctx context.Context, run BuildRun, sub Submission) (BuildRun, error) {
+	// Both fences are the run's frozen gated base. At the moment the workspace
+	// was cut they were the same commit, and pinning both to it is what makes
+	// "the combined result was never gated" impossible to smuggle past.
 	id, err := s.Reviews.Create(ctx, sub.Issue, s.Author, sub.Summary,
-		sub.Branch, run.ReviewCommit, run.ReviewSession, run.ReviewKey)
+		sub.Branch, run.ReviewCommit, run.ReviewSession,
+		run.GatedBase, run.GatedBase, run.ReviewKey)
 	if err != nil {
 		return BuildRun{}, fmt.Errorf("submit review for %s: %w", run.ID, err)
 	}
@@ -185,7 +190,8 @@ func (s Submitter) Resubmit(ctx context.Context, run BuildRun, rw Rework) (Build
 func (s Submitter) finishRework(ctx context.Context, run BuildRun, rw Rework) (BuildRun, error) {
 	revision, err := s.Reviews.Resubmit(ctx, run.ReviewID, s.Author, rw.Summary,
 		rw.Branch, run.ReviewCommit, run.ReviewSession,
-		run.ReviewRevision, run.ReviewVerdictEvent, run.ReviewKey)
+		run.ReviewRevision, run.ReviewVerdictEvent,
+		run.GatedBase, run.GatedBase, run.ReviewKey)
 	if err != nil {
 		return BuildRun{}, fmt.Errorf("resubmit review for %s: %w", run.ID, err)
 	}

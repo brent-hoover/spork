@@ -217,7 +217,7 @@ func TestImportThreadSendsTheAnchorWhenThereIsOne(t *testing.T) {
 func TestCreateReviewPinsTheBranchAtACommit(t *testing.T) {
 	c, got := serve(t, http.StatusCreated, `{"id":"r-1","revision":1}`)
 	rv, err := c.CreateReview(context.Background(), "issue-7", "actor-1",
-		"Create a short link", "kriya/KRI-1/abcd", "C2", "sess-42", "key-1")
+		"Create a short link", "kriya/KRI-1/abcd", "C2", "sess-42", "D1", "D1", "key-1")
 	if err != nil {
 		t.Fatalf("create review: %v", err)
 	}
@@ -225,7 +225,8 @@ func TestCreateReviewPinsTheBranchAtACommit(t *testing.T) {
 		t.Errorf("decoded %+v", rv)
 	}
 	for _, want := range []string{`"branch":"kriya/KRI-1/abcd"`, `"commit":"C2"`,
-		`"session":"sess-42"`, `"summary":"Create a short link"`} {
+		`"session":"sess-42"`, `"summary":"Create a short link"`,
+		`"expected_base_commit":"D1"`, `"expected_default_head":"D1"`} {
 		if !strings.Contains(got.body, want) {
 			t.Errorf("body %s is missing %s", got.body, want)
 		}
@@ -240,7 +241,7 @@ func TestCreateReviewOmitsAnAbsentSummaryAndSession(t *testing.T) {
 	// blank.
 	c, got := serve(t, http.StatusCreated, `{"id":"r-1"}`)
 	if _, err := c.CreateReview(context.Background(), "issue-7", "actor-1",
-		"", "kriya/KRI-1/abcd", "C2", "", "key-1"); err != nil {
+		"", "kriya/KRI-1/abcd", "C2", "", "D1", "D1", "key-1"); err != nil {
 		t.Fatalf("create review: %v", err)
 	}
 	for _, field := range []string{`"summary"`, `"session"`} {
@@ -305,7 +306,7 @@ func TestResubmitCarriesItsFences(t *testing.T) {
 	// replay advancing a revision twice.
 	c, got := serve(t, http.StatusOK, `{"id":"r-1","revision":3}`)
 	rv, err := c.ResubmitReview(context.Background(), "r-1", "actor-1", "summary",
-		"kriya/KRI-1/abcd", "C3", "sess-42", 2, "event-9", "key-1")
+		"kriya/KRI-1/abcd", "C3", "sess-42", 2, "event-9", "D1", "D1", "key-1")
 	if err != nil {
 		t.Fatalf("resubmit: %v", err)
 	}
@@ -313,7 +314,8 @@ func TestResubmitCarriesItsFences(t *testing.T) {
 		t.Errorf("decoded revision %d", rv.Revision)
 	}
 	for _, want := range []string{`"expected_revision":2`, `"expected_verdict_event":"event-9"`,
-		`"commit":"C3"`, `"branch":"kriya/KRI-1/abcd"`} {
+		`"commit":"C3"`, `"branch":"kriya/KRI-1/abcd"`,
+		`"expected_base_commit":"D1"`, `"expected_default_head":"D1"`} {
 		if !strings.Contains(got.body, want) {
 			t.Errorf("body %s is missing %s", got.body, want)
 		}
@@ -326,7 +328,7 @@ func TestResubmitCarriesItsFences(t *testing.T) {
 func TestResubmitOmitsAnAbsentSummaryAndSession(t *testing.T) {
 	c, got := serve(t, http.StatusOK, `{"id":"r-1","revision":3}`)
 	if _, err := c.ResubmitReview(context.Background(), "r-1", "actor-1", "",
-		"kriya/KRI-1/abcd", "C3", "", 2, "event-9", "key-1"); err != nil {
+		"kriya/KRI-1/abcd", "C3", "", 2, "event-9", "D1", "D1", "key-1"); err != nil {
 		t.Fatalf("resubmit: %v", err)
 	}
 	for _, field := range []string{`"summary"`, `"session"`} {

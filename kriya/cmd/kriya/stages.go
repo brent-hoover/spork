@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"path/filepath"
@@ -143,12 +144,21 @@ func gateStage(
 		if !found {
 			return run, fmt.Errorf("no workspace for run %s", run.ID)
 		}
+		// Incremented BEFORE the chain runs, so every result carries the
+		// attempt it belongs to. Stamping afterwards would record results
+		// under the previous attempt and let them satisfy it.
+		run.Attempt++
 		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.GatedBase, w.Path,
-			commandsFor(run.Ticket))
+			commandsFor(run.Ticket), run.Attempt)
+		if errors.Is(err, gates.ErrBaseMoved) {
+			// A RESULT, not a malfunction: the run integrates the new base and
+			// the complete chain reruns against it. Recording a mixed-base
+			// pass would say nothing about either base.
+			return run, err
+		}
 		if err != nil {
 			return run, err
 		}
-		run.Attempt++
 		for _, result := range results {
 			if !result.Passed {
 				// A failing gate is a RESULT, and the table sends it back to

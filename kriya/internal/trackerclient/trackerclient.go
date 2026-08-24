@@ -187,11 +187,17 @@ type Review struct {
 // ORIGINAL review for a replayed key rather than opening a second one, which
 // is what makes exactly one review exist per submission across a crash.
 func (c *Client) CreateReview(
-	ctx context.Context, issue, author, summary, branch, commit, session, key string,
+	ctx context.Context, issue, author, summary, branch, commit, session string,
+	expectedBase, expectedDefaultHead, key string,
 ) (Review, error) {
 	payload := map[string]any{
 		"issue": issue, "author": author,
 		"branch": branch, "commit": commit,
+		// The FENCES. sutra resolves the branch's actual base and the default
+		// branch's actual head, and rejects atomically when either differs —
+		// so a diff whose base was never gated cannot reach a human at all.
+		"expected_base_commit":  expectedBase,
+		"expected_default_head": expectedDefaultHead,
 	}
 	// Omitted rather than sent empty: sutra rejects an explicit null for these
 	// and distinguishes absent from blank.
@@ -239,11 +245,15 @@ func (c *Client) GetReview(ctx context.Context, id string) (Review, error) {
 // a later verdict cannot be answered by an earlier rework.
 func (c *Client) ResubmitReview(
 	ctx context.Context, id, author, summary, branch, commit, session string,
-	expectedRevision int, expectedVerdictEvent, key string,
+	expectedRevision int, expectedVerdictEvent, expectedBase, expectedDefaultHead, key string,
 ) (Review, error) {
 	payload := map[string]any{
 		"author": author, "branch": branch, "commit": commit,
 		"expected_revision": expectedRevision, "expected_verdict_event": expectedVerdictEvent,
+		// The same base fences a fresh submission carries: rework is no more
+		// entitled to put an ungated diff in front of a human.
+		"expected_base_commit":  expectedBase,
+		"expected_default_head": expectedDefaultHead,
 	}
 	if summary != "" {
 		payload["summary"] = summary

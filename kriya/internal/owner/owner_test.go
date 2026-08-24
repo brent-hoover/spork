@@ -47,7 +47,9 @@ type gateResults struct {
 	asked   []string
 }
 
-func (g *gateResults) AllPassed(_ context.Context, _, _, commit string) (bool, string, error) {
+func (g *gateResults) AllPassed(
+	_ context.Context, _, _, commit string, _ int,
+) (bool, string, error) {
 	g.asked = append(g.asked, commit)
 	if g.err != nil {
 		return false, "", g.err

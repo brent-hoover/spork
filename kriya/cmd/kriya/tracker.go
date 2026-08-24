@@ -45,18 +45,20 @@ func (t sutraThreads) Import(
 type sutraReviews struct{ c *trackerclient.Client }
 
 func (t sutraReviews) Create(
-	ctx context.Context, issue, author, summary, branch, commit, session, key string,
+	ctx context.Context, issue, author, summary, branch, commit, session string,
+	expectedBase, expectedDefaultHead, key string,
 ) (string, error) {
-	rv, err := t.c.CreateReview(ctx, issue, author, summary, branch, commit, session, key)
+	rv, err := t.c.CreateReview(ctx, issue, author, summary, branch, commit, session,
+		expectedBase, expectedDefaultHead, key)
 	return rv.ID, err
 }
 
 func (t sutraReviews) Resubmit(
 	ctx context.Context, id, author, summary, branch, commit, session string,
-	expectedRevision int, expectedVerdictEvent, key string,
+	expectedRevision int, expectedVerdictEvent, expectedBase, expectedDefaultHead, key string,
 ) (int, error) {
 	rv, err := t.c.ResubmitReview(ctx, id, author, summary, branch, commit, session,
-		expectedRevision, expectedVerdictEvent, key)
+		expectedRevision, expectedVerdictEvent, expectedBase, expectedDefaultHead, key)
 	return rv.Revision, err
 }
 

@@ -58,13 +58,13 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 type recordingReviews struct{}
 
 func (recordingReviews) Create(
-	_ context.Context, _, _, _, _, commit, _, key string,
+	_ context.Context, _, _, _, _, commit, _, _, _, key string,
 ) (string, error) {
 	return "review-" + key[:8] + "-" + commit, nil
 }
 
 func (recordingReviews) Resubmit(
-	_ context.Context, _, _, _, _, _, _ string, expectedRevision int, _, _ string,
+	_ context.Context, _, _, _, _, _, _ string, expectedRevision int, _, _, _, _ string,
 ) (int, error) {
 	return expectedRevision + 1, nil
 }

@@ -39,7 +39,9 @@ type chainResults struct {
 	asked   int
 }
 
-func (c *chainResults) AllPassed(context.Context, string, string, string) (bool, string, error) {
+func (c *chainResults) AllPassed(
+	context.Context, string, string, string, int,
+) (bool, string, error) {
 	c.asked++
 	if c.missing != "" {
 		return false, c.missing, nil
