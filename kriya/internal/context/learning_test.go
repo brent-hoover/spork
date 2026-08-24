@@ -94,7 +94,7 @@ func TestAManualLearningFeedsForwardLikeACapturedOne(t *testing.T) {
 	if err := s.Record(stdctx.Background(), codeCapture()); err != nil {
 		t.Fatalf("record captured: %v", err)
 	}
-	got, err := s.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+	got, err := s.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 	if err != nil {
 		t.Fatalf("matching: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestACrossProjectLearningIsVisibleOutsideItsOrigin(t *testing.T) {
 	if err := s.Record(stdctx.Background(), global); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	got, err := s.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+	got, err := s.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 	if err != nil {
 		t.Fatalf("matching: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestALearningOutlivesItsBuild(t *testing.T) {
 			t.Fatalf("record: %v", err)
 		}
 	}
-	got, err := s.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+	got, err := s.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 	if err != nil {
 		t.Fatalf("matching: %v", err)
 	}

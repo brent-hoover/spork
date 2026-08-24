@@ -68,6 +68,8 @@ type Ticket struct {
 	// Patterns are the failure patterns this ticket is prone to, used to
 	// match learnings alongside the modules.
 	Patterns []string
+	// ProjectKey scopes which project's learnings this ticket may see.
+	ProjectKey string
 }
 
 // Learning is a lesson earned on an earlier run.
@@ -92,10 +94,10 @@ type BundleStore interface {
 
 // LearningStore reads the lessons already earned.
 type LearningStore interface {
-	// Matching returns learnings tagged with any of these modules or
-	// patterns. Matching is the store's, not the caller's: a caller that
-	// filtered afterwards would have loaded everything first.
-	Matching(ctx stdctx.Context, modules, patterns []string) ([]Learning, error)
+	// Matching returns global learnings and this project's, tagged with any of
+	// these modules or patterns. Matching is the store's, not the caller's: a
+	// caller that filtered afterwards would have loaded every project's first.
+	Matching(ctx stdctx.Context, projectKey string, modules, patterns []string) ([]Learning, error)
 }
 
 // content is the assembled bundle, as the agent receives it.
@@ -162,7 +164,8 @@ func (a Assembler) Assemble(
 	}
 
 	if a.Learnings != nil {
-		learned, err := a.Learnings.Matching(ctx, ticket.Modules, ticket.Patterns)
+		learned, err := a.Learnings.Matching(ctx, ticket.ProjectKey,
+			ticket.Modules, ticket.Patterns)
 		if err != nil {
 			return Bundle{}, fmt.Errorf("read learnings: %w", err)
 		}
@@ -257,7 +260,10 @@ type Capture struct {
 	// captured learning, matching the run kind.
 	SourceDoc string
 	// SourceRef is the finding, gate result or event that produced it.
-	SourceRef     string
+	SourceRef string
+	// SourceSession is the AGENT SESSION the correction happened in, not the
+	// run: a run has many sessions, and the transcript is findable only by the
+	// session's own id.
 	SourceSession string
 }
 
@@ -305,8 +311,12 @@ func (c Capture) validateProvenance() error {
 	case SourceOperator:
 		// The operator IS the origin. A run or an anchor would claim a
 		// provenance the entry does not have.
-		if c.SourceRun != "" || c.SourceCommit != "" || c.SourceDoc != "" {
-			return fmt.Errorf("an operator learning carries no run, commit or document")
+		// EVERY captured-origin reference, not only the anchors: an operator
+		// entry pointing at a finding or a session claims a provenance it
+		// does not have, and a reader following it finds someone else's.
+		if c.SourceRun != "" || c.SourceCommit != "" || c.SourceDoc != "" ||
+			c.SourceRef != "" || c.SourceSession != "" {
+			return fmt.Errorf("an operator learning carries no run, anchor, finding or session")
 		}
 		return nil
 	case SourceReviewFinding, SourceGateFailure, SourceSADirection, SourcePORejection:

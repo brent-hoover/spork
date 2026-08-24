@@ -32,7 +32,9 @@ func (m *memBundles) Get(_ stdctx.Context, build string) (kctx.Bundle, bool, err
 // memLearnings matches on either tag, as the real store does.
 type memLearnings struct{ rows []kctx.Learning }
 
-func (m *memLearnings) Matching(_ stdctx.Context, modules, patterns []string) ([]kctx.Learning, error) {
+func (m *memLearnings) Matching(
+	_ stdctx.Context, _ string, modules, patterns []string,
+) ([]kctx.Learning, error) {
 	var out []kctx.Learning
 	for _, l := range m.rows {
 		if inList(modules, l.Module) || inList(patterns, l.Pattern) {

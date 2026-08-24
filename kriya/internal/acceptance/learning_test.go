@@ -87,7 +87,7 @@ func registerLearningLoop(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^a learning is recorded then and there, stating what went wrong and how to avoid it$`,
 		func() error {
-			got, err := w.learn.store.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+			got, err := w.learn.store.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 			if err != nil {
 				return err
 			}
@@ -102,7 +102,7 @@ func registerLearningLoop(sc *godog.ScenarioContext, w *world) {
 		})
 
 	sc.Step(`^it is tagged with the module and the failure pattern$`, func() error {
-		got, err := w.learn.store.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+		got, err := w.learn.store.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 		if err != nil {
 			return err
 		}
@@ -188,7 +188,7 @@ func registerLearningLoop(sc *godog.ScenarioContext, w *world) {
 		}); err != nil {
 			return err
 		}
-		got, err := l.store.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+		got, err := l.store.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 		if err != nil {
 			return err
 		}
@@ -235,7 +235,7 @@ func registerLearningLoop(sc *godog.ScenarioContext, w *world) {
 	})
 
 	sc.Step(`^both learnings persist durably$`, func() error {
-		got, err := w.learn.store.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+		got, err := w.learn.store.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 		if err != nil {
 			return err
 		}
@@ -246,10 +246,11 @@ func registerLearningLoop(sc *godog.ScenarioContext, w *world) {
 	})
 
 	sc.Step(`^the cross-project learning is visible outside its project of origin$`, func() error {
-		// A fresh reader with no knowledge of the origin project still matches
-		// it, because matching runs on tags rather than on scope.
+		// A reader working on a DIFFERENT project still matches it, because a
+		// global learning is scoped to no project — which is precisely what
+		// makes it cross-project.
 		fresh := kctx.SQLLearnings{DB: w.learn.db, Now: fakes.NewClock(time.Unix(0, 0))}
-		got, err := fresh.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+		got, err := fresh.Matching(stdctx.Background(), "/elsewhere", []string{"MOD-api"}, nil)
 		if err != nil {
 			return err
 		}
@@ -279,6 +280,7 @@ func registerLearningLoop(sc *godog.ScenarioContext, w *world) {
 		c := w.newContext()
 		c.learnings = nil
 		c.ticket.Modules = []string{moduleID(module)}
+		c.ticket.ProjectKey = "/target"
 		c.spec.Modules[0].ID = moduleID(module)
 		return nil
 	})

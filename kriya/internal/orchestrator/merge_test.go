@@ -135,13 +135,17 @@ func (g *gitDouble) Merge(_ context.Context, commit, expectedBase string) (strin
 }
 
 func queue(store *memAttempts, ap *approvals, git *gitDouble) orchestrator.Queue {
-	return orchestrator.Queue{Store: store, Approvals: ap, Git: git, Actor: "actor-1"}
+	return orchestrator.Queue{
+		Store: store, Approvals: ap, Git: git,
+		Resource: "/repo#main", Actor: "actor-1",
+	}
 }
 
 func attempt() orchestrator.MergeAttempt {
 	return orchestrator.MergeAttempt{
 		TargetKey: "KRIYA0a", Build: "run-1", Review: "review-1", Revision: 2,
 		ApprovalEvent: "event-9", Commit: "C2", ExpectedBase: "base-1",
+		Resource: "/repo#main",
 	}
 }
 
@@ -425,10 +429,12 @@ func TestOnlyTheQueueHeadMerges(t *testing.T) {
 	second.Build, second.Review, second.ApprovalEvent = "run-2", "review-2", "event-10"
 	secondKey := enqueued(t, q, second)
 
-	// The second attempt is asked first, and declines: it is not the head.
+	// The second attempt is asked first, and declines: it is not the head. It
+	// reports WAITING, which is neither success nor failure — a run told
+	// either would be moved somewhere it does not belong.
 	waiting, err := q.Run(context.Background(), secondKey)
-	if err != nil {
-		t.Fatalf("run second: %v", err)
+	if !errors.Is(err, orchestrator.ErrWaiting) {
+		t.Fatalf("got %v, want ErrWaiting", err)
 	}
 	if waiting.State != orchestrator.AttemptQueued {
 		t.Errorf("the waiting attempt is in %q, want queued", waiting.State)
@@ -481,8 +487,10 @@ func TestTheSecondAttemptPreflightsAgainstTheMovedBase(t *testing.T) {
 	}
 }
 
-func TestAttemptsForOtherTargetsDoNotBlockEachOther(t *testing.T) {
-	// The lock is PER TARGET. One target's queue must not stall another's.
+func TestTwoTargetsSharingARepositoryShareAQueueHead(t *testing.T) {
+	// The lock is scoped to what is CONTENDED — the repository and branch the
+	// CAS targets — not to the target. Two targets in one repository racing
+	// the same branch is exactly the case the ordering exists to prevent.
 	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
 	q := queue(store, ap, git)
 	enqueued(t, q, attempt())
@@ -491,33 +499,80 @@ func TestAttemptsForOtherTargetsDoNotBlockEachOther(t *testing.T) {
 	other.Review, other.ApprovalEvent = "review-2", "event-10"
 	otherKey := enqueued(t, q, other)
 
-	got, err := q.Run(context.Background(), otherKey)
-	if err != nil {
-		t.Fatalf("run other target: %v", err)
+	_, err := q.Run(context.Background(), otherKey)
+	if !errors.Is(err, orchestrator.ErrWaiting) {
+		t.Fatalf("got %v, want ErrWaiting — it shares the branch", err)
 	}
-	if got.State != orchestrator.AttemptMerged {
-		t.Errorf("another target's attempt settled as %q", got.State)
+	if len(ap.calls) != 0 {
+		t.Error("a waiting attempt consumed an approval")
 	}
 }
 
-func TestRecoveryResumesOneAttemptPerTarget(t *testing.T) {
-	// The same serialization Run enforces: recovery cannot do what running
-	// work is forbidden from doing.
+func TestADifferentRepositoryDoesNotBlock(t *testing.T) {
+	// Nothing is contended between them.
 	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
 	q := queue(store, ap, git)
 	enqueued(t, q, attempt())
+
+	elsewhere := queue(store, ap, git)
+	elsewhere.Resource = "/other-repo#main"
+	other := attempt()
+	other.TargetKey, other.Build = "OTHER0b", "run-2"
+	other.Review, other.ApprovalEvent = "review-2", "event-10"
+	other.Resource = "/other-repo#main"
+	otherKey := enqueued(t, elsewhere, other)
+
+	got, err := elsewhere.Run(context.Background(), otherKey)
+	if err != nil {
+		t.Fatalf("run other repository: %v", err)
+	}
+	if got.State != orchestrator.AttemptMerged {
+		t.Errorf("an attempt in another repository settled as %q", got.State)
+	}
+}
+
+func TestRecoveryDrainsTheQueueRatherThanStoppingAtItsHead(t *testing.T) {
+	// Advancing a head settles it, and the attempt behind becomes the new
+	// head. Stopping at the first would leave that one queued until something
+	// else restarted recovery — and recovery runs once, at startup.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	firstKey := enqueued(t, q, attempt())
 	second := attempt()
 	second.Build, second.Review, second.ApprovalEvent = "run-2", "review-2", "event-10"
-	enqueued(t, q, second)
+	secondKey := enqueued(t, q, second)
 
 	n, err := q.RecoverMerges(context.Background())
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("resumed %d attempts for one target", n)
+	if n != 2 {
+		t.Errorf("resumed %d attempts, want the whole queue drained", n)
 	}
-	if len(git.merges) != 1 {
-		t.Errorf("merged %v", git.merges)
+	if store.rows[firstKey].State != orchestrator.AttemptMerged {
+		t.Errorf("the head settled as %q", store.rows[firstKey].State)
+	}
+	// The second aborts: the first merge moved the head under it. Aborted is
+	// terminal, which is the point — nothing is left queued.
+	if !store.rows[secondKey].Terminal() {
+		t.Errorf("the second attempt is still %q", store.rows[secondKey].State)
+	}
+}
+
+func TestRecoveryStopsBehindAnAttemptStillHoldingTheSection(t *testing.T) {
+	// An attempt that does not settle keeps the section, and recovery must not
+	// do what running work is forbidden from doing.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1", casFails: true}
+	q := queue(store, ap, git)
+	enqueued(t, q, attempt())
+	second := attempt()
+	second.Build, second.Review, second.ApprovalEvent = "run-2", "review-2", "event-10"
+	secondKey := enqueued(t, q, second)
+
+	if _, err := q.RecoverMerges(context.Background()); err == nil {
+		t.Fatal("a merge that did not land read as success")
+	}
+	if store.rows[secondKey].State != orchestrator.AttemptQueued {
+		t.Errorf("the waiting attempt moved to %q", store.rows[secondKey].State)
 	}
 }

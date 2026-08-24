@@ -117,7 +117,7 @@ func TestEitherTagIsEnoughToMatch(t *testing.T) {
 	seedLearning(t, db, "MOD-other", "off-by-one", "by pattern")
 	seedLearning(t, db, "MOD-other", "rounding", "neither")
 
-	got, err := context.SQLLearnings{DB: db}.Matching(stdctx.Background(),
+	got, err := context.SQLLearnings{DB: db}.Matching(stdctx.Background(), "/target",
 		[]string{"MOD-api"}, []string{"off-by-one"})
 	if err != nil {
 		t.Fatalf("matching: %v", err)
@@ -134,7 +134,7 @@ func TestMatchingOnModulesAloneWorks(t *testing.T) {
 	db := sqlDB(t, true)
 	seedLearning(t, db, "MOD-api", "pagination", "by module")
 	seedLearning(t, db, "MOD-other", "pagination", "wrong module")
-	got, err := context.SQLLearnings{DB: db}.Matching(stdctx.Background(), []string{"MOD-api"}, nil)
+	got, err := context.SQLLearnings{DB: db}.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil)
 	if err != nil {
 		t.Fatalf("matching: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestMatchingOnPatternsAloneWorks(t *testing.T) {
 	db := sqlDB(t, true)
 	seedLearning(t, db, "MOD-api", "off-by-one", "by pattern")
 	seedLearning(t, db, "MOD-api", "rounding", "wrong pattern")
-	got, err := context.SQLLearnings{DB: db}.Matching(stdctx.Background(), nil, []string{"off-by-one"})
+	got, err := context.SQLLearnings{DB: db}.Matching(stdctx.Background(), "/target", nil, []string{"off-by-one"})
 	if err != nil {
 		t.Fatalf("matching: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestAskingForNothingReturnsNothingWithoutQuerying(t *testing.T) {
 	// An unfiltered query would return every learning ever recorded, which is
 	// the opposite of matching.
 	s := context.SQLLearnings{DB: sqlDB(t, false)}
-	got, err := s.Matching(stdctx.Background(), nil, nil)
+	got, err := s.Matching(stdctx.Background(), "/target", nil, nil)
 	if err != nil {
 		t.Fatalf("matching: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestAskingForNothingReturnsNothingWithoutQuerying(t *testing.T) {
 
 func TestALearningStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
 	s := context.SQLLearnings{DB: sqlDB(t, false)}
-	if _, err := s.Matching(stdctx.Background(), []string{"MOD-api"}, nil); err == nil {
+	if _, err := s.Matching(stdctx.Background(), "/target", []string{"MOD-api"}, nil); err == nil {
 		t.Error("a missing table read as nothing having been learned")
 	}
 }

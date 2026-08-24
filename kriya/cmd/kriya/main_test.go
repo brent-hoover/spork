@@ -377,3 +377,43 @@ func TestATicketsIssueAndCriteriaAreLookedUpByTitle(t *testing.T) {
 		t.Errorf("an unknown ticket resolved to %q", got)
 	}
 }
+
+func TestLearnAddRecordsAnOperatorLearning(t *testing.T) {
+	// Through the real command surface: an operator has no other way in, and a
+	// test that wrote to the store directly would prove nothing about whether
+	// they do.
+	t.Setenv("KRIYA_DB", filepath.Join(t.TempDir(), "kriya.db"))
+	err := run(t.Context(), []string{"learn", "add",
+		"--module", "MOD-api", "--pattern", "error-handling",
+		"--lesson", "never swallow an exception", "--project", "/target"})
+	if err != nil {
+		t.Fatalf("learn add: %v", err)
+	}
+}
+
+func TestLearnAddWithoutAProjectIsCrossProject(t *testing.T) {
+	// The scope follows the project key: "which project" and "is it
+	// project-scoped" are one decision, and two flags could contradict.
+	t.Setenv("KRIYA_DB", filepath.Join(t.TempDir(), "kriya.db"))
+	if err := run(t.Context(), []string{"learn", "add",
+		"--module", "MOD-api", "--pattern", "p", "--lesson", "a global lesson"}); err != nil {
+		t.Fatalf("learn add: %v", err)
+	}
+}
+
+func TestLearnRefusesAnIncompleteEntry(t *testing.T) {
+	// The write enforces the rules; the command surfaces the refusal.
+	t.Setenv("KRIYA_DB", filepath.Join(t.TempDir(), "kriya.db"))
+	if err := run(t.Context(), []string{"learn", "add", "--module", "MOD-api"}); err == nil {
+		t.Fatal("a learning with no lesson was recorded")
+	}
+}
+
+func TestLearnNeedsASubcommand(t *testing.T) {
+	t.Setenv("KRIYA_DB", filepath.Join(t.TempDir(), "kriya.db"))
+	for _, args := range [][]string{{"learn"}, {"learn", "remove"}} {
+		if err := run(t.Context(), args); err == nil {
+			t.Errorf("%v was accepted", args)
+		}
+	}
+}

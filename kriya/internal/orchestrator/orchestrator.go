@@ -9,6 +9,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"kriya/internal/clock"
@@ -143,6 +144,14 @@ var Table = []Transition{
 	{From: StateMerged, Stage: StageComplete, OnOK: StateClosed, OnFail: StateDevLoop},
 }
 
+// ErrWaiting reports that a stage cannot proceed yet and the run must stay
+// where it is.
+//
+// A THIRD outcome, distinct from success and failure: a run waiting on a merge
+// lock has neither advanced nor failed, and routing it either way would be a
+// lie. Advance leaves such a run untouched.
+var ErrWaiting = errors.New("the stage is waiting")
+
 // Lookup returns the transition for a state.
 func Lookup(from State) (Transition, bool) {
 	for _, t := range Table {
@@ -212,6 +221,11 @@ func (o Orchestrator) Advance(ctx context.Context, id string) (BuildRun, error) 
 	}
 
 	next, stageErr := stage(ctx, run)
+	if errors.Is(stageErr, ErrWaiting) {
+		// Neither advanced nor failed. The run stays exactly where it is, and
+		// the caller comes back.
+		return run, nil
+	}
 	if stageErr != nil {
 		// A stage ERROR is a malfunction, distinct from a stage reporting
 		// failure: the run parks with the durable cause so the inbox can say

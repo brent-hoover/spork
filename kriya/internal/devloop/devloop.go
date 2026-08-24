@@ -286,11 +286,6 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 		}
 
 		consecutive = append(consecutive, reviewed.Findings)
-		// Captured HERE, at the moment of correction — not reconstructed
-		// afterwards, when what actually went wrong is a guess.
-		if err := l.learn(ctx, req, sha, reviewed); err != nil {
-			return err
-		}
 		fix := fixPrompt(req, reviewed.Findings, direction)
 		res, err := l.Agent.Run(ctx, agent.Request{
 			Role:       agent.RoleDev,
@@ -306,6 +301,12 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 			Role: string(agent.RoleDev), Prompt: fix, Reply: res.Text, Model: res.Model,
 		})
 		session.SessionID = res.SessionID
+		// Recorded only once the correction has actually been made. A lesson
+		// written before the fixing agent ran would claim a correction that
+		// may never have happened, and a retry would insert it twice.
+		if err := l.learn(ctx, req, sha, res.SessionID, reviewed); err != nil {
+			return err
+		}
 		answered = &reviewed
 	}
 	// Out of rounds with findings outstanding.
@@ -353,8 +354,25 @@ func (l Loop) impasse(ctx context.Context, req Request, session *Session,
 	if l.Architect == nil {
 		return fmt.Errorf("review still reporting findings after %d rounds", rounds)
 	}
-	if _, err := l.Architect.Resolve(ctx, req.Run, req.Ticket,
-		architect.TriggerRoundLimit, findings, session.SystemFile); err != nil {
+	in, err := l.Architect.Resolve(ctx, req.Run, req.Ticket,
+		architect.TriggerRoundLimit, findings, session.SystemFile)
+	if err != nil {
+		return err
+	}
+	// The direction is a correction, and it teaches the same way a review
+	// finding does. Recorded HERE rather than inside the architect because
+	// MOD-architect may import nothing — and the loop is where the direction
+	// is observed anyway.
+	commit := ""
+	if n := len(session.Commits); n > 0 {
+		commit = session.Commits[n-1]
+	}
+	if err := l.record(ctx, kctx.Capture{
+		Scope: kctx.ScopeProject, ProjectKey: req.ProjectKey,
+		Lesson: in.Direction, Module: req.Ticket,
+		Pattern: "sa-direction/" + in.Trigger, SourceKind: kctx.SourceSADirection,
+		SourceRun: req.Run, SourceCommit: commit, SourceRef: in.Trigger,
+	}); err != nil {
 		return err
 	}
 	return fmt.Errorf("run %s paused for the architect after %d rounds", req.Run, rounds)
@@ -365,7 +383,9 @@ func (l Loop) impasse(ctx context.Context, req Request, session *Session,
 // The TRIGGERING commit, not the fix: the lesson is about the code that was
 // reviewed, and a later run matching this module wants to know what went wrong
 // there rather than where it was patched.
-func (l Loop) learn(ctx context.Context, req Request, commit string, round reviewbridge.Round) error {
+func (l Loop) learn(
+	ctx context.Context, req Request, commit, session string, round reviewbridge.Round,
+) error {
 	if l.Learnings == nil {
 		return nil
 	}
@@ -373,16 +393,64 @@ func (l Loop) learn(ctx context.Context, req Request, commit string, round revie
 	if len(req.Modules) > 0 {
 		module = req.Modules[0]
 	}
-	err := l.Learnings.Record(ctx, kctx.Capture{
-		Scope: kctx.ScopeProject, ProjectKey: req.ProjectKey,
-		Lesson: round.Findings, Module: module, Pattern: "review-finding",
-		SourceKind: kctx.SourceReviewFinding, SourceRun: req.Run,
-		SourceCommit: commit, SourceRef: round.ID, SourceSession: req.Run,
-	})
-	if err != nil {
-		return fmt.Errorf("record learning for %s: %w", req.Ticket, err)
+	// ONE learning per finding. A whole report stored as a single lesson is
+	// matched by whichever pattern the first finding happened to be about, and
+	// every other finding in it is invisible to the feed-forward path.
+	for n, finding := range splitFindings(round.Findings) {
+		err := l.record(ctx, kctx.Capture{
+			Scope: kctx.ScopeProject, ProjectKey: req.ProjectKey,
+			Lesson: finding, Module: module, Pattern: patternOf(finding),
+			SourceKind: kctx.SourceReviewFinding, SourceRun: req.Run,
+			SourceCommit: commit,
+			// The round AND the finding's position in it, so two lessons from
+			// one report do not share a reference.
+			SourceRef: fmt.Sprintf("%s#%d", round.ID, n), SourceSession: session,
+		})
+		if err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// record writes one capture, skipping a lesson with nothing in it.
+func (l Loop) record(ctx context.Context, c kctx.Capture) error {
+	if l.Learnings == nil || c.Lesson == "" {
+		return nil
+	}
+	if err := l.Learnings.Record(ctx, c); err != nil {
+		return fmt.Errorf("record learning for %s: %w", c.Module, err)
+	}
+	return nil
+}
+
+// splitFindings breaks a review report into its individual findings.
+//
+// roborev separates them with a rule on its own line. A report with no rule is
+// one finding, which is the ordinary single-finding case rather than an edge.
+func splitFindings(report string) []string {
+	var out []string
+	for _, part := range strings.Split(report, "\n---\n") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// patternOf derives a finding's failure pattern from its own text.
+//
+// The severity is the one thing every finding states in a fixed form, so it is
+// what a later run can match on. A richer classification would be kriya
+// deciding what a reviewer meant, which is exactly the judgement the review
+// exists to supply.
+func patternOf(finding string) string {
+	for _, severity := range []string{"Critical", "High", "Medium", "Low"} {
+		if strings.Contains(finding, "**Severity**: "+severity) {
+			return "review-finding/" + strings.ToLower(severity)
+		}
+	}
+	return "review-finding"
 }
 
 // fixPrompt hands the findings back unaltered, under any architect direction.

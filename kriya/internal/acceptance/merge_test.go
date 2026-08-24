@@ -144,7 +144,8 @@ func freshMerge() *mergeWorld {
 	m := &mergeWorld{
 		store: store, runs: runs, approvals: ap, git: git,
 		queue: orchestrator.Queue{
-			Store: store, Runs: runs, Approvals: ap, Git: git, Actor: "actor-1",
+			Store: store, Runs: runs, Approvals: ap, Git: git,
+			Resource: "/repo#main", Actor: "actor-1",
 		},
 		run: orchestrator.BuildRun{
 			ID: "run-1", Ticket: "KRI-1", State: orchestrator.StateReviewSubmitted,
@@ -758,8 +759,8 @@ func registerSerialization(sc *godog.ScenarioContext, w *world) {
 		// The queue ORDER is the lock: the second attempt is asked first and
 		// declines, which is what proves the head holds it.
 		waiting, err := m.queue.Run(context.Background(), m.laterKey)
-		if err != nil {
-			return err
+		if !errors.Is(err, orchestrator.ErrWaiting) {
+			return fmt.Errorf("got %v, want ErrWaiting", err)
 		}
 		if waiting.State != orchestrator.AttemptQueued {
 			return fmt.Errorf("the waiting attempt is in %q", waiting.State)

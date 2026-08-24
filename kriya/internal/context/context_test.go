@@ -33,11 +33,15 @@ func (m *memBundles) Get(_ stdctx.Context, build string) (context.Bundle, bool, 
 }
 
 type memLearnings struct {
-	rows  []context.Learning
-	asked [][]string
+	rows    []context.Learning
+	asked   [][]string
+	project string
 }
 
-func (m *memLearnings) Matching(_ stdctx.Context, modules, patterns []string) ([]context.Learning, error) {
+func (m *memLearnings) Matching(
+	_ stdctx.Context, projectKey string, modules, patterns []string,
+) ([]context.Learning, error) {
+	m.project = projectKey
 	m.asked = append(m.asked, modules, patterns)
 	var out []context.Learning
 	for _, l := range m.rows {
@@ -86,10 +90,11 @@ func spec() context.Spec {
 
 func ticket() context.Ticket {
 	return context.Ticket{
-		Title:    "Create a short link",
-		Criteria: []string{"AC-valid-url"},
-		Modules:  []string{"MOD-api", "MOD-store"},
-		Patterns: []string{"off-by-one"},
+		Title:      "Create a short link",
+		Criteria:   []string{"AC-valid-url"},
+		Modules:    []string{"MOD-api", "MOD-store"},
+		Patterns:   []string{"off-by-one"},
+		ProjectKey: "/target",
 	}
 }
 
@@ -200,6 +205,10 @@ func TestMatchingHappensInTheStoreNotAfterwards(t *testing.T) {
 	if !contains(learnings.asked[0], "MOD-api") || !contains(learnings.asked[1], "off-by-one") {
 		t.Errorf("the store was asked for %v", learnings.asked)
 	}
+	// And scoped: another project's learnings are not this ticket's to see.
+	if learnings.project != "/target" {
+		t.Errorf("the store was asked for project %q", learnings.project)
+	}
 }
 
 func TestTheBundleIsRecordedAgainstTheRun(t *testing.T) {
@@ -273,7 +282,9 @@ func (failingBundles) Get(stdctx.Context, string) (context.Bundle, bool, error) 
 // failingLearnings refuses to answer.
 type failingLearnings struct{}
 
-func (failingLearnings) Matching(stdctx.Context, []string, []string) ([]context.Learning, error) {
+func (failingLearnings) Matching(
+	stdctx.Context, string, []string, []string,
+) ([]context.Learning, error) {
 	return nil, errors.New("store unavailable")
 }
 

@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func run(ctx context.Context, args []string) error {
 	defer func() { _ = db.Close() }()
 
 	if len(args) == 0 {
-		return errors.New("usage: kriya build <project>")
+		return errors.New("usage: kriya build <project> | kriya learn add [flags]")
 	}
 	switch args[0] {
 	case "build":
@@ -64,6 +65,8 @@ func run(ctx context.Context, args []string) error {
 			return errors.New("usage: kriya build <project>")
 		}
 		return build(ctx, db, args[1])
+	case "learn":
+		return learn(ctx, db, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -97,6 +100,40 @@ func openStore(ctx context.Context) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// learn is the `kriya learn` command surface.
+//
+// One subcommand today. It is a subcommand rather than a flag on build because
+// adding a learning is not part of a build: an operator writes one from their
+// own experience, at a moment of their choosing.
+func learn(ctx context.Context, db *sql.DB, args []string) error {
+	if len(args) == 0 || args[0] != "add" {
+		return errors.New("usage: kriya learn add --module M --pattern P --lesson L [--project KEY]")
+	}
+	flags := flag.NewFlagSet("learn add", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	var (
+		lesson  = flags.String("lesson", "", "what was learned, and how to avoid it")
+		module  = flags.String("module", "", "the module the lesson concerns")
+		pattern = flags.String("pattern", "", "the failure pattern the lesson concerns")
+		project = flags.String("project", "", "scope to this project; omit for a cross-project lesson")
+	)
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	// The scope follows the project key rather than being asked for
+	// separately: "which project" and "is it project-scoped" are one decision,
+	// and two flags could contradict each other.
+	scope := kctx.ScopeGlobal
+	if *project != "" {
+		scope = kctx.ScopeProject
+	}
+	return cli.Learn(ctx, os.Stdout, kctx.SQLLearnings{DB: db, Now: clock.System{}},
+		kctx.Capture{
+			Scope: scope, ProjectKey: *project, Lesson: *lesson,
+			Module: *module, Pattern: *pattern, SourceKind: kctx.SourceOperator,
+		})
 }
 
 // build wires the modules for one target, reconciles what a previous run left
@@ -318,7 +355,10 @@ func mergeQueue(db *sql.DB, ws workspace.Manager, actor string) orchestrator.Que
 		Runs:      orchestrator.SQLStore{DB: db},
 		Approvals: sutraApprovals{c: trackerclient.New(sutraURL())},
 		Git:       repoMerger{git: workspace.ShellGit{}, repo: ws.Repo, branch: ws.DefaultBranch},
-		Actor:     actor,
+		// The repository and branch the CAS targets: two targets sharing them
+		// share a queue head, because that is what is actually contended.
+		Resource: ws.Repo + "#" + ws.DefaultBranch,
+		Actor:    actor,
 	}
 }
 
@@ -491,6 +531,7 @@ func stageDeps(
 			Now:   clock.System{},
 		},
 		submitter:    submitterOn(db, actor),
+		learnings:    kctx.SQLLearnings{DB: db, Now: clock.System{}},
 		completer:    completerOn(db, ws, actor),
 		queue:        mergeQueue(db, ws, actor),
 		commandsFor:  commandsFromSnapshot(snap),

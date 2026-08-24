@@ -42,6 +42,11 @@ type MergeAttempt struct {
 	ApprovalEvent string
 	// Commit is the approved revision's pinned commit — what actually merges.
 	Commit string
+	// Resource is what the merge actually contends for: the repository and
+	// branch the CAS targets. Two targets sharing a repository share a queue
+	// head, because two merges racing on one branch is the thing the ordering
+	// exists to prevent — the TARGET is not what is contended.
+	Resource string
 	// ExpectedBase is the frozen gated_base the preflight validated. The
 	// merge CAS targets exactly this.
 	ExpectedBase string
@@ -110,7 +115,10 @@ type Queue struct {
 	Runs      Store
 	Approvals Approvals
 	Git       Merger
-	Actor     string
+	// Resource names the repository and branch this queue merges into. It is
+	// what serialization is scoped to.
+	Resource string
+	Actor    string
 }
 
 // Enqueue records an approval event as a merge attempt.
@@ -147,31 +155,32 @@ func (q Queue) Run(ctx context.Context, key string) (MergeAttempt, error) {
 		// again, and an aborted attempt stays a terminal historical record.
 		return a, nil
 	}
-	head, err := q.head(ctx, a.TargetKey)
+	head, err := q.head(ctx, a.Resource)
 	if err != nil {
 		return MergeAttempt{}, err
 	}
 	if head != a.Key {
-		// Another attempt for this target holds the section. This one waits
-		// QUEUED, consuming nothing: two merges racing on one default branch
-		// would have one landing against a base the other just moved.
-		return a, nil
+		// Another attempt holds the section for this repository and branch.
+		// This one WAITS — it has neither advanced nor failed — consuming
+		// nothing: two merges racing on one branch would have one landing
+		// against a base the other just moved.
+		return a, fmt.Errorf("merge attempt %s: %w", a.Key, ErrWaiting)
 	}
 	return q.advance(ctx, a)
 }
 
-// head returns the oldest unfinished attempt's key for a target.
+// head returns the oldest unfinished attempt's key for a merge resource.
 //
 // The queue ORDER is the lock. A separate lock row would be a second thing to
 // keep in step with the queue, and a crash between taking it and recording the
 // step it guards would leave it held by nobody.
-func (q Queue) head(ctx context.Context, targetKey string) (string, error) {
+func (q Queue) head(ctx context.Context, resource string) (string, error) {
 	open, err := q.Store.Unfinished(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list unfinished merge attempts: %w", err)
 	}
 	for _, a := range open {
-		if a.TargetKey == targetKey {
+		if a.Resource == resource {
 			return a.Key, nil
 		}
 	}
@@ -283,20 +292,25 @@ func (q Queue) RecoverMerges(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list unfinished merge attempts: %w", err)
 	}
-	// In queue order, and one target at a time: the same serialization Run
-	// enforces, so recovery cannot do what running work is forbidden from
-	// doing.
-	held := map[string]bool{}
+	// In queue order, one resource at a time — the same serialization Run
+	// enforces — but DRAINING: advancing a head can settle it, and the attempt
+	// behind it becomes the new head. Stopping at the first would leave that
+	// one queued until something else restarted recovery.
+	busy := map[string]bool{}
 	var resumed int
 	for _, a := range open {
-		if held[a.TargetKey] {
+		if busy[a.Resource] {
 			continue
 		}
-		held[a.TargetKey] = true
-		if _, err := q.advance(ctx, a); err != nil {
+		settled, err := q.advance(ctx, a)
+		if err != nil {
 			return 0, err
 		}
 		resumed++
+		if !settled.Terminal() {
+			// It is still holding the section; nothing behind it can run.
+			busy[a.Resource] = true
+		}
 	}
 	return resumed, nil
 }
@@ -334,6 +348,7 @@ func (q Queue) OnApproval(ctx context.Context, run BuildRun, a Approved) (BuildR
 	attempt := MergeAttempt{
 		TargetKey: a.TargetKey, Build: run.ID, Review: a.Review, Revision: a.Revision,
 		ApprovalEvent: a.Event, Commit: a.Commit, ExpectedBase: run.GatedBase,
+		Resource: q.Resource,
 	}
 	if _, err := q.Enqueue(ctx, attempt); err != nil {
 		return run, "", err

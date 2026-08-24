@@ -128,7 +128,9 @@ func (s SQLLearnings) Provenance(ctx stdctx.Context, lesson string) (Capture, bo
 // Either tag matching is enough: a lesson about a failure pattern is worth
 // having on a module that has not hit it yet, which is the whole point of
 // feeding it forward.
-func (s SQLLearnings) Matching(ctx stdctx.Context, modules, patterns []string) ([]Learning, error) {
+func (s SQLLearnings) Matching(
+	ctx stdctx.Context, projectKey string, modules, patterns []string,
+) ([]Learning, error) {
 	if len(modules) == 0 && len(patterns) == 0 {
 		return nil, nil
 	}
@@ -149,13 +151,16 @@ func (s SQLLearnings) Matching(ctx stdctx.Context, modules, patterns []string) (
 			args = append(args, v)
 		}
 	}
-	// Every matching learning, whatever its scope: a cross-project lesson is
-	// visible outside its project of origin, and a manual one is
-	// indistinguishable here from a captured one — which is what makes the
-	// feed-forward path treat them alike.
+	// Global learnings and THIS project's, never another project's. A global
+	// lesson is visible outside its project of origin — that is its purpose —
+	// but a project-scoped one is not, and one database can hold several
+	// projects. A manual learning is indistinguishable here from a captured
+	// one, which is what makes the feed-forward path treat them alike.
+	args = append([]any{projectKey}, args...)
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT lesson, module, pattern FROM learning
-		   WHERE `+strings.Join(clauses, " OR ")+` ORDER BY id`, args...)
+		   WHERE (scope = 'global' OR project_key = ?)
+		     AND (`+strings.Join(clauses, " OR ")+`) ORDER BY id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query learnings: %w", err)
 	}

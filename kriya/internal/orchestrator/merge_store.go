@@ -21,6 +21,7 @@ CREATE TABLE merge_attempt (
     revision       INTEGER NOT NULL,
     approval_event TEXT NOT NULL,
     commit_sha     TEXT NOT NULL DEFAULT '',
+    resource       TEXT NOT NULL DEFAULT '',
     expected_base  TEXT NOT NULL DEFAULT '',
     consume_key    TEXT NOT NULL DEFAULT '',
     merge_commit   TEXT NOT NULL DEFAULT '',
@@ -31,7 +32,7 @@ CREATE TABLE merge_attempt (
 
 // attemptColumns is every column a MergeAttempt reads back, in scan order.
 const attemptColumns = `attempt_key, target_key, build, review, revision, approval_event,
-	commit_sha, expected_base, consume_key, merge_commit, state, note`
+	commit_sha, resource, expected_base, consume_key, merge_commit, state, note`
 
 // SQLAttempts persists merge attempts in SQLite.
 type SQLAttempts struct{ DB *sql.DB }
@@ -44,12 +45,12 @@ type SQLAttempts struct{ DB *sql.DB }
 func (s SQLAttempts) Insert(ctx context.Context, a MergeAttempt) (bool, error) {
 	res, err := s.DB.ExecContext(ctx,
 		`INSERT INTO merge_attempt (attempt_key, target_key, build, review, revision,
-		   approval_event, commit_sha, expected_base, state, seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+		   approval_event, commit_sha, resource, expected_base, state, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		   (SELECT COALESCE(MAX(seq), 0) + 1 FROM merge_attempt))
 		 ON CONFLICT(attempt_key) DO NOTHING`,
 		a.Key, a.TargetKey, a.Build, a.Review, a.Revision, a.ApprovalEvent,
-		a.Commit, a.ExpectedBase, a.State)
+		a.Commit, a.Resource, a.ExpectedBase, a.State)
 	if err != nil {
 		return false, fmt.Errorf("insert merge attempt: %w", err)
 	}
@@ -78,7 +79,8 @@ func (s SQLAttempts) Find(ctx context.Context, key string) (MergeAttempt, bool, 
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+attemptColumns+` FROM merge_attempt WHERE attempt_key = ?`, key).
 		Scan(&a.Key, &a.TargetKey, &a.Build, &a.Review, &a.Revision, &a.ApprovalEvent,
-			&a.Commit, &a.ExpectedBase, &a.ConsumeKey, &a.MergeCommit, &a.State, &a.Note)
+			&a.Commit, &a.Resource, &a.ExpectedBase, &a.ConsumeKey, &a.MergeCommit,
+			&a.State, &a.Note)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MergeAttempt{}, false, nil
 	}
@@ -105,7 +107,7 @@ func (s SQLAttempts) Unfinished(ctx context.Context) ([]MergeAttempt, error) {
 	for rows.Next() {
 		var a MergeAttempt
 		if err := rows.Scan(&a.Key, &a.TargetKey, &a.Build, &a.Review, &a.Revision,
-			&a.ApprovalEvent, &a.Commit, &a.ExpectedBase, &a.ConsumeKey,
+			&a.ApprovalEvent, &a.Commit, &a.Resource, &a.ExpectedBase, &a.ConsumeKey,
 			&a.MergeCommit, &a.State, &a.Note); err != nil {
 			return nil, fmt.Errorf("scan merge attempt: %w", err)
 		}

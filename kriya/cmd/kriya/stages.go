@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	kctx "kriya/internal/context"
 	"kriya/internal/devloop"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
@@ -37,6 +38,7 @@ type deps struct {
 	submitter orchestrator.Submitter
 	queue     orchestrator.Queue
 	completer orchestrator.Completer
+	learnings kctx.Recorder
 
 	commandsFor  func(module string) map[string]string
 	criteriaFor  func(ticket string) []string
@@ -88,7 +90,7 @@ func buildStages(d deps) orchestrator.Stages {
 			return run, err
 		},
 
-		orchestrator.StageValidate: validateStage(ws, po, criteriaFor),
+		orchestrator.StageValidate: validateStage(ws, po, criteriaFor, d.learnings),
 
 		orchestrator.StageSubmit: submitStage(ws, submitter, issueFor, sessionFor),
 
@@ -96,7 +98,7 @@ func buildStages(d deps) orchestrator.Stages {
 
 		orchestrator.StageComplete: completeStage(ws, d.completer, issueFor),
 
-		orchestrator.StageGates: gateStage(ws, runner, commandsFor),
+		orchestrator.StageGates: gateStage(ws, runner, commandsFor, d.learnings),
 	}
 }
 
@@ -139,6 +141,7 @@ func modulesFor(snap planner.Snapshot, ticket string) []string {
 // gateStage runs the whole chain for a run's module.
 func gateStage(
 	ws workspace.Manager, runner gates.Runner, commandsFor func(string) map[string]string,
+	learnings kctx.Recorder,
 ) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 		w, found, err := ws.Store.Find(ctx, run.ID)
@@ -165,6 +168,18 @@ func gateStage(
 		}
 		for _, result := range results {
 			if !result.Passed {
+				// The diagnosis is the lesson, recorded HERE rather than in a
+				// post-mortem — the same moment-of-correction rule the pair
+				// loop follows.
+				if err := recordLearning(ctx, learnings, run, kctx.Capture{
+					Lesson:     string(result.Detail),
+					Module:     result.Module,
+					Pattern:    "gate-failure/" + result.Gate,
+					SourceKind: kctx.SourceGateFailure,
+					SourceRef:  result.Gate,
+				}); err != nil {
+					return run, err
+				}
 				// A failing gate is a RESULT, and the table sends it back to
 				// the dev loop — the findings are the next instruction.
 				// Returning an error here would park the run instead.
@@ -178,6 +193,7 @@ func gateStage(
 // validateStage runs the product owner over a fully gated run.
 func validateStage(
 	ws workspace.Manager, po owner.Owner, criteriaFor func(string) []string,
+	learnings kctx.Recorder,
 ) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 		w, found, err := ws.Store.Find(ctx, run.ID)
@@ -197,6 +213,15 @@ func validateStage(
 			return run, err
 		}
 		if !v.Passed() {
+			if err := recordLearning(ctx, learnings, run, kctx.Capture{
+				Lesson:     v.Notes,
+				Module:     run.Ticket,
+				Pattern:    "po-rejection/" + v.Verdict,
+				SourceKind: kctx.SourcePORejection,
+				SourceRef:  v.Verdict,
+			}); err != nil {
+				return run, err
+			}
 			// A RESULT, not an error: the table sends it back to the dev loop,
 			// and the notes are what the agent is told to act on.
 			return run, fmt.Errorf("product owner returned %s: %s", v.Verdict, v.Notes)
@@ -254,6 +279,11 @@ func mergeStage(q orchestrator.Queue) func(context.Context, orchestrator.BuildRu
 			return run, fmt.Errorf("run %s is merging with no attempt enqueued", run.ID)
 		}
 		attempt, err := q.Run(ctx, key)
+		if errors.Is(err, orchestrator.ErrWaiting) {
+			// Another attempt holds the section. The run has neither advanced
+			// nor failed, so it stays in merging and the caller comes back.
+			return run, err
+		}
 		if err != nil {
 			return run, err
 		}
@@ -334,3 +364,30 @@ func sessionFromStore(db *sql.DB) func(context.Context, string) (string, error) 
 // The target path, which is stable for the life of a target — the same thing
 // the merge queue scopes attempts by.
 func projectKeyOf(plan string) string { return plan }
+
+// recordLearning fills in what every capture from a run shares.
+//
+// The run, the project and the TRIGGERING commit are the run's, not the
+// caller's: a capture site that had to supply them could get them wrong, and
+// a lesson anchored on the wrong commit points at code that was never the
+// problem.
+func recordLearning(
+	ctx context.Context, learnings kctx.Recorder, run orchestrator.BuildRun, c kctx.Capture,
+) error {
+	if learnings == nil {
+		return nil
+	}
+	if c.Lesson == "" {
+		// Nothing to teach. A blank lesson is noise every future run reads
+		// past, and the write would refuse it anyway.
+		return nil
+	}
+	c.Scope = kctx.ScopeProject
+	c.ProjectKey = projectKeyOf(run.Plan)
+	c.SourceRun = run.ID
+	c.SourceCommit = run.GatedBase
+	if err := learnings.Record(ctx, c); err != nil {
+		return fmt.Errorf("record learning for %s: %w", run.Ticket, err)
+	}
+	return nil
+}

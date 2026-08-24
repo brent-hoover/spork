@@ -367,3 +367,55 @@ func realRepo(t *testing.T) string {
 	}
 	return dir
 }
+
+func TestAWaitingMergeLeavesTheRunWhereItIs(t *testing.T) {
+	// A run waiting on the merge lock has neither advanced nor failed. Routing
+	// it either way would move it somewhere it does not belong — back to the
+	// dev loop with its approval still live, or on to merged without merging.
+	db := openTemp(t)
+	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := orchestrator.SQLStore{DB: db}
+	run := orchestrator.BuildRun{
+		ID: "run-waiting", Ticket: "T-1", State: orchestrator.StateMerging,
+	}
+	if err := store.Upsert(context.Background(), run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	// Two attempts on one resource: the second waits behind the first.
+	attempts := orchestrator.SQLAttempts{DB: db}
+	for _, key := range []string{"head", "waiting"} {
+		if _, err := attempts.Insert(context.Background(), orchestrator.MergeAttempt{
+			Key: key, TargetKey: "T", Build: "run-" + key, Resource: "/repo#main",
+			State: orchestrator.AttemptQueued,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", key, err)
+		}
+	}
+	if err := attempts.Update(context.Background(), orchestrator.MergeAttempt{
+		Key: "waiting", TargetKey: "T", Build: "run-waiting", Resource: "/repo#main",
+		State: orchestrator.AttemptQueued,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	o := orchestrator.Orchestrator{
+		Store: store,
+		Stages: orchestrator.Stages{
+			orchestrator.StageMerge: mergeStage(orchestrator.Queue{
+				Store: attempts, Approvals: noApprovals{},
+				Git:      repoMerger{git: workspace.ShellGit{}, repo: t.TempDir(), branch: "main"},
+				Resource: "/repo#main", Actor: "actor-1",
+			}),
+		},
+		Now: clock.System{},
+	}
+	got, err := o.Advance(context.Background(), "run-waiting")
+	if err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if got.State != orchestrator.StateMerging {
+		t.Errorf("a waiting run moved to %q", got.State)
+	}
+}
