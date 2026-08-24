@@ -203,6 +203,52 @@ CREATE TABLE planned_ticket (
     criteria   TEXT NOT NULL DEFAULT '[]'
 )`
 
+// PlanMigration records a decomposition's own lifecycle.
+//
+// The completed stamp is what arms build-completion detection: a plan
+// mid-decomposition has a ticket set that is still growing, and "every ticket
+// created so far is complete" says nothing about a build that is done.
+const PlanMigration = `
+CREATE TABLE plan (
+    target_key TEXT PRIMARY KEY,
+    spec_hash  TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    tickets    INTEGER NOT NULL DEFAULT 0
+)`
+
+// SQLPlans persists plans in SQLite.
+type SQLPlans struct{ DB *sql.DB }
+
+// Upsert writes a plan row.
+func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO plan (target_key, spec_hash, state, tickets)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(target_key) DO UPDATE SET
+		   spec_hash = excluded.spec_hash, state = excluded.state,
+		   tickets = excluded.tickets`,
+		p.TargetKey, p.SpecHash, p.State, p.Tickets)
+	if err != nil {
+		return fmt.Errorf("upsert plan: %w", err)
+	}
+	return nil
+}
+
+// Find reads a target's plan.
+func (s SQLPlans) Find(ctx context.Context, targetKey string) (Plan, bool, error) {
+	p := Plan{TargetKey: targetKey}
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT spec_hash, state, tickets FROM plan WHERE target_key = ?`, targetKey).
+		Scan(&p.SpecHash, &p.State, &p.Tickets)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Plan{}, false, nil
+	}
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("read plan: %w", err)
+	}
+	return p, true, nil
+}
+
 // SQLTickets persists planned tickets in SQLite.
 type SQLTickets struct{ DB *sql.DB }
 
@@ -223,6 +269,40 @@ func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
 		return fmt.Errorf("record planned ticket: %w", err)
 	}
 	return nil
+}
+
+// ForTarget lists a target's whole planned ticket set.
+//
+// Ordered by issue, so a detector's report of what is blocking reads the same
+// way twice.
+func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT issue, title, body, criteria FROM planned_ticket
+		   WHERE target_key = ? ORDER BY issue`, targetKey)
+	if err != nil {
+		return nil, fmt.Errorf("query planned tickets: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Ticket
+	for rows.Next() {
+		var t Ticket
+		var criteria string
+		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria); err != nil {
+			return nil, fmt.Errorf("scan planned ticket: %w", err)
+		}
+		if err := json.Unmarshal([]byte(criteria), &t.Criteria); err != nil {
+			return nil, fmt.Errorf("unmarshal criteria: %w", err)
+		}
+		out = append(out, t)
+	}
+	// Checked, because a cursor failing mid-iteration otherwise returns a
+	// SHORT list — which here reads as a plan with fewer tickets than it has,
+	// and a build that completes over the ones it could not see.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate planned tickets: %w", err)
+	}
+	return out, nil
 }
 
 // Find reads a ticket by the issue it became, within one target's plan.

@@ -245,6 +245,11 @@ func TestAMissingStageImplementationIsAnError(t *testing.T) {
 }
 
 func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
+	return orchestrator.SQLStore{DB: sqlOrchDB(t)}
+}
+
+// sqlOrchDB is a database carrying this module's whole schema.
+func sqlOrchDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "o.db"))
 	if err != nil {
@@ -259,7 +264,7 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 		orchestrator.PopMigration, orchestrator.CursorMigration,
 		orchestrator.MergeMigration, orchestrator.ResourceMigration,
 		orchestrator.HeadMigration,
-		orchestrator.IssueMigration,
+		orchestrator.IssueMigration, orchestrator.StallMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
@@ -270,7 +275,7 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 			}
 		}
 	}
-	return orchestrator.SQLStore{DB: db}
+	return db
 }
 
 func TestARunSurvivesTheRoundTrip(t *testing.T) {

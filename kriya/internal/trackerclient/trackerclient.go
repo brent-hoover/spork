@@ -46,7 +46,14 @@ type Issue struct {
 	ID     string `json:"id"`
 	Number int    `json:"number"`
 	Title  string `json:"title"`
-	State  string `json:"state"`
+	// Status is sutra's own field name. It was decoded from "state", which
+	// sutra does not emit, so every issue read back carried an empty status —
+	// invisible because nothing read it until completion detection did.
+	Status string `json:"status"`
+	// SubtreeRevision is the fence a completion claim is captured against. It
+	// advances on every change beneath an issue, which is what makes a claim
+	// over an epic's subtree provable rather than hopeful.
+	SubtreeRevision int64 `json:"subtree_revision"`
 }
 
 // APIError is a non-2xx response, carrying enough to act on.
@@ -325,6 +332,38 @@ func (c *Client) Pop(ctx context.Context, identity, key string) (Popped, error) 
 	err := c.do(ctx, "popWorkStack", http.MethodPost,
 		"/identities/"+identity+"/work-stack/pop", key, map[string]any{}, &p)
 	return p, err
+}
+
+// IssueListing is a project's issues and the feed position the read saw.
+//
+// The WATERMARK is the point: a completion read that says "nothing is active"
+// is only as good as a feed drained to the position that read observed. A
+// creation racing the read is behind the watermark, and draining to it is what
+// turns an emptiness into a fact.
+type IssueListing struct {
+	Watermark string  `json:"feed_watermark"`
+	Issues    []Issue `json:"issues"`
+}
+
+// ListIssues returns a project's issues in the given statuses.
+//
+// A read, so no idempotency key. Statuses are a filter sutra applies, because
+// paging every issue of a long-lived project to find the active few is work
+// neither side needs to do.
+func (c *Client) ListIssues(
+	ctx context.Context, projectID string, statuses []string,
+) (IssueListing, error) {
+	q := url.Values{}
+	for _, s := range statuses {
+		q.Add("status", s)
+	}
+	path := "/projects/" + projectID + "/issues"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out IssueListing
+	err := c.do(ctx, "listIssues", http.MethodGet, path, "", nil, &out)
+	return out, err
 }
 
 // Event is one entry in sutra's feed.

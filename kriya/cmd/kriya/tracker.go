@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"kriya/internal/orchestrator"
+	"kriya/internal/planner"
 	"kriya/internal/trackerclient"
 )
 
@@ -99,6 +100,30 @@ func (t sutraPops) Pop(ctx context.Context, key string) (string, string, error) 
 		return "", "", err
 	}
 	return got.Issue.ID, got.Issue.Title, nil
+}
+
+// sutraIssues adapts sutra's issue listing to completion detection's seam.
+//
+// The ACTIVE statuses only. A long-lived project's completed history is not
+// what "is this build finished" is asking about, and paging it to find the
+// few outstanding rows is work neither side needs to do.
+type sutraIssues struct{ c *trackerclient.Client }
+
+func (s sutraIssues) Active(
+	ctx context.Context, projectID string,
+) ([]planner.LiveIssue, string, error) {
+	listing, err := s.c.ListIssues(ctx, projectID,
+		[]string{"open", "queued", "in-progress", "blocked"})
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]planner.LiveIssue, 0, len(listing.Issues))
+	for _, i := range listing.Issues {
+		out = append(out, planner.LiveIssue{
+			ID: i.ID, Status: i.Status, SubtreeRevision: i.SubtreeRevision,
+		})
+	}
+	return out, listing.Watermark, nil
 }
 
 // sutraFeed adapts sutra's event feed to the verdict router's seam.

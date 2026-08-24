@@ -111,6 +111,7 @@ func intaker(db *sql.DB, tiers agent.Tiers, target string) planner.Intaker {
 		Attempts:  planner.SQLAttempts{DB: db},
 		Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
 		Tickets:   planner.SQLTickets{DB: db},
+		Plans:     planner.SQLPlans{DB: db},
 		Agent: agent.Recording{
 			Inner:  agent.Claude{Tiers: tiers},
 			Ledger: agent.Ledger{DB: db, Now: clock.System{}},
@@ -326,6 +327,11 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			Build:     buildOne(db, ws, tiers, reviews, target, actor),
 			Ordinals:  orchestrator.SQLOrdinals{DB: db},
 			TargetKey: target,
+			// Asked at the idle: nothing workable is either a build about to
+			// finish or one that is stuck, and they look identical from the
+			// loop. The answer is durable either way.
+			Finish: completionDetector(db),
+			Stalls: stallRecorder(db),
 		}.Run(ctx)
 	}
 }
@@ -396,6 +402,61 @@ func actOnVerdicts(
 		}
 	}
 	return nil
+}
+
+// completionDetector answers whether a target's build may attempt to finish.
+//
+// The project id comes from the target's own row rather than the caller: the
+// detector is asked about a TARGET, and re-deriving the project somewhere else
+// is a second place for the two to disagree.
+func completionDetector(db *sql.DB) buildFinish {
+	return buildFinish{
+		targets: planner.SQLTargets{DB: db},
+		detect: planner.Detector{
+			Plans:   planner.SQLPlans{DB: db},
+			Tickets: planner.SQLTickets{DB: db},
+			Issues:  sutraIssues{c: trackerclient.New(sutraURL())},
+		},
+	}
+}
+
+// buildFinish adapts the detector to the pop loop's seam.
+type buildFinish struct {
+	targets planner.SQLTargets
+	detect  planner.Detector
+}
+
+func (f buildFinish) Detect(ctx context.Context, targetKey string) (bool, string, error) {
+	target, found, err := f.targets.Find(ctx, targetKey)
+	if err != nil {
+		return false, "", err
+	}
+	if !found {
+		// Nothing has been planned for it. Not armed, and not a stall either
+		// — the operator has not started this build.
+		return false, "", nil
+	}
+	got, err := f.detect.Detect(ctx, targetKey, target.ProjectID)
+	if err != nil {
+		return false, "", err
+	}
+	return got.Armed, got.Reason, nil
+}
+
+// stallRecorder records a build that can neither proceed nor finish.
+func stallRecorder(db *sql.DB) stallWriter {
+	return stallWriter{s: orchestrator.Stalls{
+		Store: orchestrator.SQLStalls{DB: db}, Now: clock.System{},
+	}}
+}
+
+// stallWriter adapts the stall recorder to the pop loop's seam, which wants
+// only the error: the row itself is the inbox's business, not the loop's.
+type stallWriter struct{ s orchestrator.Stalls }
+
+func (w stallWriter) Record(ctx context.Context, targetKey string, epoch int, cause string) error {
+	_, err := w.s.Record(ctx, targetKey, epoch, cause)
+	return err
 }
 
 // verdictRouter consumes review verdicts and routes each to its run.

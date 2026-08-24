@@ -91,36 +91,79 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 		return nil, err
 	}
 
-	for n, ticket := range reply.Tickets {
-		issueID, err := i.Tracker.CreateIssue(ctx, target.ProjectID, ticket.Title, ticket.Body, actor,
-			idempotencyKey(fmt.Sprintf("ticket-%d", n), target.TargetKey, target.SpecHash))
-		if err != nil {
-			return nil, fmt.Errorf("create ticket %d: %w", n, err)
-		}
-		reply.Tickets[n].IssueID = issueID
-		// Recorded HERE, because this is the only moment the ticket's criteria
-		// and the issue they became are both in hand. A pop later returns an
-		// id and a title, and a run built from those alone reaches the product
-		// owner with nothing to validate against.
-		if i.Tickets != nil {
-			if err := i.Tickets.Put(ctx, target.TargetKey, reply.Tickets[n]); err != nil {
-				return nil, fmt.Errorf("record ticket %d: %w", n, err)
-			}
-		}
-		if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
-			idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
-			return nil, fmt.Errorf("parent ticket %d under the epic: %w", n, err)
-		}
-		// Assigned to the actor that will pop it. The tracker's work stack
-		// offers only issues assigned to the popping identity, so an
-		// unassigned ticket is one nothing ever claims — the build would
-		// decompose, report its tickets, and idle forever.
-		if err := i.Tracker.AssignIssue(ctx, issueID, actor, actor,
-			idempotencyKey(fmt.Sprintf("assign-%d", n), target.TargetKey, target.SpecHash)); err != nil {
-			return nil, fmt.Errorf("assign ticket %d: %w", n, err)
+	// Write-ahead, before the first ticket exists. A crash mid-decomposition
+	// must leave a row saying a plan was being built: completion detection
+	// reads this stamp, and no row at all is indistinguishable from a target
+	// nobody has planned.
+	if err := i.recordPlan(ctx, target, PlanDecomposing, 0); err != nil {
+		return nil, err
+	}
+
+	for n := range reply.Tickets {
+		if err := i.createTicket(ctx, target, reply.Tickets, n, actor); err != nil {
+			return nil, err
 		}
 	}
+	// The final assignment barrier is passed: every ticket exists, is
+	// recorded, is parented under the epic and is assigned. Only now is the
+	// ticket set whole, and only now may completion detection arm.
+	if err := i.recordPlan(ctx, target, PlanCompleted, len(reply.Tickets)); err != nil {
+		return nil, err
+	}
 	return reply.Tickets, nil
+}
+
+// recordPlan writes the plan row, when there is a store to write it to.
+func (i Intaker) recordPlan(ctx context.Context, target BuildTarget, state string, tickets int) error {
+	if i.Plans == nil {
+		return nil
+	}
+	if err := i.Plans.Upsert(ctx, Plan{
+		TargetKey: target.TargetKey, SpecHash: target.SpecHash,
+		State: state, Tickets: tickets,
+	}); err != nil {
+		return fmt.Errorf("record %s plan for %s: %w", state, target.TargetKey, err)
+	}
+	return nil
+}
+
+// createTicket creates one ticket, records it, parents it and assigns it.
+//
+// All four, in that order, before the next ticket starts: a ticket that exists
+// in the tracker but was never recorded reaches the product owner with nothing
+// to validate against, and one never assigned is one nothing ever pops.
+func (i Intaker) createTicket(
+	ctx context.Context, target BuildTarget, tickets []Ticket, n int, actor string,
+) error {
+	ticket := tickets[n]
+	issueID, err := i.Tracker.CreateIssue(ctx, target.ProjectID, ticket.Title, ticket.Body, actor,
+		idempotencyKey(fmt.Sprintf("ticket-%d", n), target.TargetKey, target.SpecHash))
+	if err != nil {
+		return fmt.Errorf("create ticket %d: %w", n, err)
+	}
+	tickets[n].IssueID = issueID
+	// Recorded HERE, because this is the only moment the ticket's criteria and
+	// the issue they became are both in hand. A pop later returns an id and a
+	// title, and a run built from those alone reaches the product owner with
+	// nothing to validate against.
+	if i.Tickets != nil {
+		if err := i.Tickets.Put(ctx, target.TargetKey, tickets[n]); err != nil {
+			return fmt.Errorf("record ticket %d: %w", n, err)
+		}
+	}
+	if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
+		idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
+		return fmt.Errorf("parent ticket %d under the epic: %w", n, err)
+	}
+	// Assigned to the actor that will pop it. The tracker's work stack offers
+	// only issues assigned to the popping identity, so an unassigned ticket is
+	// one nothing ever claims — the build would decompose, report its tickets,
+	// and idle forever.
+	if err := i.Tracker.AssignIssue(ctx, issueID, actor, actor,
+		idempotencyKey(fmt.Sprintf("assign-%d", n), target.TargetKey, target.SpecHash)); err != nil {
+		return fmt.Errorf("assign ticket %d: %w", n, err)
+	}
+	return nil
 }
 
 // validateCitations rejects a ticket citing an id the snapshot does not carry.

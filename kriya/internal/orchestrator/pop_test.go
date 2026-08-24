@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"kriya/internal/orchestrator"
@@ -348,5 +349,134 @@ func TestAnEmptyPopStillAdvancesTheOrdinal(t *testing.T) {
 	}
 	if len(b.seen) != 1 || b.seen[0] != "i-9" {
 		t.Errorf("built %v after the unblock", b.seen)
+	}
+}
+
+// stubDetector answers the completion question the idle path asks.
+type stubDetector struct {
+	armed  bool
+	reason string
+	err    error
+	asked  int
+}
+
+func (d *stubDetector) Detect(context.Context, string) (bool, string, error) {
+	d.asked++
+	return d.armed, d.reason, d.err
+}
+
+// stubStalls records what the idle path decided to report.
+type stubStalls struct {
+	causes []string
+	err    error
+}
+
+func (s *stubStalls) Record(_ context.Context, _ string, _ int, cause string) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.causes = append(s.causes, cause)
+	return nil
+}
+
+func idleLoop(det *stubDetector, st *stubStalls) orchestrator.Loop {
+	return orchestrator.Loop{
+		Pops:      newWorkStack(),
+		Build:     func(context.Context, string, string) (orchestrator.BuildRun, error) { panic("no build") },
+		Ordinals:  newMemOrdinals(),
+		TargetKey: "/spec",
+		Finish:    det,
+		Stalls:    st,
+	}
+}
+
+func TestAnIdleLoopWithCompletionArmedRecordsNoStall(t *testing.T) {
+	// Armed means the ticket set is whole and nothing is outstanding. The
+	// build is finishing, not stuck, and a stall row would put a healthy
+	// build in the operator's inbox.
+	det, st := &stubDetector{armed: true}, &stubStalls{}
+	got, err := idleLoop(det, st).Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !got.Idle {
+		t.Error("an empty pop did not idle")
+	}
+	if len(st.causes) != 0 {
+		t.Errorf("recorded a stall for a build that can complete: %v", st.causes)
+	}
+}
+
+func TestAnIdleLoopThatCannotCompleteRecordsTheStallWithItsCause(t *testing.T) {
+	// Nothing workable, nothing in flight, and the epic cannot close. That is
+	// the stall condition exactly, and it is durable rather than a message
+	// somebody has to be watching for.
+	det := &stubDetector{reason: "outstanding work: issue-9 (unplanned, blocked)"}
+	st := &stubStalls{}
+	if _, err := idleLoop(det, st).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if det.asked != 1 {
+		t.Errorf("completion was asked %d times", det.asked)
+	}
+	if len(st.causes) != 1 {
+		t.Fatalf("recorded %d stalls", len(st.causes))
+	}
+	if !strings.Contains(st.causes[0], "issue-9") {
+		t.Errorf("the recorded cause is %q — it does not say what is holding the build", st.causes[0])
+	}
+}
+
+func TestAPoppingLoopAsksNothingAboutCompletion(t *testing.T) {
+	// The question is only interesting when there is nothing to do. Asking on
+	// every pop would put a tracker round-trip in the hot path of a build
+	// that is plainly still working.
+	det, st := &stubDetector{}, &stubStalls{}
+	l := idleLoop(det, st)
+	l.Pops = newWorkStack("issue-1")
+	l.Build = func(context.Context, string, string) (orchestrator.BuildRun, error) {
+		return orchestrator.BuildRun{ID: "run-1"}, nil
+	}
+	if _, err := l.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if det.asked != 1 {
+		t.Errorf("completion was asked %d times; want once, at the idle", det.asked)
+	}
+}
+
+func TestAnUnreadableCompletionStopsTheLoop(t *testing.T) {
+	// "I could not tell whether the build is done" is not "it is fine". A
+	// loop that shrugged would idle forever with nothing recorded.
+	det := &stubDetector{err: errors.New("tracker unavailable")}
+	if _, err := idleLoop(det, &stubStalls{}).Run(context.Background()); err == nil {
+		t.Fatal("an unreadable completion state read as an armed one")
+	}
+}
+
+func TestAStallThatCannotBeRecordedStopsTheLoop(t *testing.T) {
+	// A stall nobody wrote is a build that looks like it is still working.
+	det := &stubDetector{reason: "nothing workable"}
+	st := &stubStalls{err: errors.New("disk full")}
+	if _, err := idleLoop(det, st).Run(context.Background()); err == nil {
+		t.Fatal("a stall that was never written read as recorded")
+	}
+}
+
+func TestALoopWithNoCompletionSeamStillIdles(t *testing.T) {
+	// Nil asks nothing and records nothing — which is what a module-level
+	// test of the pop loop itself wants.
+	l := orchestrator.Loop{
+		Pops:      newWorkStack(),
+		Build:     func(context.Context, string, string) (orchestrator.BuildRun, error) { panic("no build") },
+		Ordinals:  newMemOrdinals(),
+		TargetKey: "/spec",
+	}
+	got, err := l.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !got.Idle {
+		t.Error("the loop did not idle")
 	}
 }

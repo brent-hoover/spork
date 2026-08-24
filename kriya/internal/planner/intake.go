@@ -35,7 +35,12 @@ type Intaker struct {
 	// Tickets records what a decomposition produced. Nil records nothing,
 	// which is what a test of decomposition's own output wants.
 	Tickets TicketStore
-	Now     clock.Clock
+	// Plans records the decomposition's own lifecycle. Nil records nothing —
+	// a module-level test of decomposition does not need one — but production
+	// wires it, because the completed stamp is what arms build-completion
+	// detection.
+	Plans PlanStore
+	Now   clock.Clock
 }
 
 // TicketStore persists the tickets a decomposition produced.

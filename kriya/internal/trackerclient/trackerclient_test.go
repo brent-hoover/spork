@@ -25,13 +25,17 @@ type capture struct {
 	key    string
 	body   string
 	ctype  string
+	// query is the raw query string. Recorded separately because a filter the
+	// client fails to send is a request that returns MORE than it asked for,
+	// and a path-only capture cannot see it.
+	query string
 }
 
 func serve(t *testing.T, status int, reply string) (*trackerclient.Client, *capture) {
 	t.Helper()
 	got := &capture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got.method, got.path = r.Method, r.URL.Path
+		got.method, got.path, got.query = r.Method, r.URL.Path, r.URL.RawQuery
 		got.key = r.Header.Get("Idempotency-Key")
 		got.ctype = r.Header.Get("Content-Type")
 		b, _ := io.ReadAll(r.Body)
@@ -511,5 +515,56 @@ func TestTheFeedAcceptsExactlyTheTwoHundreds(t *testing.T) {
 	c, _ = serve(t, http.StatusMultipleChoices, `{"events":[]}`)
 	if _, err := c.Events(context.Background(), "", "", 0); err == nil {
 		t.Error("300 read as a page of events")
+	}
+}
+
+func TestListIssuesDecodesStatusAndTheWatermark(t *testing.T) {
+	// STATUS, which is sutra's own field name. It was decoded from "state",
+	// which sutra does not emit, so every issue came back with an empty
+	// status — invisible until completion detection asked.
+	c, got := serve(t, http.StatusOK,
+		`{"feed_watermark":"w-7","issues":[
+			{"id":"i-1","number":1,"title":"Create a short link","status":"open","subtree_revision":3},
+			{"id":"i-2","number":2,"title":"Redirect","status":"complete","subtree_revision":9}]}`)
+	listing, err := c.ListIssues(context.Background(), "p-1", []string{"open", "blocked"})
+	if err != nil {
+		t.Fatalf("list issues: %v", err)
+	}
+	if listing.Watermark != "w-7" {
+		t.Errorf("watermark decoded as %q", listing.Watermark)
+	}
+	if len(listing.Issues) != 2 {
+		t.Fatalf("decoded %d issues", len(listing.Issues))
+	}
+	if listing.Issues[0].Status != "open" {
+		t.Errorf("status decoded as %q", listing.Issues[0].Status)
+	}
+	if listing.Issues[0].SubtreeRevision != 3 {
+		t.Errorf("subtree revision decoded as %d", listing.Issues[0].SubtreeRevision)
+	}
+	if !strings.HasPrefix(got.path, "/projects/p-1/issues") {
+		t.Errorf("sent to %s", got.path)
+	}
+	// Both statuses travel, so sutra filters rather than kriya paging a
+	// long-lived project's whole history to find the active few.
+	for _, want := range []string{"status=open", "status=blocked"} {
+		if !strings.Contains(got.query, want) {
+			t.Errorf("the request query %q omits %s", got.query, want)
+		}
+	}
+	// A READ: no idempotency key.
+	if got.key != "" {
+		t.Errorf("a read carried idempotency key %q", got.key)
+	}
+}
+
+func TestAProjectWithNoActiveIssuesIsNotAnError(t *testing.T) {
+	c, _ := serve(t, http.StatusOK, `{"feed_watermark":"w-1","issues":[]}`)
+	listing, err := c.ListIssues(context.Background(), "p-1", nil)
+	if err != nil {
+		t.Fatalf("an empty project was treated as a failure: %v", err)
+	}
+	if len(listing.Issues) != 0 || listing.Watermark != "w-1" {
+		t.Errorf("decoded %+v", listing)
 	}
 }
