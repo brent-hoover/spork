@@ -264,12 +264,14 @@ func TestAReviewThatKeepsFindingThingsStalls(t *testing.T) {
 
 func TestAPendingReviewDoesNotBlockTheLoop(t *testing.T) {
 	// A run waiting on a review is a state the TUI shows, not a goroutine
-	// nobody can see.
+	// nobody can see. It returns rather than blocking — with ErrReviewPending,
+	// which is neither advance nor failure.
 	store := &memStore{}
 	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
 	c := &fakeCommitter{}
 	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictPending}}
-	if _, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request()); err != nil {
+	_, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request())
+	if !errors.Is(err, devloop.ErrReviewPending) {
 		t.Fatalf("work: %v", err)
 	}
 	if len(ag.Requests) != 1 {
@@ -396,7 +398,7 @@ func TestAStallLeavesItsLastRoundOpen(t *testing.T) {
 		t.Fatal("a review that never went clean read as success")
 	}
 	// Round one was answered by round two's commit; round two never was.
-	if len(rev.settled) != 1 || rev.settled[0] != "run-1-1" {
+	if len(rev.settled) != 1 || rev.settled[0] != "run-1-0-1" {
 		t.Errorf("settled %v, want only the round a later commit answered", rev.settled)
 	}
 }
@@ -423,7 +425,7 @@ func TestRoundsAreNumberedFromOne(t *testing.T) {
 			t.Errorf("commit %d is %q, want it to end %q", i, c.messages[i], want)
 		}
 	}
-	if rev.settled[0] != "run-1-1" {
+	if rev.settled[0] != "run-1-0-1" {
 		t.Errorf("the first round is %q", rev.settled[0])
 	}
 	if got.Rounds != 2 {
@@ -649,5 +651,81 @@ func TestAResumeFailureStopsTheLoop(t *testing.T) {
 	sa := &fakeArchitect{resumeErr: errors.New("store unavailable")}
 	if _, err := findingsLoop(store, ag, c, rev, sa, 4).Work(context.Background(), request()); err == nil {
 		t.Fatal("an unreadable intervention read as no intervention")
+	}
+}
+
+func TestEveryFixRoundResumesTheSameSession(t *testing.T) {
+	// The fix is a correction to work THIS agent did. A fresh session re-reads
+	// its own findings with no memory of what it wrote, and the transcript
+	// splits across session ids so only the last one reaches the catalog.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictClean},
+		findings: "- **Severity**: Low",
+	}
+	if _, err := pairLoop(store, ag, c, rev, 5).Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(ag.Requests) < 2 {
+		t.Fatalf("the agent ran %d times; there was no fix round", len(ag.Requests))
+	}
+	if ag.Requests[0].Resume != "" {
+		t.Error("the first invocation asked to resume something")
+	}
+	for i, req := range ag.Requests[1:] {
+		if req.Resume == "" {
+			t.Errorf("fix round %d started a fresh session", i+1)
+		}
+	}
+}
+
+func TestASecondPassOverTheSameRunDoesNotOverwriteItsRounds(t *testing.T) {
+	// A run re-enters the dev loop after a gate failure or a rework. Round ids
+	// that restart at 1 upsert over the first pass's rows, replacing its job
+	// ids and verdicts while keeping its commit — a review trail that points
+	// at the wrong work.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}, findings: ""}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+
+	first := request()
+	first.Attempt = 1
+	if _, err := loop.Work(context.Background(), first); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	second := request()
+	second.Attempt = 2
+	rev.verdicts = []string{reviewbridge.VerdictClean}
+	rev.round = 0
+	if _, err := loop.Work(context.Background(), second); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(rev.settled) != 2 {
+		t.Fatalf("settled %v", rev.settled)
+	}
+	if rev.settled[0] == rev.settled[1] {
+		t.Errorf("both passes used round id %q", rev.settled[0])
+	}
+}
+
+func TestAPendingReviewIsNotACompletedSession(t *testing.T) {
+	// It reported success: the session was stamped ended and the orchestrator
+	// advanced the run to the gates, with a review job still running and
+	// nothing that would ever read its verdict.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictPending}}
+	_, err := pairLoop(store, ag, &fakeCommitter{}, rev, 5).
+		Work(context.Background(), request())
+	if !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("got %v, want ErrReviewPending", err)
+	}
+	for _, row := range store.rows {
+		if row.Run == "run-1" && row.Ended {
+			t.Error("the session was stamped ended with its review still running")
+		}
 	}
 }

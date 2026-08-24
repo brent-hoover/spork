@@ -8,6 +8,7 @@ package devloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -136,6 +137,11 @@ type Request struct {
 	Modules []string
 	// Patterns are the failure patterns this ticket is prone to.
 	Patterns []string
+	// Attempt is the gate-chain round this pass belongs to. It scopes the
+	// round ids: a run re-enters the dev loop after a gate failure or a
+	// rework, and ids that restarted at one upserted over the previous pass's
+	// rows — replacing its job ids and verdicts while keeping its commit.
+	Attempt int
 	// RoundLimit is the limit snapshotted onto the BuildRun at its creation.
 	// Zero falls back to the loop's default.
 	RoundLimit int
@@ -143,6 +149,41 @@ type Request struct {
 	// agent may run is the ticket's business, and "tools irrelevant to the
 	// ticket are absent" has to be mechanically true rather than requested.
 	AllowRules []string
+}
+
+// ErrReviewPending reports that a review job is still running.
+//
+// A distinct error because the caller acts on it: the run has neither advanced
+// nor failed, and it comes back rather than parking for an operator who can do
+// nothing about a job that has not finished.
+var ErrReviewPending = errors.New("the review round is still running")
+
+// fixRound hands one review's findings back to the agent that wrote the code.
+func (l Loop) fixRound(
+	ctx context.Context, req Request, session *Session, turns *[]Exchange,
+	reviewed reviewbridge.Round, direction string, round int,
+) (agent.Result, error) {
+	fix := fixPrompt(req, reviewed.Findings, direction)
+	res, err := l.Agent.Run(ctx, agent.Request{
+		Role:      agent.RoleDev,
+		Prompt:    fix,
+		Workspace: req.Workspace,
+		// RESUMED, not restarted. The fix is a correction to work this agent
+		// did: a fresh session re-reads its own findings with no memory of
+		// what it wrote, and the transcript splits across session ids so only
+		// the last one reaches the catalog.
+		Resume:     session.SessionID,
+		SystemFile: session.SystemFile,
+		AllowRules: req.AllowRules,
+	})
+	if err != nil {
+		return agent.Result{}, fmt.Errorf("dev agent fixing round %d: %w", round+1, err)
+	}
+	*turns = append(*turns, Exchange{
+		Role: string(agent.RoleDev), Prompt: fix, Reply: res.Text, Model: res.Model,
+	})
+	session.SessionID = res.SessionID
+	return res, nil
 }
 
 // Work runs one session.
@@ -262,7 +303,7 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 			}
 		}
 
-		roundID := fmt.Sprintf("%s-%d", req.Run, round+1)
+		roundID := fmt.Sprintf("%s-%d-%d", req.Run, req.Attempt, round+1)
 		reviewed, err := l.Review.Submit(ctx, req.Run, roundID, sha)
 		if err != nil {
 			return err
@@ -282,25 +323,18 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 			// Still running. The caller polls again rather than the loop
 			// blocking: a run waiting on a review is a state the TUI shows,
 			// not a goroutine nobody can see.
-			return nil
+			//
+			// A DISTINCT error, not nil: reporting success stamped the session
+			// ended and let the orchestrator advance the run to the gates with
+			// a review job still running and nothing that would read it.
+			return ErrReviewPending
 		}
 
 		consecutive = append(consecutive, reviewed.Findings)
-		fix := fixPrompt(req, reviewed.Findings, direction)
-		res, err := l.Agent.Run(ctx, agent.Request{
-			Role:       agent.RoleDev,
-			Prompt:     fix,
-			Workspace:  req.Workspace,
-			SystemFile: session.SystemFile,
-			AllowRules: req.AllowRules,
-		})
+		res, err := l.fixRound(ctx, req, session, turns, reviewed, direction, round)
 		if err != nil {
-			return fmt.Errorf("dev agent fixing round %d: %w", round+1, err)
+			return err
 		}
-		*turns = append(*turns, Exchange{
-			Role: string(agent.RoleDev), Prompt: fix, Reply: res.Text, Model: res.Model,
-		})
-		session.SessionID = res.SessionID
 		// Recorded only once the correction has actually been made. A lesson
 		// written before the fixing agent ran would claim a correction that
 		// may never have happened, and a retry would insert it twice.

@@ -53,6 +53,9 @@ func (c Claude) Run(ctx context.Context, req Request) (Result, error) {
 // it did not.
 func args(req Request, model string) []string {
 	out := []string{"-p", req.Prompt, "--safe-mode", "--output-format", "json", "--model", model}
+	if req.Resume != "" {
+		out = append(out, "--resume", req.Resume)
+	}
 	if req.Workspace != "" {
 		out = append(out, "--add-dir", req.Workspace)
 	}

@@ -99,6 +99,10 @@ func buildStages(d deps) orchestrator.Stages {
 				Run: run.ID, Ticket: run.Ticket, Title: ticket.Title,
 				Body: ticket.Body, Criteria: ticket.Criteria,
 				Issue: ticket.IssueID, Actor: d.actor,
+				// The gate-chain round this pass belongs to, which scopes the
+				// review round ids. Without it a second pass over the same run
+				// overwrites the first pass's rounds.
+				Attempt:   run.Attempt,
 				Workspace: w.Path, Commands: commandsFor(run.Ticket),
 				// What the agent may RUN, generated from the touched modules'
 				// own commands. Listing them as content tells it what it is
@@ -115,6 +119,13 @@ func buildStages(d deps) orchestrator.Stages {
 				// now: a config change affects only future runs.
 				RoundLimit: run.RoundLimit,
 			})
+			if errors.Is(err, devloop.ErrReviewPending) {
+				// The review job has not finished. The run has neither
+				// advanced nor failed: it comes back, rather than reaching
+				// the gates with a review still running or parking for an
+				// operator who can do nothing about it.
+				return run, orchestrator.ErrWaiting
+			}
 			if err != nil {
 				return run, err
 			}

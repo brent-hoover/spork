@@ -207,3 +207,33 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+func TestAResumedSessionContinuesTheConversation(t *testing.T) {
+	// Each pair-loop round is a correction to work the SAME agent did. A
+	// fresh session re-reads its own findings with no memory of what it
+	// wrote, and the transcript splits across session ids so only the last
+	// one reaches the thread catalog.
+	bin, argvFile := stubClaude(t, okEnvelope)
+	c := agent.Claude{Bin: bin, Tiers: tiers()}
+	if _, err := c.Run(context.Background(), agent.Request{
+		Role: agent.RoleDev, Prompt: "fix it", Resume: "s-1",
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := argv(t, argvFile)
+	if !contains(got, "--resume") || !contains(got, "s-1") {
+		t.Errorf("argv %v does not resume the session", got)
+	}
+}
+
+func TestAnUnresumedRequestSendsNoResumeFlag(t *testing.T) {
+	bin, argvFile := stubClaude(t, okEnvelope)
+	c := agent.Claude{Bin: bin, Tiers: tiers()}
+	if _, err := c.Run(context.Background(),
+		agent.Request{Role: agent.RoleDev, Prompt: "go"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if contains(argv(t, argvFile), "--resume") {
+		t.Error("a first invocation asked to resume something")
+	}
+}

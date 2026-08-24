@@ -31,6 +31,13 @@ type Request struct {
 	AllowRules []string
 	// SystemFile is a context bundle appended to the system prompt.
 	SystemFile string
+	// Resume continues an existing session rather than starting one.
+	//
+	// Every pair-loop round after the first is a correction to work THIS
+	// agent did. A fresh session re-reads its own findings with no memory of
+	// what it wrote, and the transcript splits across session ids so only the
+	// last one reaches the thread catalog.
+	Resume string
 	// Schema, when set, constrains the reply to this JSON Schema and fills
 	// Result.Structured. Asking for prose and parsing it is how a build
 	// engine ends up guessing what an agent meant.
