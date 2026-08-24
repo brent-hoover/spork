@@ -12,6 +12,10 @@ import (
 type memClaims struct {
 	rows map[string]planner.CompletionClaim
 	err  error
+	// failAfter makes the Nth write onward fail, for the crash windows
+	// between one persisted step and the next.
+	failAfter int
+	writes    int
 }
 
 func newMemClaims() *memClaims {
@@ -21,6 +25,10 @@ func newMemClaims() *memClaims {
 func (m *memClaims) Upsert(_ context.Context, c planner.CompletionClaim) error {
 	if m.err != nil {
 		return m.err
+	}
+	m.writes++
+	if m.failAfter > 0 && m.writes > m.failAfter {
+		return errors.New("disk full")
 	}
 	m.rows[c.TargetKey] = c
 	return nil

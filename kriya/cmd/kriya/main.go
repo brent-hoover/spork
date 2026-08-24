@@ -352,6 +352,17 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 // submission takes, so this is only ever the FIRST attempt: recovery drives
 // the rest from the persisted claim.
 func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) error {
+	// The cheapest question first, and the one that short-circuits hardest:
+	// an attempt already in flight or settled for this epoch needs no tracker
+	// round-trip at all, and a second submission would open a second review
+	// for one claim.
+	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
+	if err != nil {
+		return err
+	}
+	if found && claim.State != planner.CompletionNone {
+		return nil
+	}
 	armed, _, err := completionDetector(db).Detect(ctx, target)
 	if err != nil || !armed {
 		return err
@@ -359,16 +370,6 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 	row, found, err := (planner.SQLTargets{DB: db}).Find(ctx, target)
 	if err != nil || !found {
 		return err
-	}
-	claims := planner.SQLClaims{DB: db}
-	claim, found, err := claims.Find(ctx, target)
-	if err != nil {
-		return err
-	}
-	if found && claim.State != planner.CompletionNone {
-		// An attempt is already in flight or settled for this epoch. A second
-		// submission would open a second review for one claim.
-		return nil
 	}
 	// The epic's revision at CAPTURE. The close is fenced on it, so history
 	// that moved invalidates the claim even when current state still matches.
