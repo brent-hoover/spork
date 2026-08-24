@@ -35,6 +35,8 @@ func (testGit) AddWorktree(_ context.Context, _, path, _, _ string) error {
 	return os.MkdirAll(path, 0o750)
 }
 func (testGit) RemoveWorktree(context.Context, string, string) error { return nil }
+
+func (testGit) Integrate(context.Context, string, string, string) error { return nil }
 func (testGit) HasUnmergedCommits(context.Context, string, string, string) (bool, error) {
 	return false, nil
 }

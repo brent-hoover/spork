@@ -142,3 +142,16 @@ func (g ShellGit) MergeCAS(
 	}
 	return merged, nil
 }
+
+// Integrate merges a commit into the worktree's checked-out branch.
+//
+// A real merge in the worktree, not a rebase: the branch's commits are already
+// under review, and rewriting them would invalidate every review that named
+// one. A conflict is left for the dev agent — it is exactly the kind of thing
+// the pair loop exists to resolve — so the refusal carries git's own report.
+func (g ShellGit) Integrate(ctx context.Context, repo, path, commit string) error {
+	if _, err := g.run(ctx, path, "merge", "--no-edit", commit); err != nil {
+		return fmt.Errorf("integration needs a human or an agent: %w", err)
+	}
+	return nil
+}

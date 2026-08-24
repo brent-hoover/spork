@@ -116,6 +116,10 @@ func (c Completer) finish(ctx context.Context, run BuildRun, cm Completion) (Bui
 		return BuildRun{}, fmt.Errorf("close ticket for %s: %w", run.ID, err)
 	}
 	run.CompletionState = CompleteClosed
+	// The RUN closes too, not only its completion marker. A run left in merged
+	// with a closed ticket is one the table would try to complete again, and
+	// one nothing reports as finished.
+	run.State = StateClosed
 	if err := c.Store.Upsert(ctx, run); err != nil {
 		return BuildRun{}, fmt.Errorf("record closed run: %w", err)
 	}

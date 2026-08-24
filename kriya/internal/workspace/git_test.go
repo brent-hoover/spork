@@ -306,3 +306,72 @@ func TestAConflictingMergeIsRefused(t *testing.T) {
 	}
 	_ = base
 }
+
+func TestARealIntegrationBringsTheOtherBranchesWorkIn(t *testing.T) {
+	// A real merge in the worktree, not a rebase: the branch's commits are
+	// already under review, and rewriting them would invalidate every review
+	// that named one.
+	dir := tempRepo(t)
+	base, other := topicBranch(t, dir, "other", "theirs.txt")
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("checkout", "-q", "-b", "mine", base)
+	if err := os.WriteFile(filepath.Join(dir, "mine.txt"), []byte("mine\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "mine")
+	mine := head(t, dir)
+
+	if err := (workspace.ShellGit{}).Integrate(context.Background(), dir, dir, other); err != nil {
+		t.Fatalf("integrate: %v", err)
+	}
+	if head(t, dir) == mine {
+		t.Error("the branch did not move")
+	}
+	// Both files present: the other branch's work really came in, and this
+	// branch's own commit is still an ancestor.
+	for _, name := range []string{"mine.txt", "theirs.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s is missing after the integration", name)
+		}
+	}
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", mine, "HEAD")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		t.Error("the branch's own commit is no longer an ancestor — it was rewritten")
+	}
+}
+
+func TestAConflictingIntegrationCarriesGitsReport(t *testing.T) {
+	dir := tempRepo(t)
+	base, other := topicBranch(t, dir, "other", "same.txt")
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("checkout", "-q", "-b", "mine", base)
+	if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte("mine\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "mine")
+
+	err := workspace.ShellGit{}.Integrate(context.Background(), dir, dir, other)
+	if err == nil {
+		t.Fatal("a conflicting integration reported success")
+	}
+	if !strings.Contains(err.Error(), "human or an agent") {
+		t.Errorf("the error does not say who resolves it: %v", err)
+	}
+}

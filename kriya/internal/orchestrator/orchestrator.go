@@ -236,15 +236,17 @@ func (o Orchestrator) Advance(ctx context.Context, id string) (BuildRun, error) 
 		return run, nil
 	}
 	if stageErr != nil {
-		// A stage ERROR is a malfunction, distinct from a stage reporting
-		// failure: the run parks with the durable cause so the inbox can say
-		// why, rather than looping on something no dev agent can fix.
-		run.State = transition.OnFail
-		run.Error = stageErr.Error()
-		if err := o.Store.Upsert(ctx, run); err != nil {
+		// The stage's RETURNED run, not the one loaded at the top: a stage
+		// that persisted something before failing — a write-ahead key, a
+		// pinned commit — must not have it overwritten by a stale copy. A
+		// close that landed and then reported ambiguously would otherwise
+		// lose the row recovery replays from.
+		next.State = transition.OnFail
+		next.Error = stageErr.Error()
+		if err := o.Store.Upsert(ctx, next); err != nil {
 			return BuildRun{}, err
 		}
-		return run, nil
+		return next, nil
 	}
 	next.State = transition.OnOK
 	next.Error = ""

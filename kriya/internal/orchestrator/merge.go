@@ -354,6 +354,12 @@ func (q Queue) OnApproval(ctx context.Context, run BuildRun, a Approved) (BuildR
 		return run, "", err
 	}
 	key := AttemptKey(a.TargetKey, run.ID, a.Review, a.Revision, a.Event)
+	// Recorded on the RUN, because completion reads them from there: the
+	// ticket close names the review at its approved revision with its
+	// approval's verdict event, and an initial submission that never went
+	// through a rework has neither on the run otherwise.
+	run.ReviewRevision = a.Revision
+	run.ReviewVerdictEvent = a.Event
 	run.State = StateMerging
 	if err := q.Runs.Upsert(ctx, run); err != nil {
 		return run, "", fmt.Errorf("record merging run: %w", err)

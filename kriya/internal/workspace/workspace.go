@@ -88,6 +88,8 @@ type Git interface {
 	RemoveWorktree(ctx context.Context, repo, path string) error
 	// HasUnmergedCommits reports whether branch holds commits absent from base.
 	HasUnmergedCommits(ctx context.Context, repo, branch, base string) (bool, error)
+	// Integrate merges a commit into the worktree's branch.
+	Integrate(ctx context.Context, repo, path, commit string) error
 }
 
 // Manager creates and disposes workspaces.
@@ -251,6 +253,39 @@ func (m Manager) probe(path string) (bool, error) {
 		return false, fmt.Errorf("probe %s: %w", path, err)
 	}
 	return here, nil
+}
+
+// Integrate brings the default branch's current head into a run's branch.
+//
+// A run whose merge or completion failed comes back to the pair loop, and
+// rerunning the chain against a base the default branch has moved past just
+// fails the same way. Integration is what makes the rerun mean something, and
+// the new base is what the next chain freezes.
+func (m Manager) Integrate(ctx context.Context, run string) (Workspace, error) {
+	w, found, err := m.Store.Find(ctx, run)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("find workspace: %w", err)
+	}
+	if !found {
+		return Workspace{}, fmt.Errorf("no workspace for run %s", run)
+	}
+	head, err := m.Git.DefaultBranchCommit(ctx, m.Repo, m.DefaultBranch)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("resolve %s: %w", m.DefaultBranch, err)
+	}
+	if head == w.Base {
+		// Nothing moved. Merging a branch into itself would make an empty
+		// commit and a new head that reviews identically.
+		return w, nil
+	}
+	if err := m.Git.Integrate(ctx, m.Repo, w.Path, head); err != nil {
+		return Workspace{}, fmt.Errorf("integrate %s into %s: %w", head, w.Branch, err)
+	}
+	w.Base = head
+	if err := m.Store.Upsert(ctx, w); err != nil {
+		return Workspace{}, fmt.Errorf("record integrated workspace: %w", err)
+	}
+	return w, nil
 }
 
 // Disposal lands with the orchestrator's merge and completion path in M4.

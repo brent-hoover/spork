@@ -93,6 +93,8 @@ func (g *countingGit) RemoveWorktree(_ context.Context, _, path string) error {
 	return os.RemoveAll(path)
 }
 
+func (g *countingGit) Integrate(context.Context, string, string, string) error { return nil }
+
 func (g *countingGit) HasUnmergedCommits(context.Context, string, string, string) (bool, error) {
 	return true, nil
 }

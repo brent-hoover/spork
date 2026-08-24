@@ -58,6 +58,10 @@ type fakeGit struct {
 	addErr         error
 	removeErr      error
 	branches       []string
+	// integrated records what was merged into the branch, so a test can see
+	// whether it took the moved head.
+	integrated   []string
+	integrateErr error
 }
 
 func (g *fakeGit) DefaultBranchCommit(context.Context, string, string) (string, error) {
@@ -81,6 +85,16 @@ func (g *fakeGit) RemoveWorktree(context.Context, string, string) error {
 		return g.removeErr
 	}
 	g.removed++
+	return nil
+}
+
+// Integrate records what was merged in, so a test can see whether the branch
+// took the moved head.
+func (g *fakeGit) Integrate(_ context.Context, _, _, commit string) error {
+	if g.integrateErr != nil {
+		return g.integrateErr
+	}
+	g.integrated = append(g.integrated, commit)
 	return nil
 }
 
@@ -354,5 +368,81 @@ func TestRecoveryProbesTheRecordedPath(t *testing.T) {
 	}
 	if len(probe.asked) != 1 || probe.asked[0] != "/promised/path" {
 		t.Errorf("probed %v", probe.asked)
+	}
+}
+
+func TestIntegrationTakesTheMovedDefaultHead(t *testing.T) {
+	// A run whose merge or completion failed comes back to the pair loop, and
+	// rerunning the chain against a base the default branch has moved past
+	// just fails the same way.
+	store, git := newMemStore(), &fakeGit{}
+	m := manager(store, git)
+	if _, err := m.Ensure(context.Background(), "run-1", "KRI-1"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	git.base = "D2"
+
+	got, err := m.Integrate(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("integrate: %v", err)
+	}
+	if len(git.integrated) != 1 || git.integrated[0] != "D2" {
+		t.Errorf("integrated %v", git.integrated)
+	}
+	if got.Base != "D2" {
+		t.Errorf("the recorded base is %q — the next chain would freeze the old one", got.Base)
+	}
+	// Durable, because the next chain reads it back rather than being handed it.
+	row, _, err := store.Find(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if row.Base != "D2" {
+		t.Errorf("the stored base is %q", row.Base)
+	}
+}
+
+func TestAnUnmovedHeadIntegratesNothing(t *testing.T) {
+	// Merging a branch into itself makes an empty commit and a new head that
+	// reviews identically.
+	store, git := newMemStore(), &fakeGit{}
+	m := manager(store, git)
+	if _, err := m.Ensure(context.Background(), "run-1", "KRI-1"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if _, err := m.Integrate(context.Background(), "run-1"); err != nil {
+		t.Fatalf("integrate: %v", err)
+	}
+	if len(git.integrated) != 0 {
+		t.Errorf("integrated %v against an unmoved head", git.integrated)
+	}
+}
+
+func TestAConflictingIntegrationSurfaces(t *testing.T) {
+	// A conflict is exactly the kind of thing the pair loop exists to resolve,
+	// but nothing can resolve one it was never told about.
+	store, git := newMemStore(), &fakeGit{}
+	m := manager(store, git)
+	if _, err := m.Ensure(context.Background(), "run-1", "KRI-1"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	git.base = "D2"
+	git.integrateErr = errors.New("CONFLICT in handler.go")
+	if _, err := m.Integrate(context.Background(), "run-1"); err == nil {
+		t.Fatal("a conflicting integration read as integrated")
+	}
+	row, _, err := store.Find(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if row.Base == "D2" {
+		t.Error("the base advanced despite the integration failing")
+	}
+}
+
+func TestIntegratingAWorkspaceThatDoesNotExistFails(t *testing.T) {
+	store, git := newMemStore(), &fakeGit{}
+	if _, err := manager(store, git).Integrate(context.Background(), "run-absent"); err == nil {
+		t.Fatal("a run with no workspace integrated something")
 	}
 }

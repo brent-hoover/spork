@@ -66,13 +66,16 @@ func buildStages(d deps) orchestrator.Stages {
 		},
 
 		orchestrator.StageDevLoop: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
-			w, found, err := ws.Store.Find(ctx, run.ID)
+			// The default branch may have moved while this run was elsewhere —
+			// a merge that lost its CAS, a completion whose head advanced.
+			// Rerunning the chain against a base it has moved past just fails
+			// the same way, so the branch integrates first and the new base is
+			// what the next chain freezes.
+			w, err := ws.Integrate(ctx, run.ID)
 			if err != nil {
 				return run, err
 			}
-			if !found {
-				return run, fmt.Errorf("no workspace for run %s", run.ID)
-			}
+			run.GatedBase = w.Base
 			session, err := loop.Work(ctx, devloop.Request{
 				Run: run.ID, Ticket: run.Ticket, Title: run.Ticket,
 				Workspace: w.Path, Commands: commandsFor(run.Ticket),
