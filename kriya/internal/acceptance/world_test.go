@@ -45,6 +45,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// epoch is the completion-epoch scenarios' state, nil until one starts.
+	epoch *epochWorld
 	// detect is the completion-detection scenarios' state, nil until one starts.
 	detect *detectWorld
 	// gates is the gate scenarios' state, nil until one starts.

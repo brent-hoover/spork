@@ -332,6 +332,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			// loop. The answer is durable either way.
 			Finish: completionDetector(db),
 			Stalls: stallRecorder(db),
+			Epochs: planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 		}.Run(ctx)
 	}
 }

@@ -48,13 +48,26 @@ func (l Loop) diagnose(ctx context.Context) error {
 	if armed {
 		return nil
 	}
-	// The epoch is zero until the completion lifecycle lands with
-	// REQ-run-to-complete's claim protocol; the key it scopes is already
-	// derived from it, so a later epoch's stall is already a distinct row.
-	if err := l.Stalls.Record(ctx, l.TargetKey, 0, reason); err != nil {
+	epoch, err := l.epoch(ctx)
+	if err != nil {
+		return err
+	}
+	if err := l.Stalls.Record(ctx, l.TargetKey, epoch, reason); err != nil {
 		return fmt.Errorf("record stall for %s: %w", l.TargetKey, err)
 	}
 	return nil
+}
+
+// epoch reads the target's completion epoch, or zero when nothing tracks it.
+func (l Loop) epoch(ctx context.Context) (int, error) {
+	if l.Epochs == nil {
+		return 0, nil
+	}
+	epoch, err := l.Epochs.Current(ctx, l.TargetKey)
+	if err != nil {
+		return 0, fmt.Errorf("read completion epoch for %s: %w", l.TargetKey, err)
+	}
+	return epoch, nil
 }
 
 // popKey is deterministic per (target, pop ordinal).
@@ -84,6 +97,15 @@ type StallRecorder interface {
 	Record(ctx context.Context, targetKey string, epoch int, cause string) error
 }
 
+// Epoch reads a target's completion epoch, which scopes the stall key.
+//
+// A stall is about a moment in the target's life: after a supersession or a
+// reopen the same-looking condition is a different one, and reusing the row
+// would hide it behind an earlier resolution.
+type Epoch interface {
+	Current(ctx context.Context, targetKey string) (int, error)
+}
+
 // Loop pops and builds until nothing is workable.
 type Loop struct {
 	Pops     Popper
@@ -94,6 +116,9 @@ type Loop struct {
 	// itself wants.
 	Finish Finishable
 	Stalls StallRecorder
+	// Epochs scopes the stall key. Nil records every stall at epoch zero,
+	// which is right for a target nothing has ever advanced.
+	Epochs Epoch
 	// TargetKey scopes the pop keys to one target.
 	TargetKey string
 	// MaxTickets bounds one pass. Reaching it is not completion — it is this

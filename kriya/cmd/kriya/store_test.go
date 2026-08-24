@@ -139,6 +139,7 @@ func TestForeignKeysAreActuallyEnforced(t *testing.T) {
 // a new fingerprint. Update a fingerprint only for a migration that has never
 // been released.
 const migrationFingerprints = `
+planner/0007_completion_epoch 81ffd03adc697494
 planner/0006_plan 942173976eed46c1
 orchestrator/0011_stall b839f5d5c180f370
 agent/0001_invocation 38098861a704eef4
