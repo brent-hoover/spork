@@ -7,6 +7,7 @@ import (
 
 	"context"
 	"errors"
+	"kriya/internal/agent"
 	"kriya/internal/clock"
 	"kriya/internal/devloop"
 	"kriya/internal/orchestrator"
@@ -516,5 +517,75 @@ func TestWithoutARepositoryOnlyTheTrackerStageRecovers(t *testing.T) {
 	kept := repositoryIndependent(all)
 	if len(kept) != 1 || kept[0].Stage != recovery.StageTargets {
 		t.Fatalf("kept %d steps: %+v", len(kept), kept)
+	}
+}
+
+func TestAnApprovedVerdictIsEnqueuedRatherThanRead(t *testing.T) {
+	// The cursor advances past a consumed verdict and never offers it again,
+	// so a verdict routed and then dropped is a run that waits forever.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	run := orchestrator.BuildRun{
+		ID: "run-1", Ticket: "T-1", Issue: "issue-7", Plan: "/target",
+		State: orchestrator.StateReviewSubmitted, ReviewID: "review-1",
+		ReviewCommit: "C2", ReviewRevision: 1, Branch: "kriya/T-1/abcd",
+	}
+	if err := (orchestrator.SQLStore{DB: db}).Upsert(t.Context(), run); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	queue := queueForTest(t, db)
+	routed := []orchestrator.Routed{{
+		Run: run,
+		Verdict: orchestrator.VerdictEvent{
+			ID: "event-9", Review: "review-1", Session: "sess-1",
+			Verdict: orchestrator.VerdictApproved,
+		},
+	}}
+	// The drive that follows fails against a repository this test does not
+	// populate; what is asserted is that the approval was ENQUEUED first.
+	if err := actOnVerdicts(t.Context(), db, workspace.Manager{}, agent.Tiers{},
+		reviewbridge.Bridge{}, queue, routed, "/target", "actor-1"); err != nil {
+		t.Logf("drive: %v", err)
+	}
+
+	key, found, err := queue.AttemptFor(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("attempt for: %v", err)
+	}
+	if !found || key == "" {
+		t.Fatal("the approval was read and dropped: no merge attempt exists")
+	}
+}
+
+func TestAReworkedVerdictEnqueuesNothing(t *testing.T) {
+	// The control. A changes-requested run goes back to the pair loop; there
+	// is nothing to merge, and enqueuing one would try to land rejected work.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	run := orchestrator.BuildRun{
+		ID: "run-2", Ticket: "T-2", Issue: "issue-8", Plan: "/target",
+		State: orchestrator.StateDevLoop, ReviewID: "review-2", ReviewCommit: "C2",
+	}
+	if err := (orchestrator.SQLStore{DB: db}).Upsert(t.Context(), run); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	queue := queueForTest(t, db)
+	_ = actOnVerdicts(t.Context(), db, workspace.Manager{}, agent.Tiers{},
+		reviewbridge.Bridge{}, queue, []orchestrator.Routed{{
+			Run: run, Reworked: true,
+			Verdict: orchestrator.VerdictEvent{
+				ID: "event-3", Review: "review-2", Session: "sess-2",
+				Verdict: orchestrator.VerdictChangesRequested,
+			},
+		}}, "/target", "actor-1")
+
+	if _, found, err := queue.AttemptFor(t.Context(), "run-2"); err != nil {
+		t.Fatalf("attempt for: %v", err)
+	} else if found {
+		t.Error("rejected work was enqueued for merging")
 	}
 }

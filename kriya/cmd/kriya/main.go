@@ -304,7 +304,16 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		// Verdicts first. A changes-requested review returns its run to the
 		// pair loop, and a pass that popped new work before reading them would
 		// leave a rejected run waiting behind tickets it does not need.
-		if _, err := verdictRouter(db, actor).Consume(ctx); err != nil {
+		routed, err := verdictRouter(db, actor).Consume(ctx)
+		if err != nil {
+			return orchestrator.Result{}, err
+		}
+		// ACTED ON, not merely read. The cursor advances past these events and
+		// never offers them again, so a verdict routed and then dropped is a
+		// run that waits forever — approved work that never merges, rework
+		// that never restarts.
+		if err := actOnVerdicts(ctx, db, ws, tiers, reviews,
+			mergeQueue(db, ws, actor), routed, target, actor); err != nil {
 			return orchestrator.Result{}, err
 		}
 		return orchestrator.Loop{
@@ -314,6 +323,57 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			TargetKey: target,
 		}.Run(ctx)
 	}
+}
+
+// actOnVerdicts drives every run a consumed verdict moved.
+//
+// A rework is already in dev-loop and only needs driving. An approval is the
+// merge queue's business: it is enqueued under the approval event's own key,
+// so the same event observed twice enqueues once.
+func actOnVerdicts(
+	ctx context.Context, db *sql.DB, ws workspace.Manager, tiers agent.Tiers,
+	reviews reviewbridge.Bridge, queue orchestrator.Queue,
+	routed []orchestrator.Routed, target, actor string,
+) error {
+	// Approvals are made DURABLE FIRST, every one of them, before anything is
+	// driven. The cursor has already advanced past these events and will never
+	// offer them again, so an approval still only in memory when a later step
+	// fails is one nothing can recover: the run waits on a merge nobody
+	// enqueued.
+	for i, r := range routed {
+		if r.Reworked {
+			// Back in the pair loop. There is nothing to merge, and enqueuing
+			// one would try to land work the human rejected.
+			continue
+		}
+		moved, _, err := queue.OnApproval(ctx, r.Run, orchestrator.Approved{
+			Review: r.Verdict.Review, Revision: r.Run.ReviewRevision,
+			Event: r.Verdict.ID, Commit: r.Run.ReviewCommit, TargetKey: target,
+		})
+		if err != nil {
+			return err
+		}
+		routed[i].Run = moved
+	}
+
+	snap, err := snapshotFor(ctx, db, target)
+	if err != nil {
+		return err
+	}
+	for _, r := range routed {
+		o := orchestrator.Orchestrator{
+			Store: orchestrator.SQLStore{DB: db},
+			Stages: buildStages(stageDeps(db, ws,
+				loopFor(db, tiers, reviews, r.Run.Ticket),
+				tiers, planner.Ticket{Title: r.Run.Ticket, IssueID: r.Run.Issue},
+				snap, target, actor)),
+			Now: clock.System{},
+		}
+		if _, err := o.Drive(ctx, r.Run.ID, 16); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // verdictRouter consumes review verdicts and routes each to its run.
@@ -328,6 +388,41 @@ func verdictRouter(db *sql.DB, actor string) orchestrator.Router {
 	}
 }
 
+// loopFor wires the pair loop for one ticket.
+//
+// Extracted because the pop loop and the verdict router both need it: a run
+// returning from a changes-requested verdict re-enters the dev loop, and a
+// second wiring of the same collaborators would be a second thing to keep in
+// step with this one.
+func loopFor(
+	db *sql.DB, tiers agent.Tiers, reviews reviewbridge.Bridge, title string,
+) devloop.Loop {
+	return devloop.Loop{
+		Agent: recorder(db, tiers, title),
+		Store: devloop.SQLStore{DB: db},
+		Context: kctx.Assembler{
+			Store:     kctx.SQLBundles{DB: db},
+			Learnings: kctx.SQLLearnings{DB: db, Now: clock.System{}},
+			Now:       clock.System{},
+		},
+		Learnings: kctx.SQLLearnings{DB: db, Now: clock.System{}},
+		Threads:   sutraThreads{c: trackerclient.New(sutraURL())},
+		Architect: architect.Architect{
+			Agent: recorder(db, tiers, title),
+			Store: architect.SQLStore{DB: db},
+			Now:   clock.System{},
+		},
+		Commit: workspace.ShellGit{},
+		Review: reviews,
+		Now:    clock.System{},
+	}
+}
+
+// snapshotFor reads the target's pinned snapshot.
+func snapshotFor(ctx context.Context, db *sql.DB, target string) (planner.Snapshot, error) {
+	return planner.SQLSnapshots{DB: db}.Get(ctx, latestSnapshotHash(ctx, db, target))
+}
+
 // buildOne runs a single popped ticket to a terminal state.
 func buildOne(
 	db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewbridge.Bridge,
@@ -335,33 +430,16 @@ func buildOne(
 ) orchestrator.Builder {
 	return func(ctx context.Context, issue, title string) (orchestrator.BuildRun, error) {
 		ticket := planner.Ticket{Title: title, IssueID: issue}
-		snap, err := planner.SQLSnapshots{DB: db}.Get(ctx, latestSnapshotHash(ctx, db, target))
+		snap, err := snapshotFor(ctx, db, target)
 		if err != nil {
 			return orchestrator.BuildRun{}, err
 		}
-		loop := devloop.Loop{
-			Agent: recorder(db, tiers, ticket.Title),
-			Store: devloop.SQLStore{DB: db},
-			Context: kctx.Assembler{
-				Store:     kctx.SQLBundles{DB: db},
-				Learnings: kctx.SQLLearnings{DB: db, Now: clock.System{}},
-				Now:       clock.System{},
-			},
-			Learnings: kctx.SQLLearnings{DB: db, Now: clock.System{}},
-			Threads:   sutraThreads{c: trackerclient.New(sutraURL())},
-			Architect: architect.Architect{
-				Agent: recorder(db, tiers, ticket.Title),
-				Store: architect.SQLStore{DB: db},
-				Now:   clock.System{},
-			},
-			Commit: workspace.ShellGit{},
-			Review: reviews,
-			Now:    clock.System{},
-		}
 		o := orchestrator.Orchestrator{
-			Store:  orchestrator.SQLStore{DB: db},
-			Stages: buildStages(stageDeps(db, ws, loop, tiers, ticket, snap, target, actor)),
-			Now:    clock.System{},
+			Store: orchestrator.SQLStore{DB: db},
+			Stages: buildStages(stageDeps(db, ws,
+				loopFor(db, tiers, reviews, ticket.Title),
+				tiers, ticket, snap, target, actor)),
+			Now: clock.System{},
 		}
 		run, err := resumeOrStart(ctx, o.Store, ticket, target)
 		if err != nil {
