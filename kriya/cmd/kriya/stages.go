@@ -119,6 +119,13 @@ func buildStages(d deps) orchestrator.Stages {
 				// now: a config change affects only future runs.
 				RoundLimit: run.RoundLimit,
 			})
+			if errors.Is(err, devloop.ErrArchitectDirected) {
+				// The architect answered and its direction is recorded. The
+				// run has neither advanced nor failed: the next pass reads
+				// that direction and starts from it, which is the whole point
+				// of asking. Parking here would strand it.
+				return run, orchestrator.ErrWaiting
+			}
 			if errors.Is(err, devloop.ErrReviewPending) {
 				// The review job has not finished. The run has neither
 				// advanced nor failed: it comes back, rather than reaching

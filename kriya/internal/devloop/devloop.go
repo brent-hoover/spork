@@ -186,6 +186,24 @@ func (l Loop) fixRound(
 	return res, nil
 }
 
+// stillRunning reports whether a pass ended without settling the session.
+//
+// Both cases come back: the review job has not finished, or the architect gave
+// direction the next pass starts from. Neither is an outcome to import.
+func stillRunning(err error) bool {
+	return errors.Is(err, ErrReviewPending) || errors.Is(err, ErrArchitectDirected)
+}
+
+// ErrArchitectDirected reports that the loop stalled and the architect gave
+// direction for the next pass.
+//
+// A distinct error because a successful handoff is not a malfunction: as a
+// plain one, the table read it as a failed dev-loop stage and parked the run
+// in awaiting-operator — terminal, so the direction the architect had just
+// recorded could never be consumed. The run comes back instead, and the next
+// pass starts with that direction in the agent's prompt.
+var ErrArchitectDirected = errors.New("the architect gave direction for the next pass")
+
 // Work runs one session.
 //
 // The session is recorded BEFORE the agent is invoked and stamped ended after,
@@ -222,17 +240,29 @@ func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
 	session.SessionID = res.SessionID
 	session.Model = res.Model
 
+	var pairErr error
 	if l.Commit != nil && l.Review != nil {
-		if err := l.pair(ctx, req, &session, &turns); err != nil {
-			return Session{}, err
-		}
+		pairErr = l.pair(ctx, req, &session, &turns)
+	}
+	if stillRunning(pairErr) {
+		// Not an outcome: the session continues, and importing a partial
+		// transcript under its own key would return that thread for every
+		// later import and lose everything after it.
+		return Session{}, pairErr
 	}
 
-	// Captured before the session is stamped ended: AC-thread-no-loss wants
-	// every outcome in the catalog, and a row stamped ended with no import
-	// would look settled while its conversation was nowhere.
+	// Captured before the session is stamped ended, and on a FAILED pass as
+	// well as a clean one: AC-thread-no-loss wants every outcome in the
+	// catalog, crashed included, and a session that died mid-loop with no
+	// transcript ref is one recovery skips and nothing ever imports.
 	if err := l.capture(ctx, req, &session, turns); err != nil {
+		if pairErr != nil {
+			return Session{}, errors.Join(pairErr, err)
+		}
 		return Session{}, err
+	}
+	if pairErr != nil {
+		return Session{}, pairErr
 	}
 
 	session.Ended = true
@@ -409,7 +439,8 @@ func (l Loop) impasse(ctx context.Context, req Request, session *Session,
 	}); err != nil {
 		return err
 	}
-	return fmt.Errorf("run %s paused for the architect after %d rounds", req.Run, rounds)
+	return fmt.Errorf("run %s paused for the architect after %d rounds: %w",
+		req.Run, rounds, ErrArchitectDirected)
 }
 
 // learn records what a review finding taught.

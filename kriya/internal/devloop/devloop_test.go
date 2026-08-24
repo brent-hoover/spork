@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -728,4 +729,148 @@ func TestAPendingReviewIsNotACompletedSession(t *testing.T) {
 			t.Error("the session was stamped ended with its review still running")
 		}
 	}
+}
+
+func TestASuccessfulArchitectHandoffIsNotAMalfunction(t *testing.T) {
+	// It returned a plain error, which the table reads as a failed dev-loop
+	// stage and parks the run in awaiting-operator — terminal, with no path
+	// back. The direction the architect just recorded could never be
+	// consumed by anything.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictFindings},
+		findings: "- **Severity**: High",
+	}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 2)
+	sa := &recordingArchitect{direction: "extract the port"}
+	loop.Architect = sa
+
+	_, err := loop.Work(context.Background(), request())
+	if !errors.Is(err, devloop.ErrArchitectDirected) {
+		t.Fatalf("got %v, want ErrArchitectDirected", err)
+	}
+	if sa.resolved != 1 {
+		t.Errorf("the architect was asked %d times", sa.resolved)
+	}
+}
+
+func TestAnArchitectFailureIsStillAFailure(t *testing.T) {
+	// The control: "the architect could not be reached" is not "the architect
+	// gave direction", and must not read as a run that may continue.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictFindings},
+		findings: "- **Severity**: High",
+	}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 2)
+	loop.Architect = &recordingArchitect{err: errors.New("architect unreachable")}
+
+	_, err := loop.Work(context.Background(), request())
+	if err == nil || errors.Is(err, devloop.ErrArchitectDirected) {
+		t.Fatalf("got %v, want a plain failure", err)
+	}
+}
+
+// recordingArchitect stands in for the SA.
+type recordingArchitect struct {
+	direction string
+	err       error
+	resolved  int
+	resume    architect.Intervention
+	found     bool
+}
+
+func (a *recordingArchitect) Resolve(
+	_ context.Context, build, _, trigger string, findings []string, _ string,
+) (architect.Intervention, error) {
+	a.resolved++
+	if a.err != nil {
+		return architect.Intervention{}, a.err
+	}
+	return architect.Intervention{
+		Build: build, Trigger: trigger, Direction: a.direction,
+		State: architect.StateDirected,
+	}, nil
+}
+
+func (a *recordingArchitect) Resume(
+	context.Context, string,
+) (architect.Intervention, bool, error) {
+	return a.resume, a.found, nil
+}
+
+func TestASessionThatFailedMidLoopStillReachesTheCatalog(t *testing.T) {
+	// AC-thread-no-loss: every outcome reaches the thread catalog, crashed
+	// included. Capture ran only after the whole loop succeeded, so a commit,
+	// agent or review failure left ImportState "none" with no transcript ref
+	// — and RecoverImports skips exactly those rows, so the conversation was
+	// nowhere, forever.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings}, findings: "- **Severity**: High",
+	}
+	loop := pairLoop(store, ag, &failingCommitter{after: 1}, rev, 5)
+	threads := &recordingThreads{}
+	loop.Threads = threads
+	req := request()
+	req.Workspace = t.TempDir()
+
+	if _, err := loop.Work(context.Background(), req); err == nil {
+		t.Fatal("a failed commit read as a completed session")
+	}
+	if len(threads.imported) != 1 {
+		t.Fatalf("imported %d transcripts for a crashed session", len(threads.imported))
+	}
+	if !strings.Contains(threads.imported[0], "Implement this ticket") {
+		t.Errorf("the imported transcript is %q", threads.imported[0])
+	}
+}
+
+func TestASessionStillRunningIsNotImportedYet(t *testing.T) {
+	// The control. A pending review or an architect handoff is not an
+	// outcome: the session continues, and importing a partial transcript
+	// under the session's own key would return that thread for every later
+	// import and lose everything after it.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictPending}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	threads := &recordingThreads{}
+	loop.Threads = threads
+	req := request()
+	req.Workspace = t.TempDir()
+
+	if _, err := loop.Work(context.Background(), req); !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("got %v", err)
+	}
+	if len(threads.imported) != 0 {
+		t.Errorf("a session still running was imported: %d", len(threads.imported))
+	}
+}
+
+// failingCommitter commits successfully n times, then refuses.
+type failingCommitter struct {
+	after int
+	made  int
+}
+
+func (c *failingCommitter) Commit(_ context.Context, _, _ string) (string, error) {
+	c.made++
+	if c.made > c.after {
+		return "", errors.New("the worktree is gone")
+	}
+	return fmt.Sprintf("sha-%d", c.made), nil
+}
+
+// recordingThreads keeps every transcript handed to the catalog.
+type recordingThreads struct{ imported []string }
+
+func (r *recordingThreads) Import(
+	_ context.Context, _ string, transcript json.RawMessage, _, _, _, _ string,
+) (string, error) {
+	r.imported = append(r.imported, string(transcript))
+	return fmt.Sprintf("thread-%d", len(r.imported)), nil
 }
