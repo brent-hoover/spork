@@ -21,7 +21,6 @@ CREATE TABLE merge_attempt (
     revision       INTEGER NOT NULL,
     approval_event TEXT NOT NULL,
     commit_sha     TEXT NOT NULL DEFAULT '',
-    resource       TEXT NOT NULL DEFAULT '',
     expected_base  TEXT NOT NULL DEFAULT '',
     consume_key    TEXT NOT NULL DEFAULT '',
     merge_commit   TEXT NOT NULL DEFAULT '',
@@ -29,6 +28,16 @@ CREATE TABLE merge_attempt (
     note           TEXT NOT NULL DEFAULT '',
     seq            INTEGER NOT NULL
 )`
+
+// ResourceMigration scopes serialization to a repository and branch.
+//
+// A SEPARATE migration rather than a column added to the one above. That
+// migration is already registered, so a database that ran it never runs it
+// again: editing it in place left existing databases with no resource column
+// at all, and every merge-attempt query against one failed. Fresh and existing
+// databases now take the same two steps and end identical.
+const ResourceMigration = `
+ALTER TABLE merge_attempt ADD COLUMN resource TEXT NOT NULL DEFAULT ''`
 
 // attemptColumns is every column a MergeAttempt reads back, in scan order.
 const attemptColumns = `attempt_key, target_key, build, review, revision, approval_event,

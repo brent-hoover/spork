@@ -449,19 +449,30 @@ func TestAPoppedTicketResumesItsExistingRun(t *testing.T) {
 	}
 	store := orchestrator.SQLStore{DB: db}
 	existing := orchestrator.BuildRun{
-		ID: "run-existing", Ticket: "issue-7", Plan: "/target",
-		State: orchestrator.StateDevLoop, ReviewID: "review-1", Attempt: 3,
+		ID: "run-existing", Ticket: "Create a short link", Issue: "issue-7",
+		Plan: "/target", State: orchestrator.StateDevLoop, ReviewID: "review-1", Attempt: 3,
 	}
 	if err := store.Upsert(t.Context(), existing); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	got, err := resumeOrStart(t.Context(), store,
-		planner.Ticket{Title: "issue-7", IssueID: "issue-7"}, "/target")
+		planner.Ticket{Title: "Create a short link", IssueID: "issue-7"}, "/target")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if got.ID != "run-existing" || got.Attempt != 3 {
 		t.Errorf("started %+v instead of resuming", got)
+	}
+	// A DIFFERENT issue sharing the title starts its own run. Titles are not
+	// unique, and resuming on one makes the second claim drive the first
+	// issue's work while orphaning the issue it actually claimed.
+	other, err := resumeOrStart(t.Context(), store,
+		planner.Ticket{Title: "Create a short link", IssueID: "issue-8"}, "/target")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if other.ID == "run-existing" {
+		t.Error("issue-8 resumed the run that belongs to issue-7")
 	}
 }
 

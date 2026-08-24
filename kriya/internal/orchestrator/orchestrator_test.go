@@ -257,7 +257,8 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 		orchestrator.Migration, orchestrator.RoundLimitMigration,
 		orchestrator.SubmissionMigration, orchestrator.CompletionMigration,
 		orchestrator.PopMigration, orchestrator.CursorMigration,
-		orchestrator.MergeMigration, orchestrator.HeadMigration,
+		orchestrator.MergeMigration, orchestrator.ResourceMigration,
+		orchestrator.HeadMigration,
 		orchestrator.IssueMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
@@ -659,8 +660,8 @@ func TestARunIsFoundByItsTicketWhileUnsettled(t *testing.T) {
 	// would abandon the first with its review and its attempt count.
 	s := sqlOrchStore(t)
 	if err := s.Upsert(context.Background(), orchestrator.BuildRun{
-		ID: "run-1", Ticket: "issue-7", State: orchestrator.StateDevLoop,
-		ReviewID: "review-1", Attempt: 3,
+		ID: "run-1", Ticket: "Create a short link", Issue: "issue-7",
+		State: orchestrator.StateDevLoop, ReviewID: "review-1", Attempt: 3,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -681,7 +682,8 @@ func TestASettledRunIsNotResumed(t *testing.T) {
 		orchestrator.StateClosed, orchestrator.StateMerged, orchestrator.StateCancelled,
 	} {
 		if err := s.Upsert(context.Background(), orchestrator.BuildRun{
-			ID: "run-" + string(state), Ticket: "issue-settled-" + string(state), State: state,
+			ID: "run-" + string(state), Ticket: "settled " + string(state),
+			Issue: "issue-settled-" + string(state), State: state,
 		}); err != nil {
 			t.Fatalf("upsert: %v", err)
 		}
@@ -715,5 +717,35 @@ func TestForTicketFailsRatherThanReadingAsFresh(t *testing.T) {
 	if _, _, err := (orchestrator.SQLStore{DB: db}).
 		ForTicket(context.Background(), "issue-7"); err == nil {
 		t.Error("a missing table read as a ticket with no run")
+	}
+}
+
+func TestTwoIssuesWithOneTitleDoNotShareARun(t *testing.T) {
+	// Titles are not unique — a decomposition can produce "add tests" twice,
+	// for two different modules. Keying resumption on the title makes the
+	// second claim drive and submit the FIRST issue's work, and orphans the
+	// issue it actually claimed.
+	s := sqlOrchStore(t)
+	first := orchestrator.BuildRun{
+		ID: "run-1", Ticket: "add tests", Issue: "issue-7", Plan: "/target",
+		State: orchestrator.StateDevLoop,
+	}
+	if err := s.Upsert(context.Background(), first); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, found, err := s.ForTicket(context.Background(), "issue-8")
+	if err != nil {
+		t.Fatalf("for ticket: %v", err)
+	}
+	if found {
+		t.Errorf("issue-8 resumed run %q, which belongs to issue-7", got.ID)
+	}
+	// And its own issue does find it.
+	got, found, err = s.ForTicket(context.Background(), "issue-7")
+	if err != nil || !found {
+		t.Fatalf("issue-7 did not find its own run: %v found=%v", err, found)
+	}
+	if got.ID != "run-1" {
+		t.Errorf("resumed %q", got.ID)
 	}
 }

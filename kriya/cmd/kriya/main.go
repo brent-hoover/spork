@@ -639,7 +639,7 @@ func reportAdvance(
 func resumeOrStart(
 	ctx context.Context, store orchestrator.Store, ticket planner.Ticket, target string,
 ) (orchestrator.BuildRun, error) {
-	existing, found, err := store.ForTicket(ctx, ticket.Title)
+	existing, found, err := store.ForTicket(ctx, ticket.IssueID)
 	if err != nil {
 		return orchestrator.BuildRun{}, err
 	}

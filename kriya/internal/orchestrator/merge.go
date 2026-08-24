@@ -340,6 +340,13 @@ func (q Queue) RecoverMerges(ctx context.Context) (int, error) {
 	busy := map[string]bool{}
 	var resumed int
 	for _, a := range open {
+		if a.Resource != q.Resource {
+			// Another repository's attempt. This queue's Git is bound to ONE
+			// repository and branch, so advancing it would preflight and CAS
+			// against the wrong repository — and abort an attempt whose base
+			// has not moved at all.
+			continue
+		}
 		if busy[a.Resource] {
 			continue
 		}

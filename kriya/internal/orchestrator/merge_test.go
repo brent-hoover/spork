@@ -633,3 +633,41 @@ func TestRecoveryStopsBehindAnAttemptStillHoldingTheSection(t *testing.T) {
 		t.Errorf("the waiting attempt moved to %q", store.rows[secondKey].State)
 	}
 }
+
+func TestRecoveryLeavesAnotherRepositorysAttemptsAlone(t *testing.T) {
+	// The attempt store is shared across every target in one database, but a
+	// queue's Git is bound to ONE repository and branch. Advancing a foreign
+	// attempt would preflight and CAS against the wrong repository, and abort
+	// an attempt whose base has not moved at all.
+	store, ap, git := newMemAttempts(), newApprovals(), &gitDouble{head: "base-1"}
+	q := queue(store, ap, git)
+	foreign := attempt()
+	foreign.Resource = "/other-repo#main"
+	foreign.Review = "review-other"
+	if _, err := q.Enqueue(context.Background(), foreign); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	// The enqueue stamps this queue's resource, so put the foreign one back.
+	for key, row := range store.rows {
+		if row.Review == "review-other" {
+			row.Resource = "/other-repo#main"
+			store.rows[key] = row
+		}
+	}
+
+	n, err := q.RecoverMerges(context.Background())
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("recovered %d foreign attempts", n)
+	}
+	if len(git.merges) != 0 || len(ap.calls) != 0 {
+		t.Errorf("touched another repository: merges=%v approvals=%v", git.merges, ap.calls)
+	}
+	for _, row := range store.rows {
+		if row.State == orchestrator.AttemptAborted {
+			t.Errorf("a foreign attempt was aborted: %+v", row)
+		}
+	}
+}

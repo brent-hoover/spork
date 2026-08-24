@@ -272,11 +272,15 @@ func (s SQLCursors) Advance(ctx context.Context, name, cursor string) error {
 // it would abandon the first with its review, its attempt count and its
 // history. At most one run per issue is unsettled; a closed one is history and
 // a new claim on the same issue is genuinely new work.
+//
+// By ISSUE, never by title. Titles are not unique: a decomposition can produce
+// "add tests" twice, and keying on it makes the second claim drive and submit
+// the first issue'"'"'s work while orphaning the issue it actually claimed.
 func (s SQLStore) ForTicket(ctx context.Context, issue string) (BuildRun, bool, error) {
 	var id string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT id FROM build_run
-		   WHERE ticket = ? AND state NOT IN (?, ?, ?)
+		   WHERE issue = ? AND state NOT IN (?, ?, ?)
 		   ORDER BY rowid DESC LIMIT 1`,
 		issue, string(StateClosed), string(StateMerged), string(StateCancelled)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
