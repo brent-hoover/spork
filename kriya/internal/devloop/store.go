@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -37,6 +38,19 @@ const RoundsMigration = `
 ALTER TABLE dev_session ADD COLUMN rounds INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE dev_session ADD COLUMN commits TEXT NOT NULL DEFAULT '[]'`
 
+// SystemFileMigration records where the assembled context was written.
+//
+// A resumed pass needs it: the fix rounds append the SAME bundle the first
+// round read, and a session recovered without it would hand the agent no law
+// at all. It was only ever in memory, which is exactly as long as a pass that
+// comes back does not last.
+const SystemFileMigration = `
+ALTER TABLE dev_session ADD COLUMN system_file TEXT NOT NULL DEFAULT ''`
+
+// sessionColumns is every column a Session reads back, in scan order.
+const sessionColumns = `ticket, session_id, model, ended, rounds, commits,
+	system_file, transcript_ref, import_key, import_state, thread_ref`
+
 // SQLStore stores sessions in SQLite.
 type SQLStore struct{ DB *sql.DB }
 
@@ -49,23 +63,45 @@ func (s SQLStore) Upsert(ctx context.Context, sess Session) error {
 	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO dev_session
 		   (run, ticket, session_id, model, ended, rounds, commits,
-		    transcript_ref, import_key, import_state, thread_ref)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    system_file, transcript_ref, import_key, import_state, thread_ref)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run) DO UPDATE SET
 		   ticket = excluded.ticket, session_id = excluded.session_id,
 		   model = excluded.model, ended = excluded.ended,
 		   rounds = excluded.rounds, commits = excluded.commits,
+		   system_file = excluded.system_file,
 		   transcript_ref = excluded.transcript_ref,
 		   import_key = excluded.import_key,
 		   import_state = excluded.import_state,
 		   thread_ref = excluded.thread_ref`,
 		sess.Run, sess.Ticket, sess.SessionID, sess.Model, sess.Ended,
-		sess.Rounds, string(commits), sess.TranscriptRef, sess.ImportKey,
+		sess.Rounds, string(commits), sess.SystemFile, sess.TranscriptRef, sess.ImportKey,
 		importStateOf(sess), sess.ThreadRef)
 	if err != nil {
 		return fmt.Errorf("upsert dev session: %w", err)
 	}
 	return nil
+}
+
+// Find reads a run's session.
+func (s SQLStore) Find(ctx context.Context, run string) (Session, bool, error) {
+	sess := Session{Run: run}
+	var commits string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT `+sessionColumns+` FROM dev_session WHERE run = ?`, run).
+		Scan(&sess.Ticket, &sess.SessionID, &sess.Model, &sess.Ended, &sess.Rounds,
+			&commits, &sess.SystemFile, &sess.TranscriptRef, &sess.ImportKey,
+			&sess.ImportState, &sess.ThreadRef)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, false, nil
+	}
+	if err != nil {
+		return Session{}, false, fmt.Errorf("read dev session: %w", err)
+	}
+	if err := json.Unmarshal([]byte(commits), &sess.Commits); err != nil {
+		return Session{}, false, fmt.Errorf("decode commits: %w", err)
+	}
+	return sess, true, nil
 }
 
 // importStateOf defaults an unset state.

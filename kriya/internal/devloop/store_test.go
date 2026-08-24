@@ -22,7 +22,8 @@ func sqlSessionStore(t *testing.T) devloop.SQLStore {
 	// The real migration text, split as the composition root splits it: a test
 	// that rebuilt the DDL by hand would pass while production had different
 	// columns, proving only that the test agrees with itself.
-	for _, schema := range []string{devloop.Migration, devloop.RoundsMigration, devloop.CaptureMigration} {
+	for _, schema := range []string{devloop.Migration, devloop.RoundsMigration, devloop.CaptureMigration,
+		devloop.SystemFileMigration} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
 				continue

@@ -374,3 +374,35 @@ func TestAnUnreadablePayloadIsAnError(t *testing.T) {
 		t.Fatal("an unparseable payload read as a verdict")
 	}
 }
+
+func TestAnApprovalCarriesTheRevisionItApproved(t *testing.T) {
+	// The consume fence names the revision the approval is against. An initial
+	// submission never recorded one, so the run's field was zero and the
+	// tracker refused the consumption instead of merging.
+	feed := &verdictFeed{
+		pages: map[string][]orchestrator.VerdictEvent{"": {{
+			ID: "event-9", Review: "review-1", Session: "sess-1",
+			Verdict: orchestrator.VerdictApproved,
+		}}},
+		next: map[string]string{"": "c-1"},
+	}
+	run := submittedFor("sess-1")
+	run.ReviewRevision = 0
+	routes := &sessionRoutes{bySession: map[string]orchestrator.BuildRun{"sess-1": run}}
+
+	routed, err := router(feed, newMemCursors(), routes, &memStore{}).
+		Consume(context.Background())
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if len(routed) != 1 {
+		t.Fatalf("routed %d verdicts", len(routed))
+	}
+	// The router's stub review is at revision 2.
+	if routed[0].Revision != 2 {
+		t.Errorf("the approval carries revision %d, want the review's own", routed[0].Revision)
+	}
+	if routed[0].Reworked {
+		t.Error("an approval was routed as rework")
+	}
+}

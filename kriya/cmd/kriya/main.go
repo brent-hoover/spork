@@ -335,32 +335,49 @@ func actOnVerdicts(
 	reviews reviewbridge.Bridge, queue orchestrator.Queue,
 	routed []orchestrator.Routed, target, actor string,
 ) error {
+	// This target's runs only. The cursor is actor-wide, but this queue's
+	// repository, snapshot and target key belong to one target — driving a
+	// foreign run here would merge its commit into the wrong repository. Its
+	// own build reads the same feed.
+	var mine []orchestrator.Routed
+	for _, r := range routed {
+		if r.Run.Plan == target {
+			mine = append(mine, r)
+		}
+	}
+	if len(mine) == 0 {
+		return nil
+	}
+
 	// Approvals are made DURABLE FIRST, every one of them, before anything is
 	// driven. The cursor has already advanced past these events and will never
 	// offer them again, so an approval still only in memory when a later step
 	// fails is one nothing can recover: the run waits on a merge nobody
 	// enqueued.
-	for i, r := range routed {
+	for i, r := range mine {
 		if r.Reworked {
 			// Back in the pair loop. There is nothing to merge, and enqueuing
 			// one would try to land work the human rejected.
 			continue
 		}
+		// The revision the ROUTER read from the review. An initial submission
+		// records none on the run, so taking it from there enqueued every
+		// approval at revision zero and the tracker refused the consumption.
 		moved, _, err := queue.OnApproval(ctx, r.Run, orchestrator.Approved{
-			Review: r.Verdict.Review, Revision: r.Run.ReviewRevision,
+			Review: r.Verdict.Review, Revision: r.Revision,
 			Event: r.Verdict.ID, Commit: r.Run.ReviewCommit, TargetKey: target,
 		})
 		if err != nil {
 			return err
 		}
-		routed[i].Run = moved
+		mine[i].Run = moved
 	}
 
 	snap, err := snapshotFor(ctx, db, target)
 	if err != nil {
 		return err
 	}
-	for _, r := range routed {
+	for _, r := range mine {
 		o := orchestrator.Orchestrator{
 			Store: orchestrator.SQLStore{DB: db},
 			Stages: buildStages(stageDeps(db, ws,

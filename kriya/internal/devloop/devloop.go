@@ -50,6 +50,9 @@ type Store interface {
 	// Importing lists sessions whose transcript import a crash left in
 	// flight. Recovery replays them under their persisted key.
 	Importing(ctx context.Context) ([]Session, error)
+	// Find returns a run's session. A pass that came back — a review still
+	// running, an architect that gave direction — resumes the one it left.
+	Find(ctx context.Context, run string) (Session, bool, error)
 }
 
 // Committer commits the agent's work so a review has something to read.
@@ -186,6 +189,53 @@ func (l Loop) fixRound(
 	return res, nil
 }
 
+// open resumes the run's unfinished session, or starts one.
+//
+// A pass that came back — a review still running, an architect that gave
+// direction — left a session with an id, a transcript and a round count. A new
+// invocation would start a fresh conversation, commit the same work again, and
+// submit it under an id nothing routes feedback to.
+func (l Loop) open(
+	ctx context.Context, req Request, direction string,
+) (Session, []Exchange, error) {
+	existing, found, err := l.Store.Find(ctx, req.Run)
+	if err != nil {
+		return Session{}, nil, fmt.Errorf("read session: %w", err)
+	}
+	if found && !existing.Ended && existing.SessionID != "" {
+		// Resumed. No new invocation: the agent already has the ticket, and
+		// the pair loop picks up at the round it left.
+		return existing, nil, nil
+	}
+
+	session := Session{Run: req.Run, Ticket: req.Ticket}
+	if err := l.Store.Upsert(ctx, session); err != nil {
+		return Session{}, nil, fmt.Errorf("record session: %w", err)
+	}
+	systemFile, err := l.assembleContext(ctx, req)
+	if err != nil {
+		return Session{}, nil, err
+	}
+	session.SystemFile = systemFile
+
+	implement := prompt(req, direction)
+	res, err := l.Agent.Run(ctx, agent.Request{
+		Role:       agent.RoleDev,
+		Prompt:     implement,
+		Workspace:  req.Workspace,
+		SystemFile: systemFile,
+		AllowRules: req.AllowRules,
+	})
+	if err != nil {
+		return Session{}, nil, fmt.Errorf("dev agent on %s: %w", req.Ticket, err)
+	}
+	session.SessionID = res.SessionID
+	session.Model = res.Model
+	return session, []Exchange{{
+		Role: string(agent.RoleDev), Prompt: implement, Reply: res.Text, Model: res.Model,
+	}}, nil
+}
+
 // stillRunning reports whether a pass ended without settling the session.
 //
 // Both cases come back: the review job has not finished, or the architect gave
@@ -211,40 +261,31 @@ var ErrArchitectDirected = errors.New("the architect gave direction for the next
 // transcript from — AC-thread-no-loss requires every outcome to reach the
 // thread catalog, crashed included.
 func (l Loop) Work(ctx context.Context, req Request) (Session, error) {
-	session := Session{Run: req.Run, Ticket: req.Ticket}
-	if err := l.Store.Upsert(ctx, session); err != nil {
-		return Session{}, fmt.Errorf("record session: %w", err)
-	}
-
-	systemFile, err := l.assembleContext(ctx, req)
+	// Read BEFORE the first invocation, not only inside the pair loop. The
+	// architect answered on a previous pass, and a pass whose first review
+	// comes back clean never reaches a fix prompt — so the direction the
+	// impasse was raised to get would never be given to anybody.
+	direction, err := l.direction(ctx, req.Run)
 	if err != nil {
 		return Session{}, err
 	}
-	session.SystemFile = systemFile
 
-	implement := prompt(req)
-	res, err := l.Agent.Run(ctx, agent.Request{
-		Role:       agent.RoleDev,
-		Prompt:     implement,
-		Workspace:  req.Workspace,
-		SystemFile: systemFile,
-		AllowRules: req.AllowRules,
-	})
+	session, turns, err := l.open(ctx, req, direction)
 	if err != nil {
-		return Session{}, fmt.Errorf("dev agent on %s: %w", req.Ticket, err)
+		return Session{}, err
 	}
-	turns := []Exchange{{
-		Role: string(agent.RoleDev), Prompt: implement, Reply: res.Text, Model: res.Model,
-	}}
-
-	session.SessionID = res.SessionID
-	session.Model = res.Model
 
 	var pairErr error
 	if l.Commit != nil && l.Review != nil {
-		pairErr = l.pair(ctx, req, &session, &turns)
+		pairErr = l.pair(ctx, req, &session, &turns, direction)
 	}
 	if stillRunning(pairErr) {
+		// PERSISTED on the way out. The pass comes back, and a session id and
+		// round count that existed only in memory would leave the next pass
+		// starting a fresh conversation and re-committing the same work.
+		if err := l.Store.Upsert(ctx, session); err != nil {
+			return Session{}, fmt.Errorf("record resuming session: %w", err)
+		}
 		// Not an outcome: the session continues, and importing a partial
 		// transcript under its own key would return that thread for every
 		// later import and lose everything after it.
@@ -304,12 +345,10 @@ func (l Loop) assembleContext(ctx context.Context, req Request) (string, error) 
 // (CON-pair-programming). The findings go back to the agent VERBATIM: they are
 // the next instruction, and summarising them drops the file and line the fix
 // needs.
-func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]Exchange) error {
+func (l Loop) pair(
+	ctx context.Context, req Request, session *Session, turns *[]Exchange, direction string,
+) error {
 	rounds := l.roundLimit(req)
-	direction, err := l.direction(ctx, req.Run)
-	if err != nil {
-		return err
-	}
 	// Findings since the last clean pass. A clean pass resets it, which is
 	// what makes the limit "consecutive rounds" rather than "rounds".
 	var consecutive []string
@@ -537,9 +576,12 @@ func fixPrompt(req Request, findings, direction string) string {
 }
 
 // prompt states the ticket and the bar it will be judged by.
-func prompt(req Request) string {
+func prompt(req Request, direction string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Implement this ticket in the workspace.\n\nTitle: %s\n", req.Title)
+	if direction != "" {
+		fmt.Fprintf(&b, "\nThe architect has given this direction:\n\n%s\n", direction)
+	}
 	if req.Body != "" {
 		fmt.Fprintf(&b, "\n%s\n", req.Body)
 	}

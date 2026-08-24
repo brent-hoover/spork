@@ -372,6 +372,10 @@ func (failingSessions) Importing(context.Context) ([]devloop.Session, error) {
 	return nil, errors.New("disk full")
 }
 
+func (failingSessions) Find(context.Context, string) (devloop.Session, bool, error) {
+	return devloop.Session{}, false, errors.New("disk full")
+}
+
 func TestAnUnreadableSessionListStopsImportRecovery(t *testing.T) {
 	loop := devloop.Loop{
 		Store: failingSessions{}, Threads: newFakeThreads(),

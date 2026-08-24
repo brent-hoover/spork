@@ -79,6 +79,11 @@ func (s *sessionStore) Upsert(_ context.Context, sess devloop.Session) error {
 	return nil
 }
 
+func (s *sessionStore) Find(_ context.Context, run string) (devloop.Session, bool, error) {
+	sess, ok := s.rows[run]
+	return sess, ok, nil
+}
+
 func (s *sessionStore) Importing(context.Context) ([]devloop.Session, error) {
 	var out []devloop.Session
 	for _, sess := range s.rows {

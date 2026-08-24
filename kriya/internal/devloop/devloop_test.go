@@ -29,6 +29,15 @@ func (m *memStore) Upsert(_ context.Context, s devloop.Session) error {
 	return nil
 }
 
+func (m *memStore) Find(_ context.Context, run string) (devloop.Session, bool, error) {
+	for _, s := range m.rows {
+		if s.Run == run {
+			return s, true, nil
+		}
+	}
+	return devloop.Session{}, false, nil
+}
+
 func (m *memStore) Importing(context.Context) ([]devloop.Session, error) {
 	var out []devloop.Session
 	for _, s := range m.rows {
@@ -873,4 +882,109 @@ func (r *recordingThreads) Import(
 ) (string, error) {
 	r.imported = append(r.imported, string(transcript))
 	return fmt.Sprintf("thread-%d", len(r.imported)), nil
+}
+
+func TestARecordedDirectionReachesTheFirstPrompt(t *testing.T) {
+	// The architect answered on the previous pass. Its direction reached only
+	// the FIX prompt, so a pass whose first review came back clean never gave
+	// the agent the direction at all — the impasse it was asked about was
+	// resolved by nobody, and the intervention stayed open forever.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	loop.Architect = &recordingArchitect{
+		found:  true,
+		resume: architect.Intervention{Direction: "extract the port boundary"},
+	}
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(ag.Requests) == 0 {
+		t.Fatal("the agent never ran")
+	}
+	if !strings.Contains(ag.Requests[0].Prompt, "extract the port boundary") {
+		t.Errorf("the first prompt does not carry the direction:\n%s", ag.Requests[0].Prompt)
+	}
+}
+
+func TestWithNoDirectionTheFirstPromptSaysNothingAboutOne(t *testing.T) {
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if strings.Contains(ag.Requests[0].Prompt, "architect") {
+		t.Errorf("a run with no direction was told about one:\n%s", ag.Requests[0].Prompt)
+	}
+}
+
+func TestAPassThatCameBackResumesItsSession(t *testing.T) {
+	// A pending review and an architect handoff both come back. Nothing was
+	// persisted on the way out, so the next pass started a fresh agent
+	// session, made another commit, and submitted the same code again under a
+	// new id — the previous conversation and its round trail lost.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictPending}}
+	loop := pairLoop(store, ag, c, rev, 5)
+
+	if _, err := loop.Work(context.Background(), request()); !errors.Is(err, devloop.ErrReviewPending) {
+		t.Fatalf("first pass: %v", err)
+	}
+	saved, found := sessionFor(store, "run-1")
+	if !found || saved.SessionID == "" {
+		t.Fatalf("the session was not persisted on the way out: %+v", saved)
+	}
+	firstID, firstCommits := saved.SessionID, len(saved.Commits)
+	invocations := len(ag.Requests)
+
+	// The second pass. The review has finished this time.
+	rev.round, rev.verdicts = 0, []string{reviewbridge.VerdictClean}
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(ag.Requests) != invocations {
+		t.Errorf("the second pass invoked the agent again: %d then %d",
+			invocations, len(ag.Requests))
+	}
+	got, _ := sessionFor(store, "run-1")
+	if got.SessionID != firstID {
+		t.Errorf("the session id changed from %q to %q", firstID, got.SessionID)
+	}
+	if len(c.messages) <= firstCommits {
+		t.Log("the resumed pass committed again, which a new round does")
+	}
+}
+
+func TestAFinishedSessionIsNotResumed(t *testing.T) {
+	// The control. A run that settled and comes back — after a gate failure
+	// or a rework — is new work, and resuming the finished conversation would
+	// hand the agent a session that already reported itself done.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	loop := pairLoop(store, ag, &fakeCommitter{}, rev, 5)
+
+	if _, err := loop.Work(context.Background(), request()); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	invocations := len(ag.Requests)
+	rev.round = 0
+	second := request()
+	second.Attempt = 2
+	if _, err := loop.Work(context.Background(), second); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(ag.Requests) == invocations {
+		t.Error("a settled session was resumed instead of starting new work")
+	}
+}
+
+func sessionFor(store *memStore, run string) (devloop.Session, bool) {
+	got, found, _ := store.Find(context.Background(), run)
+	return got, found
 }

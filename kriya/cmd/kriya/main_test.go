@@ -613,3 +613,37 @@ func TestAPoppedTicketFromAnotherTargetIsRefused(t *testing.T) {
 		t.Errorf("the refusal does not name the issue and the target: %v", err)
 	}
 }
+
+func TestAnotherTargetsVerdictIsLeftForItsOwnBuild(t *testing.T) {
+	// The verdict cursor is actor-wide, but this queue's repository, snapshot
+	// and target key belong to one target. Driving a foreign run here would
+	// merge its commit into the wrong repository.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	foreign := orchestrator.BuildRun{
+		ID: "run-foreign", Ticket: "T-9", Issue: "issue-9", Plan: "/theirs",
+		State: orchestrator.StateReviewSubmitted, ReviewID: "review-9",
+		ReviewCommit: "C9", Branch: "kriya/T-9/zzzz",
+	}
+	if err := (orchestrator.SQLStore{DB: db}).Upsert(t.Context(), foreign); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	queue := queueForTest(t, db)
+	if err := actOnVerdicts(t.Context(), db, workspace.Manager{}, agent.Tiers{},
+		reviewbridge.Bridge{}, queue, []orchestrator.Routed{{
+			Run: foreign, Revision: 1,
+			Verdict: orchestrator.VerdictEvent{
+				ID: "event-9", Review: "review-9", Session: "sess-9",
+				Verdict: orchestrator.VerdictApproved,
+			},
+		}}, "/mine", "actor-1"); err != nil {
+		t.Fatalf("act: %v", err)
+	}
+	if _, found, err := queue.AttemptFor(t.Context(), "run-foreign"); err != nil {
+		t.Fatalf("attempt for: %v", err)
+	} else if found {
+		t.Error("another target's approval was enqueued in this target's queue")
+	}
+}

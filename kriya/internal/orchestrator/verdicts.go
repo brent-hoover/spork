@@ -70,6 +70,13 @@ type Router struct {
 type Routed struct {
 	Run     BuildRun
 	Verdict VerdictEvent
+	// Revision is the review's revision at the moment the verdict landed.
+	//
+	// From the REVIEW, because the event payload carries none — and the
+	// consume and resubmit fences both name it. An initial submission records
+	// no revision on the run, so reading it from there enqueued approvals at
+	// revision zero and the tracker refused every one.
+	Revision int
 	// Reworked reports that the run was returned to the pair loop.
 	Reworked bool
 }
@@ -119,28 +126,27 @@ func (r Router) route(ctx context.Context, v VerdictEvent) (*Routed, error) {
 	if !found {
 		return nil, nil
 	}
-	if v.Verdict != VerdictChangesRequested {
-		// An approval is the merge queue's business, not the pair loop's.
-		return &Routed{Run: run, Verdict: v}, nil
-	}
-	// The event is persisted BEFORE the run moves: a resubmission answers
-	// this verdict, and one that could not name it would be answering
-	// whatever the review said last.
-	//
 	// The revision comes from the REVIEW, not the event — the payload has none
-	// — and a resubmission fenced on a stale revision is refused by the
-	// tracker rather than advancing the wrong one.
+	// — and both fences name it: a resubmission fenced on a stale revision is
+	// refused, and an approval consumed at revision zero is refused too.
 	revision, err := r.Reviews.Revision(ctx, v.Review)
 	if err != nil {
 		return nil, fmt.Errorf("read revision of %s: %w", v.Review, err)
 	}
+	if v.Verdict != VerdictChangesRequested {
+		// An approval is the merge queue's business, not the pair loop's.
+		return &Routed{Run: run, Verdict: v, Revision: revision}, nil
+	}
+	// The event is persisted BEFORE the run moves: a resubmission answers
+	// this verdict, and one that could not name it would be answering
+	// whatever the review said last.
 	run.ReviewVerdictEvent = v.ID
 	run.ReviewRevision = revision
 	run.State = StateDevLoop
 	if err := r.Store.Upsert(ctx, run); err != nil {
 		return nil, fmt.Errorf("record reworking run: %w", err)
 	}
-	return &Routed{Run: run, Verdict: v, Reworked: true}, nil
+	return &Routed{Run: run, Verdict: v, Revision: revision, Reworked: true}, nil
 }
 
 // Event kinds the tracker emits for a verdict.
