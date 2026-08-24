@@ -247,6 +247,8 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 	for _, schema := range []string{
 		orchestrator.Migration, orchestrator.RoundLimitMigration,
 		orchestrator.SubmissionMigration, orchestrator.CompletionMigration,
+		orchestrator.PopMigration, orchestrator.CursorMigration,
+		orchestrator.MergeMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
@@ -421,5 +423,221 @@ func TestACompletingListThatCannotBeReadIsNotEmpty(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := (orchestrator.SQLStore{DB: db}).Completing(context.Background()); err == nil {
 		t.Error("a missing table listed as no completions in flight")
+	}
+}
+
+func TestPopOrdinalsSurviveTheRoundTrip(t *testing.T) {
+	// A target that has settled no pops has no row, which is zero rather than
+	// an error: it is genuinely where a target that has done nothing stands.
+	s := orchestrator.SQLOrdinals{DB: sqlOrchStore(t).DB}
+	if _, err := s.Current(context.Background(), "/nowhere"); err != nil {
+		t.Fatalf("current: %v", err)
+	}
+	if err := s.Advance(context.Background(), "/target", 3); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	got, err := s.Current(context.Background(), "/target")
+	if err != nil {
+		t.Fatalf("current: %v", err)
+	}
+	if got != 3 {
+		t.Errorf("read %d", got)
+	}
+	if err := s.Advance(context.Background(), "/target", 4); err != nil {
+		t.Fatalf("re-advance: %v", err)
+	}
+	if again, _ := s.Current(context.Background(), "/target"); again != 4 {
+		t.Errorf("read %d after re-advancing", again)
+	}
+}
+
+func TestFeedCursorsSurviveTheRoundTrip(t *testing.T) {
+	// No row is the START of the feed, which is where a consumer that has read
+	// nothing genuinely is.
+	s := orchestrator.SQLCursors{DB: sqlOrchStore(t).DB}
+	got, err := s.Current(context.Background(), "verdicts")
+	if err != nil {
+		t.Fatalf("current: %v", err)
+	}
+	if got != "" {
+		t.Errorf("a consumer that read nothing is at %q", got)
+	}
+	if err := s.Advance(context.Background(), "verdicts", "cursor-1"); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if again, _ := s.Current(context.Background(), "verdicts"); again != "cursor-1" {
+		t.Errorf("read %q", again)
+	}
+	// Two consumers do not advance each other's position.
+	if err := s.Advance(context.Background(), "approvals", "cursor-9"); err != nil {
+		t.Fatalf("advance other: %v", err)
+	}
+	if mine, _ := s.Current(context.Background(), "verdicts"); mine != "cursor-1" {
+		t.Errorf("another consumer moved this one to %q", mine)
+	}
+}
+
+func TestARunIsFoundByItsReviewSession(t *testing.T) {
+	// Feedback routes by session, so the lookup has to work that way.
+	s := sqlOrchStore(t)
+	if err := s.Upsert(context.Background(), orchestrator.BuildRun{
+		ID: "run-1", Ticket: "KRI-1", ReviewSession: "sess-42", ReviewID: "review-1",
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, found, err := s.BySession(context.Background(), "sess-42")
+	if err != nil || !found {
+		t.Fatalf("by session: %v found=%v", err, found)
+	}
+	if got.ID != "run-1" {
+		t.Errorf("found %q", got.ID)
+	}
+	_, found, err = s.BySession(context.Background(), "sess-unknown")
+	if err != nil {
+		t.Fatalf("by session: %v", err)
+	}
+	if found {
+		t.Error("a session no run was stamped with found one")
+	}
+}
+
+func TestTheseStoresFailRatherThanReadAsEmpty(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bare.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := (orchestrator.SQLOrdinals{DB: db}).Current(context.Background(), "/t"); err == nil {
+		t.Error("a missing pop_ordinal table read as zero")
+	}
+	if err := (orchestrator.SQLOrdinals{DB: db}).Advance(context.Background(), "/t", 1); err == nil {
+		t.Error("a write to a missing pop_ordinal table reported success")
+	}
+	if _, err := (orchestrator.SQLCursors{DB: db}).Current(context.Background(), "v"); err == nil {
+		t.Error("a missing feed_cursor table read as the start of the feed")
+	}
+	if err := (orchestrator.SQLCursors{DB: db}).Advance(context.Background(), "v", "c"); err == nil {
+		t.Error("a write to a missing feed_cursor table reported success")
+	}
+	if _, _, err := (orchestrator.SQLStore{DB: db}).BySession(context.Background(), "s"); err == nil {
+		t.Error("a missing build_run table read as an unknown session")
+	}
+}
+
+func sqlMergeAttempts(t *testing.T) orchestrator.SQLAttempts {
+	t.Helper()
+	return orchestrator.SQLAttempts{DB: sqlOrchStore(t).DB}
+}
+
+func TestAMergeAttemptSurvivesTheRoundTrip(t *testing.T) {
+	s := sqlMergeAttempts(t)
+	want := orchestrator.MergeAttempt{
+		Key: "key-1", TargetKey: "KRIYA0a", Build: "run-1", Review: "review-1",
+		Revision: 2, ApprovalEvent: "event-9", Commit: "C2", ExpectedBase: "base-1",
+		State: orchestrator.AttemptQueued,
+	}
+	fresh, err := s.Insert(context.Background(), want)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if !fresh {
+		t.Error("the first insert of an attempt was not fresh")
+	}
+	got, found, err := s.Find(context.Background(), "key-1")
+	if err != nil || !found {
+		t.Fatalf("find: %v found=%v", err, found)
+	}
+	if got != want {
+		t.Errorf("read back %+v", got)
+	}
+}
+
+func TestAReplayedApprovalCollidesOnTheKey(t *testing.T) {
+	// The key is the PRIMARY KEY, so nothing above has to check first: the
+	// uniqueness IS the check.
+	s := sqlMergeAttempts(t)
+	a := orchestrator.MergeAttempt{
+		Key: "key-1", TargetKey: "KRIYA0a", Build: "run-1", Review: "review-1",
+		ApprovalEvent: "event-9", State: orchestrator.AttemptQueued,
+	}
+	if _, err := s.Insert(context.Background(), a); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	fresh, err := s.Insert(context.Background(), a)
+	if err != nil {
+		t.Fatalf("re-insert: %v", err)
+	}
+	if fresh {
+		t.Error("a replayed approval event enqueued a second attempt")
+	}
+}
+
+func TestUnfinishedAttemptsComeBackInQueueOrder(t *testing.T) {
+	// The queue is a queue: a target's approvals must land in the order they
+	// arrived, which is insertion order and not key order.
+	s := sqlMergeAttempts(t)
+	for _, key := range []string{"zzz", "aaa", "mmm"} {
+		if _, err := s.Insert(context.Background(), orchestrator.MergeAttempt{
+			Key: key, TargetKey: "KRIYA0a", Build: "run-" + key,
+			State: orchestrator.AttemptQueued,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", key, err)
+		}
+	}
+	settled := orchestrator.MergeAttempt{
+		Key: "done", TargetKey: "KRIYA0a", Build: "run-done",
+		State: orchestrator.AttemptQueued,
+	}
+	if _, err := s.Insert(context.Background(), settled); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	settled.State = orchestrator.AttemptMerged
+	if err := s.Update(context.Background(), settled); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := s.Unfinished(context.Background())
+	if err != nil {
+		t.Fatalf("unfinished: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("listed %d attempts", len(got))
+	}
+	for i, want := range []string{"zzz", "aaa", "mmm"} {
+		if got[i].Key != want {
+			t.Errorf("position %d is %q, want %q", i, got[i].Key, want)
+		}
+	}
+}
+
+func TestAnUnknownAttemptIsNotFound(t *testing.T) {
+	s := sqlMergeAttempts(t)
+	_, found, err := s.Find(context.Background(), "no-such-key")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if found {
+		t.Error("an attempt nobody enqueued was found")
+	}
+}
+
+func TestAnAttemptStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "bare.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s := orchestrator.SQLAttempts{DB: db}
+	if _, err := s.Unfinished(context.Background()); err == nil {
+		t.Error("a missing table listed as no attempts in flight")
+	}
+	if _, _, err := s.Find(context.Background(), "key-1"); err == nil {
+		t.Error("a missing table read as an unknown attempt")
+	}
+	if _, err := s.Insert(context.Background(), orchestrator.MergeAttempt{Key: "k"}); err == nil {
+		t.Error("an insert into a missing table reported success")
+	}
+	if err := s.Update(context.Background(), orchestrator.MergeAttempt{Key: "k"}); err == nil {
+		t.Error("an update on a missing table reported success")
 	}
 }
