@@ -353,14 +353,14 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 // the rest from the persisted claim.
 func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) error {
 	// The cheapest question first, and the one that short-circuits hardest:
-	// an attempt already in flight or settled for this epoch needs no tracker
+	// an attempt already in flight or settled FOR THIS EPOCH needs no tracker
 	// round-trip at all, and a second submission would open a second review
 	// for one claim.
-	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
+	current, err := claimIsCurrent(ctx, db, target)
 	if err != nil {
 		return err
 	}
-	if found && claim.State != planner.CompletionNone {
+	if current {
 		return nil
 	}
 	armed, _, err := completionDetector(db).Detect(ctx, target)
@@ -380,6 +380,28 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 	_, err = completionClaimer(db, actor).Submit(
 		ctx, target, row.ProjectID, row.EpicID, epic.SubtreeRevision)
 	return err
+}
+
+// claimIsCurrent reports whether a completion attempt for THIS epoch stands.
+//
+// The epoch comparison is the whole of it. A claim settled at epoch 3 says
+// nothing about epoch 4: work came back and was redone, and the human's old
+// approval was for a smaller build. Treating any claim as final would leave
+// the target complete-looking forever with new work merged into it — which is
+// exactly what "recompletion needs a fresh review" forbids.
+func claimIsCurrent(ctx context.Context, db *sql.DB, target string) (bool, error) {
+	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	if !found || claim.State == planner.CompletionNone {
+		return false, nil
+	}
+	epoch, err := (planner.Epochs{Store: planner.SQLAdvances{DB: db}}).Current(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	return claim.Epoch == epoch, nil
 }
 
 // targetsFor resolves a claim's project and epic from the target's own row.
@@ -513,7 +535,12 @@ func (f buildFinish) Detect(ctx context.Context, targetKey string) (bool, string
 		// — the operator has not started this build.
 		return false, "", nil
 	}
-	got, err := f.detect.Detect(ctx, targetKey, target.ProjectID)
+	// The target's own epic, excused from its own completion check: it is
+	// open for exactly as long as the build runs, so counting it as
+	// outstanding work would make completion unable to arm at all.
+	detect := f.detect
+	detect.Epic = target.EpicID
+	got, err := detect.Detect(ctx, targetKey, target.ProjectID)
 	if err != nil {
 		return false, "", err
 	}

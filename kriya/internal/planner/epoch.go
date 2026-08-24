@@ -57,12 +57,34 @@ type CompletionAdvance struct {
 // Insert reports whether the row was NEW. The counter moves in the same
 // transaction, so an advance that collided cannot have moved it — which is
 // what makes a replay a true no-op rather than a race.
+//
+// InsertWith binds a local operation's PRIMARY MUTATION to that same
+// transaction. A supersession's replacement CAS and its epoch advance are one
+// fact: committed separately, a crash between them leaves either an unadvanced
+// epoch over replaced work, or an advance for a replacement that never
+// happened. The callback runs inside the transaction and its error rolls
+// everything back.
 type AdvanceStore interface {
 	Insert(ctx context.Context, a CompletionAdvance) (fresh bool, err error)
+	InsertWith(ctx context.Context, a CompletionAdvance, mutate func(Tx) error) (bool, error)
 	Epoch(ctx context.Context, targetKey string) (int, error)
 	// Stamp records completion only while the target's epoch still equals the
 	// claim's. It reports whether it landed.
 	Stamp(ctx context.Context, targetKey string, claimEpoch int) (bool, error)
+}
+
+// Tx is the handle a bound mutation writes through.
+//
+// Narrow deliberately: what a caller needs inside the advance's transaction is
+// to execute its own statements, not to commit or roll back — the advance owns
+// that, because the two are one fact.
+type Tx interface {
+	ExecContext(ctx context.Context, query string, args ...any) (Result, error)
+}
+
+// Result is the part of a SQL result a bound mutation reads.
+type Result interface {
+	RowsAffected() (int64, error)
 }
 
 // Epochs advances a target's completion epoch and stamps its completion.
@@ -109,13 +131,37 @@ func (e Epochs) OnEvent(ctx context.Context, targetKey, cause, event string) (bo
 // PlanHead generation, a compensating close's operation key — so a crash
 // replay of that operation collides rather than advancing twice.
 func (e Epochs) OnLocal(ctx context.Context, targetKey, cause, source string) (bool, error) {
+	return e.OnLocalWith(ctx, targetKey, cause, source, nil)
+}
+
+// OnLocalWith advances the epoch and performs the operation's own mutation in
+// ONE transaction.
+//
+// They are one fact. Committed separately, a crash between them leaves either
+// an unadvanced epoch over work that was replaced, or an advance for a
+// replacement that never happened — and the second is worse, because the epoch
+// cannot be walked back.
+//
+// The mutation runs only when the advance is FRESH: a replay has already done
+// it, and doing it again is the double-application the key exists to prevent.
+func (e Epochs) OnLocalWith(
+	ctx context.Context, targetKey, cause, source string, mutate func(Tx) error,
+) (bool, error) {
 	if source == "" {
 		return false, errors.New("a local-operation advance needs its source")
 	}
-	return e.insert(ctx, CompletionAdvance{
+	a := CompletionAdvance{
 		Key: LocalAdvanceKey(targetKey, cause, source), TargetKey: targetKey,
 		Cause: cause, LocalSource: source,
-	})
+	}
+	if !declaredCauses[a.Cause] {
+		return false, fmt.Errorf("%q is not a declared advance cause", a.Cause)
+	}
+	fresh, err := e.Store.InsertWith(ctx, a, mutate)
+	if err != nil {
+		return false, fmt.Errorf("record %s advance for %s: %w", a.Cause, a.TargetKey, err)
+	}
+	return fresh, nil
 }
 
 func (e Epochs) insert(ctx context.Context, a CompletionAdvance) (bool, error) {

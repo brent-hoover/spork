@@ -56,6 +56,27 @@ func (m *memAdvanceStore) Insert(_ context.Context, a planner.CompletionAdvance)
 	return true, nil
 }
 
+// InsertWith binds the operation's primary mutation to the advance: it runs
+// only on a FRESH insert, and its failure undoes the advance.
+func (m *memAdvanceStore) InsertWith(
+	ctx context.Context, a planner.CompletionAdvance, mutate func(planner.Tx) error,
+) (bool, error) {
+	fresh, err := m.Insert(ctx, a)
+	if err != nil || !fresh {
+		return fresh, err
+	}
+	if mutate != nil {
+		if err := mutate(nil); err != nil {
+			delete(m.rows, a.Key)
+			m.epoch[a.TargetKey]--
+			m.inserted--
+			return false, err
+		}
+	}
+	m.mutated = append(m.mutated, a.LocalSource)
+	return true, nil
+}
+
 func (m *memAdvanceStore) Epoch(_ context.Context, target string) (int, error) {
 	return m.epoch[target], nil
 }
@@ -274,16 +295,12 @@ func registerLocalAdvance(sc *godog.ScenarioContext, w *world) {
 
 // local performs the operation's primary mutation and its advance together.
 //
-// One act, because the spec binds them to one transaction: an advance without
-// its mutation would move the epoch for work that never happened, and a
-// mutation without its advance would leave a stamp valid over it.
+// ONE transaction, which is what the spec binds: an advance without its
+// mutation moves the epoch for work that never happened, and a mutation
+// without its advance leaves a stamp valid over it. The mutation is the
+// callback, so a replay that collides never applies it a second time.
 func (e *epochWorld) local(source string) error {
-	fresh, err := e.epochs.OnLocal(context.Background(), "/spec", e.localCause, source)
-	if err != nil {
-		return err
-	}
-	if fresh {
-		e.store.mutated = append(e.store.mutated, source)
-	}
-	return nil
+	_, err := e.epochs.OnLocalWith(context.Background(), "/spec", e.localCause, source,
+		func(planner.Tx) error { return nil })
+	return err
 }

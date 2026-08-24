@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"kriya/internal/orchestrator"
@@ -113,5 +115,136 @@ func TestAClaimAlreadyInFlightIsNotSubmittedTwice(t *testing.T) {
 	got, _, _ := (planner.SQLClaims{DB: db}).Find(t.Context(), "/spec")
 	if got.ReviewID != "review-1" {
 		t.Errorf("the claim was replaced: %+v", got)
+	}
+}
+
+func TestASettledClaimFromAnEarlierEpochDoesNotBlockRecompletion(t *testing.T) {
+	// "recompletion needs a fresh review". A claim settled at epoch 3 says
+	// nothing about epoch 4: work came back and was redone, and the human's
+	// old approval was for a smaller build. Treating any claim as final would
+	// leave the target complete-looking forever with new work merged into it.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLClaims{DB: db}).Upsert(t.Context(), planner.CompletionClaim{
+		TargetKey: "/spec", State: planner.CompletionSubmitted, Epoch: 0,
+		SubmissionKey: "sub-0", ReviewID: "review-1",
+	}); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+	// A ticket reopens: the epoch advances past the claim's.
+	if _, err := (planner.Epochs{Store: planner.SQLAdvances{DB: db}}).
+		OnEvent(t.Context(), "/spec", planner.CauseTicketReopen, "E1"); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	stale, err := claimIsCurrent(t.Context(), db, "/spec")
+	if err != nil {
+		t.Fatalf("claim is current: %v", err)
+	}
+	if stale {
+		t.Error("a claim from a spent epoch still counts as the current attempt")
+	}
+}
+
+func TestAClaimAtTheCurrentEpochIsTheCurrentAttempt(t *testing.T) {
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLClaims{DB: db}).Upsert(t.Context(), planner.CompletionClaim{
+		TargetKey: "/spec", State: planner.CompletionSubmitted, Epoch: 0,
+		SubmissionKey: "sub-0", ReviewID: "review-1",
+	}); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+	current, err := claimIsCurrent(t.Context(), db, "/spec")
+	if err != nil {
+		t.Fatalf("claim is current: %v", err)
+	}
+	if !current {
+		t.Error("a claim at the current epoch was treated as spent")
+	}
+}
+
+// stubActive answers the live-issue query without a tracker.
+type stubActive struct{ rows []planner.LiveIssue }
+
+func (s stubActive) Active(context.Context, string) ([]planner.LiveIssue, string, error) {
+	return s.rows, "w-1", nil
+}
+
+func TestTheDriverExcusesTheTargetsOwnEpic(t *testing.T) {
+	// A WIRING test. The detector knows how to excuse an epic; the question
+	// here is whether the composition root tells it which one. It did not,
+	// and completion could therefore never arm: the umbrella being completed
+	// read as outstanding unplanned work.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLTargets{DB: db}).Upsert(t.Context(), planner.BuildTarget{
+		TargetKey: "/spec", ProjectID: "p-1", EpicID: "epic-1",
+		EpicState: planner.EpicCreated,
+	}); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
+		TargetKey: "/spec", SpecHash: "h", State: planner.PlanCompleted, Tickets: 1,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/spec",
+		planner.Ticket{Title: "t", IssueID: "issue-1"}); err != nil {
+		t.Fatalf("seed ticket: %v", err)
+	}
+
+	f := completionDetector(db)
+	// The only substitution: the live queue, which otherwise needs a tracker.
+	f.detect.Issues = stubActive{rows: []planner.LiveIssue{{ID: "epic-1", Status: "open"}}}
+
+	armed, reason, err := f.Detect(t.Context(), "/spec")
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if !armed {
+		t.Errorf("the target's own epic blocked its completion: %s", reason)
+	}
+}
+
+func TestTheDriverStillBlocksOnAnotherOpenIssue(t *testing.T) {
+	// The control: excusing the epic must not excuse everything.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLTargets{DB: db}).Upsert(t.Context(), planner.BuildTarget{
+		TargetKey: "/spec", ProjectID: "p-1", EpicID: "epic-1",
+		EpicState: planner.EpicCreated,
+	}); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
+		TargetKey: "/spec", SpecHash: "h", State: planner.PlanCompleted, Tickets: 1,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+
+	f := completionDetector(db)
+	f.detect.Issues = stubActive{rows: []planner.LiveIssue{
+		{ID: "epic-1", Status: "open"},
+		{ID: "issue-99", Status: "blocked"},
+	}}
+
+	armed, reason, err := f.Detect(t.Context(), "/spec")
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if armed {
+		t.Error("blocked work did not block")
+	}
+	if !strings.Contains(reason, "issue-99") {
+		t.Errorf("the reason is %q", reason)
 	}
 }

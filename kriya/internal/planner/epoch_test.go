@@ -16,6 +16,9 @@ type memAdvances struct {
 	stamped  map[string]int
 	err      error
 	inserted int
+	// mutated records the local operations whose primary mutation committed
+	// with their advance.
+	mutated []string
 }
 
 func newMemAdvances() *memAdvances {
@@ -36,6 +39,29 @@ func (m *memAdvances) Insert(_ context.Context, a planner.CompletionAdvance) (bo
 	m.rows[a.Key] = a
 	m.epoch[a.TargetKey]++
 	delete(m.stamped, a.TargetKey)
+	return true, nil
+}
+
+// InsertWith runs the bound mutation inside the "transaction", which for an
+// in-memory double means: only on a fresh insert, and its failure undoes the
+// advance.
+func (m *memAdvances) InsertWith(
+	ctx context.Context, a planner.CompletionAdvance, mutate func(planner.Tx) error,
+) (bool, error) {
+	fresh, err := m.Insert(ctx, a)
+	if err != nil || !fresh {
+		return fresh, err
+	}
+	if mutate != nil {
+		if err := mutate(nil); err != nil {
+			// Rolled back: the advance never happened either.
+			delete(m.rows, a.Key)
+			m.epoch[a.TargetKey]--
+			m.inserted--
+			return false, err
+		}
+	}
+	m.mutated = append(m.mutated, a.LocalSource)
 	return true, nil
 }
 

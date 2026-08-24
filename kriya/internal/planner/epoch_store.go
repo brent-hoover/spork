@@ -36,7 +36,20 @@ type SQLAdvances struct{ DB *sql.DB }
 // One transaction, because the log and the counter are two halves of one fact.
 // An advance logged without counting leaves a spent claim able to stamp; a
 // count without a log leaves recovery unable to tell what it must reconcile.
-func (s SQLAdvances) Insert(ctx context.Context, a CompletionAdvance) (fresh bool, err error) {
+func (s SQLAdvances) Insert(ctx context.Context, a CompletionAdvance) (bool, error) {
+	return s.InsertWith(ctx, a, nil)
+}
+
+// InsertWith records an advance, moves the epoch, and performs the operation's
+// own mutation — all in one transaction.
+//
+// The mutation runs only when the advance is FRESH, and before the commit: a
+// replay has already applied it, and applying it twice is exactly what the key
+// exists to prevent. Its error rolls back the advance too, so the pair moves
+// together or not at all.
+func (s SQLAdvances) InsertWith(
+	ctx context.Context, a CompletionAdvance, mutate func(Tx) error,
+) (fresh bool, err error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin advance: %w", err)
@@ -76,10 +89,23 @@ func (s SQLAdvances) Insert(ctx context.Context, a CompletionAdvance) (fresh boo
 		   stamped = 0, stamped_epoch = 0`, a.TargetKey); err != nil {
 		return false, fmt.Errorf("advance completion epoch: %w", err)
 	}
+	if mutate != nil {
+		if err = mutate(txExec{tx}); err != nil {
+			return false, fmt.Errorf("apply %s mutation for %s: %w", a.Cause, a.TargetKey, err)
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit advance: %w", err)
 	}
 	return true, nil
+}
+
+// txExec adapts a *sql.Tx to the narrow handle a bound mutation writes
+// through, so nothing inside the transaction can commit or roll it back.
+type txExec struct{ tx *sql.Tx }
+
+func (t txExec) ExecContext(ctx context.Context, query string, args ...any) (Result, error) {
+	return t.tx.ExecContext(ctx, query, args...)
 }
 
 // Epoch reads a target's completion epoch.

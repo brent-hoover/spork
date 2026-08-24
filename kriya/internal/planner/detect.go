@@ -54,6 +54,12 @@ type Detector struct {
 	Plans   PlanStore
 	Tickets TargetTickets
 	Issues  Issues
+	// Epic is the target's umbrella issue, excused from its own completion
+	// check. It is OPEN for exactly as long as the build runs — closing it is
+	// what completion means — so counting it as outstanding work would make
+	// completion unable to arm, ever. Empty excuses nothing: guessing which
+	// issue is the umbrella would excuse real work by accident.
+	Epic string
 }
 
 // activeStatuses are the tracker statuses that count as outstanding work.
@@ -96,7 +102,7 @@ func (d Detector) Detect(ctx context.Context, targetKey, projectID string) (Dete
 	if err != nil {
 		return Detection{}, err
 	}
-	blocking, reason := blockers(active, planned)
+	blocking, reason := blockers(active, planned, d.Epic)
 	if len(blocking) > 0 {
 		return Detection{Reason: reason, Watermark: watermark, Blocking: blocking}, nil
 	}
@@ -122,10 +128,19 @@ func (d Detector) plannedIDs(ctx context.Context, targetKey string) (map[string]
 // bind time blocks just as hard: sutra's close gate would refuse the epic
 // anyway, because it is a descendant — so arming would submit a completion
 // review that can never close.
-func blockers(active []LiveIssue, planned map[string]bool) (ids []string, reason string) {
+func blockers(
+	active []LiveIssue, planned map[string]bool, epic string,
+) (ids []string, reason string) {
 	var parts []string
 	for _, issue := range active {
 		if !activeStatuses[issue.Status] {
+			continue
+		}
+		if epic != "" && issue.ID == epic {
+			// The umbrella being completed. Only THIS target's epic is
+			// excused — another open epic in the project is work, and
+			// completing over it would close an umbrella on an unfinished
+			// subtree.
 			continue
 		}
 		ids = append(ids, issue.ID)
