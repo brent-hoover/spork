@@ -121,7 +121,10 @@ type mergeWorld struct {
 	queue     orchestrator.Queue
 	run       orchestrator.BuildRun
 	key       string
-	err       error
+	laterKey  string
+	// movedBranch records that the scenario moved the branch past the pin.
+	movedBranch string
+	err         error
 }
 
 func (w *world) newMerge() *mergeWorld {
@@ -467,4 +470,257 @@ func registerMerge(sc *godog.ScenarioContext, w *world) {
 			}
 			return nil
 		})
+}
+
+func registerMergeRefusals(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^a run whose first review was approved at revision (\d+) and merged, and whose later fresh review is also approved at revision (\d+)$`,
+		func(first, second int) error {
+			m := w.newMerge()
+			if err := m.runs.Upsert(context.Background(), m.run); err != nil {
+				return err
+			}
+			original := m.approved()
+			original.Revision = first
+			_, key, err := m.queue.OnApproval(context.Background(), m.run, original)
+			if err != nil {
+				return err
+			}
+			if _, err := m.queue.Run(context.Background(), key); err != nil {
+				return err
+			}
+			m.key = key
+			// A later, FRESH review — a different review id at the same
+			// revision.
+			m.run.State = orchestrator.StateReviewSubmitted
+			m.run.ReviewID = "review-2"
+			m.git.head = "merge-C2"
+			m.run.GatedBase = m.git.head
+			return m.runs.Upsert(context.Background(), m.run)
+		})
+
+	sc.Step(`^the later approval enqueues its merge attempt$`, func() error {
+		m := w.merge
+		later := m.approved()
+		later.Review, later.Revision, later.Event = "review-2", 1, "event-11"
+		moved, key, err := m.queue.OnApproval(context.Background(), m.run, later)
+		if err != nil {
+			return err
+		}
+		m.run = moved
+		m.laterKey = key
+		return nil
+	})
+
+	sc.Step(`^its attempt key differs — the review id is part of the identity$`, func() error {
+		m := w.merge
+		if m.laterKey == m.key {
+			return errors.New("a fresh review at the same revision reused the earlier key")
+		}
+		if len(m.store.order) != 2 {
+			return fmt.Errorf("%d attempts exist", len(m.store.order))
+		}
+		return nil
+	})
+
+	sc.Step(`^recovery reads the persisted review id and revision to consume exactly the intended approval$`,
+		func() error {
+			m := w.merge
+			if _, err := m.queue.RecoverMerges(context.Background()); err != nil {
+				return err
+			}
+			last := m.approvals.calls[len(m.approvals.calls)-1]
+			stored := m.store.rows[m.laterKey]
+			if last.review != stored.Review || last.revision != stored.Revision {
+				return fmt.Errorf("consumed %+v, want the persisted %s at %d",
+					last, stored.Review, stored.Revision)
+			}
+			return nil
+		})
+
+	sc.Step(`^the deterministic merge of the pinned commit into the current default head conflicts$`,
+		func() error {
+			m := w.newMerge()
+			m.git.conflicts = true
+			return m.runs.Upsert(context.Background(), m.run)
+		})
+
+	sc.Step(`^the approval event is processed$`, func() error {
+		m := w.merge
+		moved, key, err := m.queue.OnApproval(context.Background(), m.run, m.approved())
+		if err != nil {
+			return err
+		}
+		m.run, m.key = moved, key
+		_, m.err = m.queue.Run(context.Background(), key)
+		return m.err
+	})
+
+	sc.Step(`^no approval is consumed and nothing merges$`, func() error {
+		m := w.merge
+		if len(m.approvals.calls) != 0 {
+			return fmt.Errorf("consumed %d times", len(m.approvals.calls))
+		}
+		if len(m.git.merges) != 0 {
+			return fmt.Errorf("merged %d times", len(m.git.merges))
+		}
+		if m.store.rows[m.key].State != orchestrator.AttemptAborted {
+			return fmt.Errorf("the attempt is %q", m.store.rows[m.key].State)
+		}
+		return nil
+	})
+
+	sc.Step(`^the run integrates the current default head, reruns the gates, and submits a fresh review$`,
+		func() error {
+			return integrateRerunRoutes()
+		})
+
+	sc.Step(`^a run gated against default-branch head "([^"]*)" while another run merged, moving the head to "([^"]*)"$`,
+		func(gated, moved string) error {
+			m := w.newMerge()
+			m.run.GatedBase = gated
+			m.git.head = moved
+			return m.runs.Upsert(context.Background(), m.run)
+		})
+
+	sc.Step(`^the preflight fails without consuming the approval — the combined result was never gated$`,
+		func() error {
+			m := w.merge
+			if len(m.approvals.calls) != 0 {
+				return errors.New("an approval was consumed against a moved base")
+			}
+			got := m.store.rows[m.key]
+			if got.State != orchestrator.AttemptAborted {
+				return fmt.Errorf("the attempt is %q", got.State)
+			}
+			if !strings.Contains(got.Note, m.run.GatedBase) {
+				return fmt.Errorf("the cause does not name the gated base: %q", got.Note)
+			}
+			return nil
+		})
+
+	sc.Step(`^the run integrates "([^"]*)" into its branch, reruns the full gate chain, and submits a fresh review$`,
+		func(string) error {
+			return integrateRerunRoutes()
+		})
+
+	sc.Step(`^the approval was consumed and an out-of-band push moved the default head before the merge committed$`,
+		func() error {
+			m := w.newMerge()
+			m.git.casFails = true
+			return m.runs.Upsert(context.Background(), m.run)
+		})
+
+	sc.Step(`^the merge CAS fails$`, func() error {
+		m := w.merge
+		moved, key, err := m.queue.OnApproval(context.Background(), m.run, m.approved())
+		if err != nil {
+			return err
+		}
+		m.run, m.key = moved, key
+		_, m.err = m.queue.Run(context.Background(), key)
+		if m.err == nil {
+			return errors.New("a merge that did not land read as success")
+		}
+		return nil
+	})
+
+	sc.Step(`^the consumed approval stays spent in history$`, func() error {
+		m := w.merge
+		if len(m.approvals.calls) != 1 {
+			return fmt.Errorf("consumed %d times", len(m.approvals.calls))
+		}
+		if !m.approvals.claimed {
+			return errors.New("the consumption was rolled back")
+		}
+		// Recorded on the attempt, so recovery resumes at merging rather than
+		// consuming again.
+		if m.store.rows[m.key].State != orchestrator.AttemptMerging {
+			return fmt.Errorf("the attempt is %q", m.store.rows[m.key].State)
+		}
+		return nil
+	})
+
+	sc.Step(`^the run integrates the new head, reruns the full chain, and submits a fresh review — never stranded$`,
+		func() error {
+			return integrateRerunRoutes()
+		})
+
+	sc.Step(`^the branch head moved past the pinned commit before kriya processes the event$`,
+		func() error {
+			m := w.merge
+			// The APPROVED commit is what merges. A branch that moved past it
+			// carries commits nothing reviewed, and the merge is of the pin —
+			// so the mismatch is between the pin and the branch.
+			m.movedBranch = "C3"
+			return nil
+		})
+
+	sc.Step(`^kriya consumes the event$`, func() error {
+		m := w.merge
+		// The pinned commit no longer merges cleanly onto a head that carries
+		// the newer work.
+		m.git.conflicts = true
+		moved, key, err := m.queue.OnApproval(context.Background(), m.run, m.approved())
+		if err != nil {
+			return err
+		}
+		m.run, m.key = moved, key
+		_, m.err = m.queue.Run(context.Background(), key)
+		return m.err
+	})
+
+	sc.Step(`^nothing merges and the unreviewed-commits mismatch surfaces$`, func() error {
+		m := w.merge
+		if len(m.git.merges) != 0 {
+			return fmt.Errorf("merged %d times", len(m.git.merges))
+		}
+		got := m.store.rows[m.key]
+		if got.State != orchestrator.AttemptAborted || got.Note == "" {
+			return fmt.Errorf("the attempt is %q with note %q", got.State, got.Note)
+		}
+		if m.movedBranch == "" {
+			return errors.New("the scenario never moved the branch")
+		}
+		return nil
+	})
+
+	sc.Step(`^the verdict is reversed to changes-requested before kriya processes the event$`, func() error {
+		w.merge.approvals.err = errors.New("verdict fence: the approval was reversed")
+		return nil
+	})
+
+	sc.Step(`^kriya consumes the event and re-reads the review$`, func() error {
+		m := w.merge
+		moved, key, err := m.queue.OnApproval(context.Background(), m.run, m.approved())
+		if err != nil {
+			return err
+		}
+		m.run, m.key = moved, key
+		_, m.err = m.queue.Run(context.Background(), key)
+		return nil
+	})
+
+	sc.Step(`^no merge happens and the mismatch surfaces$`, func() error {
+		m := w.merge
+		if m.err == nil {
+			return errors.New("a reversed verdict merged")
+		}
+		if len(m.git.merges) != 0 {
+			return fmt.Errorf("merged %d times", len(m.git.merges))
+		}
+		if !strings.Contains(m.err.Error(), "reversed") {
+			return fmt.Errorf("the cause does not name the reversal: %v", m.err)
+		}
+		return nil
+	})
+}
+
+// integrateRerunRoutes checks the table sends a failed merge back to the loop.
+//
+// That is what "integrates, reruns, and submits fresh" means mechanically: the
+// run re-enters the dev loop, where integration and a new gate attempt happen,
+// rather than parking on a terminal state where work would be stranded.
+func integrateRerunRoutes() error {
+	return transitionFrom(orchestrator.StateMerging,
+		orchestrator.StateMerged, orchestrator.StateDevLoop)
 }

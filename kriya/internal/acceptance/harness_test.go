@@ -100,6 +100,8 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerMerge(sc, w)
 	registerFences(sc, w)
 	registerComplete(sc, w)
+	registerMergeRefusals(sc, w)
+	registerAttemptScoping(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

@@ -17,6 +17,7 @@ import (
 	"kriya/internal/fakes"
 	"kriya/internal/gates"
 	"kriya/internal/orchestrator"
+	"kriya/internal/owner"
 )
 
 // memGates is the gate store for these scenarios.
@@ -73,6 +74,11 @@ type gateWorld struct {
 	// gates ran at all.
 	chainResults []gates.Result
 	review       *reviewStub
+	// attempt, frozen and base carry the attempt-scoping scenarios' state.
+	attempt int
+	frozen  string
+	base    *movingHead
+	err     error
 }
 
 // chain runs the whole chain for every declared module.
@@ -795,4 +801,173 @@ func noThresholdIn(dir string) error {
 		}
 	}
 	return nil
+}
+
+func registerAttemptScoping(sc *godog.ScenarioContext, w *world) {
+	sc.Step(`^integration of a new base left the branch head unchanged$`, func() error {
+		g, err := w.newGates()
+		if err != nil {
+			return err
+		}
+		g.commit = "C2"
+		g.modules["api"] = commandsFor()
+		// Attempt 1's full chain, at this commit.
+		for _, gate := range gates.Chain {
+			if _, err := g.runner.Run(context.Background(), "run-1", "api", gate,
+				g.commit, g.dir, g.modules["api"], 1); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	sc.Step(`^the new gate-chain attempt starts and increments the run's attempt counter$`,
+		func() error {
+			w.gates.attempt = 2
+			return nil
+		})
+
+	sc.Step(`^every prior round, gate result, and PO verdict carries the old attempt and satisfies nothing$`,
+		func() error {
+			g := w.gates
+			passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", g.commit, 1)
+			if err != nil {
+				return err
+			}
+			if !passed {
+				return errors.New("attempt 1's own results did not satisfy it")
+			}
+			passed, missing, err := g.runner.AllPassed(context.Background(), "run-1", "api",
+				g.commit, g.attempt)
+			if err != nil {
+				return err
+			}
+			if passed {
+				return errors.New("attempt 1's results satisfied attempt 2 at the same commit")
+			}
+			if missing != "test" {
+				return fmt.Errorf("named %q as the gap", missing)
+			}
+			// The PO verdict is keyed the same way: a verdict from the
+			// previous attempt is not found under the new one.
+			validations := &validations{rows: map[int]owner.Validation{}}
+			if err := validations.Upsert(context.Background(), owner.Validation{
+				Build: "run-1", Attempt: 1, Verdict: owner.VerdictSatisfied, Commit: g.commit,
+			}); err != nil {
+				return err
+			}
+			if _, found, err := validations.Find(context.Background(), "run-1", g.attempt); err != nil {
+				return err
+			} else if found {
+				return errors.New("attempt 1's PO verdict satisfied attempt 2")
+			}
+			return nil
+		})
+
+	sc.Step(`^the full chain reruns and records results under the new attempt$`, func() error {
+		g := w.gates
+		results, err := g.runner.RunChain(context.Background(), "run-1", "api", g.commit,
+			g.dir, g.modules["api"], g.attempt)
+		if err != nil {
+			return err
+		}
+		if len(results) != len(gates.Chain) {
+			return fmt.Errorf("ran %d gates, want the full chain", len(results))
+		}
+		for _, r := range results {
+			if r.Attempt != g.attempt {
+				return fmt.Errorf("%s recorded under attempt %d", r.Gate, r.Attempt)
+			}
+		}
+		passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api",
+			g.commit, g.attempt)
+		if err != nil {
+			return err
+		}
+		if !passed {
+			return errors.New("the rerun's own results did not satisfy it")
+		}
+		return nil
+	})
+
+	sc.Step(`^a gate-chain attempt froze its gated base at "([^"]*)"$`, func(base string) error {
+		g, err := w.newGates()
+		if err != nil {
+			return err
+		}
+		g.commit = "C2"
+		g.frozen = base
+		g.modules["api"] = commandsFor()
+		g.base = &movingHead{head: base}
+		g.runner.Base = g.base
+		return nil
+	})
+
+	sc.Step(`^the default branch moves to "([^"]*)" while later gates are still running$`,
+		func(moved string) error {
+			g := w.gates
+			// After three gates, which is what makes this a MID-chain move
+			// rather than a precondition failure.
+			g.base.moved, g.base.after = moved, 3
+			_, g.err = g.runner.RunChain(context.Background(), "run-1", "api", g.frozen,
+				g.dir, g.modules["api"], 1)
+			return nil
+		})
+
+	sc.Step(`^the attempt aborts rather than recording a mixed-base pass$`, func() error {
+		g := w.gates
+		if !errors.Is(g.err, gates.ErrBaseMoved) {
+			return fmt.Errorf("got %v, want ErrBaseMoved", g.err)
+		}
+		// Some gates ran, none of the later ones did, and nothing claims the
+		// chain passed.
+		passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", g.frozen, 1)
+		if err != nil {
+			return err
+		}
+		if passed {
+			return errors.New("an aborted chain reported as complete")
+		}
+		return nil
+	})
+
+	sc.Step(`^the run integrates "([^"]*)" and the complete chain reruns against the new frozen base$`,
+		func(moved string) error {
+			g := w.gates
+			// A new frozen base, a new attempt: the whole chain runs again and
+			// every result carries the new attempt.
+			g.base.head, g.base.after, g.base.reads = moved, 0, 0
+			results, err := g.runner.RunChain(context.Background(), "run-1", "api", moved,
+				g.dir, g.modules["api"], 2)
+			if err != nil {
+				return err
+			}
+			if len(results) != len(gates.Chain) {
+				return fmt.Errorf("reran %d gates, want the full chain", len(results))
+			}
+			passed, _, err := g.runner.AllPassed(context.Background(), "run-1", "api", moved, 2)
+			if err != nil {
+				return err
+			}
+			if !passed {
+				return errors.New("the rerun against the new base did not satisfy it")
+			}
+			return nil
+		})
+}
+
+// movingHead reports a different head after n reads.
+type movingHead struct {
+	head  string
+	moved string
+	after int
+	reads int
+}
+
+func (m *movingHead) Head(context.Context) (string, error) {
+	m.reads++
+	if m.after > 0 && m.reads > m.after {
+		return m.moved, nil
+	}
+	return m.head, nil
 }
