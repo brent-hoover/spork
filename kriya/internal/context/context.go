@@ -217,3 +217,110 @@ func SystemFile(workspace string, b Bundle) (string, error) {
 	}
 	return path, nil
 }
+
+// Learning source kinds, exactly as ENT-learning declares them.
+const (
+	SourceReviewFinding = "review-finding"
+	SourceGateFailure   = "gate-failure"
+	SourceSADirection   = "sa-direction"
+	SourcePORejection   = "po-rejection"
+	SourceOperator      = "operator"
+)
+
+// Learning scopes.
+const (
+	ScopeProject = "project"
+	ScopeGlobal  = "global"
+)
+
+// Capture is a learning as it is recorded.
+//
+// Separate from Learning, which is what the feed-forward path reads: what a
+// capture must carry to be traceable is more than what a later run needs to
+// act on it, and conflating the two would either lose the provenance or push
+// it into every context bundle.
+type Capture struct {
+	Scope string
+	// ProjectKey is present exactly when Scope is project.
+	ProjectKey string
+	Lesson     string
+	Module     string
+	Pattern    string
+	SourceKind string
+	// SourceRun is absent exactly when SourceKind is operator.
+	SourceRun string
+	// SourceCommit is the TRIGGERING head — the commit that was reviewed,
+	// gated or validated when the lesson arose. Code-backed corrections only.
+	SourceCommit string
+	// SourceDoc is the finding document version a research-backed correction
+	// arose from. Exactly one of SourceCommit and SourceDoc is present on a
+	// captured learning, matching the run kind.
+	SourceDoc string
+	// SourceRef is the finding, gate result or event that produced it.
+	SourceRef     string
+	SourceSession string
+}
+
+// Recorder persists captured learnings.
+type Recorder interface {
+	Record(ctx stdctx.Context, c Capture) error
+}
+
+// Validate checks what the format cannot express.
+//
+// ENT-learning's conditional requirements are enforced at WRITE time because
+// the schema has no way to say "present exactly when": a project learning
+// without its key, or a captured one without its run, would be unmatched or
+// untraceable forever after, and the write is the last moment anything knows.
+func (c Capture) Validate() error {
+	if err := c.validateScope(); err != nil {
+		return err
+	}
+	if c.Lesson == "" || c.Module == "" || c.Pattern == "" {
+		return fmt.Errorf("a learning needs a lesson, a module and a pattern")
+	}
+	return c.validateProvenance()
+}
+
+// validateScope checks project_key is present exactly when scope is project.
+func (c Capture) validateScope() error {
+	switch c.Scope {
+	case ScopeProject:
+		if c.ProjectKey == "" {
+			return fmt.Errorf("a project learning needs its project key")
+		}
+	case ScopeGlobal:
+		if c.ProjectKey != "" {
+			return fmt.Errorf("a global learning must carry no project key")
+		}
+	default:
+		return fmt.Errorf("unknown learning scope %q", c.Scope)
+	}
+	return nil
+}
+
+// validateProvenance checks the reference fields the source kind implies.
+func (c Capture) validateProvenance() error {
+	switch c.SourceKind {
+	case SourceOperator:
+		// The operator IS the origin. A run or an anchor would claim a
+		// provenance the entry does not have.
+		if c.SourceRun != "" || c.SourceCommit != "" || c.SourceDoc != "" {
+			return fmt.Errorf("an operator learning carries no run, commit or document")
+		}
+		return nil
+	case SourceReviewFinding, SourceGateFailure, SourceSADirection, SourcePORejection:
+	default:
+		return fmt.Errorf("unknown learning source %q", c.SourceKind)
+	}
+	if c.SourceRun == "" || c.SourceRef == "" {
+		return fmt.Errorf("a captured learning needs its run and the finding that produced it")
+	}
+	// Exactly one anchor, matching the run kind: a code correction points at
+	// the triggering commit, a research one at the finding document version.
+	if (c.SourceCommit == "") == (c.SourceDoc == "") {
+		return fmt.Errorf(
+			"a captured learning needs exactly one of a triggering commit or a finding document")
+	}
+	return nil
+}

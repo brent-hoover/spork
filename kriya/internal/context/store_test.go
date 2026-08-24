@@ -28,7 +28,7 @@ func sqlDB(t *testing.T, migrate bool) *sql.DB {
 	if !migrate {
 		return db
 	}
-	for _, stmt := range strings.Split(context.Migration, ";") {
+	for _, stmt := range strings.Split(context.Migration+";"+context.ProvenanceMigration, ";") {
 		if strings.TrimSpace(stmt) == "" {
 			continue
 		}

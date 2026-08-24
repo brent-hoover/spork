@@ -402,3 +402,97 @@ func TestAMissingTranscriptStopsTheReplay(t *testing.T) {
 		t.Error("an import was attempted with no transcript")
 	}
 }
+
+// learningRecorder records what a correction taught.
+type learningRecorder struct {
+	captured []kctx.Capture
+	err      error
+}
+
+func (r *learningRecorder) Record(_ context.Context, c kctx.Capture) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.captured = append(r.captured, c)
+	return nil
+}
+
+func TestAFindingBecomesALearningAtTheMomentOfCorrection(t *testing.T) {
+	// Not reconstructed afterwards, when what actually went wrong is a guess.
+	store, threads := &memStore{}, newFakeThreads()
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings, reviewbridge.VerdictClean},
+		findings: "- **Severity**: Low\n- **Problem**: pagination is zero-based here",
+	}
+	recorder := &learningRecorder{}
+	loop := pairLoop(store, ag, c, rev, 5)
+	loop.Threads = threads
+	loop.Learnings = recorder
+	req := captureRequest(t)
+	req.ProjectKey = "/target"
+	req.Modules = []string{"MOD-api"}
+	if _, err := loop.Work(context.Background(), req); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(recorder.captured) != 1 {
+		t.Fatalf("captured %d learnings for one finding", len(recorder.captured))
+	}
+	got := recorder.captured[0]
+	if got.Module != "MOD-api" || got.Pattern == "" {
+		t.Errorf("captured %+v — a learning with no tags is one no run will see", got)
+	}
+	if got.SourceKind != kctx.SourceReviewFinding || got.SourceRun != req.Run {
+		t.Errorf("captured %+v", got)
+	}
+	// The TRIGGERING commit, not the fix: the lesson is about the code that
+	// was reviewed.
+	if got.SourceCommit != c.shas[0] {
+		t.Errorf("anchored on %q, want the reviewed commit %q", got.SourceCommit, c.shas[0])
+	}
+	if err := got.Validate(); err != nil {
+		t.Errorf("the captured learning is not recordable: %v", err)
+	}
+}
+
+func TestACleanRoundTeachesNothing(t *testing.T) {
+	// A learning is a CORRECTION. A round that found nothing corrected
+	// nothing, and recording one would fill the store with noise every future
+	// run has to read past.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{verdicts: []string{reviewbridge.VerdictClean}}
+	recorder := &learningRecorder{}
+	loop := pairLoop(store, ag, c, rev, 5)
+	loop.Learnings = recorder
+	req := captureRequest(t)
+	req.ProjectKey = "/target"
+	if _, err := loop.Work(context.Background(), req); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(recorder.captured) != 0 {
+		t.Errorf("captured %+v from a clean round", recorder.captured)
+	}
+}
+
+func TestALearningThatCannotBeRecordedStopsTheLoop(t *testing.T) {
+	// Errors should never pass silently: a correction whose lesson vanished is
+	// one the next run repeats.
+	store := &memStore{}
+	ag := &fakes.Agent{Replies: devReply(), Repeat: true}
+	c := &fakeCommitter{}
+	rev := &fakeReviewer{
+		verdicts: []string{reviewbridge.VerdictFindings},
+		findings: "- **Severity**: Low",
+	}
+	recorder := &learningRecorder{err: errors.New("disk full")}
+	loop := pairLoop(store, ag, c, rev, 5)
+	loop.Learnings = recorder
+	req := captureRequest(t)
+	req.ProjectKey = "/target"
+	if _, err := loop.Work(context.Background(), req); err == nil {
+		t.Fatal("a learning that vanished read as recorded")
+	}
+}

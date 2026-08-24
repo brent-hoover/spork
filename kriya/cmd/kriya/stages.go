@@ -80,6 +80,7 @@ func buildStages(d deps) orchestrator.Stages {
 				Spec:         specForContext(snap.Law, snap.Constitution, snap.Content),
 				Modules:      modulesFor(snap, run.Ticket),
 				Instructions: instructions,
+				ProjectKey:   projectKeyOf(run.Plan),
 				// The limit the RUN was created under, not the one configured
 				// now: a config change affects only future runs.
 				RoundLimit: run.RoundLimit,
@@ -327,3 +328,9 @@ func sessionFromStore(db *sql.DB) func(context.Context, string) (string, error) 
 		return session, nil
 	}
 }
+
+// projectKeyOf scopes a project learning to its target.
+//
+// The target path, which is stable for the life of a target — the same thing
+// the merge queue scopes attempts by.
+func projectKeyOf(plan string) string { return plan }

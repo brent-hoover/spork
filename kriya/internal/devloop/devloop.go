@@ -80,6 +80,11 @@ type Architects interface {
 	Resume(ctx context.Context, build string) (architect.Intervention, bool, error)
 }
 
+// Learnings records what a correction taught.
+type Learnings interface {
+	Record(ctx context.Context, c kctx.Capture) error
+}
+
 // Loop drives a dev agent through pair-programming rounds.
 type Loop struct {
 	// Context assembles the ticket's law, contracts, and learnings. Nil skips
@@ -91,6 +96,9 @@ type Loop struct {
 	// Architect resolves an impasse the pair loop cannot get past. Nil makes
 	// the round limit a plain stall.
 	Architect Architects
+	// Learnings records what a correction taught, at the moment of
+	// correction. Nil records nothing.
+	Learnings Learnings
 	Agent     agent.Agent
 	Store     Store
 	Commit    Committer
@@ -118,6 +126,8 @@ type Request struct {
 	Spec kctx.Spec
 	// Instructions is the operator's hand-crafted project file.
 	Instructions string
+	// ProjectKey scopes a project-specific learning to its project.
+	ProjectKey string
 	// Issue is the tracker issue the transcript is tied to.
 	Issue string
 	// Actor is the identity every tracker mutation is recorded against.
@@ -276,6 +286,11 @@ func (l Loop) pair(ctx context.Context, req Request, session *Session, turns *[]
 		}
 
 		consecutive = append(consecutive, reviewed.Findings)
+		// Captured HERE, at the moment of correction — not reconstructed
+		// afterwards, when what actually went wrong is a guess.
+		if err := l.learn(ctx, req, sha, reviewed); err != nil {
+			return err
+		}
 		fix := fixPrompt(req, reviewed.Findings, direction)
 		res, err := l.Agent.Run(ctx, agent.Request{
 			Role:       agent.RoleDev,
@@ -343,6 +358,31 @@ func (l Loop) impasse(ctx context.Context, req Request, session *Session,
 		return err
 	}
 	return fmt.Errorf("run %s paused for the architect after %d rounds", req.Run, rounds)
+}
+
+// learn records what a review finding taught.
+//
+// The TRIGGERING commit, not the fix: the lesson is about the code that was
+// reviewed, and a later run matching this module wants to know what went wrong
+// there rather than where it was patched.
+func (l Loop) learn(ctx context.Context, req Request, commit string, round reviewbridge.Round) error {
+	if l.Learnings == nil {
+		return nil
+	}
+	module := req.Ticket
+	if len(req.Modules) > 0 {
+		module = req.Modules[0]
+	}
+	err := l.Learnings.Record(ctx, kctx.Capture{
+		Scope: kctx.ScopeProject, ProjectKey: req.ProjectKey,
+		Lesson: round.Findings, Module: module, Pattern: "review-finding",
+		SourceKind: kctx.SourceReviewFinding, SourceRun: req.Run,
+		SourceCommit: commit, SourceRef: round.ID, SourceSession: req.Run,
+	})
+	if err != nil {
+		return fmt.Errorf("record learning for %s: %w", req.Ticket, err)
+	}
+	return nil
 }
 
 // fixPrompt hands the findings back unaltered, under any architect direction.

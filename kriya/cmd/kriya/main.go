@@ -231,10 +231,11 @@ func buildOne(
 			Store: devloop.SQLStore{DB: db},
 			Context: kctx.Assembler{
 				Store:     kctx.SQLBundles{DB: db},
-				Learnings: kctx.SQLLearnings{DB: db},
+				Learnings: kctx.SQLLearnings{DB: db, Now: clock.System{}},
 				Now:       clock.System{},
 			},
-			Threads: sutraThreads{c: trackerclient.New(sutraURL())},
+			Learnings: kctx.SQLLearnings{DB: db, Now: clock.System{}},
+			Threads:   sutraThreads{c: trackerclient.New(sutraURL())},
 			Architect: architect.Architect{
 				Agent: recorder(db, tiers, ticket.Title),
 				Store: architect.SQLStore{DB: db},

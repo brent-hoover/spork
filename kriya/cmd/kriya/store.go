@@ -146,6 +146,7 @@ func migrations() []migration {
 		{module: "reviewbridge", name: "0001_review_round", stmts: splitSQL(reviewbridge.Migration)},
 		{module: "reviewbridge", name: "0002_response_lifecycle", stmts: splitSQL(reviewbridge.ResponseMigration)},
 		{module: "context", name: "0001_context_and_learnings", stmts: splitSQL(kctx.Migration)},
+		{module: "context", name: "0002_learning_provenance", stmts: splitSQL(kctx.ProvenanceMigration)},
 	}
 }
 

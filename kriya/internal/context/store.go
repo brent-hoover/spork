@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"kriya/internal/clock"
 )
 
 // Migration is the context module's schema.
@@ -26,6 +28,14 @@ CREATE TABLE learning (
     source_run  TEXT NOT NULL DEFAULT '',
     created     TEXT NOT NULL
 )`
+
+// ProvenanceMigration adds what a captured learning must carry to be
+// traceable to its origin.
+const ProvenanceMigration = `
+ALTER TABLE learning ADD COLUMN source_commit TEXT NOT NULL DEFAULT '';
+ALTER TABLE learning ADD COLUMN source_doc TEXT NOT NULL DEFAULT '';
+ALTER TABLE learning ADD COLUMN source_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE learning ADD COLUMN source_session TEXT NOT NULL DEFAULT ''`
 
 // SQLBundles persists context bundles.
 type SQLBundles struct{ DB *sql.DB }
@@ -63,7 +73,55 @@ func (s SQLBundles) Get(ctx stdctx.Context, build string) (Bundle, bool, error) 
 }
 
 // SQLLearnings reads and writes the learning store.
-type SQLLearnings struct{ DB *sql.DB }
+type SQLLearnings struct {
+	DB  *sql.DB
+	Now clock.Clock
+}
+
+// Record persists a captured learning.
+//
+// Validated at write time, because ENT-learning's conditional requirements are
+// ones the format cannot express — and the write is the last moment anything
+// knows enough to reject an entry that would be unmatched or untraceable
+// forever after.
+func (s SQLLearnings) Record(ctx stdctx.Context, c Capture) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("reject learning: %w", err)
+	}
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO learning (scope, project_key, lesson, module, pattern,
+		   source_kind, source_run, source_commit, source_doc, source_ref,
+		   source_session, created)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Scope, c.ProjectKey, c.Lesson, c.Module, c.Pattern, c.SourceKind,
+		c.SourceRun, c.SourceCommit, c.SourceDoc, c.SourceRef, c.SourceSession,
+		s.Now.Now().UTC().Format(timeLayout))
+	if err != nil {
+		return fmt.Errorf("record learning: %w", err)
+	}
+	return nil
+}
+
+// Provenance reads a learning's origin back.
+//
+// Exists because "every learning knows its origin" is a claim about what was
+// STORED, and the feed-forward path deliberately reads none of it.
+func (s SQLLearnings) Provenance(ctx stdctx.Context, lesson string) (Capture, bool, error) {
+	var c Capture
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT scope, project_key, lesson, module, pattern, source_kind,
+		   source_run, source_commit, source_doc, source_ref, source_session
+		   FROM learning WHERE lesson = ? ORDER BY id DESC LIMIT 1`, lesson).
+		Scan(&c.Scope, &c.ProjectKey, &c.Lesson, &c.Module, &c.Pattern, &c.SourceKind,
+			&c.SourceRun, &c.SourceCommit, &c.SourceDoc, &c.SourceRef, &c.SourceSession)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Capture{}, false, nil
+	}
+	if err != nil {
+		return Capture{}, false, fmt.Errorf("read learning provenance: %w", err)
+	}
+	return c, true, nil
+}
 
 // Matching returns learnings tagged with any of these modules or patterns.
 //
@@ -91,6 +149,10 @@ func (s SQLLearnings) Matching(ctx stdctx.Context, modules, patterns []string) (
 			args = append(args, v)
 		}
 	}
+	// Every matching learning, whatever its scope: a cross-project lesson is
+	// visible outside its project of origin, and a manual one is
+	// indistinguishable here from a captured one — which is what makes the
+	// feed-forward path treat them alike.
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT lesson, module, pattern FROM learning
 		   WHERE `+strings.Join(clauses, " OR ")+` ORDER BY id`, args...)
