@@ -474,30 +474,35 @@ the BuildRun **research path** · `planner` `completion_state` +
 `CompletionAdvance` · `recovery` stages 3, 8.
 **Proves:** po-validation, submit-review.
 
-**Status 2026-08-23 — 55 of 162 scenario runs green, all six gates
-passing.** Landed: `owner` (4/4), review submission and its two crash
-recoveries, resubmission and its two, and the merge queue's
-approve-consume-merge with re-approval and step-exact recovery
-(REQ-submit-review 7/23).
+**Status 2026-08-23 — M4 essentially done. 73 of 162 scenario runs green,
+all six gates passing** (mutation 481 killed / 0 lived / 0 timed out).
+`REQ-po-validation` 4/4 and `REQ-submit-review` **25 of 27**.
 
-What the remaining 16 submit-review scenarios need, none of it faked:
+Landed: the product owner; review submission and resubmission with their
+crash recoveries; the base fences on both; the merge queue's
+preflight-consume-CAS with re-approval and step-exact recovery; and the
+completion path — session terminated, head re-read, ticket closed through
+sutra's own gate under a key scoped to the review, its revision and its
+approval event.
 
-| Scenarios | Needs |
+The two scenarios still open both need M5:
+
+| Scenario | Needs |
 |---|---|
 | rework routes back by session | consuming sutra's verdict events, and routing a run by the review's session id |
-| successive fresh reviews, post-merge review, ticket close | the completion path — `completion_state` and `CompletionAdvance` |
-| the research path's finding reviews | the BuildRun research traversal |
-| serialization under contention | the per-target merge lock, which arrives with M5's parallelism |
+| simultaneous approvals for one target serialize | the per-target merge lock, which arrives with parallelism |
 
 The approval is currently observed by POLLING once after a run settles,
 in the composition root only. M5 replaces the poll with event
 consumption; a poll that observes the same approval enqueues the same
 attempt under the same key, so nothing durable changes when it does.
 
-Two more spec-conformance points, on top of M3's three: `review-submitted`
-has no transition because the table cannot express waiting, and
-`trackerclient.do` carried two branches for a request shape no caller
-has.
+Three more spec-conformance points, on top of M3's three: `review-submitted`
+has no transition because the table cannot express waiting;
+`trackerclient.do` carried two branches for a request shape no caller has;
+and gate results were keyed by commit alone, which let a previous
+attempt's pass satisfy a rerun after an integration that left the head
+unchanged.
 
 ### M5 — The outer loop
 `orchestrator` full transition table, parallelism, pop admission,
