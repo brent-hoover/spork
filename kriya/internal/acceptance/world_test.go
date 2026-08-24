@@ -63,6 +63,8 @@ type world struct {
 	merge *mergeWorld
 	// complete is the completion scenarios' state, nil until one starts.
 	complete *completeWorld
+	// pop is the pop-loop scenarios' state, nil until one starts.
+	pop *popWorld
 }
 
 func newWorld() *world {

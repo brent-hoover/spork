@@ -303,3 +303,21 @@ func (c *Client) CompleteIssue(
 			"review_verdict_event": verdictEvent, "actor": actor,
 		}, nil)
 }
+
+// Popped is what a work-stack pop returns.
+//
+// Issue is empty when nothing is workable. That is NOT an error: idling is the
+// ordinary state of a plan whose remaining tickets are blocked or in flight,
+// and treating it as one would exit a build that is merely waiting.
+type Popped struct {
+	Issue         Issue `json:"issue"`
+	FeedWatermark int64 `json:"feed_watermark"`
+}
+
+// Pop claims the next workable ticket for an identity.
+func (c *Client) Pop(ctx context.Context, identity, key string) (Popped, error) {
+	var p Popped
+	err := c.do(ctx, "popWorkStack", http.MethodPost,
+		"/identities/"+identity+"/work-stack/pop", key, map[string]any{}, &p)
+	return p, err
+}

@@ -175,8 +175,10 @@ func runWith(t *testing.T, r specverify.Report, drive cli.Drive, out *bytes.Buff
 
 func TestASettledRunIsReported(t *testing.T) {
 	var out bytes.Buffer
-	drive := func(context.Context, planner.Ticket) (orchestrator.BuildRun, error) {
-		return orchestrator.BuildRun{ID: "run-1", State: orchestrator.StatePOValidation}, nil
+	drive := func(context.Context) (orchestrator.Result, error) {
+		return orchestrator.Result{Built: []orchestrator.BuildRun{
+			{ID: "run-1", State: orchestrator.StatePOValidation},
+		}}, nil
 	}
 	if err := runWith(t, specverify.Report{Status: "ready", OK: true}, drive, &out); err != nil {
 		t.Fatalf("build: %v", err)
@@ -190,11 +192,11 @@ func TestAParkedRunPrintsWhyBeforeFailing(t *testing.T) {
 	// The reason is the whole value of a parked run; returning the error
 	// without printing it would leave the operator with nothing to act on.
 	var out bytes.Buffer
-	drive := func(context.Context, planner.Ticket) (orchestrator.BuildRun, error) {
-		return orchestrator.BuildRun{
+	drive := func(context.Context) (orchestrator.Result, error) {
+		return orchestrator.Result{Built: []orchestrator.BuildRun{{
 			ID: "run-2", State: orchestrator.StateAwaitingOperator,
 			Error: "gate structure failed",
-		}, errors.New("run parked")
+		}}}, errors.New("run parked")
 	}
 	err := runWith(t, specverify.Report{Status: "ready", OK: true}, drive, &out)
 	if err == nil {

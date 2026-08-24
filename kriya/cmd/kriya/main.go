@@ -186,7 +186,25 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 	if repo == "" {
 		return nil
 	}
-	return func(ctx context.Context, ticket planner.Ticket) (orchestrator.BuildRun, error) {
+	// The pop loop is the outer loop: it claims the next workable ticket and
+	// builds it, until the tracker has nothing to give. Idling is not exiting.
+	return func(ctx context.Context) (orchestrator.Result, error) {
+		return orchestrator.Loop{
+			Pops:      sutraPops{c: trackerclient.New(sutraURL()), identity: actor},
+			Build:     buildOne(db, ws, tiers, reviews, target, actor),
+			Ordinals:  orchestrator.SQLOrdinals{DB: db},
+			TargetKey: target,
+		}.Run(ctx)
+	}
+}
+
+// buildOne runs a single popped ticket to a terminal state.
+func buildOne(
+	db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewbridge.Bridge,
+	target, actor string,
+) orchestrator.Builder {
+	return func(ctx context.Context, issue, title string) (orchestrator.BuildRun, error) {
+		ticket := planner.Ticket{Title: title, IssueID: issue}
 		snap, err := planner.SQLSnapshots{DB: db}.Get(ctx, latestSnapshotHash(ctx, db, target))
 		if err != nil {
 			return orchestrator.BuildRun{}, err

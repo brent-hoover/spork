@@ -172,3 +172,40 @@ func completionStateOf(r BuildRun) string {
 	}
 	return r.CompletionState
 }
+
+// PopMigration records how many pops a target has settled.
+const PopMigration = `
+CREATE TABLE pop_ordinal (
+    target_key TEXT PRIMARY KEY,
+    settled    INTEGER NOT NULL
+)`
+
+// SQLOrdinals persists pop ordinals in SQLite.
+type SQLOrdinals struct{ DB *sql.DB }
+
+// Current reads how many pops a target has settled. A target that has settled
+// none has no row, which is zero rather than an error.
+func (s SQLOrdinals) Current(ctx context.Context, targetKey string) (int, error) {
+	var settled int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT settled FROM pop_ordinal WHERE target_key = ?`, targetKey).Scan(&settled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read pop ordinal: %w", err)
+	}
+	return settled, nil
+}
+
+// Advance records a settled pop.
+func (s SQLOrdinals) Advance(ctx context.Context, targetKey string, to int) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO pop_ordinal (target_key, settled) VALUES (?, ?)
+		 ON CONFLICT(target_key) DO UPDATE SET settled = excluded.settled`,
+		targetKey, to)
+	if err != nil {
+		return fmt.Errorf("advance pop ordinal: %w", err)
+	}
+	return nil
+}

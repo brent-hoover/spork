@@ -39,6 +39,25 @@ func projectKey(dir string) string {
 	return base + hex.EncodeToString(sum[:])[:6]
 }
 
+// reportRuns prints what a pass built.
+//
+// Idling gets its own line: a pass that built nothing because nothing was
+// workable and a pass that built nothing because it failed look identical
+// otherwise, and only one of them is fine.
+func reportRuns(w *errWriter, result orchestrator.Result) {
+	for _, run := range result.Built {
+		w.printf("  run %s settled in %s\n", run.ID, run.State)
+		if run.Error != "" {
+			w.printf("    %s\n", run.Error)
+		}
+	}
+	if result.Idle {
+		// Idling is not exiting. The remaining tickets are blocked or in
+		// flight, and popping resumes when one unblocks.
+		w.printf("  nothing workable; idling\n")
+	}
+}
+
 // errWriter defers write-error handling to one place.
 //
 // A failed write is not cosmetic here: AC-intake-refuse requires the verify
@@ -57,9 +76,9 @@ func (e *errWriter) printf(format string, a ...any) {
 }
 
 // Build is the `kriya build <project>` entry point.
-// Drive starts and advances a BuildRun for one ticket. Nil when no repository
-// is configured, in which case a build stops after decomposition.
-type Drive func(ctx context.Context, ticket planner.Ticket) (orchestrator.BuildRun, error)
+// Drive pops and builds until nothing is workable. Nil when no repository is
+// configured, in which case a build stops after decomposition.
+type Drive func(ctx context.Context) (orchestrator.Result, error)
 
 func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, token string, drive Drive) error {
 	w := &errWriter{w: out}
@@ -92,11 +111,8 @@ func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, t
 			w.printf("  no repository configured; not starting a run\n")
 			break
 		}
-		run, driveErr := drive(ctx, tickets[0])
-		w.printf("  run %s settled in %s\n", run.ID, run.State)
-		if run.Error != "" {
-			w.printf("    %s\n", run.Error)
-		}
+		result, driveErr := drive(ctx)
+		reportRuns(w, result)
 		if driveErr != nil {
 			return driveErr
 		}

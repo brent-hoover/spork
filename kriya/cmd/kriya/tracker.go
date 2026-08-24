@@ -85,3 +85,17 @@ func (t sutraTickets) Complete(
 ) error {
 	return t.c.CompleteIssue(ctx, issue, review, revision, verdictEvent, t.actor, key)
 }
+
+// sutraPops adapts the sutra client to the pop loop's seam.
+type sutraPops struct {
+	c        *trackerclient.Client
+	identity string
+}
+
+func (t sutraPops) Pop(ctx context.Context, key string) (string, string, error) {
+	got, err := t.c.Pop(ctx, t.identity, key)
+	if err != nil {
+		return "", "", err
+	}
+	return got.Issue.ID, got.Issue.Title, nil
+}
