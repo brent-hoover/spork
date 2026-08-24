@@ -178,7 +178,7 @@ func TestAPlannedTicketKeepsItsCriteria(t *testing.T) {
 	if err := s.Put(context.Background(), "/target", want); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	got, found, err := s.Find(context.Background(), "issue-7")
+	got, found, err := s.Find(context.Background(), "/target", "issue-7")
 	if err != nil || !found {
 		t.Fatalf("find: %v found=%v", err, found)
 	}
@@ -200,7 +200,7 @@ func TestReDecomposingATicketReplacesIt(t *testing.T) {
 	if err := s.Put(context.Background(), "/target", ticket); err != nil {
 		t.Fatalf("re-put: %v", err)
 	}
-	got, _, err := s.Find(context.Background(), "issue-7")
+	got, _, err := s.Find(context.Background(), "/target", "issue-7")
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestReDecomposingATicketReplacesIt(t *testing.T) {
 
 func TestAnIssueNothingPlannedIsNotFound(t *testing.T) {
 	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
-	_, found, err := s.Find(context.Background(), "issue-absent")
+	_, found, err := s.Find(context.Background(), "/target", "issue-absent")
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -222,10 +222,39 @@ func TestAnIssueNothingPlannedIsNotFound(t *testing.T) {
 
 func TestATicketStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
 	s := planner.SQLTickets{DB: sqlDB(t)}
-	if _, _, err := s.Find(context.Background(), "issue-7"); err == nil {
+	if _, _, err := s.Find(context.Background(), "/target", "issue-7"); err == nil {
 		t.Error("a missing table read as an unplanned issue")
 	}
 	if err := s.Put(context.Background(), "/target", planner.Ticket{IssueID: "i"}); err == nil {
 		t.Error("a write to a missing table reported success")
+	}
+}
+
+func TestATicketFromAnotherTargetIsNotFound(t *testing.T) {
+	// A pop is identity-wide: sutra offers whatever is assigned to the
+	// popping identity, from any plan. A ticket this target's decomposition
+	// did not produce is one whose code lives in another repository, and
+	// building it here would work the wrong codebase against the wrong
+	// snapshot.
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	mine := planner.Ticket{Title: "Create a short link", IssueID: "issue-7"}
+	theirs := planner.Ticket{Title: "Add billing", IssueID: "issue-9"}
+	if err := s.Put(context.Background(), "/mine", mine); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := s.Put(context.Background(), "/theirs", theirs); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, found, err := s.Find(context.Background(), "/mine", "issue-9"); err != nil {
+		t.Fatalf("find: %v", err)
+	} else if found {
+		t.Error("another target's ticket was offered to this one")
+	}
+	got, found, err := s.Find(context.Background(), "/mine", "issue-7")
+	if err != nil || !found {
+		t.Fatalf("this target's own ticket was not found: %v found=%v", err, found)
+	}
+	if got.Title != mine.Title {
+		t.Errorf("found %+v", got)
 	}
 }

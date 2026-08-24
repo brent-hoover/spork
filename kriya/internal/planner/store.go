@@ -225,12 +225,18 @@ func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
 	return nil
 }
 
-// Find reads a ticket by the issue it became.
-func (s SQLTickets) Find(ctx context.Context, issue string) (Ticket, bool, error) {
+// Find reads a ticket by the issue it became, within one target's plan.
+//
+// SCOPED to the target, because a pop is identity-wide: sutra offers whatever
+// is assigned to the popping identity, from any plan. A ticket this target's
+// decomposition did not produce is one whose code lives in another repository,
+// and building it here would work the wrong codebase.
+func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, bool, error) {
 	t := Ticket{IssueID: issue}
 	var criteria string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT title, body, criteria FROM planned_ticket WHERE issue = ?`, issue).
+		`SELECT title, body, criteria FROM planned_ticket
+		   WHERE issue = ? AND target_key = ?`, issue, targetKey).
 		Scan(&t.Title, &t.Body, &criteria)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil

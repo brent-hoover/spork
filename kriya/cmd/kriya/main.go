@@ -429,7 +429,22 @@ func buildOne(
 	target, actor string,
 ) orchestrator.Builder {
 	return func(ctx context.Context, issue, title string) (orchestrator.BuildRun, error) {
-		ticket := planner.Ticket{Title: title, IssueID: issue}
+		// A pop is IDENTITY-WIDE: sutra offers whatever is assigned to the
+		// popping identity, from any plan. A ticket this target's
+		// decomposition did not produce belongs to another repository, and
+		// building it here would run this target's gate commands over the
+		// wrong codebase. Refused loudly rather than skipped: the claim is
+		// already made, and silently dropping it would strand the ticket.
+		ticket, planned, err := (planner.SQLTickets{DB: db}).Find(ctx, target, issue)
+		if err != nil {
+			return orchestrator.BuildRun{}, err
+		}
+		if !planned {
+			return orchestrator.BuildRun{}, fmt.Errorf(
+				"issue %s (%s) is not in %s's plan; it was popped for this identity "+
+					"but belongs to another target", issue, title, target)
+		}
+		ticket.IssueID = issue
 		snap, err := snapshotFor(ctx, db, target)
 		if err != nil {
 			return orchestrator.BuildRun{}, err
@@ -652,7 +667,7 @@ func stageDeps(
 		completer:    completerOn(db, ws, actor),
 		queue:        mergeQueue(db, ws, actor),
 		commandsFor:  commandsFromSnapshot(snap),
-		ticketFor:    ticketFromStore(db, ticket),
+		ticketFor:    ticketFromStore(db, target, ticket),
 		actor:        actor,
 		sessionFor:   sessionFromStore(db),
 		instructions: operatorInstructions(target),

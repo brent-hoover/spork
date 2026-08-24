@@ -406,7 +406,8 @@ func mergeStage(q orchestrator.Queue) func(context.Context, orchestrator.BuildRu
 			return run, err
 		}
 		if !found {
-			return run, fmt.Errorf("run %s is merging with no attempt enqueued", run.ID)
+			return releaseReview(run),
+				fmt.Errorf("run %s is merging with no attempt enqueued", run.ID)
 		}
 		attempt, err := q.Run(ctx, key)
 		if errors.Is(err, orchestrator.ErrWaiting) {
@@ -418,12 +419,32 @@ func mergeStage(q orchestrator.Queue) func(context.Context, orchestrator.BuildRu
 			return run, err
 		}
 		if attempt.State != orchestrator.AttemptMerged {
-			// A RESULT: the attempt aborted, and the run parks with the cause
-			// rather than looking merged.
-			return run, fmt.Errorf("merge attempt %s: %s", attempt.State, attempt.Note)
+			// A RESULT: the attempt aborted, and the table sends the run back
+			// to the dev loop with the cause.
+			return releaseReview(run),
+				fmt.Errorf("merge attempt %s: %s", attempt.State, attempt.Note)
 		}
 		return run, nil
 	}
+}
+
+// releaseReview unbinds a review that can no longer be advanced.
+//
+// An aborted merge returns the run to the dev loop, which integrates the moved
+// base and produces a NEW head. That head is work no human has seen, so it
+// needs its own review — and the approved one is spent: resubmitting it fences
+// on an APPROVAL event where sutra expects a changes-requested one, which it
+// refuses forever.
+//
+// The commit and the session stay. They are the history of what was reviewed,
+// and the next submission overwrites them with its own.
+func releaseReview(run orchestrator.BuildRun) orchestrator.BuildRun {
+	run.ReviewID = ""
+	run.ReviewKey = ""
+	run.ReviewState = orchestrator.SubmitNone
+	run.ReviewRevision = 0
+	run.ReviewVerdictEvent = ""
+	return run
 }
 
 // completeStage closes a merged run's ticket through the tracker's own gate.
@@ -465,9 +486,10 @@ func systemFileFor(workspace string) string {
 // The popped ticket is the fallback, so a plan whose row cannot be read still
 // carries its issue id — losing the issue would submit a review against
 // nothing and close no ticket.
-func ticketFromStore(db *sql.DB, popped planner.Ticket) func(string) planner.Ticket {
+func ticketFromStore(db *sql.DB, target string, popped planner.Ticket) func(string) planner.Ticket {
 	return func(string) planner.Ticket {
-		t, found, err := (planner.SQLTickets{DB: db}).Find(context.Background(), popped.IssueID)
+		t, found, err := (planner.SQLTickets{DB: db}).Find(
+			context.Background(), target, popped.IssueID)
 		if err != nil || !found {
 			return popped
 		}

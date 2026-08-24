@@ -49,7 +49,7 @@ func stagesAndReviews(
 	// Every run these stages drive has a session: the submit stage stamps the
 	// review with it so feedback routes back to the agent that wrote the code.
 	for _, run := range []string{"run-1", "run-2", "run-3", "run-po-1", "run-po-2",
-		"run-sub-1", "run-sub-2", "run-sub-3", "run-sub-4", "run-merge-1", "run-complete-1", "run-nowhere"} {
+		"run-sub-1", "run-sub-2", "run-sub-3", "run-sub-4", "run-merge-1", "run-merge-2", "run-complete-1", "run-nowhere"} {
 		if err := (devloop.SQLStore{DB: db}).Upsert(context.Background(), devloop.Session{
 			Run: run, Ticket: "T-1", SessionID: "sess-" + run,
 		}); err != nil {
@@ -605,5 +605,49 @@ func TestNewWorkAfterAVerdictStillResubmits(t *testing.T) {
 	}
 	if again.ReviewRevision <= run.ReviewRevision {
 		t.Errorf("the reworked head did not advance the revision: %d", again.ReviewRevision)
+	}
+}
+
+func TestAnAbortedMergeReleasesTheSpentReview(t *testing.T) {
+	// The table sends an aborted merge back to the dev loop, which integrates
+	// the moved base and produces a NEW head. That head is work no human has
+	// seen, so it needs its own review — but the run still carried the
+	// approved one, and the submit stage resubmitted it, fencing on an
+	// APPROVAL event where sutra expects a changes-requested one.
+	stages, _, reviews := stagesAndReviews(t, quietLoop(), passingCommands)
+	run, err := runThrough(t, stages,
+		orchestrator.BuildRun{ID: "run-merge-2", Ticket: "T-1", Issue: "issue-7", Head: "C2"},
+		orchestrator.StageWorkspace, orchestrator.StageGates,
+		orchestrator.StageValidate, orchestrator.StageSubmit)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	if run.ReviewID == "" {
+		t.Fatal("no review was opened")
+	}
+	opened := len(reviews.issues)
+
+	// The merge aborts: no attempt is enqueued for this run.
+	run.State = orchestrator.StateMerging
+	released, err := stages[orchestrator.StageMerge](context.Background(), run)
+	if err == nil {
+		t.Fatal("a merge with no attempt read as success")
+	}
+	if released.ReviewID != "" || released.ReviewState == orchestrator.SubmitSubmitted {
+		t.Fatalf("the spent review is still bound: %q in %q",
+			released.ReviewID, released.ReviewState)
+	}
+
+	// And the next submission opens a fresh review rather than resubmitting.
+	released.Head = "C3"
+	again, err := stages[orchestrator.StageSubmit](context.Background(), released)
+	if err != nil {
+		t.Fatalf("submit stage: %v", err)
+	}
+	if len(reviews.issues) != opened+1 {
+		t.Errorf("opened %d reviews in total, want one more", len(reviews.issues))
+	}
+	if again.ReviewID == run.ReviewID {
+		t.Error("the new work reused the spent review")
 	}
 }

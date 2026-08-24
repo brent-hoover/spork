@@ -381,7 +381,7 @@ func TestTheWholeTicketIsRecoveredFromThePlan(t *testing.T) {
 	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/target", full); err != nil {
 		t.Fatalf("put ticket: %v", err)
 	}
-	got := ticketFromStore(db, popped)(full.Title)
+	got := ticketFromStore(db, "/target", popped)(full.Title)
 	if got.Body != full.Body {
 		t.Errorf("the body came back as %q", got.Body)
 	}
@@ -396,7 +396,7 @@ func TestTheWholeTicketIsRecoveredFromThePlan(t *testing.T) {
 	// review against nothing and closing no ticket is worse than reaching the
 	// dev agent with a thin ticket.
 	unrecorded := planner.Ticket{Title: "Redirect", IssueID: "issue-8"}
-	if got := ticketFromStore(db, unrecorded)("Redirect"); got.IssueID != "issue-8" {
+	if got := ticketFromStore(db, "/target", unrecorded)("Redirect"); got.IssueID != "issue-8" {
 		t.Errorf("an unrecorded ticket lost its issue: %q", got.IssueID)
 	}
 }
@@ -587,5 +587,29 @@ func TestAReworkedVerdictEnqueuesNothing(t *testing.T) {
 		t.Fatalf("attempt for: %v", err)
 	} else if found {
 		t.Error("rejected work was enqueued for merging")
+	}
+}
+
+func TestAPoppedTicketFromAnotherTargetIsRefused(t *testing.T) {
+	// A pop is identity-wide. Building another target's ticket here would run
+	// THIS target's gate commands over the wrong codebase, against a snapshot
+	// that never described it.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/theirs",
+		planner.Ticket{Title: "Add billing", IssueID: "issue-9"}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	build := buildOne(db, workspace.Manager{}, agent.Tiers{},
+		reviewbridge.Bridge{}, "/mine", "actor-1")
+
+	_, err := build(t.Context(), "issue-9", "Add billing")
+	if err == nil {
+		t.Fatal("another target's ticket was built here")
+	}
+	if !strings.Contains(err.Error(), "issue-9") || !strings.Contains(err.Error(), "/mine") {
+		t.Errorf("the refusal does not name the issue and the target: %v", err)
 	}
 }

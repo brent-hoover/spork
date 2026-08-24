@@ -41,7 +41,7 @@ type Intaker struct {
 // TicketStore persists the tickets a decomposition produced.
 type TicketStore interface {
 	Put(ctx context.Context, targetKey string, t Ticket) error
-	Find(ctx context.Context, issue string) (Ticket, bool, error)
+	Find(ctx context.Context, targetKey, issue string) (Ticket, bool, error)
 }
 
 // admitReport applies the three report-level checks.
