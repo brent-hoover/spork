@@ -45,6 +45,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// claim is the completion-submission scenarios' state, nil until one starts.
+	claim *claimWorld
 	// epoch is the completion-epoch scenarios' state, nil until one starts.
 	epoch *epochWorld
 	// detect is the completion-detection scenarios' state, nil until one starts.
@@ -93,6 +95,22 @@ func (w *world) tempDir() (string, error) {
 	}
 	w.cleanup = append(w.cleanup, func() { _ = os.RemoveAll(dir) })
 	return dir, nil
+}
+
+// recover runs whichever recovery the scenario is about.
+//
+// The step sentence is shared, so the world it built is what selects the
+// module: a scenario that seeded a completion claim recovers completion, one
+// that seeded a review round recovers rounds.
+func (w *world) recover() error {
+	switch {
+	case w.claim != nil:
+		return w.claim.recover()
+	case w.pair != nil:
+		_, w.pair.err = w.pair.bridge.RecoverRounds(context.Background())
+		return w.pair.err
+	}
+	return errors.New("no recovery is in scope: the scenario built no world")
 }
 
 // done releases what the scenario created.

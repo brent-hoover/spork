@@ -221,6 +221,74 @@ func (c *Client) CreateReview(
 	return rv, err
 }
 
+// Document is a sutra document and the version it currently points at.
+type Document struct {
+	ID string `json:"id"`
+	// CurrentVersion is the version the document points at. A replayed
+	// creation returns the ORIGINAL document with the ORIGINAL version, which
+	// is what makes "no second version appends" true across a crash.
+	CurrentVersion *string `json:"current_version"`
+}
+
+// DocVersion is one immutable version of a document.
+type DocVersion struct {
+	ID       string `json:"id"`
+	Document string `json:"document"`
+	Number   int64  `json:"number"`
+}
+
+// CreateDocument creates a document holding a build's completion report.
+//
+// The key is the caller's and is persisted before the call, exactly as for a
+// review: a replay returns the original document rather than appending a
+// second one beside it.
+func (c *Client) CreateDocument(
+	ctx context.Context, projectID, title, issue, content, author, key string,
+) (Document, error) {
+	payload := map[string]any{"title": title, "content": content, "author": author}
+	if issue != "" {
+		payload["issue"] = issue
+	}
+	var doc Document
+	err := c.do(ctx, "createDocument", http.MethodPost,
+		"/projects/"+projectID+"/documents", key, payload, &doc)
+	return doc, err
+}
+
+// SaveDocVersion appends a version to a document.
+//
+// A rework's new report. Keyed, so a crash between writing the version and
+// recording it recovers the EXACT version rather than appending another.
+func (c *Client) SaveDocVersion(
+	ctx context.Context, documentID, content, author, key string,
+) (DocVersion, error) {
+	var v DocVersion
+	err := c.do(ctx, "saveDocVersion", http.MethodPost,
+		"/documents/"+documentID+"/versions", key,
+		map[string]any{"content": content, "author": author}, &v)
+	return v, err
+}
+
+// CreateDocReview opens a review whose deliverable is a document version.
+//
+// A build-completion review reviews a REPORT, not a diff: the work it covers
+// is already merged, and what a human is being asked to approve is the claim
+// that the build is done. sutra takes exactly one deliverable, so this sends
+// doc_version where a code review sends branch and commit.
+func (c *Client) CreateDocReview(
+	ctx context.Context, issue, author, summary, docVersion, key string,
+) (Review, error) {
+	payload := map[string]any{
+		"issue": issue, "author": author, "doc_version": docVersion,
+	}
+	if summary != "" {
+		payload["summary"] = summary
+	}
+	var rv Review
+	err := c.do(ctx, "createReview", http.MethodPost, "/reviews", key, payload, &rv)
+	return rv, err
+}
+
 // GetReview reads a review's current state.
 //
 // Not a mutation, so it carries no idempotency key and no body — it needs its
@@ -332,6 +400,17 @@ func (c *Client) Pop(ctx context.Context, identity, key string) (Popped, error) 
 	err := c.do(ctx, "popWorkStack", http.MethodPost,
 		"/identities/"+identity+"/work-stack/pop", key, map[string]any{}, &p)
 	return p, err
+}
+
+// GetIssue reads one issue, for its subtree revision.
+//
+// The epic's revision is the fence a completion claim is captured against, and
+// it is not in the active listing: an epic with no open children is not active
+// work, which is precisely the state completion is asking about.
+func (c *Client) GetIssue(ctx context.Context, id string) (Issue, error) {
+	var i Issue
+	err := c.do(ctx, "getIssue", http.MethodGet, "/issues/"+id, "", nil, &i)
+	return i, err
 }
 
 // IssueListing is a project's issues and the feed position the read saw.

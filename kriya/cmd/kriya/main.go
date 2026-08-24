@@ -211,7 +211,8 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	// reconciliation, which touches the tracker and this database, is
 	// repository-independent.
 	steps := recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
-		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor)
+		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor,
+		completionClaimer(db, actor), targetsFor(db))
 	if repo == "" {
 		steps = repositoryIndependent(steps)
 	}
@@ -322,7 +323,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		if err := router.Advance(ctx, next); err != nil {
 			return orchestrator.Result{}, err
 		}
-		return orchestrator.Loop{
+		result, err := orchestrator.Loop{
 			Pops:      sutraPops{c: trackerclient.New(sutraURL()), identity: actor},
 			Build:     buildOne(db, ws, tiers, reviews, target, actor),
 			Ordinals:  orchestrator.SQLOrdinals{DB: db},
@@ -334,6 +335,80 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 			Stalls: stallRecorder(db),
 			Epochs: planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 		}.Run(ctx)
+		if err != nil || !result.Idle {
+			return result, err
+		}
+		// Idle AND armed is the finish line. The completion review is
+		// submitted here rather than inside the loop because the loop's job is
+		// to pop and build: whether the build is DONE is a different question,
+		// and it is asked once, when there is nothing left to pop.
+		return result, claimCompletion(ctx, db, target, actor)
+	}
+}
+
+// claimCompletion submits the build-completion review when a target is armed.
+//
+// Every crash window in the protocol is recovered by the same path a fresh
+// submission takes, so this is only ever the FIRST attempt: recovery drives
+// the rest from the persisted claim.
+func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) error {
+	armed, _, err := completionDetector(db).Detect(ctx, target)
+	if err != nil || !armed {
+		return err
+	}
+	row, found, err := (planner.SQLTargets{DB: db}).Find(ctx, target)
+	if err != nil || !found {
+		return err
+	}
+	claims := planner.SQLClaims{DB: db}
+	claim, found, err := claims.Find(ctx, target)
+	if err != nil {
+		return err
+	}
+	if found && claim.State != planner.CompletionNone {
+		// An attempt is already in flight or settled for this epoch. A second
+		// submission would open a second review for one claim.
+		return nil
+	}
+	// The epic's revision at CAPTURE. The close is fenced on it, so history
+	// that moved invalidates the claim even when current state still matches.
+	epic, err := trackerclient.New(sutraURL()).GetIssue(ctx, row.EpicID)
+	if err != nil {
+		return fmt.Errorf("read epic %s: %w", row.EpicID, err)
+	}
+	_, err = completionClaimer(db, actor).Submit(
+		ctx, target, row.ProjectID, row.EpicID, epic.SubtreeRevision)
+	return err
+}
+
+// targetsFor resolves a claim's project and epic from the target's own row.
+//
+// From the ROW, not the caller: a replay must reproduce the original request,
+// and a project re-derived somewhere else is a second place for the two to
+// disagree.
+func targetsFor(db *sql.DB) func(planner.CompletionClaim) (string, string, error) {
+	return func(claim planner.CompletionClaim) (string, string, error) {
+		row, found, err := (planner.SQLTargets{DB: db}).Find(
+			context.Background(), claim.TargetKey)
+		if err != nil {
+			return "", "", err
+		}
+		if !found {
+			return "", "", fmt.Errorf("no build target for claim %s", claim.TargetKey)
+		}
+		return row.ProjectID, row.EpicID, nil
+	}
+}
+
+// completionClaimer wires the build-completion claim protocol.
+func completionClaimer(db *sql.DB, actor string) planner.Claimer {
+	c := trackerclient.New(sutraURL())
+	return planner.Claimer{
+		Claims:    planner.SQLClaims{DB: db},
+		Reports:   reportFor(db),
+		Documents: sutraDocs{c: c, actor: actor},
+		Reviews:   sutraCompletionReviews{c: c, actor: actor},
+		Epochs:    planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 	}
 }
 
@@ -659,10 +734,19 @@ func recoverySteps(
 	in planner.Intaker, ws workspace.Manager, rb reviewbridge.Bridge,
 	loop devloop.Loop, submitter orchestrator.Submitter,
 	queue orchestrator.Queue, completer orchestrator.Completer, actor string,
+	claimer planner.Claimer, targets func(planner.CompletionClaim) (string, string, error),
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
-			_, err := in.RecoverTargets(ctx)
+			if _, err := in.RecoverTargets(ctx); err != nil {
+				return err
+			}
+			// A completion submission a crash left in flight, replayed under
+			// its PERSISTED keys. The claim is epoch-scoped, so a replay after
+			// an advance still presents the old key — which is what keeps it
+			// from adopting a spent review — and the stamp's CAS refuses it
+			// later.
+			_, err := claimer.Recover(ctx, targets)
 			return err
 		}},
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {

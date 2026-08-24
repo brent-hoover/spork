@@ -343,10 +343,11 @@ func registerPairLoop(sc *godog.ScenarioContext, w *world) {
 		return nil
 	})
 
-	sc.Step(`^recovery runs$`, func() error {
-		_, w.pair.err = w.pair.bridge.RecoverRounds(context.Background())
-		return w.pair.err
-	})
+	// "recovery runs" is a phrase several features share, and godog matches
+	// on the sentence alone. It dispatches on whichever world the scenario's
+	// Given built: registering it twice would be ambiguous, and owning it
+	// here would panic in every other feature that says it.
+	sc.Step(`^recovery runs$`, func() error { return w.recover() })
 
 	sc.Step(`^exactly the stored payload is re-issued as the comment — a rare duplicate is benign, a missing or differing response is not — and the close completes$`, func() error {
 		want := "comment 101 Addressed in C2."

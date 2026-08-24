@@ -126,6 +126,43 @@ func (s sutraIssues) Active(
 	return out, listing.Watermark, nil
 }
 
+// sutraDocs adapts sutra's document API to the completion claim's seam.
+type sutraDocs struct {
+	c     *trackerclient.Client
+	actor string
+}
+
+func (d sutraDocs) Create(
+	ctx context.Context, projectID, title, issue, content, key string,
+) (string, string, error) {
+	doc, err := d.c.CreateDocument(ctx, projectID, title, issue, content, d.actor, key)
+	if err != nil {
+		return "", "", err
+	}
+	if doc.CurrentVersion == nil {
+		// The review's deliverable IS the version. A document pointing at
+		// nothing would open a review over nothing.
+		return doc.ID, "", nil
+	}
+	return doc.ID, *doc.CurrentVersion, nil
+}
+
+// sutraCompletionReviews opens the review a human approves to finish a build.
+type sutraCompletionReviews struct {
+	c     *trackerclient.Client
+	actor string
+}
+
+func (r sutraCompletionReviews) Create(
+	ctx context.Context, issue, summary, docVersion, key string,
+) (string, int, error) {
+	rv, err := r.c.CreateDocReview(ctx, issue, r.actor, summary, docVersion, key)
+	if err != nil {
+		return "", 0, err
+	}
+	return rv.ID, rv.Revision, nil
+}
+
 // sutraFeed adapts sutra's event feed to the verdict router's seam.
 //
 // It reads only review verdicts. The feed carries every event sutra emits, and
