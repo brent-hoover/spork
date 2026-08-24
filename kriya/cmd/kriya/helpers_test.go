@@ -98,7 +98,7 @@ func loopForTest(db *sql.DB) devloop.Loop {
 func submitterForTest(db *sql.DB) orchestrator.Submitter {
 	return orchestrator.Submitter{
 		Store:   orchestrator.SQLStore{DB: db},
-		Reviews: recordingReviews{},
+		Reviews: &recordingReviews{},
 		Author:  "actor-1",
 	}
 }

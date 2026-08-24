@@ -58,6 +58,12 @@ const (
 type BuildRun struct {
 	ID     string
 	Ticket string
+	// Issue is the tracker issue this ticket became, and Branch the branch
+	// its work lives on. Persisted on the run because recovery replays a
+	// submission or a close from what the RUN recorded — a replay that
+	// re-derived them could ask sutra to act on a different issue.
+	Issue  string
+	Branch string
 	Plan   string
 	State  State
 	// Head is the branch's head commit — the DEVELOPED WORK. It is what the

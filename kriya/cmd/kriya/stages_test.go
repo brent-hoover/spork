@@ -18,6 +18,7 @@ import (
 	"kriya/internal/orchestrator"
 	"kriya/internal/owner"
 	"kriya/internal/planner"
+	"kriya/internal/specverify"
 	"kriya/internal/workspace"
 )
 
@@ -30,7 +31,16 @@ func passingCommands(string) map[string]string {
 	return cmds
 }
 
-func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map[string]string) (orchestrator.Stages, workspace.Manager) {
+func stagesForTest(t *testing.T, loop worker, commandsFor func(string) map[string]string) (orchestrator.Stages, workspace.Manager) {
+	stages, ws, _ := stagesAndReviews(t, loop, commandsFor)
+	return stages, ws
+}
+
+// stagesAndReviews is stagesForTest, plus the review recorder, for the tests
+// that need to see what a submission carried.
+func stagesAndReviews(
+	t *testing.T, loop worker, commandsFor func(string) map[string]string,
+) (orchestrator.Stages, workspace.Manager, *recordingReviews) {
 	t.Helper()
 	db := openTemp(t)
 	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
@@ -48,36 +58,56 @@ func stagesForTest(t *testing.T, loop devloop.Loop, commandsFor func(string) map
 	}
 	ws := workspaceManagerOn(t, db)
 	runner := gates.Runner{Store: gates.SQLStore{DB: db}, Now: clock.System{}}
+	reviews := &recordingReviews{}
 	return buildStages(deps{
-		ws: ws, loop: loop, runner: runner, snap: planner.Snapshot{},
+		ws: ws, loop: loop, runner: runner, snap: testSnapshot(commandsFor),
 		po: owner.Owner{
 			Agent: &fakes.Agent{Replies: poReply(owner.VerdictSatisfied)},
 			Store: owner.SQLStore{DB: db}, Gates: runner, Now: clock.System{},
 		},
 		submitter: orchestrator.Submitter{
 			Store:   orchestrator.SQLStore{DB: db},
-			Reviews: recordingReviews{},
+			Reviews: reviews,
 			Author:  "actor-1",
 		},
 		queue:       queueForTest(t, db),
 		completer:   completerForTest(t, db),
 		commandsFor: commandsFor,
-		criteriaFor: func(string) []string { return []string{"AC-x"} },
-		issueFor:    func(string) string { return "issue-1" },
-		sessionFor:  sessionFromStore(db),
-	}), ws
+		ticketFor: func(title string) planner.Ticket {
+			return planner.Ticket{
+				Title: title, Body: "Accept a URL and return a code.",
+				Criteria: []string{"AC-x"}, IssueID: "issue-1",
+			}
+		},
+		actor:      "actor-1",
+		sessionFor: sessionFromStore(db),
+	}), ws, reviews
 }
 
-// recordingReviews stands in for sutra's review API.
-type recordingReviews struct{}
+// testSnapshot is a one-module pinned snapshot.
+//
+// A real module id, not the ticket title: the gate chain runs once per touched
+// module and records its results under the module's own name.
+func testSnapshot(commandsFor func(string) map[string]string) planner.Snapshot {
+	return planner.Snapshot{
+		Law:              []specverify.Module{{ID: "MOD-api"}},
+		ResolvedCommands: map[string]map[string]string{"MOD-api": commandsFor("MOD-api")},
+	}
+}
 
-func (recordingReviews) Create(
-	_ context.Context, _, _, _, _, commit, _, _, _, key string,
+// recordingReviews stands in for sutra's review API, keeping what each
+// submission carried so a test can see what was actually asked for.
+type recordingReviews struct{ issues, branches []string }
+
+func (r *recordingReviews) Create(
+	_ context.Context, issue, _, _, branch, commit, _, _, _, key string,
 ) (string, error) {
+	r.issues = append(r.issues, issue)
+	r.branches = append(r.branches, branch)
 	return "review-" + key[:8] + "-" + commit, nil
 }
 
-func (recordingReviews) Resubmit(
+func (r *recordingReviews) Resubmit(
 	_ context.Context, _, _, _, _, _, _ string, expectedRevision int, _, _, _, _ string,
 ) (int, error) {
 	return expectedRevision + 1, nil
@@ -259,9 +289,9 @@ func runThrough(
 }
 
 func TestASubmissionOpensAReviewForAValidatedRun(t *testing.T) {
-	stages, _ := stagesForTest(t, quietLoop(), passingCommands)
+	stages, _, reviews := stagesAndReviews(t, quietLoop(), passingCommands)
 	got, err := runThrough(t, stages,
-		orchestrator.BuildRun{ID: "run-sub-1", Ticket: "T-1", Head: "C2"},
+		orchestrator.BuildRun{ID: "run-sub-1", Ticket: "T-1", Issue: "issue-7", Head: "C2"},
 		orchestrator.StageWorkspace, orchestrator.StageGates,
 		orchestrator.StageValidate, orchestrator.StageSubmit)
 	if err != nil {
@@ -276,6 +306,18 @@ func TestASubmissionOpensAReviewForAValidatedRun(t *testing.T) {
 	}
 	if got.ReviewCommit == got.GatedBase {
 		t.Error("the review pinned the base the branch was cut from")
+	}
+	// The review is opened against the RUN's issue and its real branch.
+	// Recovery replays from the same two fields, so a submission that named
+	// anything else would replay as a different request.
+	if len(reviews.issues) != 1 || reviews.issues[0] != "issue-7" {
+		t.Errorf("the review was opened against %v, not the run's issue", reviews.issues)
+	}
+	if len(reviews.branches) != 1 || reviews.branches[0] == "" {
+		t.Errorf("the review named branch %v", reviews.branches)
+	}
+	if got.Branch != reviews.branches[0] {
+		t.Errorf("the run records branch %q but submitted %q", got.Branch, reviews.branches[0])
 	}
 }
 
@@ -424,5 +466,86 @@ func TestAWaitingMergeLeavesTheRunWhereItIs(t *testing.T) {
 	}
 	if got.State != orchestrator.StateMerging {
 		t.Errorf("a waiting run moved to %q", got.State)
+	}
+}
+
+// recordingLoop captures the request the dev-loop stage builds.
+//
+// The stage is the only place the ticket, the actor and the toolset are
+// assembled, so what it hands over is what has to be asserted. A test that
+// built a Request itself would prove nothing about production.
+type recordingLoop struct{ got devloop.Request }
+
+func (l *recordingLoop) Work(
+	_ context.Context, req devloop.Request,
+) (devloop.Session, error) {
+	l.got = req
+	return devloop.Session{Run: req.Run}, nil
+}
+
+// captureDevRequest drives the real dev-loop stage and returns what it built.
+func captureDevRequest(t *testing.T) devloop.Request {
+	t.Helper()
+	loop := &recordingLoop{}
+	stages, _ := stagesForTest(t, loop, passingCommands)
+	run := orchestrator.BuildRun{ID: "run-1", Ticket: "T-1"}
+	run, err := stages[orchestrator.StageWorkspace](context.Background(), run)
+	if err != nil {
+		t.Fatalf("workspace stage: %v", err)
+	}
+	if _, err := stages[orchestrator.StageDevLoop](context.Background(), run); err != nil {
+		t.Fatalf("dev-loop stage: %v", err)
+	}
+	if loop.got.Run == "" {
+		t.Fatal("the stage never invoked the loop")
+	}
+	return loop.got
+}
+
+func TestTheDevAgentIsGivenTheWholeTicket(t *testing.T) {
+	// The body and the acceptance criteria are what the agent implements
+	// against. A run carries a title; everything else is read back from the
+	// plan by the composition root, and dropping it leaves the agent guessing.
+	captured := captureDevRequest(t)
+	if captured.Body == "" {
+		t.Error("the ticket body never reached the dev agent")
+	}
+	if len(captured.Criteria) == 0 {
+		t.Error("the acceptance criteria never reached the dev agent")
+	}
+	if captured.Issue == "" {
+		t.Error("no issue was named, so the transcript import has no anchor")
+	}
+	if captured.Actor == "" {
+		t.Error("no actor was named, so sutra refuses every mutation")
+	}
+}
+
+func TestTheDevAgentsToolsetIsScopedToTheTicket(t *testing.T) {
+	captured := captureDevRequest(t)
+	if len(captured.AllowRules) == 0 {
+		t.Fatal("no permission rules were generated: the agent cannot run its gates")
+	}
+	var sawBash bool
+	for _, rule := range captured.AllowRules {
+		if rule == "Bash" || strings.HasPrefix(rule, "Bash(*") {
+			t.Errorf("%q permits every command on the machine", rule)
+		}
+		if strings.HasPrefix(rule, "Bash(") {
+			sawBash = true
+		}
+	}
+	if !sawBash {
+		t.Error("no gate command is permitted, so the agent cannot run one")
+	}
+}
+
+func TestTheDevAgentIsToldWhichModulesItTouched(t *testing.T) {
+	// The module IDS from the snapshot, never the ticket title: context
+	// assembly keys the law, the contracts and the learnings by module, and a
+	// title matches none of them.
+	captured := captureDevRequest(t)
+	if len(captured.Modules) != 1 || captured.Modules[0] != "MOD-api" {
+		t.Errorf("the touched modules are %v, want the snapshot's own ids", captured.Modules)
 	}
 }

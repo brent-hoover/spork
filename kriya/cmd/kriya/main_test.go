@@ -11,7 +11,10 @@ import (
 	"kriya/internal/devloop"
 	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
+	"kriya/internal/recovery"
+	"kriya/internal/reviewbridge"
 	"kriya/internal/trackerclient"
+	"kriya/internal/workspace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -360,36 +363,40 @@ func TestASessionIsReadFromTheRunThatDidTheWork(t *testing.T) {
 	}
 }
 
-func TestATicketsIssueAndCriteriaAreLookedUpByTitle(t *testing.T) {
-	tickets := []planner.Ticket{
-		{Title: "Create a short link", Criteria: []string{"AC-valid-url"}, IssueID: "issue-7"},
-		{Title: "Redirect", Criteria: []string{"AC-redirect"}, IssueID: "issue-8"},
+func TestTheWholeTicketIsRecoveredFromThePlan(t *testing.T) {
+	// A pop carries an id and a title. Everything the dev agent implements
+	// against and the product owner validates against — the body and the
+	// acceptance criteria — is read back from the plan.
+	full := planner.Ticket{
+		Title: "Create a short link", Body: "Accept a URL and return a code.",
+		Criteria: []string{"AC-valid-url"}, IssueID: "issue-7",
 	}
-	if got := issuesFromTickets(tickets)("Redirect"); got != "issue-8" {
-		t.Errorf("resolved %q", got)
-	}
-	// Criteria come from the STORE, not from a title lookup: a popped ticket
-	// carries an id and a title, and a run built from those alone reaches the
-	// product owner with nothing to validate against.
+	popped := planner.Ticket{Title: full.Title, IssueID: "issue-7"}
+
 	db := openTemp(t)
 	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/target", tickets[0]); err != nil {
+	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/target", full); err != nil {
 		t.Fatalf("put ticket: %v", err)
 	}
-	if got := criteriaFromStore(db, "issue-7")("Create a short link"); len(got) != 1 ||
-		got[0] != "AC-valid-url" {
-		t.Errorf("resolved %v", got)
+	got := ticketFromStore(db, popped)(full.Title)
+	if got.Body != full.Body {
+		t.Errorf("the body came back as %q", got.Body)
 	}
-	// An issue nothing recorded resolves to nothing rather than to another
-	// ticket's criteria.
-	if got := criteriaFromStore(db, "issue-absent")("anything"); got != nil {
-		t.Errorf("an unknown issue resolved to %v", got)
+	if len(got.Criteria) != 1 || got.Criteria[0] != "AC-valid-url" {
+		t.Errorf("the criteria came back as %v", got.Criteria)
 	}
-	// An unknown title resolves to nothing rather than to another ticket's.
-	if got := issuesFromTickets(tickets)("Unknown"); got != "" {
-		t.Errorf("an unknown ticket resolved to %q", got)
+	if got.IssueID != "issue-7" {
+		t.Errorf("the issue came back as %q", got.IssueID)
+	}
+
+	// A plan row that cannot be read still yields the ISSUE: submitting a
+	// review against nothing and closing no ticket is worse than reaching the
+	// dev agent with a thin ticket.
+	unrecorded := planner.Ticket{Title: "Redirect", IssueID: "issue-8"}
+	if got := ticketFromStore(db, unrecorded)("Redirect"); got.IssueID != "issue-8" {
+		t.Errorf("an unrecorded ticket lost its issue: %q", got.IssueID)
 	}
 }
 
@@ -448,7 +455,8 @@ func TestAPoppedTicketResumesItsExistingRun(t *testing.T) {
 	if err := store.Upsert(t.Context(), existing); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	got, err := resumeOrStart(t.Context(), store, "issue-7", "/target")
+	got, err := resumeOrStart(t.Context(), store,
+		planner.Ticket{Title: "issue-7", IssueID: "issue-7"}, "/target")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -463,16 +471,39 @@ func TestAFreshTicketStartsANewRun(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := orchestrator.SQLStore{DB: db}
-	got, err := resumeOrStart(t.Context(), store, "issue-new", "/target")
+	got, err := resumeOrStart(t.Context(), store,
+		planner.Ticket{Title: "Redirect a short code", IssueID: "issue-new"}, "/target")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if got.ID == "" || got.State != orchestrator.StateQueued {
 		t.Errorf("started %+v", got)
 	}
+	// The ISSUE, recorded at creation. Recovery replays a submission and a
+	// close from what the run holds, and a title is not an issue id.
+	if got.Issue != "issue-new" {
+		t.Errorf("the run recorded issue %q", got.Issue)
+	}
 	// And it is durable before anything drives it: a run only in memory is
 	// one a crash loses along with its claim.
 	if _, found, err := store.Find(t.Context(), got.ID); err != nil || !found {
 		t.Errorf("the new run was not recorded: %v found=%v", err, found)
+	}
+}
+
+func TestWithoutARepositoryOnlyTheTrackerStageRecovers(t *testing.T) {
+	// Every other stage shells out to git in the manager's Repo, and an empty
+	// one is the process's own working directory — so recovering a pending
+	// workspace would cut branches and worktrees in whatever repository kriya
+	// happened to be launched from.
+	all := recoverySteps(planner.Intaker{}, workspace.Manager{}, reviewbridge.Bridge{},
+		devloop.Loop{}, orchestrator.Submitter{}, orchestrator.Queue{},
+		orchestrator.Completer{}, "actor-1")
+	if len(all) < 2 {
+		t.Fatalf("only %d recovery steps exist, so nothing is being skipped", len(all))
+	}
+	kept := repositoryIndependent(all)
+	if len(kept) != 1 || kept[0].Stage != recovery.StageTargets {
+		t.Fatalf("kept %d steps: %+v", len(kept), kept)
 	}
 }

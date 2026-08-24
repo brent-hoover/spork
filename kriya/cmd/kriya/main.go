@@ -202,9 +202,19 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		Rev:   reviewbridge.CLI{},
 		Now:   clock.System{},
 	}
-	if err := recovery.Run(ctx,
-		recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
-			mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor)); err != nil {
+	// The repository-touching stages are SKIPPED when none is configured.
+	// Every one of them shells out to git with the manager's Repo as the
+	// working directory, and an empty one is the process's own — so recovering
+	// a pending workspace would cut branches and worktrees in whatever
+	// repository kriya happened to be launched from. Only the target
+	// reconciliation, which touches the tracker and this database, is
+	// repository-independent.
+	steps := recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
+		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor)
+	if repo == "" {
+		steps = repositoryIndependent(steps)
+	}
+	if err := recovery.Run(ctx, steps); err != nil {
 		return err
 	}
 	// Each explicit run is a deliberate re-intake and allocates the next
@@ -217,6 +227,65 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	}
 	return cli.Build(ctx, os.Stdout, in, target, actor, token,
 		driver(db, ws, tiers, reviews, repo, target, actor))
+}
+
+// recoverInFlight replays everything a crash left mid-flight between an
+// approval and a closed ticket.
+//
+// Every replay is built from the RUN's persisted fields, never re-derived: a
+// replay must reproduce the original request, and a re-derived one could act
+// on a different issue, a moved branch, or a fresh session that feedback does
+// not route to.
+func recoverInFlight(
+	queue orchestrator.Queue, submitter orchestrator.Submitter, completer orchestrator.Completer,
+) func(context.Context) error {
+	return func(ctx context.Context) error {
+		// Attempts first: a merge left mid-flight holds the serialized
+		// section, and a submission replayed ahead of it would open a review
+		// for work that is already landing.
+		if _, err := queue.RecoverMerges(ctx); err != nil {
+			return err
+		}
+		if _, err := submitter.RecoverSubmissions(ctx,
+			func(run orchestrator.BuildRun) orchestrator.Submission {
+				return orchestrator.Submission{
+					Issue: run.Issue, Branch: run.Branch,
+					Session: run.ReviewSession, Summary: run.Ticket,
+				}
+			}); err != nil {
+			return err
+		}
+		if _, err := completer.RecoverCompletions(ctx,
+			func(run orchestrator.BuildRun) orchestrator.Completion {
+				return orchestrator.Completion{
+					Issue: run.Issue, Branch: run.Branch, Merged: run.CompletedHead,
+				}
+			}); err != nil {
+			return err
+		}
+		_, err := submitter.RecoverResubmissions(ctx,
+			func(run orchestrator.BuildRun) orchestrator.Rework {
+				return orchestrator.Rework{
+					Branch: run.Branch, Session: run.ReviewSession, Summary: run.Ticket,
+					Revision: run.ReviewRevision, VerdictEvent: run.ReviewVerdictEvent,
+				}
+			})
+		return err
+	}
+}
+
+// repositoryIndependent keeps only the recovery steps that need no worktree.
+//
+// The target stage reconciles the tracker and this database. Every other stage
+// runs git in the configured repository, and there is none.
+func repositoryIndependent(steps []recovery.Step) []recovery.Step {
+	var out []recovery.Step
+	for _, step := range steps {
+		if step.Stage == recovery.StageTargets {
+			out = append(out, step)
+		}
+	}
+	return out
 }
 
 // driver returns a cli.Drive, or nil when no repository is configured.
@@ -294,7 +363,7 @@ func buildOne(
 			Stages: buildStages(stageDeps(db, ws, loop, tiers, ticket, snap, target, actor)),
 			Now:    clock.System{},
 		}
-		run, err := resumeOrStart(ctx, o.Store, ticket.Title, target)
+		run, err := resumeOrStart(ctx, o.Store, ticket, target)
 		if err != nil {
 			return orchestrator.BuildRun{}, err
 		}
@@ -424,39 +493,8 @@ func recoverySteps(
 			_, err := loop.RecoverImports(ctx, "", actor)
 			return err
 		}},
-		{Stage: recovery.StageMerges, Owner: "orchestrator", Run: func(ctx context.Context) error {
-			// Attempts first: a merge left mid-flight holds the serialized
-			// section, and a submission replayed ahead of it would open a
-			// review for work that is already landing.
-			if _, err := queue.RecoverMerges(ctx); err != nil {
-				return err
-			}
-			// Replayed from the PERSISTED fields under the persisted key, so
-			// a branch that moved cannot smuggle an ungated commit in and a
-			// fresh session cannot displace the one feedback routes to.
-			if _, err := submitter.RecoverSubmissions(ctx,
-				func(run orchestrator.BuildRun) orchestrator.Submission {
-					return orchestrator.Submission{
-						Issue: run.Ticket, Session: run.ReviewSession, Summary: run.Ticket,
-					}
-				}); err != nil {
-				return err
-			}
-			if _, err := completer.RecoverCompletions(ctx,
-				func(run orchestrator.BuildRun) orchestrator.Completion {
-					return orchestrator.Completion{Issue: run.Ticket, Merged: run.CompletedHead}
-				}); err != nil {
-				return err
-			}
-			_, err := submitter.RecoverResubmissions(ctx,
-				func(run orchestrator.BuildRun) orchestrator.Rework {
-					return orchestrator.Rework{
-						Session: run.ReviewSession, Summary: run.Ticket,
-						Revision: run.ReviewRevision, VerdictEvent: run.ReviewVerdictEvent,
-					}
-				})
-			return err
-		}},
+		{Stage: recovery.StageMerges, Owner: "orchestrator",
+			Run: recoverInFlight(queue, submitter, completer)},
 		{Stage: recovery.StageReviewRounds, Owner: "reviewbridge", Run: func(ctx context.Context) error {
 			stuck, err := rb.Recover(ctx)
 			if err != nil {
@@ -536,8 +574,8 @@ func stageDeps(
 		completer:    completerOn(db, ws, actor),
 		queue:        mergeQueue(db, ws, actor),
 		commandsFor:  commandsFromSnapshot(snap),
-		criteriaFor:  criteriaFromStore(db, ticket.IssueID),
-		issueFor:     issuesFromTickets([]planner.Ticket{ticket}),
+		ticketFor:    ticketFromStore(db, ticket),
+		actor:        actor,
 		sessionFor:   sessionFromStore(db),
 		instructions: operatorInstructions(target),
 	}
@@ -599,9 +637,9 @@ func reportAdvance(
 // second run would abandon the first along with its review, its attempt count
 // and everything the tracker already points at.
 func resumeOrStart(
-	ctx context.Context, store orchestrator.Store, ticket, target string,
+	ctx context.Context, store orchestrator.Store, ticket planner.Ticket, target string,
 ) (orchestrator.BuildRun, error) {
-	existing, found, err := store.ForTicket(ctx, ticket)
+	existing, found, err := store.ForTicket(ctx, ticket.Title)
 	if err != nil {
 		return orchestrator.BuildRun{}, err
 	}
@@ -609,8 +647,12 @@ func resumeOrStart(
 		return existing, nil
 	}
 	run := orchestrator.BuildRun{
-		ID: uuid.NewString(), Ticket: ticket,
-		Plan: target, State: orchestrator.StateQueued,
+		ID: uuid.NewString(), Ticket: ticket.Title,
+		// Recorded at creation, because recovery replays a submission and a
+		// close from what the RUN holds: a replay that looked the issue up
+		// again could act on a different one.
+		Issue: ticket.IssueID,
+		Plan:  target, State: orchestrator.StateQueued,
 		// Snapshotted here, at creation. Changing KRIYA_ROUND_LIMIT later
 		// affects only runs created after the change.
 		RoundLimit: roundLimit(),

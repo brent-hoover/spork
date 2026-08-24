@@ -31,7 +31,7 @@ import (
 // place two of the same type can quietly swap.
 type deps struct {
 	ws        workspace.Manager
-	loop      devloop.Loop
+	loop      worker
 	runner    gates.Runner
 	snap      planner.Snapshot
 	po        owner.Owner
@@ -40,18 +40,30 @@ type deps struct {
 	completer orchestrator.Completer
 	learnings kctx.Recorder
 
-	commandsFor  func(module string) map[string]string
-	criteriaFor  func(ticket string) []string
-	issueFor     func(ticket string) string
+	commandsFor func(module string) map[string]string
+	// ticketFor recovers the whole ticket — body, criteria and issue — from
+	// the plan. A pop hands back an id and a title, and a run built from
+	// those alone reaches the dev agent with nothing to implement against
+	// and the product owner with nothing to validate against.
+	ticketFor    func(title string) planner.Ticket
 	sessionFor   func(ctx context.Context, run string) (string, error)
+	actor        string
 	instructions string
 }
 
+// worker is the dev loop as the stage uses it.
+//
+// An interface at the composition root rather than the concrete Loop, because
+// what the stage assembles — the ticket, the actor, the generated toolset — is
+// only observable in the request it hands over.
+type worker interface {
+	Work(ctx context.Context, req devloop.Request) (devloop.Session, error)
+}
+
 func buildStages(d deps) orchestrator.Stages {
-	ws, loop, runner := d.ws, d.loop, d.runner
-	snap, commandsFor, instructions := d.snap, d.commandsFor, d.instructions
-	po, criteriaFor := d.po, d.criteriaFor
-	submitter, issueFor, sessionFor := d.submitter, d.issueFor, d.sessionFor
+	ws, runner := d.ws, d.runner
+	snap, commandsFor := d.snap, d.commandsFor
+	submitter, ticketFor, sessionFor := d.submitter, d.ticketFor, d.sessionFor
 	return orchestrator.Stages{
 		orchestrator.StageWorkspace: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 			w, err := ws.Ensure(ctx, run.ID, run.Ticket)
@@ -62,6 +74,11 @@ func buildStages(d deps) orchestrator.Stages {
 			// at. Recording it on the run is what lets a stale pass be
 			// recognised: a result from any other commit never satisfies.
 			run.GatedBase = w.Base
+			// The branch travels on the run for the same reason the issue
+			// does: recovery replays a submission from what the RUN recorded,
+			// and a branch re-derived after a workspace was pruned is no
+			// branch at all.
+			run.Branch = w.Branch
 			return run, nil
 		},
 
@@ -76,15 +93,23 @@ func buildStages(d deps) orchestrator.Stages {
 				return run, err
 			}
 			run.GatedBase = w.Base
-			session, err := loop.Work(ctx, devloop.Request{
-				Run: run.ID, Ticket: run.Ticket, Title: run.Ticket,
+			ticket := ticketFor(run.Ticket)
+			modules := modulesFor(snap, run.Ticket)
+			session, err := d.loop.Work(ctx, devloop.Request{
+				Run: run.ID, Ticket: run.Ticket, Title: ticket.Title,
+				Body: ticket.Body, Criteria: ticket.Criteria,
+				Issue: ticket.IssueID, Actor: d.actor,
 				Workspace: w.Path, Commands: commandsFor(run.Ticket),
+				// What the agent may RUN, generated from the touched modules'
+				// own commands. Listing them as content tells it what it is
+				// judged by; this is what lets it run them.
+				AllowRules: devloop.AllowRules(commandsForAll(commandsFor, modules)...),
 				// The law comes from the PINNED snapshot, never the working
 				// tree: the agent is shown the spec the build was admitted
 				// against.
 				Spec:         specForContext(snap.Law, snap.Constitution, snap.Content),
-				Modules:      modulesFor(snap, run.Ticket),
-				Instructions: instructions,
+				Modules:      modules,
+				Instructions: d.instructions,
 				ProjectKey:   projectKeyOf(run.Plan),
 				// The limit the RUN was created under, not the one configured
 				// now: a config change affects only future runs.
@@ -102,15 +127,15 @@ func buildStages(d deps) orchestrator.Stages {
 			return run, nil
 		},
 
-		orchestrator.StageValidate: validateStage(ws, po, criteriaFor, d.learnings),
+		orchestrator.StageValidate: validateStage(ws, d.po, ticketFor, snap, d.learnings),
 
-		orchestrator.StageSubmit: submitStage(ws, submitter, issueFor, sessionFor),
+		orchestrator.StageSubmit: submitStage(ws, submitter, sessionFor),
 
 		orchestrator.StageMerge: mergeStage(d.queue),
 
-		orchestrator.StageComplete: completeStage(ws, d.completer, issueFor),
+		orchestrator.StageComplete: completeStage(ws, d.completer),
 
-		orchestrator.StageGates: gateStage(ws, runner, commandsFor, d.learnings),
+		orchestrator.StageGates: gateStage(ws, runner, commandsFor, snap, d.learnings),
 	}
 }
 
@@ -150,10 +175,14 @@ func modulesFor(snap planner.Snapshot, ticket string) []string {
 	return out
 }
 
-// gateStage runs the whole chain for a run's module.
+// gateStage runs the whole chain once per module the ticket touched.
+//
+// PER MODULE, because that is what the gates require: each module carries its
+// own six commands, and one chain labelled with the run's ticket runs one
+// module's commands and records them under a name no module has.
 func gateStage(
 	ws workspace.Manager, runner gates.Runner, commandsFor func(string) map[string]string,
-	learnings kctx.Recorder,
+	snap planner.Snapshot, learnings kctx.Recorder,
 ) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 		w, found, err := ws.Store.Find(ctx, run.ID)
@@ -167,45 +196,96 @@ func gateStage(
 		// attempt it belongs to. Stamping afterwards would record results
 		// under the previous attempt and let them satisfy it.
 		run.Attempt++
-		results, err := runner.RunChain(ctx, run.ID, run.Ticket, run.Head, run.GatedBase,
-			w.Path, commandsFor(run.Ticket), run.Attempt)
-		if errors.Is(err, gates.ErrBaseMoved) {
-			// A RESULT, not a malfunction: the run integrates the new base and
-			// the complete chain reruns against it. Recording a mixed-base
-			// pass would say nothing about either base.
-			return run, err
+		modules := modulesFor(snap, run.Ticket)
+		if len(modules) == 0 {
+			// Running no gates must never read as passing them. Intake refuses
+			// a snapshot with no modules, so reaching here is a defect.
+			return run, fmt.Errorf("no module for run %s to gate", run.ID)
 		}
-		if err != nil {
-			return run, err
-		}
-		for _, result := range results {
-			if !result.Passed {
-				// The diagnosis is the lesson, recorded HERE rather than in a
-				// post-mortem — the same moment-of-correction rule the pair
-				// loop follows.
-				if err := recordLearning(ctx, learnings, run, kctx.Capture{
-					Lesson:     string(result.Detail),
-					Module:     result.Module,
-					Pattern:    "gate-failure/" + result.Gate,
-					SourceKind: kctx.SourceGateFailure,
-					SourceRef:  result.Gate,
-				}); err != nil {
-					return run, err
-				}
-				// A failing gate is a RESULT, and the table sends it back to
-				// the dev loop — the findings are the next instruction.
-				// Returning an error here would park the run instead.
-				return run, fmt.Errorf("gate %s failed for %s", result.Gate, result.Module)
+		for _, module := range modules {
+			commands := commandsFor(module)
+			if len(commands) == 0 {
+				// Intake refuses a module missing any of the six, so a module
+				// the snapshot resolved nothing for is a defect rather than a
+				// failing gate — and running no gates must never read as a
+				// module that passed them.
+				return run, fmt.Errorf("module %s resolved no gate commands", module)
+			}
+			failed, err := runModuleChain(ctx, runner, run, module, w.Path, commands, learnings)
+			if err != nil || failed != nil {
+				return run, chainOutcome(err, failed)
 			}
 		}
 		return run, nil
 	}
 }
 
+// chainOutcome turns one module's chain into the stage's result.
+func chainOutcome(err error, failed *gates.Result) error {
+	if err != nil {
+		return err
+	}
+	// A failing gate is a RESULT, and the table sends it back to the dev loop
+	// — the findings are the next instruction. Returning a malfunction here
+	// would park the run instead.
+	return fmt.Errorf("gate %s failed for %s", failed.Gate, failed.Module)
+}
+
+// runModuleChain runs one module's chain and reports the first gate that
+// failed, recording its diagnosis as a learning.
+func runModuleChain(
+	ctx context.Context, runner gates.Runner, run orchestrator.BuildRun,
+	module, dir string, commands map[string]string, learnings kctx.Recorder,
+) (*gates.Result, error) {
+	results, err := runner.RunChain(ctx, run.ID, module, run.Head, run.GatedBase,
+		dir, commands, run.Attempt)
+	if errors.Is(err, gates.ErrBaseMoved) {
+		// A RESULT, not a malfunction: the run integrates the new base and
+		// the complete chain reruns against it. Recording a mixed-base pass
+		// would say nothing about either base.
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, result := range results {
+		if result.Passed {
+			continue
+		}
+		// The diagnosis is the lesson, recorded HERE rather than in a
+		// post-mortem — the same moment-of-correction rule the pair loop
+		// follows.
+		if err := recordLearning(ctx, learnings, run, kctx.Capture{
+			Lesson:     string(result.Detail),
+			Module:     result.Module,
+			Pattern:    "gate-failure/" + result.Gate,
+			SourceKind: kctx.SourceGateFailure,
+			SourceRef:  result.Gate,
+		}); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}
+	return nil, nil
+}
+
+// commandsForAll resolves every touched module's gate commands.
+func commandsForAll(
+	commandsFor func(string) map[string]string, modules []string,
+) []map[string]string {
+	out := make([]map[string]string, 0, len(modules))
+	for _, module := range modules {
+		if cmds := commandsFor(module); len(cmds) > 0 {
+			out = append(out, cmds)
+		}
+	}
+	return out
+}
+
 // validateStage runs the product owner over a fully gated run.
 func validateStage(
-	ws workspace.Manager, po owner.Owner, criteriaFor func(string) []string,
-	learnings kctx.Recorder,
+	ws workspace.Manager, po owner.Owner, ticketFor func(string) planner.Ticket,
+	snap planner.Snapshot, learnings kctx.Recorder,
 ) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 		w, found, err := ws.Store.Find(ctx, run.ID)
@@ -215,10 +295,19 @@ func validateStage(
 		if !found {
 			return run, fmt.Errorf("no workspace for run %s", run.ID)
 		}
+		ticket := ticketFor(run.Ticket)
+		// The module the gate results were recorded under, which is what the
+		// PO reads to confirm the chain passed at this commit. A first build
+		// touches one module; a ticket spanning several is validated against
+		// the first, in the same order the chain ran them.
+		modules := modulesFor(snap, run.Ticket)
+		if len(modules) == 0 {
+			return run, fmt.Errorf("no module for run %s to validate", run.ID)
+		}
 		v, err := po.Validate(ctx, owner.Request{
-			Build: run.ID, Module: run.Ticket, Ticket: run.Ticket,
+			Build: run.ID, Module: modules[0], Ticket: run.Ticket,
 			Commit: run.Head, Attempt: run.Attempt,
-			Criteria: criteriaFor(run.Ticket), Workspace: w.Path,
+			Criteria: ticket.Criteria, Workspace: w.Path,
 			SystemFile: systemFileFor(w.Path),
 		})
 		if err != nil {
@@ -227,7 +316,7 @@ func validateStage(
 		if !v.Passed() {
 			if err := recordLearning(ctx, learnings, run, kctx.Capture{
 				Lesson:     v.Notes,
-				Module:     run.Ticket,
+				Module:     modules[0],
 				Pattern:    "po-rejection/" + v.Verdict,
 				SourceKind: kctx.SourcePORejection,
 				SourceRef:  v.Verdict,
@@ -245,7 +334,6 @@ func validateStage(
 // submitStage opens the sutra review a validated run has earned.
 func submitStage(
 	ws workspace.Manager, submitter orchestrator.Submitter,
-	issueFor func(string) string,
 	sessionFor func(context.Context, string) (string, error),
 ) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
@@ -269,8 +357,11 @@ func submitStage(
 				Revision: run.ReviewRevision, VerdictEvent: run.ReviewVerdictEvent,
 			})
 		}
+		// The run's OWN issue, which is what recovery replays under. A stage
+		// that looked it up again could submit against a different one than
+		// the replay of the same submission would.
 		return submitter.Submit(ctx, run, orchestrator.Submission{
-			Issue: issueFor(run.Ticket), Branch: w.Branch, Session: session,
+			Issue: run.Issue, Branch: w.Branch, Session: session,
 			Summary: run.Ticket,
 		})
 	}
@@ -310,7 +401,7 @@ func mergeStage(q orchestrator.Queue) func(context.Context, orchestrator.BuildRu
 
 // completeStage closes a merged run's ticket through the tracker's own gate.
 func completeStage(
-	ws workspace.Manager, c orchestrator.Completer, issueFor func(string) string,
+	ws workspace.Manager, c orchestrator.Completer,
 ) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
 		w, found, err := ws.Store.Find(ctx, run.ID)
@@ -323,7 +414,7 @@ func completeStage(
 		// The APPROVED commit, which is what the run's branch must still point
 		// at. A commit landing on it after the merge is work nothing reviewed.
 		return c.Complete(ctx, run, orchestrator.Completion{
-			Issue: issueFor(run.Ticket), Branch: w.Branch, Merged: run.ReviewCommit,
+			Issue: run.Issue, Branch: w.Branch, Merged: run.ReviewCommit,
 		})
 	}
 }
@@ -337,28 +428,25 @@ func systemFileFor(workspace string) string {
 	return filepath.Join(workspace, ".kriya", "context.json")
 }
 
-// criteriaFromStore reads a ticket's acceptance criteria from the plan.
+// ticketFromStore reads the whole ticket back from the plan.
 //
 // From the STORE, not from whatever the pop happened to return: a pop carries
-// an id and a title, and a run built from those alone reaches the product
-// owner with nothing to validate against.
-func criteriaFromStore(db *sql.DB, issue string) func(string) []string {
-	return func(string) []string {
-		t, found, err := (planner.SQLTickets{DB: db}).Find(context.Background(), issue)
+// an id and a title, and a run built from those alone reaches the dev agent
+// with nothing to implement against and the product owner with nothing to
+// validate against.
+//
+// The popped ticket is the fallback, so a plan whose row cannot be read still
+// carries its issue id — losing the issue would submit a review against
+// nothing and close no ticket.
+func ticketFromStore(db *sql.DB, popped planner.Ticket) func(string) planner.Ticket {
+	return func(string) planner.Ticket {
+		t, found, err := (planner.SQLTickets{DB: db}).Find(context.Background(), popped.IssueID)
 		if err != nil || !found {
-			return nil
+			return popped
 		}
-		return t.Criteria
+		t.IssueID = popped.IssueID
+		return t
 	}
-}
-
-// issuesFromTickets maps a ticket title to the sutra issue it became.
-func issuesFromTickets(tickets []planner.Ticket) func(string) string {
-	byTitle := make(map[string]string, len(tickets))
-	for _, t := range tickets {
-		byTitle[t.Title] = t.IssueID
-	}
-	return func(ticket string) string { return byTitle[ticket] }
 }
 
 // sessionFromStore reads the session that did a run's work.

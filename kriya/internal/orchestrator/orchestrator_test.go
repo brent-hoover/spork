@@ -258,6 +258,7 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 		orchestrator.SubmissionMigration, orchestrator.CompletionMigration,
 		orchestrator.PopMigration, orchestrator.CursorMigration,
 		orchestrator.MergeMigration, orchestrator.HeadMigration,
+		orchestrator.IssueMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
@@ -274,7 +275,8 @@ func sqlOrchStore(t *testing.T) orchestrator.SQLStore {
 func TestARunSurvivesTheRoundTrip(t *testing.T) {
 	s := sqlOrchStore(t)
 	want := orchestrator.BuildRun{
-		ID: "run-1", Ticket: "T-1", Plan: "/target", State: orchestrator.StateGates,
+		ID: "run-1", Ticket: "T-1", Issue: "issue-7", Branch: "kriya/KRI-1/abcd",
+		Plan: "/target", State: orchestrator.StateGates,
 		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
 		RoundLimit: 4, ReviewState: orchestrator.SubmitNone,
 		CompletionState: orchestrator.CompleteNone,
