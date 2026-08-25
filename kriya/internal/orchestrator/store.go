@@ -59,6 +59,18 @@ ALTER TABLE build_run ADD COLUMN head TEXT NOT NULL DEFAULT ''`
 const StartedMigration = `
 ALTER TABLE build_run ADD COLUMN started TEXT NOT NULL DEFAULT ''`
 
+// FindingMigration records a spike run's kind and its documented finding.
+//
+// Without the kind a popped spike is indistinguishable from implementation
+// work and goes through the code gate chain — which fails it for having no
+// tests, a finding about the ticket's shape rather than about the risk.
+const FindingMigration = `
+ALTER TABLE build_run ADD COLUMN kind TEXT NOT NULL DEFAULT 'implementation';
+ALTER TABLE build_run ADD COLUMN finding_doc TEXT NOT NULL DEFAULT '';
+ALTER TABLE build_run ADD COLUMN finding_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE build_run ADD COLUMN finding_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE build_run ADD COLUMN pending_finding TEXT NOT NULL DEFAULT ''`
+
 // IssueMigration records the tracker issue and branch the run works on.
 //
 // Recovery replays a submission or a close from the run's PERSISTED fields.
@@ -71,7 +83,7 @@ ALTER TABLE build_run ADD COLUMN branch TEXT NOT NULL DEFAULT ''`
 
 // runColumns is every column a BuildRun reads back, in scan order.
 const runColumns = `ticket, issue, branch, plan, state, head, gated_base, error, attempt, round_limit,
-	started,
+	started, kind, finding_doc, finding_version, finding_key, pending_finding,
 	review_key, review_commit, review_session, review_state, review_id,
 	review_revision, review_verdict_event, close_key, completed_head, completion_state`
 
@@ -82,15 +94,21 @@ type SQLStore struct{ DB *sql.DB }
 func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO build_run (id, ticket, issue, branch, plan, state, head, gated_base, error, attempt,
-		   round_limit, started, review_key, review_commit, review_session, review_state, review_id,
+		   round_limit, started, kind, finding_doc, finding_version, finding_key,
+		   pending_finding,
+		   review_key, review_commit, review_session, review_state, review_id,
 		   review_revision, review_verdict_event, close_key, completed_head, completion_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ticket = excluded.ticket, issue = excluded.issue, branch = excluded.branch,
 		   plan = excluded.plan, state = excluded.state,
 		   head = excluded.head, gated_base = excluded.gated_base, error = excluded.error,
 		   attempt = excluded.attempt, round_limit = excluded.round_limit,
-		   started = excluded.started,
+		   started = excluded.started, kind = excluded.kind,
+		   finding_doc = excluded.finding_doc,
+		   finding_version = excluded.finding_version,
+		   finding_key = excluded.finding_key,
+		   pending_finding = excluded.pending_finding,
 		   review_key = excluded.review_key, review_commit = excluded.review_commit,
 		   review_session = excluded.review_session, review_state = excluded.review_state,
 		   review_id = excluded.review_id,
@@ -100,7 +118,9 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 		   completed_head = excluded.completed_head,
 		   completion_state = excluded.completion_state`,
 		r.ID, r.Ticket, r.Issue, r.Branch, r.Plan, string(r.State), r.Head, r.GatedBase, r.Error, r.Attempt,
-		r.RoundLimit, startedOf(r), r.ReviewKey, r.ReviewCommit, r.ReviewSession,
+		r.RoundLimit, startedOf(r), kindOf(r), r.FindingDoc, r.FindingVersion,
+		r.FindingKey, r.PendingFinding,
+		r.ReviewKey, r.ReviewCommit, r.ReviewSession,
 		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent,
 		r.CloseKey, r.CompletedHead, completionStateOf(r))
 	if err != nil {
@@ -116,7 +136,8 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM build_run WHERE id = ?`, id).
 		Scan(&r.Ticket, &r.Issue, &r.Branch, &r.Plan, &state, &r.Head, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
-			&started,
+			&started, &r.Kind, &r.FindingDoc, &r.FindingVersion, &r.FindingKey,
+			&r.PendingFinding,
 			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,
 			&r.CloseKey, &r.CompletedHead, &r.CompletionState)
@@ -129,6 +150,19 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 	r.State = State(state)
 	r.Started = startedFrom(started)
 	return r, true, nil
+}
+
+// kindOf defaults a run with no kind to implementation.
+//
+// The column is an enum, and a zero-valued BuildRun has none. Implementation
+// is the safe default: a spike misfiled as one fails the gate chain loudly,
+// where an implementation run misfiled as a spike would SKIP the gates and
+// land unreviewed code.
+func kindOf(r BuildRun) string {
+	if r.Kind == "" {
+		return "implementation"
+	}
+	return r.Kind
 }
 
 // startedOf renders a run's start time, defaulting an unset one to blank.
@@ -221,7 +255,9 @@ func scanRuns(rows *sql.Rows, what string) ([]BuildRun, error) {
 		var runState string
 		var started string
 		if err := rows.Scan(&r.ID, &r.Ticket, &r.Issue, &r.Branch, &r.Plan, &runState, &r.Head, &r.GatedBase, &r.Error,
-			&r.Attempt, &r.RoundLimit, &started, &r.ReviewKey, &r.ReviewCommit,
+			&r.Attempt, &r.RoundLimit, &started, &r.Kind, &r.FindingDoc,
+			&r.FindingVersion, &r.FindingKey, &r.PendingFinding,
+			&r.ReviewKey, &r.ReviewCommit,
 			&r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,
 			&r.CloseKey, &r.CompletedHead, &r.CompletionState); err != nil {

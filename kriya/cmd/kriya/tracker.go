@@ -203,6 +203,30 @@ func (f sutraWorkFeed) Since(
 	return out, page.NextCursor, nil
 }
 
+// sutraFindingReviews opens and advances the review over a spike's finding.
+type sutraFindingReviews struct {
+	c     *trackerclient.Client
+	actor string
+}
+
+func (r sutraFindingReviews) Create(
+	ctx context.Context, issue, summary, docVersion, key string,
+) (string, int, error) {
+	rv, err := r.c.CreateDocReview(ctx, issue, r.actor, summary, docVersion, key)
+	if err != nil {
+		return "", 0, err
+	}
+	return rv.ID, rv.Revision, nil
+}
+
+func (r sutraFindingReviews) Resubmit(
+	ctx context.Context, id, summary, docVersion string,
+	expectedRevision int, expectedVerdictEvent, key string,
+) (int, error) {
+	return r.c.ResubmitDocReview(ctx, id, r.actor, summary, docVersion,
+		expectedRevision, expectedVerdictEvent, key)
+}
+
 // sutraFeed adapts sutra's event feed to the verdict router's seam.
 //
 // It reads only review verdicts. The feed carries every event sutra emits, and

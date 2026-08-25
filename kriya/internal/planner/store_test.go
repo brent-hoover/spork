@@ -170,7 +170,7 @@ func TestATargetStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
 func TestAPlannedTicketKeepsItsCriteria(t *testing.T) {
 	// A pop returns an id and a title. The criteria are what the product owner
 	// validates against, and they exist nowhere else kriya can read.
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration)}
 	want := planner.Ticket{
 		Title: "Create a short link", Body: "the walking skeleton",
 		Criteria: []string{"AC-valid-url", "AC-redirect"}, IssueID: "issue-7",
@@ -191,7 +191,7 @@ func TestAPlannedTicketKeepsItsCriteria(t *testing.T) {
 }
 
 func TestReDecomposingATicketReplacesIt(t *testing.T) {
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration)}
 	ticket := planner.Ticket{Title: "first", IssueID: "issue-7", Criteria: []string{"AC-a"}}
 	if err := s.Put(context.Background(), "/target", ticket); err != nil {
 		t.Fatalf("put: %v", err)
@@ -210,7 +210,7 @@ func TestReDecomposingATicketReplacesIt(t *testing.T) {
 }
 
 func TestAnIssueNothingPlannedIsNotFound(t *testing.T) {
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration)}
 	_, found, err := s.Find(context.Background(), "/target", "issue-absent")
 	if err != nil {
 		t.Fatalf("find: %v", err)
@@ -236,7 +236,7 @@ func TestATicketFromAnotherTargetIsNotFound(t *testing.T) {
 	// did not produce is one whose code lives in another repository, and
 	// building it here would work the wrong codebase against the wrong
 	// snapshot.
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration)}
 	mine := planner.Ticket{Title: "Create a short link", IssueID: "issue-7"}
 	theirs := planner.Ticket{Title: "Add billing", IssueID: "issue-9"}
 	if err := s.Put(context.Background(), "/mine", mine); err != nil {

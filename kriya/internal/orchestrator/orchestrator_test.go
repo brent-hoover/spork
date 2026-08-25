@@ -266,6 +266,7 @@ func sqlOrchDB(t *testing.T) *sql.DB {
 		orchestrator.HeadMigration,
 		orchestrator.IssueMigration, orchestrator.StallMigration,
 		orchestrator.StartedMigration,
+		orchestrator.FindingMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
@@ -288,6 +289,7 @@ func TestARunSurvivesTheRoundTrip(t *testing.T) {
 		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
 		RoundLimit: 4, ReviewState: orchestrator.SubmitNone,
 		CompletionState: orchestrator.CompleteNone,
+		Kind:            "implementation",
 	}
 	if err := s.Upsert(context.Background(), want); err != nil {
 		t.Fatalf("upsert: %v", err)

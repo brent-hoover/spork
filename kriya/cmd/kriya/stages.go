@@ -40,6 +40,9 @@ type deps struct {
 	completer orchestrator.Completer
 	learnings kctx.Recorder
 
+	researcher orchestrator.Researcher
+	projectID  string
+
 	commandsFor func(module string) map[string]string
 	// ticketFor recovers the whole ticket — body, criteria and issue — from
 	// the plan. A pop hands back an id and a title, and a run built from
@@ -82,68 +85,7 @@ func buildStages(d deps) orchestrator.Stages {
 			return run, nil
 		},
 
-		orchestrator.StageDevLoop: func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
-			// The default branch may have moved while this run was elsewhere —
-			// a merge that lost its CAS, a completion whose head advanced.
-			// Rerunning the chain against a base it has moved past just fails
-			// the same way, so the branch integrates first and the new base is
-			// what the next chain freezes.
-			w, err := ws.Integrate(ctx, run.ID)
-			if err != nil {
-				return run, err
-			}
-			run.GatedBase = w.Base
-			ticket := ticketFor(run.Ticket)
-			modules := modulesFor(snap, run.Ticket)
-			session, err := d.loop.Work(ctx, devloop.Request{
-				Run: run.ID, Ticket: run.Ticket, Title: ticket.Title,
-				Body: ticket.Body, Criteria: ticket.Criteria,
-				Issue: ticket.IssueID, Actor: d.actor,
-				// The gate-chain round this pass belongs to, which scopes the
-				// review round ids. Without it a second pass over the same run
-				// overwrites the first pass's rounds.
-				Attempt:   run.Attempt,
-				Workspace: w.Path, Commands: commandsFor(run.Ticket),
-				// What the agent may RUN, generated from the touched modules'
-				// own commands. Listing them as content tells it what it is
-				// judged by; this is what lets it run them.
-				AllowRules: devloop.AllowRules(commandsForAll(commandsFor, modules)...),
-				// The law comes from the PINNED snapshot, never the working
-				// tree: the agent is shown the spec the build was admitted
-				// against.
-				Spec:         specForContext(snap.Law, snap.Constitution, snap.Content),
-				Modules:      modules,
-				Instructions: d.instructions,
-				ProjectKey:   projectKeyOf(run.Plan),
-				// The limit the RUN was created under, not the one configured
-				// now: a config change affects only future runs.
-				RoundLimit: run.RoundLimit,
-			})
-			if errors.Is(err, devloop.ErrArchitectDirected) {
-				// The architect answered and its direction is recorded. The
-				// run has neither advanced nor failed: the next pass reads
-				// that direction and starts from it, which is the whole point
-				// of asking. Parking here would strand it.
-				return run, orchestrator.ErrWaiting
-			}
-			if errors.Is(err, devloop.ErrReviewPending) {
-				// The review job has not finished. The run has neither
-				// advanced nor failed: it comes back, rather than reaching
-				// the gates with a review still running or parking for an
-				// operator who can do nothing about it.
-				return run, orchestrator.ErrWaiting
-			}
-			if err != nil {
-				return run, err
-			}
-			// The branch head the session produced. Everything after this —
-			// gates, validation, review, merge — is about THIS commit, not the
-			// base the branch was cut from.
-			if n := len(session.Commits); n > 0 {
-				run.Head = session.Commits[n-1]
-			}
-			return run, nil
-		},
+		orchestrator.StageDevLoop: devLoopStage(d, snap, ticketFor, commandsFor),
 
 		orchestrator.StageValidate: validateStage(ws, d.po, ticketFor, snap, d.learnings),
 
@@ -154,6 +96,97 @@ func buildStages(d deps) orchestrator.Stages {
 		orchestrator.StageComplete: completeStage(ws, d.completer),
 
 		orchestrator.StageGates: gateStage(ws, runner, commandsFor, snap, d.learnings),
+
+		orchestrator.StageResearch: researchStage(d.researcher, d.projectID),
+	}
+}
+
+// devLoopStage integrates the moved base, then works the ticket.
+//
+// Integration FIRST: the default branch may have moved while this run was
+// elsewhere — a merge that lost its CAS, a completion whose head advanced —
+// and rerunning the chain against a base it has moved past just fails the same
+// way forever.
+func devLoopStage(
+	d deps, snap planner.Snapshot,
+	ticketFor func(string) planner.Ticket,
+	commandsFor func(string) map[string]string,
+) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	ws := d.ws
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		// The default branch may have moved while this run was elsewhere —
+		// a merge that lost its CAS, a completion whose head advanced.
+		// Rerunning the chain against a base it has moved past just fails
+		// the same way, so the branch integrates first and the new base is
+		// what the next chain freezes.
+		w, err := ws.Integrate(ctx, run.ID)
+		if err != nil {
+			return run, err
+		}
+		run.GatedBase = w.Base
+		ticket := ticketFor(run.Ticket)
+		modules := modulesFor(snap, run.Ticket)
+		session, err := d.loop.Work(ctx, devloop.Request{
+			Run: run.ID, Ticket: run.Ticket, Title: ticket.Title,
+			Body: ticket.Body, Criteria: ticket.Criteria,
+			Issue: ticket.IssueID, Actor: d.actor,
+			// The gate-chain round this pass belongs to, which scopes the
+			// review round ids. Without it a second pass over the same run
+			// overwrites the first pass's rounds.
+			Attempt:   run.Attempt,
+			Workspace: w.Path, Commands: commandsFor(run.Ticket),
+			// What the agent may RUN, generated from the touched modules'
+			// own commands. Listing them as content tells it what it is
+			// judged by; this is what lets it run them.
+			AllowRules: devloop.AllowRules(commandsForAll(commandsFor, modules)...),
+			// The law comes from the PINNED snapshot, never the working
+			// tree: the agent is shown the spec the build was admitted
+			// against.
+			Spec:         specForContext(snap.Law, snap.Constitution, snap.Content),
+			Modules:      modules,
+			Instructions: d.instructions,
+			ProjectKey:   projectKeyOf(run.Plan),
+			// The limit the RUN was created under, not the one configured
+			// now: a config change affects only future runs.
+			RoundLimit: run.RoundLimit,
+		})
+		if errors.Is(err, devloop.ErrArchitectDirected) {
+			// The architect answered and its direction is recorded. The
+			// run has neither advanced nor failed: the next pass reads
+			// that direction and starts from it, which is the whole point
+			// of asking. Parking here would strand it.
+			return run, orchestrator.ErrWaiting
+		}
+		if errors.Is(err, devloop.ErrReviewPending) {
+			// The review job has not finished. The run has neither
+			// advanced nor failed: it comes back, rather than reaching
+			// the gates with a review still running or parking for an
+			// operator who can do nothing about it.
+			return run, orchestrator.ErrWaiting
+		}
+		if err != nil {
+			return run, err
+		}
+		// The branch head the session produced. Everything after this —
+		// gates, validation, review, merge — is about THIS commit, not the
+		// base the branch was cut from.
+		if n := len(session.Commits); n > 0 {
+			run.Head = session.Commits[n-1]
+		}
+		return run, nil
+	}
+}
+
+// researchStage answers a spike's risk and submits the finding for review.
+//
+// ONE stage rather than two: a finding that exists but was never submitted is
+// research nobody will ever read, and a spike whose run rests between them is
+// a risk that looks answered and blocks nothing.
+func researchStage(
+	r orchestrator.Researcher, projectID string,
+) func(context.Context, orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+	return func(ctx context.Context, run orchestrator.BuildRun) (orchestrator.BuildRun, error) {
+		return r.Submit(ctx, run, projectID)
 	}
 }
 

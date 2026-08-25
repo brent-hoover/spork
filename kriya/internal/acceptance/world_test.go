@@ -14,6 +14,7 @@ import (
 
 	"kriya/internal/cli"
 	"kriya/internal/fakes"
+	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
 	_ "modernc.org/sqlite"
 
@@ -45,6 +46,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// finding is the spike-finding scenarios' state, nil until one starts.
+	finding *findingWorld
 	// spike is the risk-first scenarios' state, nil until one starts.
 	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
@@ -110,6 +113,10 @@ func (w *world) tempDir() (string, error) {
 // that seeded a review round recovers rounds.
 func (w *world) recover() error {
 	switch {
+	case w.finding != nil:
+		_, err := w.finding.r.RecoverFindings(context.Background(),
+			func(orchestrator.BuildRun) (string, error) { return "p-1", nil })
+		return err
 	case w.claim != nil:
 		return w.claim.recover()
 	case w.pair != nil:

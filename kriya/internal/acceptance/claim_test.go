@@ -180,7 +180,9 @@ func registerClaim(sc *godog.ScenarioContext, w *world) {
 			return nil
 		})
 
-	sc.Step(`^recovery replays the keyed doc mutation$`, func() error { return w.claim.recover() })
+	// Shared with the risk-first feature, which says the same sentence about a
+	// finding document. It dispatches on whichever world the scenario built.
+	sc.Step(`^recovery replays the keyed doc mutation$`, func() error { return w.recover() })
 
 	sc.Step(`^the keyed doc mutation replays and creates the version, records it, and the keyed review creation follows$`,
 		func() error {

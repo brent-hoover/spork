@@ -35,6 +35,10 @@ const (
 	StateFailed           State = "failed"
 	StateCancelling       State = "cancelling"
 	StateCancelled        State = "cancelled"
+	// StateResearchLoop and StateFindingSubmitted are the RESEARCH path. A
+	// spike's deliverable is a documented finding, not code, so it never
+	// enters the gate chain — there is nothing there to gate, and the chain
+	// would fail it for having no tests.
 	StateResearchLoop     State = "research-loop"
 	StateFindingSubmitted State = "finding-submitted"
 	StateCompleting       State = "completing"
@@ -47,12 +51,16 @@ type Stage string
 // The stages M3 delivers.
 const (
 	StageWorkspace Stage = "workspace"
-	StageDevLoop   Stage = "dev-loop"
-	StageGates     Stage = "gates"
-	StageValidate  Stage = "po-validation"
-	StageSubmit    Stage = "submit-review"
-	StageMerge     Stage = "merge"
-	StageComplete  Stage = "complete"
+	// StageResearch produces a documented finding and submits it for review.
+	// One stage rather than two: a finding that exists but was never
+	// submitted is research nobody will ever read.
+	StageResearch Stage = "research"
+	StageDevLoop  Stage = "dev-loop"
+	StageGates    Stage = "gates"
+	StageValidate Stage = "po-validation"
+	StageSubmit   Stage = "submit-review"
+	StageMerge    Stage = "merge"
+	StageComplete Stage = "complete"
 )
 
 // BuildRun is one ticket's journey through the chain.
@@ -83,6 +91,24 @@ type BuildRun struct {
 	// Attempt counts gate-chain rounds, so results pin to the round that
 	// produced them.
 	Attempt int
+	// Kind decides which path the run takes. A SPIKE's deliverable is a
+	// documented finding, so it enters the research path and never the gate
+	// chain — the chain would fail it for having no tests, which says nothing
+	// about the risk it was raised to answer.
+	Kind string
+	// FindingDoc and FindingVersion are the document the finding review names.
+	// Recorded before the review call, so a crash between them recovers the
+	// exact version rather than appending another.
+	FindingDoc     string
+	FindingVersion string
+	// FindingKey is the document mutation's Idempotency-Key, rotated per
+	// review revision so a revised finding cannot replay the previous
+	// version under the same key.
+	FindingKey string
+	// PendingFinding is the prepared finding content, persisted before the
+	// document exists. A replay that regenerated it would write different
+	// bytes under a key sutra has already settled.
+	PendingFinding string
 	// Started is when the run was created. The operator's first question
 	// about a run that looks stuck is how long it has looked that way, and a
 	// state alone cannot answer it.
@@ -134,6 +160,15 @@ type Transition struct {
 // else a state change can come from.
 var Table = []Transition{
 	{From: StateQueued, Stage: StageWorkspace, OnOK: StateDevLoop, OnFail: StateAwaitingOperator},
+	// The RESEARCH path, which a spike run enters from creation rather than
+	// from queued: it needs no workspace to gate and no gates to pass. The
+	// deliverable is a documented finding, and the only judgement is a
+	// human's.
+	{From: StateResearchLoop, Stage: StageResearch,
+		OnOK: StateFindingSubmitted, OnFail: StateAwaitingOperator},
+	// finding-submitted has NO transition, for the same reason
+	// review-submitted does not: the run waits for a human. An approval
+	// closes the spike, which unblocks everything the risk was holding.
 	{From: StateDevLoop, Stage: StageDevLoop, OnOK: StateGates, OnFail: StateAwaitingOperator},
 	// A failing gate chain returns to the dev loop rather than parking: the
 	// findings ARE the next instruction, and the loop is how they get acted

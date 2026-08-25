@@ -289,6 +289,30 @@ func (c *Client) CreateDocReview(
 	return rv, err
 }
 
+// ResubmitDocReview advances a document review to its next revision.
+//
+// A revised FINDING: the deliverable is a new document version, and the fences
+// are the same ones a code resubmission carries — sutra refuses if the review
+// has moved on, so a replay cannot advance a revision twice and a later
+// verdict cannot be answered by an earlier revision.
+func (c *Client) ResubmitDocReview(
+	ctx context.Context, id, author, summary, docVersion string,
+	expectedRevision int, expectedVerdictEvent, key string,
+) (int, error) {
+	payload := map[string]any{
+		"author": author, "doc_version": docVersion,
+		"expected_revision":      expectedRevision,
+		"expected_verdict_event": expectedVerdictEvent,
+	}
+	if summary != "" {
+		payload["summary"] = summary
+	}
+	var rv Review
+	err := c.do(ctx, "resubmitReview", http.MethodPost,
+		"/reviews/"+id+"/resubmit", key, payload, &rv)
+	return rv.Revision, err
+}
+
 // GetReview reads a review's current state.
 //
 // Not a mutation, so it carries no idempotency key and no body — it needs its

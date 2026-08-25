@@ -232,6 +232,15 @@ CREATE TABLE plan (
     tickets    INTEGER NOT NULL DEFAULT 0
 )`
 
+// TicketKindMigration records what kind of ticket the plan produced.
+//
+// Its own migration: planned_ticket has shipped. Without the kind a popped
+// spike is indistinguishable from implementation work, so it goes through the
+// code gate chain — and fails it, because a spike produces a document.
+const TicketKindMigration = `
+ALTER TABLE planned_ticket ADD COLUMN kind TEXT NOT NULL DEFAULT 'implementation';
+ALTER TABLE planned_ticket ADD COLUMN blocks TEXT NOT NULL DEFAULT '[]'`
+
 // SQLPlans persists plans in SQLite.
 type SQLPlans struct{ DB *sql.DB }
 
@@ -270,21 +279,39 @@ type SQLTickets struct{ DB *sql.DB }
 
 // Put records a ticket a decomposition produced.
 func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
+	blocks, err := json.Marshal(t.Blocks)
+	if err != nil {
+		return fmt.Errorf("marshal blocks: %w", err)
+	}
 	criteria, err := json.Marshal(t.Criteria)
 	if err != nil {
 		return fmt.Errorf("marshal criteria: %w", err)
 	}
 	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO planned_ticket (issue, target_key, title, body, criteria)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO planned_ticket (issue, target_key, title, body, criteria, kind, blocks)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(issue) DO UPDATE SET
 		   target_key = excluded.target_key, title = excluded.title,
-		   body = excluded.body, criteria = excluded.criteria`,
-		t.IssueID, targetKey, t.Title, t.Body, string(criteria))
+		   body = excluded.body, criteria = excluded.criteria,
+		   kind = excluded.kind, blocks = excluded.blocks`,
+		t.IssueID, targetKey, t.Title, t.Body, string(criteria), kindOf(t), string(blocks))
 	if err != nil {
 		return fmt.Errorf("record planned ticket: %w", err)
 	}
 	return nil
+}
+
+// kindOf defaults a ticket with no kind to implementation.
+//
+// The column is an enum, and a zero-valued Ticket has none. Implementation is
+// the safe default: a spike misfiled as one fails the gate chain loudly, where
+// an implementation ticket misfiled as a spike would SKIP the gates and land
+// unreviewed code.
+func kindOf(t Ticket) string {
+	if t.Kind == "" {
+		return KindImplementation
+	}
+	return t.Kind
 }
 
 // ForTarget lists a target's whole planned ticket set.
@@ -293,7 +320,7 @@ func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
 // way twice.
 func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT issue, title, body, criteria FROM planned_ticket
+		`SELECT issue, title, body, criteria, kind, blocks FROM planned_ticket
 		   WHERE target_key = ? ORDER BY issue`, targetKey)
 	if err != nil {
 		return nil, fmt.Errorf("query planned tickets: %w", err)
@@ -303,12 +330,16 @@ func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, 
 	var out []Ticket
 	for rows.Next() {
 		var t Ticket
-		var criteria string
-		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria); err != nil {
+		var criteria, blocks string
+		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria,
+			&t.Kind, &blocks); err != nil {
 			return nil, fmt.Errorf("scan planned ticket: %w", err)
 		}
 		if err := json.Unmarshal([]byte(criteria), &t.Criteria); err != nil {
 			return nil, fmt.Errorf("unmarshal criteria: %w", err)
+		}
+		if err := json.Unmarshal([]byte(blocks), &t.Blocks); err != nil {
+			return nil, fmt.Errorf("unmarshal blocks: %w", err)
 		}
 		out = append(out, t)
 	}
@@ -329,11 +360,11 @@ func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, 
 // and building it here would work the wrong codebase.
 func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, bool, error) {
 	t := Ticket{IssueID: issue}
-	var criteria string
+	var criteria, blocks string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT title, body, criteria FROM planned_ticket
+		`SELECT title, body, criteria, kind, blocks FROM planned_ticket
 		   WHERE issue = ? AND target_key = ?`, issue, targetKey).
-		Scan(&t.Title, &t.Body, &criteria)
+		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil
 	}
@@ -342,6 +373,9 @@ func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, 
 	}
 	if err := json.Unmarshal([]byte(criteria), &t.Criteria); err != nil {
 		return Ticket{}, false, fmt.Errorf("unmarshal criteria: %w", err)
+	}
+	if err := json.Unmarshal([]byte(blocks), &t.Blocks); err != nil {
+		return Ticket{}, false, fmt.Errorf("unmarshal blocks: %w", err)
 	}
 	return t, true, nil
 }

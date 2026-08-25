@@ -217,7 +217,8 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor,
 		completionClaimer(db, actor, target), targetsFor(db),
 		func(ctx context.Context) error { return consumeWork(ctx, db, target, actor) },
-		target)
+		target, researcherFor(db, tiers, target, actor),
+		func(orchestrator.BuildRun) (string, error) { return target2Project(db, target), nil })
 	if repo == "" {
 		steps = repositoryIndependent(steps)
 	}
@@ -883,6 +884,8 @@ func recoverySteps(
 	queue orchestrator.Queue, completer orchestrator.Completer, actor string,
 	claimer planner.Claimer, targets func(planner.CompletionClaim) (string, string, error),
 	work func(context.Context) error, target string,
+	researcher orchestrator.Researcher,
+	findingProject func(orchestrator.BuildRun) (string, error),
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
@@ -902,6 +905,12 @@ func recoverySteps(
 				return err
 			}
 			if _, err := claimer.Recover(ctx, targets); err != nil {
+				return err
+			}
+			// A finding submission a crash left in flight, replayed under
+			// its persisted document key: sutra returns the original version
+			// rather than appending a second finding beside it.
+			if _, err := researcher.RecoverFindings(ctx, findingProject); err != nil {
 				return err
 			}
 			// And a close a crash left mid-flight, replayed under its
@@ -995,6 +1004,47 @@ func recorder(db *sql.DB, tiers agent.Tiers, build string) agent.Recording {
 	}
 }
 
+// researcherFor wires the spike research path.
+//
+// Shared by the stage and by recovery, so a replayed finding takes exactly the
+// same path a first attempt does.
+func researcherFor(
+	db *sql.DB, tiers agent.Tiers, target, actor string,
+) orchestrator.Researcher {
+	c := trackerclient.New(sutraURL())
+	return orchestrator.Researcher{
+		Store: orchestrator.SQLStore{DB: db},
+		Findings: spikeResearch{
+			agent:  recorder(db, tiers, target),
+			ticket: func(string) planner.Ticket { return planner.Ticket{} },
+		},
+		Docs:    sutraDocs{c: c, actor: actor},
+		Reviews: sutraFindingReviews{c: c, actor: actor},
+	}
+}
+
+// target2Project reads a target's project, for the stages that name one.
+//
+// From the target's own row: the project a finding document belongs in is the
+// one its epic lives in, and re-deriving it elsewhere is a second place for
+// the two to disagree.
+func target2Project(db *sql.DB, target string) string {
+	row, found, err := (planner.SQLTargets{DB: db}).Find(context.Background(), target)
+	if err != nil || !found {
+		return ""
+	}
+	return row.ProjectID
+}
+
+// specText renders the pinned snapshot's manifest for an agent to read.
+func specText(snap planner.Snapshot) string {
+	var out string
+	for _, body := range snap.Content {
+		out += body
+	}
+	return out
+}
+
 // stageDeps wires every collaborator a run's stages delegate to.
 func stageDeps(
 	db *sql.DB, ws workspace.Manager, loop devloop.Loop, tiers agent.Tiers,
@@ -1015,7 +1065,18 @@ func stageDeps(
 			Gates: runner,
 			Now:   clock.System{},
 		},
-		submitter:    submitterOn(db, actor),
+		submitter: submitterOn(db, actor),
+		projectID: target2Project(db, target),
+		researcher: orchestrator.Researcher{
+			Store: orchestrator.SQLStore{DB: db},
+			Findings: spikeResearch{
+				agent:  recorder(db, tiers, ticket.Title),
+				ticket: ticketFromStore(db, target, ticket),
+				spec:   specText(snap),
+			},
+			Docs:    sutraDocs{c: trackerclient.New(sutraURL()), actor: actor},
+			Reviews: sutraFindingReviews{c: trackerclient.New(sutraURL()), actor: actor},
+		},
 		learnings:    kctx.SQLLearnings{DB: db, Now: clock.System{}},
 		completer:    completerOn(db, ws, actor),
 		queue:        mergeQueue(db, ws, actor),
@@ -1092,13 +1153,21 @@ func resumeOrStart(
 	if found {
 		return existing, nil
 	}
+	// A SPIKE starts on the research path, not queued. Its deliverable is a
+	// documented finding, so it needs no workspace to gate and no gates to
+	// pass — the table branches on the state a run is created in rather than
+	// asking each stage what kind of work it is looking at.
+	state := orchestrator.StateQueued
+	if ticket.Kind == planner.KindSpike {
+		state = orchestrator.StateResearchLoop
+	}
 	run := orchestrator.BuildRun{
-		ID: uuid.NewString(), Ticket: ticket.Title,
+		ID: uuid.NewString(), Ticket: ticket.Title, Kind: ticket.Kind,
 		// Recorded at creation, because recovery replays a submission and a
 		// close from what the RUN holds: a replay that looked the issue up
 		// again could act on a different one.
 		Issue: ticket.IssueID,
-		Plan:  target, State: orchestrator.StateQueued,
+		Plan:  target, State: state,
 		// Snapshotted here, at creation. Changing KRIYA_ROUND_LIMIT later
 		// affects only runs created after the change.
 		RoundLimit: roundLimit(),
