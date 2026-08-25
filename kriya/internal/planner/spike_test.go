@@ -23,9 +23,9 @@ requirements:
 const spikePlan = `{"tickets":[
   {"title":"spike: can the review tool run headless","body":"",
    "kind":"spike","criteria":["AC-headless"],"blocks":["AC-verdict","AC-headless"]},
-  {"title":"drive the review tool","body":"","skeleton":true,
+  {"title":"drive the review tool","body":"",
    "kind":"implementation","criteria":["AC-verdict"],"layers":["http","store"]},
-  {"title":"create a short link","body":"",
+  {"title":"create a short link","body":"","skeleton":true,
    "kind":"implementation","criteria":["AC-valid-url"],"layers":["http","store"]}]}`
 
 func TestARiskBecomesASpikeThatBlocksItsDependents(t *testing.T) {

@@ -135,6 +135,7 @@ func migrations() []migration {
 		{module: "planner", name: "0010_reopen_owed", stmts: splitSQL(planner.ReopenOwedMigration)},
 		{module: "planner", name: "0011_claim_watermark", stmts: splitSQL(planner.WatermarkMigration)},
 		{module: "planner", name: "0012_ticket_kind", stmts: splitSQL(planner.TicketKindMigration)},
+		{module: "planner", name: "0013_ticket_slice", stmts: splitSQL(planner.TicketSliceMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
 		{module: "workspace", name: "0002_removal", stmts: splitSQL(workspace.RemovalMigration)},

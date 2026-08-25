@@ -106,3 +106,77 @@ func TestTheWalkingSkeletonIsAssignedFirst(t *testing.T) {
 		t.Errorf("the first assignment was %q, want the walking skeleton", got)
 	}
 }
+
+func TestRepeatingOneLayerIsStillOneLayer(t *testing.T) {
+	// Counting entries rather than distinct names let ["store","store"] pass
+	// as an end-to-end slice while touching exactly the one layer the rule
+	// exists to refuse.
+	mustReject(t, `{"tickets":[
+	  {"title":"add the column","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["store","store"]}]}`,
+		"touches 1 layer(s)")
+}
+
+func TestABlankLayerNameCountsForNothing(t *testing.T) {
+	mustReject(t, `{"tickets":[
+	  {"title":"add the column","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["store",""]}]}`,
+		"touches 1 layer(s)")
+}
+
+func TestAPlanOfNothingButResearchIsRefused(t *testing.T) {
+	// A decomposition that produces only spikes builds nothing. It would
+	// reach the completion protocol having shipped no code, where it is
+	// indistinguishable from a build that succeeded.
+	mustReject(t, `{"tickets":[
+	  {"title":"spike: one","body":"","kind":"spike","criteria":["AC-valid-url"]},
+	  {"title":"spike: two","body":"","kind":"spike","criteria":["AC-bad-url"]}]}`,
+		"no implementation work among them")
+}
+
+func TestASpikeMayNotBlockTheSkeletonAloneMustBlockTheRest(t *testing.T) {
+	// Assigning the skeleton first is not enough: sutra SKIPS blocked work,
+	// so a spike gating the skeleton while another slice is free hands that
+	// other slice out first. The skeleton is then assigned first and worked
+	// second — and only when a risk is in play, which is when the guarantee
+	// matters most.
+	mustReject(t, `{"tickets":[
+	  {"title":"spike: which store","body":"","kind":"spike",
+	   "criteria":["AC-valid-url"],"blocks":["AC-valid-url"]},
+	  {"title":"skeleton","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["http","store"]},
+	  {"title":"free slice","body":"","kind":"implementation",
+	   "criteria":["AC-bad-url"],"layers":["http","store"]}]}`,
+		"which would then be worked first")
+}
+
+func TestASpikeBlockingTheWholeImplementationPlanIsFine(t *testing.T) {
+	// The rule is about BYPASS, not about blocking. A risk the skeleton waits
+	// on is a risk the whole implementation plan waits on, and that plan is
+	// legal: nothing can be worked ahead of the skeleton.
+	_, err := decomposeReply(t, `{"tickets":[
+	  {"title":"spike: which store","body":"","kind":"spike",
+	   "criteria":["AC-valid-url"],"blocks":["AC-valid-url","AC-bad-url"]},
+	  {"title":"skeleton","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["http","store"]},
+	  {"title":"later slice","body":"","kind":"implementation",
+	   "criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
+	if err != nil {
+		t.Fatalf("a plan whose spike blocks all implementation work was refused: %v", err)
+	}
+}
+
+func TestAnUnblockedSkeletonNeedsNoBlockingElsewhere(t *testing.T) {
+	// The common shape: the skeleton is free, a spike gates later work. The
+	// bypass rule must not fire here, or every risk-carrying plan is refused.
+	_, err := decomposeReply(t, `{"tickets":[
+	  {"title":"spike: which store","body":"","kind":"spike",
+	   "criteria":["AC-bad-url"],"blocks":["AC-bad-url"]},
+	  {"title":"skeleton","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["http","store"]},
+	  {"title":"later slice","body":"","kind":"implementation",
+	   "criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
+	if err != nil {
+		t.Fatalf("a plan with a free skeleton and a gated later slice was refused: %v", err)
+	}
+}

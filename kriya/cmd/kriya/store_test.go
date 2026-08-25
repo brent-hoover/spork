@@ -140,6 +140,7 @@ func TestForeignKeysAreActuallyEnforced(t *testing.T) {
 // been released.
 const migrationFingerprints = `
 planner/0012_ticket_kind 503efd0392818828
+planner/0013_ticket_slice 7189fa251cacda01
 planner/0011_claim_watermark 62fd5c44cd3f21aa
 planner/0010_reopen_owed f91d423e923a3be6
 planner/0009_completion_close fcb2b598766b4952

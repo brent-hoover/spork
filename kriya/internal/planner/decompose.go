@@ -358,12 +358,16 @@ func validateSlices(tickets []Ticket) error {
 			continue
 		}
 		implementations++
-		if len(t.Layers) < 2 {
+		named := distinct(t.Layers)
+		// DISTINCT: counting entries let ["store", "store"] pass as a slice
+		// while touching one layer, which is precisely the stripe the rule
+		// exists to refuse.
+		if len(named) < 2 {
 			return fmt.Errorf(
-				"implementation ticket %q names %d layers: a slice that touches one layer is a layer",
-				t.Title, len(t.Layers))
+				"implementation ticket %q touches %d layer(s) %v: a slice that touches one layer is a layer",
+				t.Title, len(named), t.Layers)
 		}
-		for _, l := range t.Layers {
+		for _, l := range named {
 			layers[l] = true
 		}
 		if !t.Skeleton {
@@ -376,8 +380,12 @@ func validateSlices(tickets []Ticket) error {
 		skeleton = n
 	}
 
+	// A plan of nothing but research builds nothing. Decomposition turns a
+	// snapshot into tracer bullets, and a set with no implementation ticket
+	// has none — it would reach the completion protocol having shipped no
+	// code, and be indistinguishable there from a build that succeeded.
 	if implementations == 0 {
-		return nil
+		return fmt.Errorf("the plan has %d tickets and no implementation work among them", len(tickets))
 	}
 	if skeleton < 0 {
 		return fmt.Errorf("no ticket is the walking skeleton: %d implementation tickets and no skeleton among them",
@@ -393,7 +401,60 @@ func validateSlices(tickets []Ticket) error {
 				tickets[skeleton].Title, l)
 		}
 	}
+	return validateSkeletonLeads(tickets, skeleton)
+}
+
+// validateSkeletonLeads refuses a plan where the skeleton can be bypassed.
+//
+// Assigning it first is not enough. sutra SKIPS blocked work, so a spike
+// blocking the skeleton while some other implementation ticket is unblocked
+// hands that other ticket out first — the skeleton is assigned first and
+// worked second, and the guarantee is gone precisely when a risk is in play,
+// which is when it matters most.
+//
+// The rule is therefore about the blockers, not the order: anything blocking
+// the skeleton must block every other implementation ticket too. A risk the
+// skeleton waits on is a risk the whole implementation plan waits on, because
+// the skeleton is what proves the stack those tickets extend actually
+// connects.
+func validateSkeletonLeads(tickets []Ticket, skeleton int) error {
+	for _, spike := range tickets {
+		if spike.Kind != KindSpike {
+			continue
+		}
+		blocked := make(map[string]bool, len(spike.Blocks))
+		for _, id := range spike.Blocks {
+			blocked[id] = true
+		}
+		if !dependsOn(tickets[skeleton], blocked) {
+			continue
+		}
+		for n, other := range tickets {
+			if n == skeleton || other.Kind != KindImplementation {
+				continue
+			}
+			if !dependsOn(other, blocked) {
+				return fmt.Errorf(
+					"spike %q blocks the walking skeleton %q but not %q, which would then be worked first",
+					spike.Title, tickets[skeleton].Title, other.Title)
+			}
+		}
+	}
 	return nil
+}
+
+// distinct returns the non-blank values of a list, without repeats.
+func distinct(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 func contains(haystack []string, needle string) bool {

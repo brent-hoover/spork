@@ -241,6 +241,18 @@ const TicketKindMigration = `
 ALTER TABLE planned_ticket ADD COLUMN kind TEXT NOT NULL DEFAULT 'implementation';
 ALTER TABLE planned_ticket ADD COLUMN blocks TEXT NOT NULL DEFAULT '[]'`
 
+// TicketSliceMigration records the plan shape a tracer bullet declares.
+//
+// Its own migration, because TicketKindMigration has shipped: a database that
+// ran it must gain these columns by ALTER rather than by a rewrite of an
+// applied migration. Without them a ticket read back after decomposition
+// carries no layers and is never the skeleton, so anything reasoning about
+// plan shape from the store — recovery above all — sees a different plan than
+// the one that was filed.
+const TicketSliceMigration = `
+ALTER TABLE planned_ticket ADD COLUMN layers TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE planned_ticket ADD COLUMN skeleton INTEGER NOT NULL DEFAULT 0`
+
 // SQLPlans persists plans in SQLite.
 type SQLPlans struct{ DB *sql.DB }
 
@@ -287,14 +299,21 @@ func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
 	if err != nil {
 		return fmt.Errorf("marshal criteria: %w", err)
 	}
+	layers, err := json.Marshal(t.Layers)
+	if err != nil {
+		return fmt.Errorf("marshal layers: %w", err)
+	}
 	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO planned_ticket (issue, target_key, title, body, criteria, kind, blocks)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO planned_ticket
+		   (issue, target_key, title, body, criteria, kind, blocks, layers, skeleton)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(issue) DO UPDATE SET
 		   target_key = excluded.target_key, title = excluded.title,
 		   body = excluded.body, criteria = excluded.criteria,
-		   kind = excluded.kind, blocks = excluded.blocks`,
-		t.IssueID, targetKey, t.Title, t.Body, string(criteria), kindOf(t), string(blocks))
+		   kind = excluded.kind, blocks = excluded.blocks,
+		   layers = excluded.layers, skeleton = excluded.skeleton`,
+		t.IssueID, targetKey, t.Title, t.Body, string(criteria), kindOf(t), string(blocks),
+		string(layers), t.Skeleton)
 	if err != nil {
 		return fmt.Errorf("record planned ticket: %w", err)
 	}
@@ -320,8 +339,8 @@ func kindOf(t Ticket) string {
 // way twice.
 func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT issue, title, body, criteria, kind, blocks FROM planned_ticket
-		   WHERE target_key = ? ORDER BY issue`, targetKey)
+		`SELECT issue, title, body, criteria, kind, blocks, layers, skeleton
+		   FROM planned_ticket WHERE target_key = ? ORDER BY issue`, targetKey)
 	if err != nil {
 		return nil, fmt.Errorf("query planned tickets: %w", err)
 	}
@@ -330,16 +349,13 @@ func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, 
 	var out []Ticket
 	for rows.Next() {
 		var t Ticket
-		var criteria, blocks string
+		var criteria, blocks, layers string
 		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria,
-			&t.Kind, &blocks); err != nil {
+			&t.Kind, &blocks, &layers, &t.Skeleton); err != nil {
 			return nil, fmt.Errorf("scan planned ticket: %w", err)
 		}
-		if err := json.Unmarshal([]byte(criteria), &t.Criteria); err != nil {
-			return nil, fmt.Errorf("unmarshal criteria: %w", err)
-		}
-		if err := json.Unmarshal([]byte(blocks), &t.Blocks); err != nil {
-			return nil, fmt.Errorf("unmarshal blocks: %w", err)
+		if err := decodeTicketLists(&t, criteria, blocks, layers); err != nil {
+			return nil, err
 		}
 		out = append(out, t)
 	}
@@ -360,22 +376,41 @@ func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, 
 // and building it here would work the wrong codebase.
 func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, bool, error) {
 	t := Ticket{IssueID: issue}
-	var criteria, blocks string
+	var criteria, blocks, layers string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT title, body, criteria, kind, blocks FROM planned_ticket
+		`SELECT title, body, criteria, kind, blocks, layers, skeleton FROM planned_ticket
 		   WHERE issue = ? AND target_key = ?`, issue, targetKey).
-		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks)
+		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil
 	}
 	if err != nil {
 		return Ticket{}, false, fmt.Errorf("read planned ticket: %w", err)
 	}
-	if err := json.Unmarshal([]byte(criteria), &t.Criteria); err != nil {
-		return Ticket{}, false, fmt.Errorf("unmarshal criteria: %w", err)
-	}
-	if err := json.Unmarshal([]byte(blocks), &t.Blocks); err != nil {
-		return Ticket{}, false, fmt.Errorf("unmarshal blocks: %w", err)
+	if err := decodeTicketLists(&t, criteria, blocks, layers); err != nil {
+		return Ticket{}, false, err
 	}
 	return t, true, nil
+}
+
+// decodeTicketLists fills a ticket's three JSON-encoded list columns.
+//
+// One function for all three so a column added later cannot be decoded in one
+// read path and quietly dropped in the other — which is exactly how layers and
+// skeleton reached the store as write-only columns in the first place.
+func decodeTicketLists(t *Ticket, criteria, blocks, layers string) error {
+	for _, list := range []struct {
+		name string
+		raw  string
+		into *[]string
+	}{
+		{"criteria", criteria, &t.Criteria},
+		{"blocks", blocks, &t.Blocks},
+		{"layers", layers, &t.Layers},
+	} {
+		if err := json.Unmarshal([]byte(list.raw), list.into); err != nil {
+			return fmt.Errorf("unmarshal %s: %w", list.name, err)
+		}
+	}
+	return nil
 }
