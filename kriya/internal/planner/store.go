@@ -169,6 +169,22 @@ func (s SQLTargets) Pending(ctx context.Context) ([]BuildTarget, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query pending targets: %w", err)
 	}
+	return scanTargets(rows, "pending")
+}
+
+// All lists every target, for the operator's picture of the machine.
+func (s SQLTargets) All(ctx context.Context) ([]BuildTarget, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT target_key, spec_hash, project_id, epic_id, epic_state, project_key, name, actor
+		 FROM build_target ORDER BY target_key`)
+	if err != nil {
+		return nil, fmt.Errorf("query targets: %w", err)
+	}
+	return scanTargets(rows, "all")
+}
+
+// scanTargets reads a target cursor to exhaustion.
+func scanTargets(rows *sql.Rows, what string) ([]BuildTarget, error) {
 	defer func() { _ = rows.Close() }()
 
 	var out []BuildTarget
@@ -176,14 +192,14 @@ func (s SQLTargets) Pending(ctx context.Context) ([]BuildTarget, error) {
 		var t BuildTarget
 		if err := rows.Scan(&t.TargetKey, &t.SpecHash, &t.ProjectID, &t.EpicID,
 			&t.EpicState, &t.ProjectKey, &t.Name, &t.Actor); err != nil {
-			return nil, fmt.Errorf("scan pending target: %w", err)
+			return nil, fmt.Errorf("scan %s target: %w", what, err)
 		}
 		out = append(out, t)
 	}
 	// Checked, because a cursor that fails mid-iteration otherwise returns a
 	// SHORT list that reads exactly like "nothing left to recover".
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending targets: %w", err)
+		return nil, fmt.Errorf("iterate %s targets: %w", what, err)
 	}
 	return out, nil
 }

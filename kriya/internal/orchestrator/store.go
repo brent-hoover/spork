@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Migration is orchestrator's schema.
@@ -51,6 +52,13 @@ ALTER TABLE build_run ADD COLUMN completion_state TEXT NOT NULL DEFAULT 'none'`
 const HeadMigration = `
 ALTER TABLE build_run ADD COLUMN head TEXT NOT NULL DEFAULT ''`
 
+// StartedMigration records when a run began.
+//
+// Its own migration: the run's table has shipped, and a database that ran that
+// migration never runs it again.
+const StartedMigration = `
+ALTER TABLE build_run ADD COLUMN started TEXT NOT NULL DEFAULT ''`
+
 // IssueMigration records the tracker issue and branch the run works on.
 //
 // Recovery replays a submission or a close from the run's PERSISTED fields.
@@ -63,6 +71,7 @@ ALTER TABLE build_run ADD COLUMN branch TEXT NOT NULL DEFAULT ''`
 
 // runColumns is every column a BuildRun reads back, in scan order.
 const runColumns = `ticket, issue, branch, plan, state, head, gated_base, error, attempt, round_limit,
+	started,
 	review_key, review_commit, review_session, review_state, review_id,
 	review_revision, review_verdict_event, close_key, completed_head, completion_state`
 
@@ -73,14 +82,15 @@ type SQLStore struct{ DB *sql.DB }
 func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO build_run (id, ticket, issue, branch, plan, state, head, gated_base, error, attempt,
-		   round_limit, review_key, review_commit, review_session, review_state, review_id,
+		   round_limit, started, review_key, review_commit, review_session, review_state, review_id,
 		   review_revision, review_verdict_event, close_key, completed_head, completion_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ticket = excluded.ticket, issue = excluded.issue, branch = excluded.branch,
 		   plan = excluded.plan, state = excluded.state,
 		   head = excluded.head, gated_base = excluded.gated_base, error = excluded.error,
 		   attempt = excluded.attempt, round_limit = excluded.round_limit,
+		   started = excluded.started,
 		   review_key = excluded.review_key, review_commit = excluded.review_commit,
 		   review_session = excluded.review_session, review_state = excluded.review_state,
 		   review_id = excluded.review_id,
@@ -90,7 +100,7 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 		   completed_head = excluded.completed_head,
 		   completion_state = excluded.completion_state`,
 		r.ID, r.Ticket, r.Issue, r.Branch, r.Plan, string(r.State), r.Head, r.GatedBase, r.Error, r.Attempt,
-		r.RoundLimit, r.ReviewKey, r.ReviewCommit, r.ReviewSession,
+		r.RoundLimit, startedOf(r), r.ReviewKey, r.ReviewCommit, r.ReviewSession,
 		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent,
 		r.CloseKey, r.CompletedHead, completionStateOf(r))
 	if err != nil {
@@ -102,10 +112,11 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 // Find reads a run by id.
 func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 	r := BuildRun{ID: id}
-	var state string
+	var state, started string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM build_run WHERE id = ?`, id).
 		Scan(&r.Ticket, &r.Issue, &r.Branch, &r.Plan, &state, &r.Head, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
+			&started,
 			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,
 			&r.CloseKey, &r.CompletedHead, &r.CompletionState)
@@ -116,7 +127,31 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 		return BuildRun{}, false, fmt.Errorf("read build run: %w", err)
 	}
 	r.State = State(state)
+	r.Started = startedFrom(started)
 	return r, true, nil
+}
+
+// startedOf renders a run's start time, defaulting an unset one to blank.
+//
+// Blank rather than the zero instant: a run recorded before this column
+// existed has no start time, and printing year one would be a lie about it.
+func startedOf(r BuildRun) string {
+	if r.Started.IsZero() {
+		return ""
+	}
+	return r.Started.UTC().Format(time.RFC3339Nano)
+}
+
+// startedFrom reads a start time back, treating an unparseable one as absent.
+func startedFrom(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }
 
 // reviewStateOf defaults an unset state.
@@ -149,6 +184,19 @@ func (s SQLStore) inReviewState(ctx context.Context, state string) ([]BuildRun, 
 	return s.listRuns(ctx, "review_state", state)
 }
 
+// ForPlan lists every run of a target, newest first.
+//
+// The whole set, settled ones included: the operator's question is what this
+// build has done, and hiding the finished runs answers a different one.
+func (s SQLStore) ForPlan(ctx context.Context, plan string) ([]BuildRun, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, `+runColumns+` FROM build_run WHERE plan = ? ORDER BY rowid DESC`, plan)
+	if err != nil {
+		return nil, fmt.Errorf("query runs for %s: %w", plan, err)
+	}
+	return scanRuns(rows, plan)
+}
+
 // listRuns lists runs whose column holds state.
 //
 // The column name is a CONSTANT from this file, never caller input: it is
@@ -160,26 +208,33 @@ func (s SQLStore) listRuns(ctx context.Context, column, state string) ([]BuildRu
 	if err != nil {
 		return nil, fmt.Errorf("query %s runs: %w", state, err)
 	}
+	return scanRuns(rows, state)
+}
+
+// scanRuns reads a run cursor to exhaustion.
+func scanRuns(rows *sql.Rows, what string) ([]BuildRun, error) {
 	defer func() { _ = rows.Close() }()
 
 	var out []BuildRun
 	for rows.Next() {
 		var r BuildRun
 		var runState string
+		var started string
 		if err := rows.Scan(&r.ID, &r.Ticket, &r.Issue, &r.Branch, &r.Plan, &runState, &r.Head, &r.GatedBase, &r.Error,
-			&r.Attempt, &r.RoundLimit, &r.ReviewKey, &r.ReviewCommit,
+			&r.Attempt, &r.RoundLimit, &started, &r.ReviewKey, &r.ReviewCommit,
 			&r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,
 			&r.CloseKey, &r.CompletedHead, &r.CompletionState); err != nil {
-			return nil, fmt.Errorf("scan %s run: %w", state, err)
+			return nil, fmt.Errorf("scan %s run: %w", what, err)
 		}
 		r.State = State(runState)
+		r.Started = startedFrom(started)
 		out = append(out, r)
 	}
 	// Checked, because a cursor failing mid-iteration otherwise returns a
 	// SHORT list that reads exactly like "every review reached sutra".
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate %s runs: %w", state, err)
+		return nil, fmt.Errorf("iterate %s runs: %w", what, err)
 	}
 	return out, nil
 }

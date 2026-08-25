@@ -110,6 +110,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerEpoch(sc, w)
 	registerClaim(sc, w)
 	registerClose(sc, w)
+	registerStatus(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

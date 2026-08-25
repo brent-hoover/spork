@@ -57,7 +57,8 @@ func run(ctx context.Context, args []string) error {
 	defer func() { _ = db.Close() }()
 
 	if len(args) == 0 {
-		return errors.New("usage: kriya build <project> | kriya learn add [flags]")
+		return errors.New(
+			"usage: kriya build <project> | kriya status [--json] | kriya learn add [flags]")
 	}
 	switch args[0] {
 	case "build":
@@ -65,6 +66,8 @@ func run(ctx context.Context, args []string) error {
 			return errors.New("usage: kriya build <project>")
 		}
 		return build(ctx, db, args[1])
+	case "status":
+		return status(ctx, db, args[1:])
 	case "learn":
 		return learn(ctx, db, args[1:])
 	default:

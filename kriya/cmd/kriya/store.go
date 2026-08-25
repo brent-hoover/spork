@@ -147,6 +147,7 @@ func migrations() []migration {
 		{module: "orchestrator", name: "0009_issue_and_branch", stmts: splitSQL(orchestrator.IssueMigration)},
 		{module: "orchestrator", name: "0010_merge_resource", stmts: splitSQL(orchestrator.ResourceMigration)},
 		{module: "orchestrator", name: "0011_stall", stmts: splitSQL(orchestrator.StallMigration)},
+		{module: "orchestrator", name: "0012_run_started", stmts: splitSQL(orchestrator.StartedMigration)},
 		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
 		{module: "owner", name: "0001_validation", stmts: splitSQL(owner.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},

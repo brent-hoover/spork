@@ -51,6 +51,8 @@ func (t *targets) Find(_ context.Context, key string) (planner.BuildTarget, bool
 
 func (t *targets) Pending(context.Context) ([]planner.BuildTarget, error) { return nil, nil }
 
+func (t *targets) All(context.Context) ([]planner.BuildTarget, error) { return nil, nil }
+
 type stubTracker struct{}
 
 func (stubTracker) CreateProject(context.Context, string, string, string, string) (string, error) {

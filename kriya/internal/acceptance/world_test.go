@@ -45,6 +45,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// status is the CLI-status scenario's state, nil until it starts.
+	status *statusWorld
 	// close is the epic-close scenarios' state, nil until one starts.
 	close *closeWorld
 	// claim is the completion-submission scenarios' state, nil until one starts.
@@ -327,6 +329,8 @@ func (t *memTargets) Find(_ context.Context, key string) (planner.BuildTarget, b
 }
 
 func (t *memTargets) Pending(context.Context) ([]planner.BuildTarget, error) { return nil, nil }
+
+func (t *memTargets) All(context.Context) ([]planner.BuildTarget, error) { return nil, nil }
 
 // requiredCommands is what AC-intake-commands demands of every module.
 var requiredCommands = specverify.RequiredCommands

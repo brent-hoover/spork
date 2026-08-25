@@ -192,6 +192,14 @@ func TestTheTwoStepsDoNotShareAKey(t *testing.T) {
 	}
 }
 
+func (t *memTargets) All(_ context.Context) ([]planner.BuildTarget, error) {
+	var out []planner.BuildTarget
+	for _, b := range t.rows {
+		out = append(out, b)
+	}
+	return out, nil
+}
+
 func (t *memTargets) Pending(_ context.Context) ([]planner.BuildTarget, error) {
 	var out []planner.BuildTarget
 	for _, b := range t.rows {

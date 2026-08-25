@@ -265,6 +265,7 @@ func sqlOrchDB(t *testing.T) *sql.DB {
 		orchestrator.MergeMigration, orchestrator.ResourceMigration,
 		orchestrator.HeadMigration,
 		orchestrator.IssueMigration, orchestrator.StallMigration,
+		orchestrator.StartedMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
@@ -283,6 +284,7 @@ func TestARunSurvivesTheRoundTrip(t *testing.T) {
 	want := orchestrator.BuildRun{
 		ID: "run-1", Ticket: "T-1", Issue: "issue-7", Branch: "kriya/KRI-1/abcd",
 		Plan: "/target", State: orchestrator.StateGates,
+		Started:   time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC),
 		GatedBase: "base-sha", Attempt: 2, Error: "gate structure failed",
 		RoundLimit: 4, ReviewState: orchestrator.SubmitNone,
 		CompletionState: orchestrator.CompleteNone,

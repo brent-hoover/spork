@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"kriya/internal/clock"
 )
@@ -82,6 +83,10 @@ type BuildRun struct {
 	// Attempt counts gate-chain rounds, so results pin to the round that
 	// produced them.
 	Attempt int
+	// Started is when the run was created. The operator's first question
+	// about a run that looks stuck is how long it has looked that way, and a
+	// state alone cannot answer it.
+	Started time.Time
 	// RoundLimit is snapshotted at the run's creation. A later change to the
 	// configured limit affects only future runs; this one keeps the limit it
 	// started under, and recovery reads it from here rather than from config.

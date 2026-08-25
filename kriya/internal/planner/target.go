@@ -41,6 +41,8 @@ type TargetStore interface {
 	Find(ctx context.Context, targetKey string) (BuildTarget, bool, error)
 	// Pending lists targets a crash left mid-creation.
 	Pending(ctx context.Context) ([]BuildTarget, error)
+	// All lists every target, for the operator's picture of the machine.
+	All(ctx context.Context) ([]BuildTarget, error)
 }
 
 // Tracker is the slice of the issue tracker planner needs.
