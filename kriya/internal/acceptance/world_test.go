@@ -59,6 +59,8 @@ type world struct {
 	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
 	status *statusWorld
+	// head is the plan-head scenarios' state, nil until one starts.
+	head *headWorld
 	// resolve is the same-key-retry scenarios' state, nil until one starts.
 	resolve *resolveWorld
 	// close is the epic-close scenarios' state, nil until one starts.

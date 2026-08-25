@@ -154,6 +154,13 @@ func (i Intaker) Decompose(
 		return nil, err
 	}
 
+	// The CAS, between the write-ahead row and activation. A candidate that
+	// filed tickets before winning the head would have decomposed against a
+	// target another plan already owns.
+	if err := i.takeTheHead(ctx, plan); err != nil {
+		return nil, err
+	}
+
 	// ACTIVE before the phases, not after. The spec is explicit that
 	// activation precedes creation, wiring and assignment — which is what
 	// makes "active without completed" a real state that a crash can leave
@@ -170,6 +177,9 @@ func (i Intaker) Decompose(
 	// now is the ticket set whole, and only now may completion detection arm.
 	plan.Completed, plan.Tickets = true, len(tickets)
 	if err := i.recordPlan(ctx, plan); err != nil {
+		return nil, err
+	}
+	if err := i.activate(ctx, plan); err != nil {
 		return nil, err
 	}
 	return tickets, nil
@@ -565,4 +575,41 @@ func (i Intaker) proposeTickets(
 		return nil, err
 	}
 	return reply.Tickets, nil
+}
+
+// takeTheHead runs a candidate through the replacement CAS.
+//
+// A loser is an ERROR to this caller, and the error names where the candidate
+// landed. Returning the head plan's tickets instead would be a lie: they
+// belong to a different decomposition of a different snapshot, and the caller
+// asked what THIS request produced.
+func (i Intaker) takeTheHead(ctx context.Context, plan Plan) error {
+	if i.Heads == nil || i.Plans == nil {
+		return nil
+	}
+	verdict, err := Supersede(ctx, i.Heads, i.Plans, plan)
+	if err != nil {
+		return err
+	}
+	if !verdict.Won {
+		return fmt.Errorf(
+			"the decomposition of %s lost the head to plan %s and is now %s",
+			plan.TargetKey, verdict.Head.Current[:12], verdict.Landing)
+	}
+	return nil
+}
+
+// activate lowers the pop fence the head move raised.
+//
+// Its own step, after the ticket set is whole. The fence exists precisely to
+// refuse pops while a head plan is unactivated, so lowering it any earlier
+// would admit work against a plan still being built.
+func (i Intaker) activate(ctx context.Context, plan Plan) error {
+	if i.Heads == nil {
+		return nil
+	}
+	if err := i.Heads.Activate(ctx, plan.Key); err != nil {
+		return err
+	}
+	return nil
 }

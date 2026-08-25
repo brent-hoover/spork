@@ -40,6 +40,11 @@ type Intaker struct {
 	// wires it, because the completed stamp is what arms build-completion
 	// detection.
 	Plans PlanStore
+	// Heads is the durable head row and its replacement CAS. Nil skips the
+	// CAS, which is what a module-level test of decomposition's own phases
+	// wants; production wires it, because without it two decompositions can
+	// both believe they are the head.
+	Heads HeadStore
 	Now   clock.Clock
 }
 
