@@ -98,6 +98,15 @@ func (d Detector) Detect(ctx context.Context, targetKey, projectID string) (Dete
 			targetKey, plan.State)}, nil
 	}
 
+	// The epoch BEFORE the queue. An advance landing between them then leaves
+	// the answer bound to the OLDER epoch, whose claim fails the stamp's CAS
+	// — the safe direction. Reading it after would bind a claim to an epoch
+	// whose queue state was never checked, and that claim would PASS the CAS.
+	epoch, err := d.epoch(ctx, targetKey)
+	if err != nil {
+		return Detection{}, err
+	}
+
 	active, watermark, err := d.Issues.Active(ctx, projectID)
 	if err != nil {
 		// "I could not read the queue" is not "the queue is empty". Arming
@@ -106,13 +115,6 @@ func (d Detector) Detect(ctx context.Context, targetKey, projectID string) (Dete
 	}
 
 	planned, err := d.plannedIDs(ctx, targetKey)
-	if err != nil {
-		return Detection{}, err
-	}
-	// Read AFTER the queue, so an advance racing the read leaves the answer
-	// bound to the OLDER epoch — which then fails the stamp's CAS rather than
-	// claiming an epoch nobody checked.
-	epoch, err := d.epoch(ctx, targetKey)
 	if err != nil {
 		return Detection{}, err
 	}

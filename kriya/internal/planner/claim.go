@@ -73,6 +73,12 @@ type CompletionClaim struct {
 	// original success under it — never a close-used conflict, since this
 	// very key stamped it.
 	CloseKey string
+	// ReopenOwed records that this claim's close may be standing over a
+	// newer epoch. It is set when a stale claim is settled without having
+	// resolved whether its close landed: the epic could be closed with no
+	// compensating reopen, and "we do not know" must not read as "nothing
+	// happened". The operator inbox is what lists it.
+	ReopenOwed bool
 }
 
 // ClaimStore persists completion claims.
@@ -278,7 +284,10 @@ func (c Claimer) RecoverCloses(
 			return 0, err
 		}
 		if current != claim.Epoch {
-			if err := c.settleStale(ctx, claim); err != nil {
+			// The close was ISSUED — the row reached closing before the call
+			// — and whether it landed is unknown from here. A reopen is owed
+			// until something resolves it.
+			if err := c.settleStale(ctx, claim, true); err != nil {
 				return 0, err
 			}
 			stale = fmt.Errorf("%s: %w", claim.TargetKey, ErrStaleClaim)
@@ -308,8 +317,15 @@ func (c Claimer) RecoverCloses(
 // Terminal for THIS attempt. A fresh attempt at the new epoch is what comes
 // next, under a key that names it — and leaving this one in closing would have
 // every startup retry a close that can never stamp.
-func (c Claimer) settleStale(ctx context.Context, claim CompletionClaim) error {
+//
+// owed records that the close's outcome is UNRESOLVED. A close that landed
+// before an ambiguous failure leaves the epic closed over a newer epoch with
+// nothing reopening it, and settling silently would turn "we do not know" into
+// "nothing happened". The compensating reopen is the operator's to drive until
+// the compensation lifecycle lands.
+func (c Claimer) settleStale(ctx context.Context, claim CompletionClaim, owed bool) error {
 	claim.State = CompletionStale
+	claim.ReopenOwed = owed
 	if err := c.Claims.Upsert(ctx, claim); err != nil {
 		return fmt.Errorf("record stale claim for %s: %w", claim.TargetKey, err)
 	}
@@ -386,7 +402,10 @@ func (c Claimer) finishClose(
 		// compensating reopen is what returns the target to work. The
 		// operator hears about it; nothing is stamped, and the claim parks
 		// terminally so recovery does not retry it forever.
-		if err := c.settleStale(ctx, claim); err != nil {
+		// The close LANDED — sutra returned success a moment ago — so the
+		// epic is closed over an epoch this claim no longer owns, and the
+		// compensating reopen is owed rather than merely possible.
+		if err := c.settleStale(ctx, claim, true); err != nil {
 			return CompletionClaim{}, err
 		}
 		return claim, fmt.Errorf("%s: %w", claim.TargetKey, ErrStaleClaim)

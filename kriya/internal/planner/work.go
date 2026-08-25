@@ -29,11 +29,6 @@ type WorkFeed interface {
 	Since(ctx context.Context, cursor string) ([]WorkEvent, string, error)
 }
 
-// IssueStates answers what an issue's status currently is.
-type IssueStates interface {
-	Status(ctx context.Context, id string) (string, error)
-}
-
 // Cursors persists how far a consumer has read.
 //
 // Declared here rather than imported: what this needs is a durable position,
@@ -51,7 +46,6 @@ type Cursors interface {
 // and recompletion never happens.
 type Work struct {
 	Feed    WorkFeed
-	Issues  IssueStates
 	Epochs  Epochs
 	Tickets TargetTickets
 	Claims  ClaimStore
@@ -126,19 +120,16 @@ func (w Work) consume(ctx context.Context, event WorkEvent) (bool, error) {
 	// Only a target with something to invalidate. Mid-build, tickets move
 	// between statuses constantly, and advancing on each would rotate the
 	// epoch — and every key derived from it — for no reason.
+	//
+	// A standing claim is also what makes the event ALONE sufficient: every
+	// target-scoped ticket was complete when the claim was captured, so any
+	// status change on one since is a reopen. Reading the live status
+	// instead would miss a ticket that reopened and recompleted before
+	// consumption — every queued event would read complete, the cursor would
+	// move past them all, and the stale claim would survive.
 	claimed, err := w.hasClaim(ctx)
 	if err != nil || !claimed {
 		return false, err
-	}
-	// The event carries no payload, so the LIVE status is what says whether
-	// this was a reopen. "I could not read it" is not "it is still complete":
-	// skipping would leave a stamp standing over work that came back.
-	status, err := w.Issues.Status(ctx, event.Subject)
-	if err != nil {
-		return false, fmt.Errorf("read status of %s: %w", event.Subject, err)
-	}
-	if !activeStatuses[status] {
-		return false, nil
 	}
 	return w.Epochs.OnEvent(ctx, w.TargetKey, cause, event.ID)
 }

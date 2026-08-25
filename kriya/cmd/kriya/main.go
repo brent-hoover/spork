@@ -212,7 +212,8 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	// repository-independent.
 	steps := recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
 		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor,
-		completionClaimer(db, actor), targetsFor(db))
+		completionClaimer(db, actor), targetsFor(db),
+		func(ctx context.Context) error { return consumeWork(ctx, db, target, actor) })
 	if repo == "" {
 		steps = repositoryIndependent(steps)
 	}
@@ -662,7 +663,6 @@ func workWatcher(
 	c := trackerclient.New(sutraURL())
 	return planner.Work{
 		Feed:      sutraWorkFeed{c: c},
-		Issues:    sutraIssueStates{c: c},
 		Epochs:    planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 		Tickets:   planner.SQLTickets{DB: db},
 		Claims:    planner.SQLClaims{DB: db},
@@ -871,6 +871,7 @@ func recoverySteps(
 	loop devloop.Loop, submitter orchestrator.Submitter,
 	queue orchestrator.Queue, completer orchestrator.Completer, actor string,
 	claimer planner.Claimer, targets func(planner.CompletionClaim) (string, string, error),
+	work func(context.Context) error,
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
@@ -882,6 +883,13 @@ func recoverySteps(
 			// an advance still presents the old key — which is what keeps it
 			// from adopting a spent review — and the stamp's CAS refuses it
 			// later.
+			// Work returning FIRST. A close that cached a conflict after a
+			// reopen would otherwise be replayed here with its epoch still
+			// unchanged: the conflict comes back, recovery fails, and the
+			// advance that would have made the claim stale never runs.
+			if err := work(ctx); err != nil {
+				return err
+			}
 			if _, err := claimer.Recover(ctx, targets); err != nil {
 				return err
 			}
@@ -900,7 +908,14 @@ func recoverySteps(
 				fmt.Fprintln(os.Stderr, "kriya:", err)
 				return nil
 			}
-			return err
+			if err != nil {
+				// A close that cannot be replayed — a cached conflict from a
+				// reversed approval, say — must not halt startup either. The
+				// claim rests in closing, and the driver re-polls it: a
+				// reapproval rotates the key and the retry escapes the cache.
+				fmt.Fprintln(os.Stderr, "kriya: completion close deferred:", err)
+			}
+			return nil
 		}},
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
 			_, err := ws.Recover(ctx)

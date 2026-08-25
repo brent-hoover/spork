@@ -203,20 +203,6 @@ func (f sutraWorkFeed) Since(
 	return out, page.NextCursor, nil
 }
 
-// sutraIssueStates answers what an issue's status currently is.
-//
-// A status-changed event carries no payload, so what it MEANS is a question
-// about the issue's live state rather than about the event.
-type sutraIssueStates struct{ c *trackerclient.Client }
-
-func (s sutraIssueStates) Status(ctx context.Context, id string) (string, error) {
-	issue, err := s.c.GetIssue(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	return issue.Status, nil
-}
-
 // sutraFeed adapts sutra's event feed to the verdict router's seam.
 //
 // It reads only review verdicts. The feed carries every event sutra emits, and

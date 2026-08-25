@@ -60,41 +60,6 @@ func TestAnUnreachableFeedIsAnError(t *testing.T) {
 	}
 }
 
-func TestTheIssueStateAdapterReadsTheLiveStatus(t *testing.T) {
-	// A status-changed event carries no payload, so this read is what says
-	// whether the change was a reopen.
-	var asked string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked = r.URL.Path
-		_, _ = io.WriteString(w, `{"id":"issue-1","status":"open","subtree_revision":3}`)
-	}))
-	defer srv.Close()
-
-	status, err := sutraIssueStates{c: trackerclient.New(srv.URL)}.
-		Status(t.Context(), "issue-1")
-	if err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	if status != "open" {
-		t.Errorf("read status %q", status)
-	}
-	if !strings.HasSuffix(asked, "/issues/issue-1") {
-		t.Errorf("asked %s", asked)
-	}
-}
-
-func TestAnUnreadableIssueIsAnError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = io.WriteString(w, `{"code":"internal"}`)
-	}))
-	defer srv.Close()
-	if _, err := (sutraIssueStates{c: trackerclient.New(srv.URL)}).
-		Status(t.Context(), "issue-1"); err == nil {
-		t.Fatal("an unreadable issue read as a blank status")
-	}
-}
-
 func TestTheDocumentAdapterReportsAVersionlessDocument(t *testing.T) {
 	// The review's deliverable IS the version. A document pointing at nothing
 	// must surface as such rather than opening a review over nothing.

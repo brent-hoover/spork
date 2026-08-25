@@ -132,6 +132,7 @@ func migrations() []migration {
 		{module: "planner", name: "0007_completion_epoch", stmts: splitSQL(planner.EpochMigration)},
 		{module: "planner", name: "0008_completion_claim", stmts: splitSQL(planner.ClaimMigration)},
 		{module: "planner", name: "0009_completion_close", stmts: splitSQL(planner.CloseMigration)},
+		{module: "planner", name: "0010_reopen_owed", stmts: splitSQL(planner.ReopenOwedMigration)},
 		{module: "agent", name: "0001_invocation", stmts: []string{agent.Migration}},
 		{module: "workspace", name: "0001_workspace", stmts: []string{workspace.Migration}},
 		{module: "workspace", name: "0002_removal", stmts: splitSQL(workspace.RemovalMigration)},

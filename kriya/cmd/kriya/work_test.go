@@ -17,7 +17,6 @@ func TestTheWorkWatcherIsWiredWithEveryCollaborator(t *testing.T) {
 	w := workWatcher(db, planner.BuildTarget{EpicID: "epic-1"}, "/spec", "actor-1")
 	for name, wired := range map[string]bool{
 		"feed":    w.Feed != nil,
-		"issues":  w.Issues != nil,
 		"epochs":  w.Epochs.Store != nil,
 		"tickets": w.Tickets != nil,
 		"claims":  w.Claims != nil,

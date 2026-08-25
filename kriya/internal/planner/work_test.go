@@ -24,21 +24,6 @@ func (f *workFeed) Since(
 	return f.pages[cursor], f.next[cursor], nil
 }
 
-// issueStates answers what an issue's status currently is.
-type issueStates struct {
-	status map[string]string
-	err    error
-	reads  []string
-}
-
-func (s *issueStates) Status(_ context.Context, id string) (string, error) {
-	s.reads = append(s.reads, id)
-	if s.err != nil {
-		return "", s.err
-	}
-	return s.status[id], nil
-}
-
 // workCursors persists a consumer's feed position.
 type workCursors struct{ at map[string]string }
 
@@ -58,22 +43,22 @@ type watch struct {
 	advances *memAdvances
 	claims   *memClaims
 	tickets  *memTickets
-	states   *issueStates
 	cursors  *workCursors
 }
 
 func watcher(t *testing.T, events []planner.WorkEvent, status map[string]string) *watch {
 	t.Helper()
+	_ = status
 	w := &watch{
 		advances: newMemAdvances(), claims: newMemClaims(), tickets: newMemTickets(),
-		states: &issueStates{status: status}, cursors: newWorkCursors(),
+		cursors: newWorkCursors(),
 	}
 	w.work = planner.Work{
 		Feed: &workFeed{
 			pages: map[string][]planner.WorkEvent{"": events},
 			next:  map[string]string{"": "c-1"},
 		},
-		Issues: w.states, Epochs: planner.Epochs{Store: w.advances},
+		Epochs:  planner.Epochs{Store: w.advances},
 		Tickets: w.tickets, Claims: w.claims, Cursors: w.cursors,
 		TargetKey: "/spec", Epic: "epic-1", Actor: "actor-1",
 	}
@@ -141,20 +126,21 @@ func TestAReopenedPlanTicketAdvancesTheEpochAndClearsTheStamp(t *testing.T) {
 	}
 }
 
-func TestATicketStillCompleteAdvancesNothing(t *testing.T) {
-	// A status-changed event carries no payload, so the LIVE status is what
-	// says whether this was a reopen. Advancing on every status change would
-	// invalidate a valid completion whenever anything was touched.
+func TestAStatusChangeUnderAStandingClaimIsAlwaysAReopen(t *testing.T) {
+	// Every target-scoped ticket was COMPLETE when the claim was captured.
+	// A status change on one since can only be work coming back, whatever
+	// the status reads now — and reading it now is precisely how a
+	// reopen-and-recomplete slips past.
 	w := watcher(t, reopenOf("issue-1"), map[string]string{"issue-1": "complete"}).
 		stamped(t).plans(t, "issue-1")
 	if _, _, err := w.work.Consume(context.Background()); err != nil {
 		t.Fatalf("consume: %v", err)
 	}
-	if w.epoch(t) != 0 {
-		t.Errorf("a status change that was not a reopen advanced the epoch")
+	if w.epoch(t) != 1 {
+		t.Error("a status change under a standing claim did not advance")
 	}
-	if _, ok := w.advances.stamped["/spec"]; !ok {
-		t.Error("a valid completion was cleared")
+	if _, ok := w.advances.stamped["/spec"]; ok {
+		t.Error("the completion survived work returning")
 	}
 }
 
@@ -169,8 +155,8 @@ func TestAnotherTargetsIssueAdvancesNothing(t *testing.T) {
 	if w.epoch(t) != 0 {
 		t.Error("another target's issue advanced the epoch")
 	}
-	if len(w.states.reads) != 0 {
-		t.Errorf("a foreign issue was read anyway: %v", w.states.reads)
+	if len(w.advances.rows) != 0 {
+		t.Errorf("a foreign issue recorded an advance: %v", w.advances.rows)
 	}
 }
 
@@ -318,13 +304,13 @@ func TestAnUnreadableFeedStopsTheWatcher(t *testing.T) {
 	}
 }
 
-func TestAnUnreadableIssueStopsTheWatcher(t *testing.T) {
-	// "I could not read the status" is not "it is still complete". Skipping
-	// would leave a stamp standing over work that came back.
+func TestAnUnreadableTicketSetStopsTheWatcher(t *testing.T) {
+	// "I could not tell whether this issue is mine" is not "it is not". A
+	// skipped event is a reopen the cursor then moves past forever.
 	w := watcher(t, reopenOf("issue-1"), nil).stamped(t).plans(t, "issue-1")
-	w.states.err = errors.New("sutra unavailable")
+	w.tickets.err = errors.New("disk full")
 	if _, _, err := w.work.Consume(context.Background()); err == nil {
-		t.Fatal("an unreadable status read as still complete")
+		t.Fatal("an unreadable ticket set read as a foreign issue")
 	}
 }
 
