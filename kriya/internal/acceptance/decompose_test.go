@@ -63,6 +63,8 @@ func registerDecompose(sc *godog.ScenarioContext, w *world) {
 		func() error { return w.assertOneEpicEveryTicketParented() })
 	sc.Then(`^carried-forward and new tickets sit under the same epic with no re-parenting$`,
 		func() error { return w.assertEpicUnchangedAcrossRuns() })
+	sc.Then(`^the epic can close only when the build completes$`,
+		func() error { return w.assertTheEpicClosesOnlyOnCompletion() })
 	sc.Then(`^every ticket's acceptance criteria cite REQ and AC ids present in the snapshot$`,
 		func() error { return w.assertCitationsAreInTheSnapshot() })
 	sc.Then(`^every implementation ticket is a thin end-to-end slice$`,
@@ -71,6 +73,53 @@ func registerDecompose(sc *godog.ScenarioContext, w *world) {
 		func() error { return w.assertSpikesAreExempt() })
 	sc.Then(`^the walking skeleton — an implementation ticket touching every layer — is the first implementation ticket workable once blocking risks retire$`,
 		func() error { return w.assertSkeletonLeadsTheImplementationPhase() })
+
+	sc.Given(`^the snapshot carries a risk item with dependent requirements$`, func() error {
+		w.newSpike()
+		return nil
+	})
+	sc.Then(`^the spike ticket blocks every ticket that depends on the risk$`, func() error {
+		s := w.spike
+		spikes := s.byKind(planner.KindSpike)
+		if len(spikes) != 1 {
+			return fmt.Errorf("the decomposition produced %d spikes", len(spikes))
+		}
+		// EVERY dependent, not merely one: the spike declares two blocked
+		// criteria and a wiring that reached only the first would leave the
+		// second startable ahead of the answer it needs.
+		for _, criterion := range []string{"AC-verdict", "AC-headless"} {
+			dependent := s.forCriterion(criterion)
+			if dependent == "" || dependent == spikes[0] {
+				continue // the spike's own criterion; it cannot block itself
+			}
+			if !s.tracker.blocks(spikes[0], dependent) {
+				return fmt.Errorf("the ticket for %s is not blocked by the spike: %v",
+					criterion, s.tracker.wired)
+			}
+		}
+		return nil
+	})
+	sc.Then(`^tickets with no dependency between them carry no relation$`, func() error {
+		s := w.spike
+		independent := s.forCriterion("AC-valid-url")
+		if independent == "" {
+			return fmt.Errorf("the plan has no independent ticket, so parallelism is untested")
+		}
+		// Relating everything to everything would serialize a plan that has
+		// parallel work in it — the opposite of what the relations buy.
+		for _, r := range s.tracker.wired {
+			if r.kind != "blocks" {
+				continue
+			}
+			if r.to == independent {
+				return fmt.Errorf("the independent ticket is blocked by %s", r.from)
+			}
+		}
+		return nil
+	})
+	sc.Then(`^an agent popping work receives an unblocked ticket$`, func() error {
+		return w.spike.assertPopIsUnblocked()
+	})
 
 	sc.Given(`^a decomposition producing tickets, relations, and assignments$`, func() error {
 		if err := w.copyLinkshort(); err != nil {
@@ -88,6 +137,46 @@ func registerDecompose(sc *godog.ScenarioContext, w *world) {
 		func() error { return w.assertNothingWorkableBeforeWiring() })
 	sc.Then(`^completed is stamped only after the final assignment barrier$`,
 		func() error { return w.assertCompletedFollowsTheLastAssignment() })
+}
+
+// assertTheEpicClosesOnlyOnCompletion drives the close, twice.
+//
+// Not a check that decomposition refrained from closing the epic: the Tracker
+// interface decomposition holds has no close at all, so that claim is true by
+// construction and asserting it would prove nothing. What is worth proving is
+// that the path which DOES close the epic refuses while the plan's tickets are
+// open — so it runs the real Claimer against a gate carrying sutra's
+// open-children rule, with this decomposition's own ticket count.
+func (w *world) assertTheEpicClosesOnlyOnCompletion() error {
+	if len(w.tickets) == 0 {
+		return fmt.Errorf("the plan filed no tickets, so no child could hold the epic open")
+	}
+	c := w.newClose()
+	const revision = 4
+	c.epics.revision = revision
+	if err := c.submitted(revision); err != nil {
+		return err
+	}
+
+	// Every ticket this decomposition filed is still open.
+	c.epics.openChildren = len(w.tickets)
+	_, err := c.claimer.Close(context.Background(), "/spec", w.firstEpicID, "verdict-1")
+	if err == nil {
+		return fmt.Errorf("the epic closed with %d tickets still open", len(w.tickets))
+	}
+	if !strings.Contains(err.Error(), "open-children") {
+		return fmt.Errorf("the close was refused for %q, not for the open children", err)
+	}
+
+	// The build completes: the children close, and only then does the epic.
+	c.epics.openChildren = 0
+	if _, err := c.claimer.Close(context.Background(), "/spec", w.firstEpicID, "verdict-1"); err != nil {
+		return fmt.Errorf("the epic would not close once the build completed: %w", err)
+	}
+	if len(c.epics.closedByKey) != 1 {
+		return fmt.Errorf("the epic closed %d times", len(c.epics.closedByKey))
+	}
+	return nil
 }
 
 // tracerPlan programs the fake PM with a plan that has shape.

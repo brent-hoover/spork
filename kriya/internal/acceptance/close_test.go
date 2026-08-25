@@ -29,12 +29,17 @@ type closeWorld struct {
 type epicGate struct {
 	closedByKey map[string]bool
 	revision    int64
-	keys        []string
-	fences      []int64
-	reviews     []string
-	revisions   []int
-	events      []string
-	err         error
+	// openChildren is how many tickets under the epic are still open. sutra
+	// refuses a close while any remain, and the live proof established that
+	// it checks this AFTER the subtree fence — the fence is a fence, and
+	// this gate is the authoritative check sitting on top of it.
+	openChildren int
+	keys         []string
+	fences       []int64
+	reviews      []string
+	revisions    []int
+	events       []string
+	err          error
 }
 
 func (e *epicGate) Close(
@@ -57,6 +62,9 @@ func (e *epicGate) Close(
 	if expectedSubtreeRevision != e.revision {
 		return fmt.Errorf("conflict: expected subtree_revision %d, current is %d",
 			expectedSubtreeRevision, e.revision)
+	}
+	if e.openChildren > 0 {
+		return fmt.Errorf("conflict: open-children: %d children are still open", e.openChildren)
 	}
 	e.closedByKey[key] = true
 	return nil

@@ -277,3 +277,69 @@ func registerSpikeOrdering(sc *godog.ScenarioContext, w *world) {
 		return nil
 	})
 }
+
+// assertPopIsUnblocked models sutra's offer and requires it to be startable.
+//
+// sutra offers assigned work FIFO but SKIPS anything an open issue blocks.
+// The live proof established that by assigning the BLOCKED ticket first and
+// watching sutra hand back the spike instead, and this asserts against the
+// same adverse order for the same reason: with the plan's own assignment
+// order — spikes first — the first candidate is unblocked already, the skip
+// never runs, and the assertion would pass with no relation wired at all.
+func (s *spikeWorld) assertPopIsUnblocked() error {
+	if len(s.tracker.assignOrder) == 0 {
+		return errors.New("nothing was assigned, so nothing could be popped")
+	}
+	open := map[string]bool{}
+	for _, t := range s.tickets {
+		open[t.IssueID] = true
+	}
+
+	// FIFO would hand out the blocked ticket first. Only the relation stops it.
+	queue := s.adverseQueue(open)
+	if !s.blockedByOpen(queue[0], open) {
+		return errors.New("the queue does not lead with a blocked ticket, so FIFO is not under test")
+	}
+
+	offered := ""
+	for _, issue := range queue {
+		if !s.blockedByOpen(issue, open) {
+			offered = issue
+			break
+		}
+	}
+	if offered == "" {
+		return errors.New("every assigned ticket is blocked: the plan cannot start at all")
+	}
+	// The offer must be the SPIKE: it led with a blocked ticket, so anything
+	// else reaching an agent means the risk was not ordered ahead of the work
+	// that depends on its answer.
+	spikes := s.byKind(planner.KindSpike)
+	if len(spikes) == 0 || offered != spikes[0] {
+		return fmt.Errorf("the pop offered %q from queue %v, not the spike %v", offered, queue, spikes)
+	}
+	return nil
+}
+
+// adverseQueue puts every blocked ticket ahead of everything else.
+func (s *spikeWorld) adverseQueue(open map[string]bool) []string {
+	var blocked, rest []string
+	for _, issue := range s.tracker.assignOrder {
+		if s.blockedByOpen(issue, open) {
+			blocked = append(blocked, issue)
+			continue
+		}
+		rest = append(rest, issue)
+	}
+	return append(blocked, rest...)
+}
+
+// blockedByOpen reports whether an open issue blocks this one.
+func (s *spikeWorld) blockedByOpen(issue string, open map[string]bool) bool {
+	for _, r := range s.tracker.wired {
+		if r.kind == "blocks" && r.to == issue && open[r.from] {
+			return true
+		}
+	}
+	return false
+}
