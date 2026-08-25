@@ -39,7 +39,7 @@ func TestASubmissionBindsToTheEpochItWasGiven(t *testing.T) {
 	}
 	c := claimer(claims, newDocCatalog(), newReviewDesk(),
 		&staticReport{body: "# Done"}, advances)
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 1, 7); err != nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 1, 7, "w-1"); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	got := claims.rows["/spec"]
@@ -54,7 +54,7 @@ func TestASubmissionBindsToTheEpochItWasGiven(t *testing.T) {
 func TestAnUnrenderableReportStopsASubmission(t *testing.T) {
 	report := &staticReport{err: errors.New("no plan to report on")}
 	c := claimer(newMemClaims(), newDocCatalog(), newReviewDesk(), report, newMemAdvances())
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7, "w-1"); err == nil {
 		t.Fatal("a submission proceeded with no report")
 	}
 }
@@ -82,7 +82,7 @@ func TestARecoveryThatCannotResolveItsTargetStops(t *testing.T) {
 	report := &staticReport{body: "# Done"}
 	docs.err = errors.New("crash")
 	if _, err := claimer(claims, docs, reviews, report, newMemAdvances()).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7, "w-1"); err == nil {
 		t.Fatal("expected the crash")
 	}
 	docs.err = nil
@@ -116,7 +116,7 @@ func TestAnUnwritableClaimStopsTheReviewRecord(t *testing.T) {
 	c := claimer(claims, docs, reviews, &staticReport{body: "# Done"}, newMemAdvances())
 	// The first two writes succeed; the third — recording the review — fails.
 	claims.failAfter = 2
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7, "w-1"); err == nil {
 		t.Fatal("a review whose id was never recorded read as submitted")
 	}
 }

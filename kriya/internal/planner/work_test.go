@@ -89,6 +89,13 @@ func (w *watch) plans(t *testing.T, id string) *watch {
 	return w
 }
 
+// feedPage programs what the feed returns from a cursor.
+func (w *watch) feedPage(from string, events []planner.WorkEvent, next string) {
+	f := w.work.Feed.(*workFeed)
+	f.pages[from] = events
+	f.next[from] = next
+}
+
 func (w *watch) epoch(t *testing.T) int {
 	t.Helper()
 	got, err := w.advances.Epoch(context.Background(), "/spec")

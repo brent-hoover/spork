@@ -143,7 +143,7 @@ func registerClaim(sc *godog.ScenarioContext, w *world) {
 		func() error {
 			c := w.newClaim()
 			c.docs.fail = errors.New("crash before the document existed")
-			_, c.err = c.claimer.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7)
+			_, c.err = c.claimer.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7, "w-1")
 			if c.err == nil {
 				return errors.New("the scenario's crash did not happen")
 			}
@@ -164,7 +164,7 @@ func registerClaim(sc *godog.ScenarioContext, w *world) {
 		func() error {
 			c := w.newClaim()
 			c.reviews.fail = errors.New("crash after the document existed")
-			_, c.err = c.claimer.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7)
+			_, c.err = c.claimer.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7, "w-1")
 			if c.err == nil {
 				return errors.New("the scenario's crash did not happen")
 			}

@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
 
 // Event kinds the tracker emits that can return work to a target.
@@ -92,6 +93,40 @@ func (w Work) Consume(ctx context.Context) (advanced int, next string, err error
 		return advanced, "", nil
 	}
 	return advanced, next, nil
+}
+
+// SyncTo moves the cursor to a completion claim's captured watermark.
+//
+// Everything at or before it is already accounted for: the detection that
+// armed the attempt saw the queue state those events produced. Without this
+// the watcher treats a build's OWN completion events as reopens — every
+// ticket completing emits a status change — and the epoch advances the moment
+// a claim exists, so no build could ever finish.
+//
+// FORWARD only. A watermark behind the cursor belongs to an older claim, and
+// rewinding would re-read a page for nothing.
+func (w Work) SyncTo(ctx context.Context, watermark string) error {
+	if watermark == "" {
+		return nil
+	}
+	to, err := strconv.ParseInt(watermark, 10, 64)
+	if err != nil {
+		// sutra's watermark and its cursor are the same decimal position.
+		// Anything else is a contract mismatch, and writing it would leave
+		// the cursor unreadable on the next pass.
+		return fmt.Errorf("watermark %q is not a feed position: %w", watermark, err)
+	}
+	cursor, err := w.Cursors.Current(ctx, w.Name())
+	if err != nil {
+		return fmt.Errorf("read work cursor: %w", err)
+	}
+	if at, err := strconv.ParseInt(cursor, 10, 64); err == nil && at >= to {
+		return nil
+	}
+	if err := w.Cursors.Advance(ctx, w.Name(), watermark); err != nil {
+		return fmt.Errorf("sync work cursor: %w", err)
+	}
+	return nil
 }
 
 // Advance moves the cursor past a page the caller has finished acting on.

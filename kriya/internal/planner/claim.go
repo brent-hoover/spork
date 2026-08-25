@@ -73,6 +73,11 @@ type CompletionClaim struct {
 	// original success under it — never a close-used conflict, since this
 	// very key stamped it.
 	CloseKey string
+	// Watermark is the feed position the detection that armed this attempt
+	// saw. Everything at or before it is accounted for by that detection —
+	// including the build's OWN completion events, which would otherwise read
+	// as reopens and destroy the claim the moment it existed.
+	Watermark string
 	// ReopenOwed records that this claim's close may be standing over a
 	// newer epoch. It is set when a stale claim is settled without having
 	// resolved whether its close landed: the epic could be closed with no
@@ -137,6 +142,16 @@ func CloseKey(targetKey string, epoch int, approvalEvent string) string {
 		strconv.Itoa(epoch) + ":" + approvalEvent)
 }
 
+// Synced marks the feed position a claim accounts for.
+//
+// Part of the protocol rather than something the caller does afterwards: the
+// events a detection already saw the effects of include the build's OWN
+// completion events, and a caller who forgot this step would have every one of
+// them read as a reopen the moment the claim existed.
+type Synced interface {
+	SyncTo(ctx context.Context, watermark string) error
+}
+
 // Epics closes a build's umbrella issue.
 type Epics interface {
 	// Close completes the epic, fenced on the subtree revision the claim
@@ -153,6 +168,9 @@ type Claimer struct {
 	Reviews   CompletionReviews
 	Epics     Epics
 	Epochs    Epochs
+	// Work marks the feed position this claim accounts for. Nil skips it,
+	// which is what a module-level test of the protocol itself wants.
+	Work Synced
 }
 
 // Submit opens the build-completion review for an armed target.
@@ -164,7 +182,7 @@ type Claimer struct {
 // replays exactly what was promised.
 func (c Claimer) Submit(
 	ctx context.Context, targetKey, projectID, epicID string,
-	epoch int, subtreeRevision int64,
+	epoch int, subtreeRevision int64, watermark string,
 ) (CompletionClaim, error) {
 	// The epoch is the CALLER'S, captured with the detection that armed this
 	// attempt. Re-reading it here would bind the claim to an epoch nothing
@@ -185,9 +203,18 @@ func (c Claimer) Submit(
 		TargetKey: targetKey, State: CompletionSubmitting, Epoch: epoch,
 		SubmissionKey: submission, ReportKey: ReportKey(submission),
 		PendingReport: report, SubtreeRevision: subtreeRevision,
+		Watermark: watermark,
 	}
 	if err := c.Claims.Upsert(ctx, claim); err != nil {
 		return CompletionClaim{}, fmt.Errorf("record submitting claim for %s: %w", targetKey, err)
+	}
+	// Before the external calls, and before anything can read the feed again:
+	// everything up to this watermark is accounted for by the detection that
+	// armed the attempt, the build's own completion events included.
+	if c.Work != nil {
+		if err := c.Work.SyncTo(ctx, watermark); err != nil {
+			return CompletionClaim{}, err
+		}
 	}
 	return c.finish(ctx, claim, projectID, epicID)
 }
@@ -267,14 +294,24 @@ func (c Claimer) Recover(
 // original success. A claim whose epoch has since moved surfaces as
 // ErrStaleClaim rather than stamping — the close is real, the stamp is not.
 func (c Claimer) RecoverCloses(
-	ctx context.Context, epic func(CompletionClaim) (string, error),
+	ctx context.Context, targetKey string, epic func(CompletionClaim) (string, error),
 ) (int, error) {
 	pending, err := c.Claims.Closing(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list closing claims: %w", err)
 	}
 	var stale error
+	var replayed int
 	for _, claim := range pending {
+		if targetKey != "" && claim.TargetKey != targetKey {
+			// Another target's close. Startup consumes work events for the
+			// target it was invoked for and no other, so replaying a foreign
+			// close here would do it with an epoch nothing had refreshed:
+			// its cached conflict comes back and recovery fails for a build
+			// this command is not even about.
+			continue
+		}
+		replayed++
 		// The epoch FIRST, before sutra. A subtree or reversed-approval
 		// conflict is cached under the persisted key, so replaying the call
 		// would return that conflict on every startup — and since only a
@@ -309,7 +346,7 @@ func (c Claimer) RecoverCloses(
 			return 0, err
 		}
 	}
-	return len(pending), stale
+	return replayed, stale
 }
 
 // settleStale parks a claim whose epoch has moved past it.

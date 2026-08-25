@@ -16,8 +16,11 @@ func TestTheClaimerIsWiredWithEveryCollaborator(t *testing.T) {
 	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	c := completionClaimer(db, "actor-1")
+	c := completionClaimer(db, "actor-1", "/spec")
 	for name, wired := range map[string]bool{
+		// Without it, every completion event the build itself emitted reads
+		// as a reopen the moment the claim exists.
+		"work":      c.Work != nil,
 		"claims":    c.Claims != nil,
 		"reports":   c.Reports != nil,
 		"documents": c.Documents != nil,

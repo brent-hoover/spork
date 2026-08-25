@@ -44,10 +44,17 @@ ALTER TABLE completion_claim ADD COLUMN close_key TEXT NOT NULL DEFAULT ''`
 const ReopenOwedMigration = `
 ALTER TABLE completion_claim ADD COLUMN reopen_owed INTEGER NOT NULL DEFAULT 0`
 
+// WatermarkMigration records the feed position a claim was captured at.
+//
+// Its own migration, for the same reason as every other addition here: the
+// claim's table has shipped.
+const WatermarkMigration = `
+ALTER TABLE completion_claim ADD COLUMN watermark TEXT NOT NULL DEFAULT ''`
+
 // claimColumns is every column a CompletionClaim reads back, in scan order.
 const claimColumns = `state, completion_epoch, submission_key, report_key,
 	pending_report, report_doc, report_version, review_id, review_revision,
-	subtree_revision, approval_event, close_key, reopen_owed`
+	subtree_revision, approval_event, close_key, reopen_owed, watermark`
 
 // SQLClaims persists completion claims in SQLite.
 type SQLClaims struct{ DB *sql.DB }
@@ -58,8 +65,8 @@ func (s SQLClaims) Upsert(ctx context.Context, c CompletionClaim) error {
 		`INSERT INTO completion_claim (target_key, state, completion_epoch,
 		   submission_key, report_key, pending_report, report_doc, report_version,
 		   review_id, review_revision, subtree_revision, approval_event, close_key,
-		   reopen_owed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   reopen_owed, watermark)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(target_key) DO UPDATE SET
 		   state = excluded.state, completion_epoch = excluded.completion_epoch,
 		   submission_key = excluded.submission_key, report_key = excluded.report_key,
@@ -68,10 +75,15 @@ func (s SQLClaims) Upsert(ctx context.Context, c CompletionClaim) error {
 		   review_revision = excluded.review_revision,
 		   subtree_revision = excluded.subtree_revision,
 		   approval_event = excluded.approval_event, close_key = excluded.close_key,
-		   reopen_owed = excluded.reopen_owed`,
+		   watermark = excluded.watermark,
+		   -- NEVER cleared by a later attempt. An unresolved reopen
+		   -- obligation outlives the claim that incurred it: the epic may be
+		   -- closed over work that returned, and the next attempt knowing
+		   -- nothing about it does not make that untrue.
+		   reopen_owed = completion_claim.reopen_owed OR excluded.reopen_owed`,
 		c.TargetKey, c.State, c.Epoch, c.SubmissionKey, c.ReportKey, c.PendingReport,
 		c.ReportDoc, c.ReportVersion, c.ReviewID, c.ReviewRevision, c.SubtreeRevision,
-		c.ApprovalEvent, c.CloseKey, c.ReopenOwed)
+		c.ApprovalEvent, c.CloseKey, c.ReopenOwed, c.Watermark)
 	if err != nil {
 		return fmt.Errorf("upsert completion claim: %w", err)
 	}
@@ -85,7 +97,7 @@ func (s SQLClaims) Find(ctx context.Context, targetKey string) (CompletionClaim,
 		`SELECT `+claimColumns+` FROM completion_claim WHERE target_key = ?`, targetKey).
 		Scan(&c.State, &c.Epoch, &c.SubmissionKey, &c.ReportKey, &c.PendingReport,
 			&c.ReportDoc, &c.ReportVersion, &c.ReviewID, &c.ReviewRevision,
-			&c.SubtreeRevision, &c.ApprovalEvent, &c.CloseKey, &c.ReopenOwed)
+			&c.SubtreeRevision, &c.ApprovalEvent, &c.CloseKey, &c.ReopenOwed, &c.Watermark)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CompletionClaim{}, false, nil
 	}
@@ -125,7 +137,7 @@ func (s SQLClaims) inState(ctx context.Context, state string) ([]CompletionClaim
 		if err := rows.Scan(&c.TargetKey, &c.State, &c.Epoch, &c.SubmissionKey,
 			&c.ReportKey, &c.PendingReport, &c.ReportDoc, &c.ReportVersion,
 			&c.ReviewID, &c.ReviewRevision, &c.SubtreeRevision,
-			&c.ApprovalEvent, &c.CloseKey, &c.ReopenOwed); err != nil {
+			&c.ApprovalEvent, &c.CloseKey, &c.ReopenOwed, &c.Watermark); err != nil {
 			return nil, fmt.Errorf("scan completion claim: %w", err)
 		}
 		out = append(out, c)

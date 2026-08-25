@@ -10,7 +10,8 @@ import (
 func TestACompletionClaimSurvivesTheRoundTrip(t *testing.T) {
 	// Recovery rebuilds the original request from these fields, so every one
 	// of them has to come back.
-	s := planner.SQLClaims{DB: sqlDB(t, planner.ClaimMigration, planner.CloseMigration, planner.ReopenOwedMigration)}
+	s := planner.SQLClaims{DB: sqlDB(t, planner.ClaimMigration, planner.CloseMigration, planner.ReopenOwedMigration,
+		planner.WatermarkMigration)}
 	want := planner.CompletionClaim{
 		TargetKey: "/spec", State: planner.CompletionSubmitting, Epoch: 3,
 		SubmissionKey: "sub-key", ReportKey: "doc-key", PendingReport: "# Done",
@@ -30,7 +31,8 @@ func TestACompletionClaimSurvivesTheRoundTrip(t *testing.T) {
 }
 
 func TestSubmittingClaimsComeBackWhole(t *testing.T) {
-	s := planner.SQLClaims{DB: sqlDB(t, planner.ClaimMigration, planner.CloseMigration, planner.ReopenOwedMigration)}
+	s := planner.SQLClaims{DB: sqlDB(t, planner.ClaimMigration, planner.CloseMigration, planner.ReopenOwedMigration,
+		planner.WatermarkMigration)}
 	for _, c := range []planner.CompletionClaim{
 		{TargetKey: "/b", State: planner.CompletionSubmitting, SubmissionKey: "k-b", Epoch: 1},
 		{TargetKey: "/a", State: planner.CompletionSubmitting, SubmissionKey: "k-a", Epoch: 2},

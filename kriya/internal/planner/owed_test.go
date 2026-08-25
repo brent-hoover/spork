@@ -51,7 +51,7 @@ func TestARecoveredStaleCloseAlsoOwesAReopen(t *testing.T) {
 		t.Fatalf("advance: %v", err)
 	}
 	if _, err := closer(claims, epics, advances).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "epic-1", nil
 		}); !errors.Is(err, planner.ErrStaleClaim) {
 		t.Fatalf("got %v", err)

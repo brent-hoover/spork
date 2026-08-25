@@ -215,8 +215,9 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 	// repository-independent.
 	steps := recoverySteps(in, ws, reviews, recoveryLoop(db), submitterOn(db, actor),
 		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor,
-		completionClaimer(db, actor), targetsFor(db),
-		func(ctx context.Context) error { return consumeWork(ctx, db, target, actor) })
+		completionClaimer(db, actor, target), targetsFor(db),
+		func(ctx context.Context) error { return consumeWork(ctx, db, target, actor) },
+		target)
 	if repo == "" {
 		steps = repositoryIndependent(steps)
 	}
@@ -394,10 +395,11 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 	if err != nil {
 		return fmt.Errorf("read epic %s: %w", row.EpicID, err)
 	}
-	// The epoch the DETECTION was about. Re-reading it here would bind the
-	// claim to one nothing checked for completion.
-	_, err = completionClaimer(db, actor).Submit(
-		ctx, target, row.ProjectID, row.EpicID, got.Epoch, epic.SubtreeRevision)
+	// The epoch and the WATERMARK the detection was about. Re-reading either
+	// here would bind the claim to state nothing checked for completion.
+	_, err = completionClaimer(db, actor, target).Submit(
+		ctx, target, row.ProjectID, row.EpicID,
+		got.Epoch, epic.SubtreeRevision, got.Watermark)
 	return err
 }
 
@@ -424,7 +426,7 @@ func observeCompletionApproval(ctx context.Context, db *sql.DB, target, actor st
 	if err != nil || !found {
 		return err
 	}
-	_, err = completionClaimer(db, actor).Close(ctx, target, row.EpicID, rv.LatestVerdictEvent)
+	_, err = completionClaimer(db, actor, target).Close(ctx, target, row.EpicID, rv.LatestVerdictEvent)
 	if errors.Is(err, planner.ErrStaleClaim) {
 		// The approval was real and it covered a build that is no longer this
 		// one. The operator hears about it rather than the build silently
@@ -492,9 +494,15 @@ func targetsFor(db *sql.DB) func(planner.CompletionClaim) (string, string, error
 }
 
 // completionClaimer wires the build-completion claim protocol.
-func completionClaimer(db *sql.DB, actor string) planner.Claimer {
+func completionClaimer(db *sql.DB, actor, target string) planner.Claimer {
 	c := trackerclient.New(sutraURL())
 	return planner.Claimer{
+		// Wired HERE, not by the caller. Every ticket completing during a
+		// build emits a status change, and a caller who forgot this seam
+		// would have each of them read as a reopen the moment the claim
+		// existed — so no build could ever complete. The epic is not needed:
+		// the sync only moves a cursor.
+		Work:      workWatcher(db, planner.BuildTarget{}, target, actor),
 		Claims:    planner.SQLClaims{DB: db},
 		Reports:   reportFor(db),
 		Documents: sutraDocs{c: c, actor: actor},
@@ -874,7 +882,7 @@ func recoverySteps(
 	loop devloop.Loop, submitter orchestrator.Submitter,
 	queue orchestrator.Queue, completer orchestrator.Completer, actor string,
 	claimer planner.Claimer, targets func(planner.CompletionClaim) (string, string, error),
-	work func(context.Context) error,
+	work func(context.Context) error, target string,
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
@@ -900,7 +908,7 @@ func recoverySteps(
 			// PERSISTED key: a close that landed returns its original
 			// success, never a close-used conflict, because that very key is
 			// what stamped it.
-			_, err := claimer.RecoverCloses(ctx, func(c planner.CompletionClaim) (string, error) {
+			_, err := claimer.RecoverCloses(ctx, target, func(c planner.CompletionClaim) (string, error) {
 				_, epic, err := targets(c)
 				return epic, err
 			})

@@ -28,7 +28,7 @@ func TestRecoveryChecksTheEpochBeforeReplayingSutra(t *testing.T) {
 	}
 
 	_, err := closer(claims, epics, advances).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "epic-1", nil
 		})
 	if !errors.Is(err, planner.ErrStaleClaim) {
@@ -54,13 +54,13 @@ func TestAStaleClosingClaimIsSettledRatherThanRetriedForever(t *testing.T) {
 		t.Fatalf("advance: %v", err)
 	}
 	c := closer(claims, epics, advances)
-	if _, err := c.RecoverCloses(context.Background(),
+	if _, err := c.RecoverCloses(context.Background(), "",
 		func(planner.CompletionClaim) (string, error) { return "epic-1", nil }); !errors.Is(err, planner.ErrStaleClaim) {
 		t.Fatalf("first recovery: %v", err)
 	}
 	// The second startup finds nothing to replay: the stale claim was
 	// settled, and a fresh attempt at the new epoch is what comes next.
-	n, err := c.RecoverCloses(context.Background(),
+	n, err := c.RecoverCloses(context.Background(), "",
 		func(planner.CompletionClaim) (string, error) { return "epic-1", nil })
 	if err != nil {
 		t.Fatalf("second recovery: %v", err)
@@ -82,7 +82,7 @@ func TestAClosingClaimAtItsOwnEpochStillReplays(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	n, err := closer(claims, epics, newMemAdvances()).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "epic-1", nil
 		})
 	if err != nil {

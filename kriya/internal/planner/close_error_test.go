@@ -69,7 +69,7 @@ func TestRecoveryReplaysEveryClosingClaim(t *testing.T) {
 		}
 	}
 	n, err := closer(claims, epics, advances).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "epic-1", nil
 		})
 	if err != nil {
@@ -106,7 +106,7 @@ func TestRecoveryFinishesTheOthersWhenOneIsStale(t *testing.T) {
 		}
 	}
 	_, err := closer(claims, epics, advances).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "epic-1", nil
 		})
 	if !errors.Is(err, planner.ErrStaleClaim) {
@@ -124,7 +124,7 @@ func TestAnUnlistableClosingSetStopsRecovery(t *testing.T) {
 	claims := newMemClaims()
 	claims.err = errors.New("disk full")
 	if _, err := closer(claims, newEpicDesk(), newMemAdvances()).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "epic-1", nil
 		}); err == nil {
 		t.Fatal("an unreadable claim store read as nothing closing")
@@ -140,7 +140,7 @@ func TestARecoveredCloseThatCannotResolveItsEpicStops(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := closer(claims, newEpicDesk(), newMemAdvances()).
-		RecoverCloses(context.Background(), func(planner.CompletionClaim) (string, error) {
+		RecoverCloses(context.Background(), "", func(planner.CompletionClaim) (string, error) {
 			return "", errors.New("no build target for this claim")
 		}); err == nil {
 		t.Fatal("a claim with no epic was replayed anyway")
