@@ -124,6 +124,48 @@ func TestABlankLayerNameCountsForNothing(t *testing.T) {
 		"touches 1 layer(s)")
 }
 
+func TestAWhitespaceLayerNameCountsForNothing(t *testing.T) {
+	// The schema requires only minLength 1, so " " is a valid string and an
+	// empty layer name. Checking for "" alone let it through as a second
+	// layer, and a one-layer stripe passed as an end-to-end slice.
+	mustReject(t, `{"tickets":[
+	  {"title":"add the column","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["store","  "]}]}`,
+		"touches 1 layer(s)")
+}
+
+func TestALayerIsTheSameLayerWithSpacesAroundIt(t *testing.T) {
+	// Coverage compared normalized layer names against raw ones, so a stray
+	// space would make " http " a layer the skeleton does not touch — and a
+	// skeleton that does cover the plan would be refused.
+	_, err := decomposeReply(t, `{"tickets":[
+	  {"title":"skeleton","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":[" http ","store"]},
+	  {"title":"later","body":"","kind":"implementation",
+	   "criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
+	if err != nil {
+		t.Fatalf("a skeleton covering the plan was refused over whitespace: %v", err)
+	}
+}
+
+func TestThePMIsToldTheSkeletonGatingRule(t *testing.T) {
+	// A rule kriya enforces but never states is one the PM can violate while
+	// obeying every instruction it was given — and decomposition has no
+	// retry path, so the build simply fails.
+	in, _, ag := decomposer(t, `{"tickets":[
+	  {"title":"skeleton","body":"","kind":"implementation","skeleton":true,
+	   "criteria":["AC-valid-url"],"layers":["http","store"]}]}`)
+	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("decompose: %v", err)
+	}
+	prompt := ag.Requests[0].Prompt
+	for _, want := range []string{"gate the skeleton", "gates every other implementation ticket"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the PM prompt never says %q", want)
+		}
+	}
+}
+
 func TestAPlanOfNothingButResearchIsRefused(t *testing.T) {
 	// A decomposition that produces only spikes builds nothing. It would
 	// reach the completion protocol having shipped no code, where it is

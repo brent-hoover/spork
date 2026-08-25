@@ -48,6 +48,8 @@ func decomposePrompt(snap Snapshot, known map[string]bool) string {
 	b.WriteString("- Mark exactly one implementation ticket \"skeleton\": true. It is the walking skeleton, the\n")
 	b.WriteString("  thinnest slice that touches EVERY layer any other ticket touches, and it is worked first.\n")
 	b.WriteString("- Spike and research tickets are exempt: they cut through no layers and are never the skeleton.\n")
+	b.WriteString("- A spike may gate the skeleton ONLY if it gates every other implementation ticket too.\n")
+	b.WriteString("  Otherwise leave the skeleton ungated: an unblocked ticket would be worked ahead of it.\n")
 	b.WriteString("- Every ticket cites the REQ and AC ids it satisfies as BARE IDS, never prose, and may cite ONLY these:\n  ")
 	b.WriteString(strings.Join(ids, ", "))
 	b.WriteString("\n\nSpecification:\n")

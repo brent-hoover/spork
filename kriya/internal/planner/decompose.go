@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"kriya/internal/agent"
 )
@@ -370,7 +371,7 @@ func validateSlices(tickets []Ticket) error {
 			continue
 		}
 		implementations++
-		named := distinct(t.Layers)
+		named := normalizeLayers(t.Layers)
 		// DISTINCT: counting entries let ["store", "store"] pass as a slice
 		// while touching one layer, which is precisely the stripe the rule
 		// exists to refuse.
@@ -407,8 +408,12 @@ func validateSlices(tickets []Ticket) error {
 	// skeleton is the thinnest slice that proves the whole stack connects,
 	// so a layer some later ticket reaches and the skeleton does not is a
 	// layer whose wiring nothing has demonstrated.
+	// Against the NORMALIZED names on both sides. Comparing normalized layers
+	// to raw ones would make " http " and "http" different layers, so a
+	// skeleton that does cover the plan would be refused for a stray space.
+	covered := normalizeLayers(tickets[skeleton].Layers)
 	for l := range layers {
-		if !contains(tickets[skeleton].Layers, l) {
+		if !contains(covered, l) {
 			return fmt.Errorf("the walking skeleton %q does not touch layer %q, which the plan does",
 				tickets[skeleton].Title, l)
 		}
@@ -455,11 +460,16 @@ func validateSkeletonLeads(tickets []Ticket, skeleton int) error {
 	return nil
 }
 
-// distinct returns the non-blank values of a list, without repeats.
-func distinct(values []string) []string {
+// normalizeLayers reduces a layer list to the distinct layers it names.
+//
+// Trimmed before the blank check, because the schema requires only minLength
+// 1: " " is a valid string and an empty layer name. Untrimmed, ["store", " "]
+// counted as two layers and passed as an end-to-end slice while touching one.
+func normalizeLayers(values []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
 	for _, v := range values {
+		v = strings.TrimSpace(v)
 		if v == "" || seen[v] {
 			continue
 		}
