@@ -52,9 +52,11 @@ type Intaker struct {
 type TicketStore interface {
 	Put(ctx context.Context, targetKey string, t Ticket) error
 	Find(ctx context.Context, targetKey, issue string) (Ticket, bool, error)
-	// ForTarget lists the whole set. A same-key retry that must not
-	// re-decompose answers from here rather than by asking the agent again.
-	ForTarget(ctx context.Context, targetKey string) ([]Ticket, error)
+	// ForPlan lists ONE decomposition's tickets. A same-key retry that must
+	// not re-decompose answers from here rather than by asking the agent
+	// again — and by plan rather than by target, because a target
+	// accumulates plans as decompositions supersede each other.
+	ForPlan(ctx context.Context, decompositionKey string) ([]Ticket, error)
 }
 
 // admitReport applies the three report-level checks.

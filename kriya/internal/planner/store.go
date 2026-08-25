@@ -276,6 +276,15 @@ const TicketKindMigration = `
 ALTER TABLE planned_ticket ADD COLUMN kind TEXT NOT NULL DEFAULT 'implementation';
 ALTER TABLE planned_ticket ADD COLUMN blocks TEXT NOT NULL DEFAULT '[]'`
 
+// TicketPlanMigration binds a ticket to the decomposition that produced it.
+//
+// Its own migration, because TicketSliceMigration has shipped. Existing rows
+// get an empty plan, which is honest: they were written when a target had one
+// plan and nothing recorded which. They still answer target-scoped reads.
+const TicketPlanMigration = `
+ALTER TABLE planned_ticket ADD COLUMN plan TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_planned_ticket_plan ON planned_ticket(plan)`
+
 // TicketSliceMigration records the plan shape a tracer bullet declares.
 //
 // Its own migration, because TicketKindMigration has shipped: a database that
@@ -373,15 +382,16 @@ func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
 	}
 	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO planned_ticket
-		   (issue, target_key, title, body, criteria, kind, blocks, layers, skeleton)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   (issue, target_key, title, body, criteria, kind, blocks, layers, skeleton, plan)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(issue) DO UPDATE SET
 		   target_key = excluded.target_key, title = excluded.title,
 		   body = excluded.body, criteria = excluded.criteria,
 		   kind = excluded.kind, blocks = excluded.blocks,
-		   layers = excluded.layers, skeleton = excluded.skeleton`,
+		   layers = excluded.layers, skeleton = excluded.skeleton,
+		   plan = excluded.plan`,
 		t.IssueID, targetKey, t.Title, t.Body, string(criteria), kindOf(t), string(blocks),
-		string(layers), t.Skeleton)
+		string(layers), t.Skeleton, t.Plan)
 	if err != nil {
 		return fmt.Errorf("record planned ticket: %w", err)
 	}
@@ -407,11 +417,18 @@ func kindOf(t Ticket) string {
 // way twice.
 func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT issue, title, body, criteria, kind, blocks, layers, skeleton
-		   FROM planned_ticket WHERE target_key = ? ORDER BY issue`, targetKey)
+		`SELECT `+ticketColumns+` FROM planned_ticket
+		   WHERE target_key = ? ORDER BY issue`, targetKey)
 	if err != nil {
 		return nil, fmt.Errorf("query planned tickets: %w", err)
 	}
+	return scanTickets(rows)
+}
+
+// scanTickets drains a ticket query. One drain for every ticket read path, so
+// a column added to the select list cannot be decoded by one and dropped by
+// another — which is how layers and skeleton became write-only columns.
+func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 	defer func() { _ = rows.Close() }()
 
 	var out []Ticket
@@ -419,7 +436,7 @@ func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, 
 		var t Ticket
 		var criteria, blocks, layers string
 		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria,
-			&t.Kind, &blocks, &layers, &t.Skeleton); err != nil {
+			&t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan); err != nil {
 			return nil, fmt.Errorf("scan planned ticket: %w", err)
 		}
 		if err := decodeTicketLists(&t, criteria, blocks, layers); err != nil {
@@ -436,6 +453,24 @@ func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, 
 	return out, nil
 }
 
+// ticketColumns is the read list every ticket query shares.
+const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skeleton, plan`
+
+// ForPlan lists ONE decomposition's tickets.
+//
+// A same-key retry answers from here. Scoped to the plan rather than the
+// target because a target accumulates plans, and the union of every
+// generation's tickets is not any one decomposition's output.
+func (s SQLTickets) ForPlan(ctx context.Context, decompositionKey string) ([]Ticket, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+ticketColumns+` FROM planned_ticket
+		   WHERE plan = ? ORDER BY issue`, decompositionKey)
+	if err != nil {
+		return nil, fmt.Errorf("query plan tickets: %w", err)
+	}
+	return scanTickets(rows)
+}
+
 // Find reads a ticket by the issue it became, within one target's plan.
 //
 // SCOPED to the target, because a pop is identity-wide: sutra offers whatever
@@ -446,9 +481,9 @@ func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, 
 	t := Ticket{IssueID: issue}
 	var criteria, blocks, layers string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT title, body, criteria, kind, blocks, layers, skeleton FROM planned_ticket
-		   WHERE issue = ? AND target_key = ?`, issue, targetKey).
-		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton)
+		`SELECT title, body, criteria, kind, blocks, layers, skeleton, plan
+		   FROM planned_ticket WHERE issue = ? AND target_key = ?`, issue, targetKey).
+		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil
 	}

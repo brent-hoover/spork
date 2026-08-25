@@ -94,6 +94,10 @@ type Ticket struct {
 	// implementation work, so it is the first thing workable once the
 	// blocking risks retire.
 	Skeleton bool `json:"skeleton,omitempty"`
+	// Plan is the decomposition key that produced this ticket. A target
+	// accumulates plans, so without it a ticket set cannot be told apart from
+	// the union of every generation's tickets.
+	Plan string `json:"-"`
 	// IssueID is the sutra issue this ticket became. Not from the agent —
 	// stamped after creation, so a review can hang off the right issue
 	// without anything having to look it up by title.
@@ -114,7 +118,14 @@ type ticketReply struct {
 func (i Intaker) Decompose(
 	ctx context.Context, target BuildTarget, snap Snapshot, generation int, actor string,
 ) ([]Ticket, error) {
-	key := DecompositionKey(target.ProjectKey, target.TargetKey, target.SpecHash, generation)
+	// From the SNAPSHOT's hash, never the target row's. EnsureEpic returns
+	// the existing target with its ORIGINAL hash on purpose — the epic's
+	// idempotency keys were derived from it, and one epic umbrellas a target
+	// forever. A plan is the opposite: it identifies the decomposition of the
+	// spec version in hand, so after an H1 -> H2 intake the plan must be H2's.
+	// Taking the target's hash made the key, the row and every report claim
+	// H1 while the tickets came from H2.
+	key := DecompositionKey(target.ProjectKey, target.TargetKey, snap.Hash, generation)
 
 	// FIRST — before the agent, before the tracker, before anything. A
 	// request that decomposed before resolving its own key would compete
@@ -147,7 +158,7 @@ func (i Intaker) Decompose(
 	// reads this stamp, and no row at all is indistinguishable from a target
 	// nobody has planned.
 	plan := Plan{
-		Key: key, TargetKey: target.TargetKey, SpecHash: target.SpecHash,
+		Key: key, TargetKey: target.TargetKey, SpecHash: snap.Hash,
 		Generation: generation, State: PlanPending,
 	}
 	if err := i.recordPlan(ctx, plan); err != nil {
@@ -169,7 +180,7 @@ func (i Intaker) Decompose(
 	if err := i.recordPlan(ctx, plan); err != nil {
 		return nil, err
 	}
-	if err := i.filePlan(ctx, target, tickets, actor); err != nil {
+	if err := i.filePlan(ctx, target, plan, tickets, actor); err != nil {
 		return nil, err
 	}
 	// The final assignment barrier is passed: every ticket exists, is
@@ -193,20 +204,31 @@ func (i Intaker) Decompose(
 // spikes are assigned before implementation work, because sutra offers work
 // FIFO and no tracker-side priority is assumed — the order IS the guarantee.
 func (i Intaker) filePlan(
-	ctx context.Context, target BuildTarget, tickets []Ticket, actor string,
+	ctx context.Context, target BuildTarget, plan Plan, tickets []Ticket, actor string,
 ) error {
 	for n := range tickets {
-		if err := i.createTicket(ctx, target, tickets, n, actor); err != nil {
+		if err := i.createTicket(ctx, target, plan, tickets, n, actor); err != nil {
 			return err
 		}
 	}
-	if err := i.wireBlocks(ctx, target, tickets, actor); err != nil {
+	if err := i.wireBlocks(ctx, plan, tickets, actor); err != nil {
 		return err
 	}
-	if err := i.assign(ctx, target, tickets, KindSpike, actor); err != nil {
+	if err := i.assign(ctx, plan, tickets, KindSpike, actor); err != nil {
 		return err
 	}
-	return i.assign(ctx, target, tickets, KindImplementation, actor)
+	return i.assign(ctx, plan, tickets, KindImplementation, actor)
+}
+
+// planStepKey derives the idempotency key for one step of one plan.
+//
+// Scoped to the DECOMPOSITION KEY, which carries the intake generation.
+// Keying on (target, spec hash) instead made an H1 -> H2 -> H1 revert present
+// the FIRST plan's keys: sutra would settle each call under them and replay
+// the original tickets, so the revert produced no new work at all — the exact
+// replay the generation was added to the plan's identity to prevent.
+func planStepKey(step, decompositionKey string) string {
+	return idempotencyKey(step, decompositionKey, "")
 }
 
 // wireBlocks relates each spike to the tickets waiting on its answer.
@@ -215,7 +237,7 @@ func (i Intaker) filePlan(
 // validates ids against the snapshot, and trusting an agent about which of its
 // own tickets to block is trusting it about something it can get wrong.
 func (i Intaker) wireBlocks(
-	ctx context.Context, target BuildTarget, tickets []Ticket, actor string,
+	ctx context.Context, plan Plan, tickets []Ticket, actor string,
 ) error {
 	for n, spike := range tickets {
 		if spike.Kind != KindSpike {
@@ -234,8 +256,7 @@ func (i Intaker) wireBlocks(
 			// nothing can ever pop. The n == m guard above is what prevents
 			// it; another spike sharing the criterion is genuinely blocked.
 			if err := i.Tracker.AddRelation(ctx, spike.IssueID, "blocks", other.IssueID, actor,
-				idempotencyKey(fmt.Sprintf("blocks-%d-%d", n, m),
-					target.TargetKey, target.SpecHash)); err != nil {
+				planStepKey(fmt.Sprintf("blocks-%d-%d", n, m), plan.Key)); err != nil {
 				return fmt.Errorf("block ticket %d behind spike %d: %w", m, n, err)
 			}
 		}
@@ -259,7 +280,7 @@ func dependsOn(ticket Ticket, blocked map[string]bool) bool {
 // real: sutra offers work FIFO, so a spike assigned after an implementation
 // ticket pops after it.
 func (i Intaker) assign(
-	ctx context.Context, target BuildTarget, tickets []Ticket, kind, actor string,
+	ctx context.Context, plan Plan, tickets []Ticket, kind, actor string,
 ) error {
 	for _, n := range assignmentOrder(tickets, kind) {
 		ticket := tickets[n]
@@ -268,8 +289,7 @@ func (i Intaker) assign(
 		// unassigned ticket is one nothing ever claims — the build would
 		// decompose, report its tickets, and idle forever.
 		if err := i.Tracker.AssignIssue(ctx, ticket.IssueID, actor, actor,
-			idempotencyKey(fmt.Sprintf("assign-%d", n),
-				target.TargetKey, target.SpecHash)); err != nil {
+			planStepKey(fmt.Sprintf("assign-%d", n), plan.Key)); err != nil {
 			return fmt.Errorf("assign ticket %d: %w", n, err)
 		}
 	}
@@ -318,11 +338,11 @@ func (i Intaker) recordPlan(ctx context.Context, plan Plan) error {
 // a ticket popped before its blocking relation exists is one started ahead of
 // the risk it depends on.
 func (i Intaker) createTicket(
-	ctx context.Context, target BuildTarget, tickets []Ticket, n int, actor string,
+	ctx context.Context, target BuildTarget, plan Plan, tickets []Ticket, n int, actor string,
 ) error {
 	ticket := tickets[n]
 	issueID, err := i.Tracker.CreateIssue(ctx, target.ProjectID, ticket.Title, ticket.Body, actor,
-		idempotencyKey(fmt.Sprintf("ticket-%d", n), target.TargetKey, target.SpecHash))
+		planStepKey(fmt.Sprintf("ticket-%d", n), plan.Key))
 	if err != nil {
 		return fmt.Errorf("create ticket %d: %w", n, err)
 	}
@@ -332,12 +352,16 @@ func (i Intaker) createTicket(
 	// title, and a run built from those alone reaches the product owner with
 	// nothing to validate against.
 	if i.Tickets != nil {
+		// Recorded against the PLAN, not the target. A target accumulates
+		// plans, so a target-scoped set mixes every generation's tickets
+		// together and a retry of one plan answers with all of them.
+		tickets[n].Plan = plan.Key
 		if err := i.Tickets.Put(ctx, target.TargetKey, tickets[n]); err != nil {
 			return fmt.Errorf("record ticket %d: %w", n, err)
 		}
 	}
 	if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
-		idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
+		planStepKey(fmt.Sprintf("parent-%d", n), plan.Key)); err != nil {
 		return fmt.Errorf("parent ticket %d under the epic: %w", n, err)
 	}
 	return nil
@@ -530,9 +554,12 @@ func (i Intaker) plannedSet(ctx context.Context, plan Plan) ([]Ticket, error) {
 	if i.Tickets == nil {
 		return nil, nil
 	}
-	tickets, err := i.Tickets.ForTarget(ctx, plan.TargetKey)
+	// By PLAN. A target accumulates plans as decompositions supersede each
+	// other, so answering a retry from the target's tickets would hand back
+	// every generation's work as though one decomposition had produced it.
+	tickets, err := i.Tickets.ForPlan(ctx, plan.Key)
 	if err != nil {
-		return nil, fmt.Errorf("read the planned tickets of %s: %w", plan.TargetKey, err)
+		return nil, fmt.Errorf("read the planned tickets of plan %s: %w", plan.Key[:12], err)
 	}
 	return tickets, nil
 }

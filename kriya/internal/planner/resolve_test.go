@@ -126,8 +126,14 @@ func (p *planningTickets) Find(context.Context, string, string) (planner.Ticket,
 	return planner.Ticket{}, false, nil
 }
 
-func (p *planningTickets) ForTarget(context.Context, string) ([]planner.Ticket, error) {
-	return p.rows, nil
+func (p *planningTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
+	var out []planner.Ticket
+	for _, t := range p.rows {
+		if t.Plan == key {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 func TestASameKeyRetryNeverDecomposesTwice(t *testing.T) {

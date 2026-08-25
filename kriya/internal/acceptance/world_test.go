@@ -540,3 +540,15 @@ func (t *worldTickets) Find(_ context.Context, targetKey, issue string) (planner
 func (t *worldTickets) ForTarget(_ context.Context, targetKey string) ([]planner.Ticket, error) {
 	return t.rows[targetKey], nil
 }
+
+func (t *worldTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
+	var out []planner.Ticket
+	for _, set := range t.rows {
+		for _, ticket := range set {
+			if ticket.Plan == key {
+				out = append(out, ticket)
+			}
+		}
+	}
+	return out, nil
+}
