@@ -30,6 +30,15 @@ type Issues interface {
 
 // TargetTickets lists a target's planned ticket set.
 type TargetTickets interface {
+	// ForPlan is what DETECTION judges: it arms on the activated head plan,
+	// so the set must be that plan's. A target accumulates plans, and a
+	// target-scoped read there counts every superseded generation's tickets
+	// as though the head had planned them.
+	ForPlan(ctx context.Context, decompositionKey string) ([]Ticket, error)
+	// ForTarget is what the WORK WATCHER needs, and the difference is not an
+	// oversight: a ticket reopening may belong to a superseded plan and is
+	// still this target's work — that is exactly the case the watcher exists
+	// to catch.
 	ForTarget(ctx context.Context, targetKey string) ([]Ticket, error)
 }
 
@@ -118,7 +127,7 @@ func (d Detector) Detect(ctx context.Context, targetKey, projectID string) (Dete
 		return Detection{}, fmt.Errorf("read active issues in %s: %w", projectID, err)
 	}
 
-	planned, err := d.plannedIDs(ctx, targetKey)
+	planned, err := d.plannedIDs(ctx, plan)
 	if err != nil {
 		return Detection{}, err
 	}
@@ -139,11 +148,11 @@ func (d Detector) epoch(ctx context.Context, targetKey string) (int, error) {
 	return d.Epochs.Current(ctx, targetKey)
 }
 
-// plannedIDs is the target's planned ticket set, by issue.
-func (d Detector) plannedIDs(ctx context.Context, targetKey string) (map[string]bool, error) {
-	tickets, err := d.Tickets.ForTarget(ctx, targetKey)
+// plannedIDs is the head plan's ticket set, by issue.
+func (d Detector) plannedIDs(ctx context.Context, plan Plan) (map[string]bool, error) {
+	tickets, err := d.Tickets.ForPlan(ctx, plan.Key)
 	if err != nil {
-		return nil, fmt.Errorf("read planned tickets for %s: %w", targetKey, err)
+		return nil, fmt.Errorf("read the planned tickets of plan %s: %w", plan.Key, err)
 	}
 	out := make(map[string]bool, len(tickets))
 	for _, t := range tickets {

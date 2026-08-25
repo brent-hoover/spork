@@ -37,6 +37,21 @@ type memTickets struct {
 
 func newMemTickets() *memTickets { return &memTickets{rows: map[string]planner.Ticket{}} }
 
+// ForPlan lists one decomposition's tickets. The seeded plan's key is the
+// one plannedTarget writes, so a detector reading by plan finds them.
+func (m *memTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	var out []planner.Ticket
+	for _, t := range m.rows {
+		if t.Plan == key {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (m *memTickets) Put(_ context.Context, _ string, t planner.Ticket) error {
 	m.rows[t.IssueID] = t
 	return nil
@@ -71,9 +86,9 @@ func plannedTarget(t *testing.T, plans *memPlans, tickets *memTickets, completed
 	}); err != nil {
 		t.Fatalf("seed plan: %v", err)
 	}
-	for _, id := range issues {
+	for n, id := range issues {
 		if err := tickets.Put(context.Background(), "/spec",
-			planner.Ticket{Title: id, IssueID: id}); err != nil {
+			planner.Ticket{Title: id, IssueID: id, Plan: "plan-key", Ordinal: n}); err != nil {
 			t.Fatalf("seed ticket: %v", err)
 		}
 	}

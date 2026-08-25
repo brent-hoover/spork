@@ -149,6 +149,15 @@ func (i Intaker) Decompose(
 			return nil, err
 		}
 		if !resolution.Fresh && !resolution.Resume {
+			// Activation is a SEPARATE write from the completed stamp, so a
+			// crash between them leaves a whole plan behind a raised fence
+			// and every later retry returning "already complete" without
+			// ever lowering it — pops refused forever. Activation is
+			// idempotent, so replaying it here costs nothing and closes that
+			// window.
+			if err := i.activate(ctx, resolution.Plan); err != nil {
+				return nil, err
+			}
 			return i.plannedSet(ctx, resolution.Plan)
 		}
 	}
@@ -575,9 +584,12 @@ func (i Intaker) takeTheHead(ctx context.Context, plan Plan) error {
 	if i.Heads == nil || i.Plans == nil {
 		return nil
 	}
-	verdict, err := Supersede(ctx, i.Heads, i.Plans, plan)
+	// The verdict AND the loser's landing come from one transaction, so
+	// there is no window in which a candidate has lost and does not yet say
+	// so.
+	verdict, err := i.Heads.Replace(ctx, plan)
 	if err != nil {
-		return err
+		return fmt.Errorf("replace the head of %s: %w", plan.TargetKey, err)
 	}
 	if !verdict.Won {
 		return fmt.Errorf(

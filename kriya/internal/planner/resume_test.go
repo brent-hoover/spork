@@ -57,7 +57,17 @@ func resuming(t *testing.T, reply string) (planner.Intaker, *countingTracker, *m
 	t.Helper()
 	in, tr, ag := decomposer(t, reply)
 	steps := newMemSteps()
-	in.Plans, in.Steps, in.Tickets = newMemPlans(), steps, &planningTickets{}
+	// ONE database for plans and heads, because production has one: the
+	// replacement CAS reads plan rows inside its own transaction, so an
+	// in-memory plan store beside a SQLite head store leaves the CAS unable
+	// to see any plan at all — and every verdict it reaches is meaningless.
+	//
+	// A REAL head store, not nil. Leaving it out let the resume tests pass
+	// while resumption re-entered the CAS and buried the plan historical —
+	// the whole path they exist to cover was skipped.
+	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.HeadMigration)
+	in.Plans, in.Steps, in.Tickets = planner.SQLPlans{DB: db}, steps, &planningTickets{}
+	in.Heads = planner.SQLHeads{DB: db}
 	ag.Repeat = true
 	return in, tr, steps, ag
 }
@@ -243,3 +253,93 @@ func (vanishingPlans) ByKey(context.Context, string) (planner.Plan, bool, error)
 }
 
 func (vanishingPlans) Claim(context.Context, planner.Plan) (bool, error) { return false, nil }
+
+func TestAPlanStillPendingResumesThroughTheCAS(t *testing.T) {
+	// The head is moved BEFORE the plan is marked active, so a crash between
+	// those two writes leaves a pending plan that already OWNS the head. Its
+	// resume re-enters the CAS and must win — comparing it against itself
+	// makes it an equal-generation loser, buried historical, with the head
+	// left pointing at a terminal plan and the fence never lowered.
+	//
+	// A CAS that merely FAILED is not this case: no head was installed, so a
+	// resume bootstraps and wins trivially. The state has to be seeded.
+	in, tr, _, ag := resuming(t, threeTicketPlan)
+	ctx := context.Background()
+	// Reached through the production path: a decomposition that fails at its
+	// first create has claimed its key, written its sequence and taken the
+	// head. Rewinding the plan row to pending reproduces exactly the durable
+	// state a crash between the head move and the activation write leaves.
+	tr.failIssue = errors.New("sutra unreachable")
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err == nil {
+		t.Fatal("expected the first create to fail")
+	}
+	tr.failIssue = nil
+	plan, found, err := in.Plans.ByKey(ctx, planKeyFor(1))
+	if err != nil || !found {
+		t.Fatalf("no plan row: %v found=%v", err, found)
+	}
+	plan.State = planner.PlanPending
+	if err := in.Plans.Upsert(ctx, plan); err != nil {
+		t.Fatalf("rewind the plan: %v", err)
+	}
+	if head, _, _ := in.Heads.Head(ctx, "/spec"); head.Current != plan.Key {
+		t.Fatalf("the seeded plan does not own the head")
+	}
+
+	calls := len(ag.Requests)
+	tickets, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(ag.Requests) != calls {
+		t.Error("the resume asked the PM again")
+	}
+	if len(tickets) != 3 {
+		t.Errorf("the resume produced %d tickets", len(tickets))
+	}
+	final, _, err := in.Plans.ByKey(ctx, plan.Key)
+	if err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	if final.State != planner.PlanActive || !final.Completed {
+		t.Errorf("the resumed plan is %q completed=%v", final.State, final.Completed)
+	}
+	// And the fence it raised must have come down.
+	head, _, err := in.Heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 0 {
+		t.Errorf("the fence is %d after the resume completed the plan", head.Fence)
+	}
+}
+
+func TestACompletedPlanBehindARaisedFenceStillActivates(t *testing.T) {
+	// Activation is a SEPARATE write from the completed stamp, so a crash
+	// between them leaves a whole plan behind a raised fence. Every later
+	// retry then resolves "already complete" and returns without lowering it
+	// — pops refused forever, for a plan that finished.
+	in, _, _, _ := resuming(t, threeTicketPlan)
+	ctx := context.Background()
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("decompose: %v", err)
+	}
+
+	// Reproduce the crash window: the plan is stamped whole, the fence is up.
+	heads := in.Heads.(planner.SQLHeads)
+	if _, err := heads.DB.ExecContext(ctx,
+		`UPDATE plan_head SET fence = 1 WHERE target_key = ?`, "/spec"); err != nil {
+		t.Fatalf("raise the fence: %v", err)
+	}
+
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 0 {
+		t.Errorf("the fence is still %d after a retry of a completed plan", head.Fence)
+	}
+}

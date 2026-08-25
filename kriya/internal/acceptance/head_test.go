@@ -72,7 +72,7 @@ func (h *headWorld) install(p planner.Plan) error {
 	if err := h.plans.Upsert(ctx, p); err != nil {
 		return err
 	}
-	verdict, err := planner.Supersede(ctx, h.heads, h.plans, p)
+	verdict, err := h.heads.Replace(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func (h *headWorld) enter(p planner.Plan) error {
 	if err := h.plans.Upsert(ctx, p); err != nil {
 		return err
 	}
-	verdict, err := planner.Supersede(ctx, h.heads, h.plans, p)
+	verdict, err := h.heads.Replace(ctx, p)
 	if err != nil {
 		return err
 	}

@@ -73,6 +73,15 @@ func replaceWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement
 		return bootstrapWithin(ctx, tx, candidate)
 	}
 
+	// ALREADY the head. A resumed plan re-enters the CAS — it must, since a
+	// crash can land between the head move and activation — and comparing it
+	// against itself makes it an equal-generation loser: buried historical,
+	// with the head left pointing at a terminal plan. Owning the head is a
+	// win, idempotently.
+	if head.Current == candidate.Key {
+		return Replacement{Won: true, Head: head}, nil
+	}
+
 	// The head's PLAN's intake generation, not the head row's own counter.
 	// The two are different numbers and comparing the wrong one would let a
 	// stale intake win against a head that had merely moved often.
@@ -92,7 +101,21 @@ func replaceWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement
 	// The head's plan must be ACTIVE. Replacing a head whose plan is itself
 	// mid-replacement would interleave two supersessions over one predecessor.
 	if headState != PlanActive || !Eligible(candidate.Generation, headGeneration) {
-		return Replacement{Head: head, Landing: LandingFor(candidate.Generation, headGeneration)}, nil
+		landing := LandingFor(candidate.Generation, headGeneration)
+		// The landing is written HERE, in the transaction that decided it.
+		// Written afterwards, another replacement or a crash in between could
+		// leave the candidate pending, or parked awaiting-operator after it
+		// had already become permanently ineligible — an operator offered a
+		// retry the CAS can only reject again.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE decomposition_plan SET state = ?, error = ?
+			   WHERE decomposition_key = ? AND state IN (?, ?)`,
+			landing,
+			fmt.Sprintf("lost the replacement CAS to head plan %s", head.Current),
+			candidate.Key, PlanPending, PlanAwaitingOperator); err != nil {
+			return Replacement{}, fmt.Errorf("land the losing candidate: %w", err)
+		}
+		return Replacement{Head: head, Landing: landing}, nil
 	}
 
 	if _, err := tx.ExecContext(ctx,

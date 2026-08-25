@@ -1,9 +1,6 @@
 package planner
 
-import (
-	"context"
-	"fmt"
-)
+import "context"
 
 // PlanHead is the one durable head row per build target.
 //
@@ -77,32 +74,4 @@ func LandingFor(candidate, head int) string {
 		return PlanAwaitingOperator
 	}
 	return PlanHistorical
-}
-
-// Supersede runs a candidate through the replacement CAS and lands it.
-//
-// The order is the point. Resolve has already run — a same-key retry never
-// reaches here, in any state, whether it arrived before or raced the winner —
-// so anything arriving is a genuinely different decomposition competing for
-// one head.
-func Supersede(
-	ctx context.Context, heads HeadStore, plans PlanStore, candidate Plan,
-) (Replacement, error) {
-	verdict, err := heads.Replace(ctx, candidate)
-	if err != nil {
-		return Replacement{}, fmt.Errorf("replace the head of %s: %w", candidate.TargetKey, err)
-	}
-	if verdict.Won {
-		return verdict, nil
-	}
-
-	// The loser moves DURABLY. A loser left pending is indistinguishable from
-	// a plan still being built, so recovery would keep resuming a candidate
-	// that can never win.
-	candidate.State = verdict.Landing
-	candidate.Error = fmt.Sprintf("lost the replacement CAS to head plan %s", verdict.Head.Current)
-	if err := plans.Upsert(ctx, candidate); err != nil {
-		return Replacement{}, fmt.Errorf("land the losing candidate for %s: %w", candidate.TargetKey, err)
-	}
-	return verdict, nil
 }

@@ -34,7 +34,11 @@ func (r planReport) Render(ctx context.Context, targetKey string) (string, error
 	if !found {
 		return "", fmt.Errorf("no plan for %s to report on", targetKey)
 	}
-	tickets, err := (planner.SQLTickets{DB: r.db}).ForTarget(ctx, targetKey)
+	// ForPlan. A target accumulates plans as decompositions supersede each
+	// other, so a target-scoped read listed every historical generation's
+	// tickets under the CURRENT plan's spec hash — a report claiming one
+	// snapshot produced work that three of them did.
+	tickets, err := (planner.SQLTickets{DB: r.db}).ForPlan(ctx, plan.Key)
 	if err != nil {
 		return "", err
 	}

@@ -360,7 +360,7 @@ type SQLPlans struct{ DB *sql.DB }
 
 // Upsert writes a plan row.
 func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
-	_, err := s.DB.ExecContext(ctx,
+	res, err := s.DB.ExecContext(ctx,
 		`INSERT INTO decomposition_plan
 		   (decomposition_key, target_key, spec_hash, generation, state,
 		    completed, tickets, superseded_by, error)
@@ -369,13 +369,41 @@ func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
 		   target_key = excluded.target_key, spec_hash = excluded.spec_hash,
 		   generation = excluded.generation, state = excluded.state,
 		   completed = excluded.completed, tickets = excluded.tickets,
-		   superseded_by = excluded.superseded_by, error = excluded.error`,
+		   superseded_by = excluded.superseded_by, error = excluded.error
+		 WHERE decomposition_plan.state NOT IN (?, ?)`,
 		p.Key, p.TargetKey, p.SpecHash, p.Generation, p.State,
-		p.Completed, p.Tickets, p.SupersededBy, p.Error)
+		p.Completed, p.Tickets, p.SupersededBy, p.Error,
+		PlanSuperseded, PlanHistorical)
 	if err != nil {
 		return fmt.Errorf("upsert plan: %w", err)
 	}
+	// SUPERSEDED and HISTORICAL are terminal, and the guard above makes them
+	// so. Without it, a decomposition whose head was replaced mid-phase went
+	// on writing itself active and completed — erasing the supersession, and
+	// then failing to activate because it was no longer current, leaking a
+	// fence increment that nothing would ever lower.
+	//
+	// Loudly, not silently: a caller that just wrote nothing must not carry
+	// on stamping a plan whole.
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("upsert plan: %w", err)
+	}
+	if rows == 0 {
+		return &TerminalPlanError{Key: p.Key}
+	}
 	return nil
+}
+
+// TerminalPlanError says a write was refused because the plan has ended.
+//
+// Its own type because the caller's response is specific: a decomposition
+// that learns its plan was superseded mid-phase must STOP, not retry. Nothing
+// went wrong with the store.
+type TerminalPlanError struct{ Key string }
+
+func (e *TerminalPlanError) Error() string {
+	return fmt.Sprintf("plan %s has ended and cannot be written to", e.Key[:12])
 }
 
 // Claim inserts a plan only if nothing has claimed its key.

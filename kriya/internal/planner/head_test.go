@@ -2,13 +2,10 @@ package planner_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"kriya/internal/planner"
 )
-
-var errStoreDown = errors.New("the plan store is unreachable")
 
 func TestAnEqualGenerationCandidateIsNotNewEnough(t *testing.T) {
 	// STRICTLY newer. An equal-generation candidate is a competitor from the
@@ -46,85 +43,66 @@ func TestAStillEligibleLoserParksForTheOperator(t *testing.T) {
 	}
 }
 
-// countingHeads is a HeadStore that records what it was asked.
-type countingHeads struct {
-	verdict   planner.Replacement
-	err       error
-	activated []string
-}
+// TestALosingCandidateLandsInsideTheVerdictTransaction covers what used to be
+// a second write after the CAS committed.
+//
+// Landed afterwards, another replacement or a crash in between could leave a
+// candidate pending — indistinguishable from a plan still being built, so
+// recovery would keep resuming one that can never win — or parked
+// awaiting-operator after it had already become permanently ineligible.
+func TestALosingCandidateLandsInsideTheVerdictTransaction(t *testing.T) {
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	install(t, heads, plans, candidate(2, planner.PlanPending))
 
-func (c *countingHeads) Replace(context.Context, planner.Plan) (planner.Replacement, error) {
-	return c.verdict, c.err
-}
-
-func (c *countingHeads) Head(context.Context, string) (planner.PlanHead, bool, error) {
-	return planner.PlanHead{}, false, nil
-}
-
-func (c *countingHeads) Activate(_ context.Context, key string) error {
-	c.activated = append(c.activated, key)
-	return nil
-}
-
-func TestALosingCandidateLandsDurablyRatherThanStayingPending(t *testing.T) {
-	// A loser left pending is indistinguishable from a plan still being
-	// built, so recovery would keep resuming a candidate that can never win.
-	plans := newMemPlans()
-	heads := &countingHeads{verdict: planner.Replacement{
-		Won:     false,
-		Head:    planner.PlanHead{Current: "winning-key"},
-		Landing: planner.PlanHistorical,
-	}}
-	losing := planner.Plan{Key: "losing-key", TargetKey: "/spec", State: planner.PlanPending}
-
-	verdict, err := planner.Supersede(context.Background(), heads, plans, losing)
+	stale := candidate(1, planner.PlanPending)
+	if err := plans.Upsert(ctx, stale); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	verdict, err := heads.Replace(ctx, stale)
 	if err != nil {
-		t.Fatalf("supersede: %v", err)
+		t.Fatalf("replace: %v", err)
 	}
 	if verdict.Won {
-		t.Fatal("the verdict says the loser won")
+		t.Fatal("a stale candidate took the head")
 	}
-	got, found, err := plans.ByKey(context.Background(), "losing-key")
+
+	// The row says so already, with no second call from the caller.
+	got, found, err := plans.ByKey(ctx, stale.Key)
 	if err != nil || !found {
-		t.Fatalf("the losing candidate has no row: %v found=%v", err, found)
+		t.Fatalf("read candidate: %v found=%v", err, found)
 	}
 	if got.State != planner.PlanHistorical {
-		t.Errorf("the loser is still %q", got.State)
+		t.Errorf("the loser is %q after the CAS committed", got.State)
 	}
-	// And it says why, naming the head it lost to. A park with no cause is
-	// one nobody can act on.
 	if got.Error == "" {
-		t.Error("the losing candidate records no cause")
+		t.Error("the loser records no cause")
 	}
 }
 
-func TestAWinningCandidateIsNotRewritten(t *testing.T) {
-	// The winner's own state is written by decomposition's phases, not by
-	// the CAS. Landing it here would overwrite the phase progress a crash
-	// needs to resume from.
-	plans := newMemPlans()
-	heads := &countingHeads{verdict: planner.Replacement{Won: true}}
-	winner := planner.Plan{Key: "winning-key", TargetKey: "/spec", State: planner.PlanPending}
-
-	if _, err := planner.Supersede(context.Background(), heads, plans, winner); err != nil {
-		t.Fatalf("supersede: %v", err)
+func TestAWinningCandidateIsNotLandedByTheCAS(t *testing.T) {
+	// The winner's state is written by decomposition's phases. Landing it in
+	// the CAS would overwrite the phase progress a crash resumes from.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	first := candidate(1, planner.PlanPending)
+	install(t, heads, plans, first)
+	if err := heads.Activate(ctx, first.Key); err != nil {
+		t.Fatalf("activate: %v", err)
 	}
-	if _, found, _ := plans.ByKey(context.Background(), "winning-key"); found {
-		t.Error("winning the CAS rewrote the candidate's plan row")
-	}
-}
 
-func TestAFailedReplacementIsNotALoss(t *testing.T) {
-	// A store that could not answer has not said the candidate lost, and
-	// landing it historical on an outage would kill a plan that might win.
-	plans := newMemPlans()
-	heads := &countingHeads{err: errStoreDown}
-	losing := planner.Plan{Key: "k", TargetKey: "/spec", State: planner.PlanPending}
-
-	if _, err := planner.Supersede(context.Background(), heads, plans, losing); err == nil {
-		t.Fatal("a failed replacement resolved without an error")
+	second := candidate(2, planner.PlanPending)
+	if err := plans.Upsert(ctx, second); err != nil {
+		t.Fatalf("write candidate: %v", err)
 	}
-	if _, found, _ := plans.ByKey(context.Background(), "k"); found {
-		t.Error("a failed replacement landed the candidate anyway")
+	if _, err := heads.Replace(ctx, second); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	got, _, err := plans.ByKey(ctx, second.Key)
+	if err != nil {
+		t.Fatalf("read winner: %v", err)
+	}
+	if got.State != planner.PlanPending {
+		t.Errorf("the CAS moved the winner to %q", got.State)
 	}
 }

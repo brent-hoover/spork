@@ -2,6 +2,7 @@ package planner_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"kriya/internal/planner"
@@ -234,5 +235,101 @@ func TestAnUnreachableStoreFailsEveryHeadOperation(t *testing.T) {
 	}
 	if err := heads.Activate(ctx, "key"); err == nil {
 		t.Error("activating in a closed database succeeded")
+	}
+}
+
+func TestAPlanThatAlreadyOwnsTheHeadWinsAgain(t *testing.T) {
+	// A resumed plan re-enters the CAS: a crash can land between the head
+	// move and activation, so resumption must be able to finish either.
+	// Comparing it against ITSELF makes it an equal-generation loser — buried
+	// historical, with the head left pointing at a terminal plan.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	plan := candidate(1, planner.PlanPending)
+	install(t, heads, plans, plan)
+
+	verdict, err := heads.Replace(ctx, plan)
+	if err != nil {
+		t.Fatalf("re-entering the CAS: %v", err)
+	}
+	if !verdict.Won {
+		t.Fatalf("a plan that already owns the head lost to itself, landing %q", verdict.Landing)
+	}
+	// And the head must be UNMOVED: an idempotent win that bumped the
+	// generation would raise the fence again with nothing to activate it.
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Generation != 1 || head.Fence != 1 {
+		t.Errorf("re-entering the CAS moved the head to generation %d fence %d",
+			head.Generation, head.Fence)
+	}
+}
+
+func TestASupersededPlanCannotWriteItselfBackToActive(t *testing.T) {
+	// An active-but-incomplete head may be replaced while its own
+	// decomposition is still running its phases. That decomposition then
+	// reaches its next durable write — and unguarded, it wrote itself active
+	// and completed, erasing the supersession. Its activation then silently
+	// missed, because it was no longer current, leaking a fence increment
+	// nothing would ever lower.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	first := candidate(1, planner.PlanPending)
+	install(t, heads, plans, first)
+	if err := heads.Activate(ctx, first.Key); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	second := candidate(2, planner.PlanPending)
+	if err := plans.Upsert(ctx, second); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	if verdict, err := heads.Replace(ctx, second); err != nil || !verdict.Won {
+		t.Fatalf("replace: %v won=%v", err, verdict.Won)
+	}
+
+	// The superseded decomposition carries on and tries to stamp itself.
+	stamping := first
+	stamping.State, stamping.Completed = planner.PlanActive, true
+	err := plans.Upsert(ctx, stamping)
+	if err == nil {
+		t.Fatal("a superseded plan wrote itself back to active")
+	}
+	var terminal *planner.TerminalPlanError
+	if !errors.As(err, &terminal) {
+		t.Errorf("the refusal is %v, want a TerminalPlanError the caller can act on", err)
+	}
+
+	got, _, err := plans.ByKey(ctx, first.Key)
+	if err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	if got.State != planner.PlanSuperseded {
+		t.Errorf("the predecessor is %q after the refused write", got.State)
+	}
+	if got.Completed {
+		t.Error("the refused write still landed the completed stamp")
+	}
+}
+
+func TestAHistoricalPlanIsNeverRevived(t *testing.T) {
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	install(t, heads, plans, candidate(2, planner.PlanPending))
+
+	stale := candidate(1, planner.PlanPending)
+	if err := plans.Upsert(ctx, stale); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	if _, err := heads.Replace(ctx, stale); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	revived := stale
+	revived.State = planner.PlanActive
+	if err := plans.Upsert(ctx, revived); err == nil {
+		t.Error("a terminal historical plan was revived")
 	}
 }

@@ -68,6 +68,16 @@ func (m *memPlanTickets) ForTarget(context.Context, string) ([]planner.Ticket, e
 	return m.rows, nil
 }
 
+func (m *memPlanTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
+	var out []planner.Ticket
+	for _, t := range m.rows {
+		if t.Plan == key {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 // liveQueue is what the tracker currently holds, which is the universe
 // completion is judged against — never kriya's own idea of it.
 type liveQueue struct {
@@ -127,8 +137,9 @@ func (w *world) newDetect() *detectWorld {
 // plan seeds a target's plan in a given state with a ticket set.
 func (d *detectWorld) plan(completed bool, issues ...string) error {
 	d.tickets.rows = nil
-	for _, id := range issues {
-		d.tickets.rows = append(d.tickets.rows, planner.Ticket{Title: id, IssueID: id})
+	for n, id := range issues {
+		d.tickets.rows = append(d.tickets.rows,
+			planner.Ticket{Title: id, IssueID: id, Plan: "plan-key", Ordinal: n})
 	}
 	return d.plans.Upsert(context.Background(), planner.Plan{
 		Key: "plan-key", TargetKey: "/spec", SpecHash: "hash1",
