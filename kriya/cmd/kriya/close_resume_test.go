@@ -21,7 +21,11 @@ func TestAClaimStrandedInClosingIsResumed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if !awaitsClose(t.Context(), db, "/spec") {
+	claim, _, err := (planner.SQLClaims{DB: db}).Find(t.Context(), "/spec")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if !awaitsClose(claim) {
 		t.Error("a claim stranded in closing is not resumed by the driver")
 	}
 }
@@ -36,7 +40,11 @@ func TestASubmittedClaimAlsoAwaitsItsClose(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if !awaitsClose(t.Context(), db, "/spec") {
+	claim, _, err := (planner.SQLClaims{DB: db}).Find(t.Context(), "/spec")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if !awaitsClose(claim) {
 		t.Error("a submitted claim is not polled for its approval")
 	}
 }
@@ -54,11 +62,15 @@ func TestASettledClaimAwaitsNothing(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed %s: %v", state, err)
 		}
-		if awaitsClose(t.Context(), db, "/spec") {
+		claim, _, err := (planner.SQLClaims{DB: db}).Find(t.Context(), "/spec")
+		if err != nil {
+			t.Fatalf("find: %v", err)
+		}
+		if awaitsClose(claim) {
 			t.Errorf("a claim in %q was polled for an approval", state)
 		}
 	}
-	if awaitsClose(t.Context(), db, "/never-claimed") {
+	if awaitsClose(planner.CompletionClaim{}) {
 		t.Error("a target with no claim was polled")
 	}
 }

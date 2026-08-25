@@ -406,11 +406,7 @@ func observeCompletionApproval(ctx context.Context, db *sql.DB, target, actor st
 	if err != nil || !found {
 		return err
 	}
-	// SUBMITTED or CLOSING. Close persists closing before calling sutra, so a
-	// close that errored rests there — and polling only submitted claims left
-	// it stranded: nothing retried the persisted key, and nothing observed a
-	// reapproval under a new verdict event.
-	if claim.State != planner.CompletionSubmitted && claim.State != planner.CompletionClosing {
+	if !awaitsClose(claim) {
 		return nil
 	}
 	rv, err := trackerclient.New(sutraURL()).GetReview(ctx, claim.ReviewID)
@@ -438,18 +434,16 @@ func observeCompletionApproval(ctx context.Context, db *sql.DB, target, actor st
 	return err
 }
 
-// awaitsClose reports whether a target's claim is waiting on a human.
+// awaitsClose reports whether a claim is waiting on a human.
 //
-// Submitted claims are polled for their first approval; CLOSING ones are too,
+// SUBMITTED claims are polled for their first approval; CLOSING ones are too,
 // because Close persists that state before calling sutra — a close that
 // errored rests there and needs either its key replayed or a reapproval
-// observed under a new verdict event.
-func awaitsClose(ctx context.Context, db *sql.DB, target string) bool {
-	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
-	if err != nil || !found {
-		return false
-	}
-	return claim.State == planner.CompletionSubmitted || claim.State == planner.CompletionClosing
+// observed under a new verdict event. Polling only submitted claims left one
+// stranded with nothing to resume it.
+func awaitsClose(claim planner.CompletionClaim) bool {
+	return claim.State == planner.CompletionSubmitted ||
+		claim.State == planner.CompletionClosing
 }
 
 // claimIsCurrent reports whether a completion attempt for THIS epoch stands.
