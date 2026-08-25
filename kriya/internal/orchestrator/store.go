@@ -383,6 +383,24 @@ func (s SQLStore) ForTicket(ctx context.Context, issue string) (BuildRun, bool, 
 	return s.Find(ctx, id)
 }
 
+// ByReview returns the run whose review this is.
+//
+// For verdicts that carry no session: a spike's finding review has none —
+// there was no pair loop and no agent instance to route feedback back to — so
+// the review id is the only handle its verdict has.
+func (s SQLStore) ByReview(ctx context.Context, review string) (BuildRun, bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT id FROM build_run WHERE review_id = ?`, review).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BuildRun{}, false, nil
+	}
+	if err != nil {
+		return BuildRun{}, false, fmt.Errorf("find run by review: %w", err)
+	}
+	return s.Find(ctx, id)
+}
+
 // BySession returns the run whose review was stamped with a session.
 func (s SQLStore) BySession(ctx context.Context, session string) (BuildRun, bool, error) {
 	var id string

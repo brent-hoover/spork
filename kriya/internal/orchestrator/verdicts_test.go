@@ -47,9 +47,11 @@ func (m *memCursors) Advance(_ context.Context, name, cursor string) error {
 	return nil
 }
 
-// sessionRoutes finds a run by the session its review was stamped with.
+// sessionRoutes finds a run by the session its review was stamped with, or by
+// the review itself for a verdict that carries no session.
 type sessionRoutes struct {
 	bySession map[string]orchestrator.BuildRun
+	byReview  map[string]orchestrator.BuildRun
 	err       error
 }
 
@@ -60,6 +62,16 @@ func (s *sessionRoutes) BySession(
 		return orchestrator.BuildRun{}, false, s.err
 	}
 	run, ok := s.bySession[session]
+	return run, ok, nil
+}
+
+func (s *sessionRoutes) ByReview(
+	_ context.Context, review string,
+) (orchestrator.BuildRun, bool, error) {
+	if s.err != nil {
+		return orchestrator.BuildRun{}, false, s.err
+	}
+	run, ok := s.byReview[review]
 	return run, ok, nil
 }
 

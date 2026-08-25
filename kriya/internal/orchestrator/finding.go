@@ -53,6 +53,9 @@ type Researcher struct {
 	Findings Findings
 	Docs     FindingDocs
 	Reviews  FindingReviews
+	// Tickets closes a spike on its approved finding. Nil never retires one,
+	// which is what a module-level test of the submission path wants.
+	Tickets SpikeTickets
 }
 
 // Submit researches the risk and opens the finding review.
@@ -155,6 +158,88 @@ func (r Researcher) resubmit(ctx context.Context, run BuildRun) (BuildRun, error
 		return BuildRun{}, fmt.Errorf("record resubmitted finding: %w", err)
 	}
 	return run, nil
+}
+
+// SpikeTickets closes a spike on its approved finding.
+type SpikeTickets interface {
+	// Complete closes the ticket through the tracker's own approved-review
+	// gate, naming the review at its approved revision.
+	Complete(ctx context.Context, issue, review string, revision int,
+		verdictEvent, key string) error
+}
+
+// Retire closes a spike whose finding a human approved.
+//
+// The close is what retires the risk: sutra releases the blocking relations
+// when the blocker closes, so kriya asks for no unblocking of its own. What it
+// must get right is the KEY — write-ahead, so a close that landed replays to
+// its original success rather than a close-used conflict.
+func (r Researcher) Retire(
+	ctx context.Context, run BuildRun, approvalEvent string,
+) (BuildRun, error) {
+	if run.ReviewID == "" || run.FindingVersion == "" {
+		// A risk retired without documented evidence is the one thing
+		// risk-first exists to prevent.
+		return BuildRun{}, fmt.Errorf("spike %s has no approved finding to close on", run.ID)
+	}
+	if approvalEvent == "" {
+		return BuildRun{}, fmt.Errorf("the approval for %s names no verdict event", run.ID)
+	}
+	if run.CompletionState != CompleteCompleting || run.ReviewVerdictEvent != approvalEvent {
+		run.ReviewVerdictEvent = approvalEvent
+		run.CloseKey = SpikeCloseKey(run.ID, approvalEvent)
+		run.CompletionState = CompleteCompleting
+		if err := r.Store.Upsert(ctx, run); err != nil {
+			return BuildRun{}, fmt.Errorf("record closing spike: %w", err)
+		}
+	}
+	return r.finishRetire(ctx, run)
+}
+
+// finishRetire performs the close the write-ahead row promised.
+func (r Researcher) finishRetire(ctx context.Context, run BuildRun) (BuildRun, error) {
+	if err := r.Tickets.Complete(ctx, run.Issue, run.ReviewID, run.ReviewRevision,
+		run.ReviewVerdictEvent, run.CloseKey); err != nil {
+		return BuildRun{}, fmt.Errorf("close spike %s: %w", run.Issue, err)
+	}
+	run.CompletionState = CompleteClosed
+	run.State = StateClosed
+	if err := r.Store.Upsert(ctx, run); err != nil {
+		return BuildRun{}, fmt.Errorf("record closed spike: %w", err)
+	}
+	return run, nil
+}
+
+// RecoverRetirements replays spike closes a crash left in flight.
+func (r Researcher) RecoverRetirements(ctx context.Context) (int, error) {
+	if r.Store == nil {
+		return 0, nil
+	}
+	pending, err := r.Store.Completing(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list completing runs: %w", err)
+	}
+	var replayed int
+	for _, run := range pending {
+		if run.Kind != KindSpike {
+			// A merged ticket's close. Its own recovery replays it.
+			continue
+		}
+		if _, err := r.finishRetire(ctx, run); err != nil {
+			return 0, err
+		}
+		replayed++
+	}
+	return replayed, nil
+}
+
+// SpikeCloseKey is deterministic per (run, approval event).
+//
+// The EVENT is in it so a reapproval after a reversal-induced conflict issues
+// under a fresh key rather than replaying the cached conflict forever.
+func SpikeCloseKey(run, approvalEvent string) string {
+	sum := sha256.Sum256([]byte("kriya-spike-close:" + run + ":" + approvalEvent))
+	return hex.EncodeToString(sum[:])
 }
 
 // RecoverFindings replays finding submissions a crash left in flight.

@@ -43,6 +43,11 @@ type Routes interface {
 	// AC-rework-routing routes by SESSION, not by review: the session is what
 	// identifies the agent instance that wrote the code.
 	BySession(ctx context.Context, session string) (BuildRun, bool, error)
+	// ByReview returns the run whose review this is, for verdicts that carry
+	// no session. A SPIKE's finding review has none — there was no pair loop
+	// and no agent instance to route feedback back to — so the review id is
+	// the only handle its verdict has.
+	ByReview(ctx context.Context, review string) (BuildRun, bool, error)
 }
 
 // Revisions reads a review's current revision.
@@ -77,8 +82,13 @@ type Routed struct {
 	// no revision on the run, so reading it from there enqueued approvals at
 	// revision zero and the tracker refused every one.
 	Revision int
-	// Reworked reports that the run was returned to the pair loop.
+	// Reworked reports that the run was returned to its loop — the pair loop
+	// for code, the research loop for a spike.
 	Reworked bool
+	// Spike reports that the deliverable was a documented finding. An
+	// approved one closes its ticket and retires a risk; there is nothing to
+	// merge, and sending it to the merge queue would try to land a document.
+	Spike bool
 }
 
 // Consume reads new verdicts and routes each to its run.
@@ -138,9 +148,9 @@ func (r Router) Advance(ctx context.Context, cursor string) error {
 // A verdict for a session kriya does not know is SKIPPED, not an error: the
 // feed is shared, and another consumer's reviews are none of kriya's business.
 func (r Router) route(ctx context.Context, v VerdictEvent) (*Routed, error) {
-	run, found, err := r.Routes.BySession(ctx, v.Session)
+	run, found, err := r.find(ctx, v)
 	if err != nil {
-		return nil, fmt.Errorf("route verdict %s: %w", v.ID, err)
+		return nil, err
 	}
 	if !found {
 		return nil, nil
@@ -153,20 +163,59 @@ func (r Router) route(ctx context.Context, v VerdictEvent) (*Routed, error) {
 		return nil, fmt.Errorf("read revision of %s: %w", v.Review, err)
 	}
 	if v.Verdict != VerdictChangesRequested {
-		// An approval is the merge queue's business, not the pair loop's.
-		return &Routed{Run: run, Verdict: v, Revision: revision}, nil
+		// An approval. For code that is the merge queue's business; for a
+		// SPIKE there is nothing to merge — the finding closes the ticket and
+		// the risk retires.
+		return &Routed{Run: run, Verdict: v, Revision: revision, Spike: isSpike(run)}, nil
 	}
 	// The event is persisted BEFORE the run moves: a resubmission answers
 	// this verdict, and one that could not name it would be answering
 	// whatever the review said last.
 	run.ReviewVerdictEvent = v.ID
 	run.ReviewRevision = revision
+	// A rejected FINDING returns to the research loop, not the dev loop.
+	// There is no code to fix: the agent is being asked to answer the same
+	// risk better, and sending it to the pair loop would have it write an
+	// implementation nothing gates.
 	run.State = StateDevLoop
+	if isSpike(run) {
+		run.State = StateResearchLoop
+	}
 	if err := r.Store.Upsert(ctx, run); err != nil {
 		return nil, fmt.Errorf("record reworking run: %w", err)
 	}
-	return &Routed{Run: run, Verdict: v, Revision: revision, Reworked: true}, nil
+	return &Routed{
+		Run: run, Verdict: v, Revision: revision, Reworked: true, Spike: isSpike(run),
+	}, nil
 }
+
+// find locates the run a verdict belongs to.
+//
+// By SESSION first, which is how a code review's feedback reaches the agent
+// instance that wrote it. A finding review carries no session — there was no
+// pair loop — so the review id is the fallback rather than the rule.
+func (r Router) find(ctx context.Context, v VerdictEvent) (BuildRun, bool, error) {
+	if v.Session != "" {
+		run, found, err := r.Routes.BySession(ctx, v.Session)
+		if err != nil {
+			return BuildRun{}, false, fmt.Errorf("route verdict %s: %w", v.ID, err)
+		}
+		if found {
+			return run, true, nil
+		}
+	}
+	if v.Review == "" {
+		return BuildRun{}, false, nil
+	}
+	run, found, err := r.Routes.ByReview(ctx, v.Review)
+	if err != nil {
+		return BuildRun{}, false, fmt.Errorf("route verdict %s by review: %w", v.ID, err)
+	}
+	return run, found, nil
+}
+
+// isSpike reports whether a run's deliverable is a documented finding.
+func isSpike(run BuildRun) bool { return run.Kind == KindSpike }
 
 // Event kinds the tracker emits for a verdict.
 //

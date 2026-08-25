@@ -227,6 +227,19 @@ func (r sutraFindingReviews) Resubmit(
 		expectedRevision, expectedVerdictEvent, key)
 }
 
+// sutraSpikeTickets closes a spike through sutra's approved-review gate.
+type sutraSpikeTickets struct {
+	c     *trackerclient.Client
+	actor string
+}
+
+func (t sutraSpikeTickets) Complete(
+	ctx context.Context, issue, review string, revision int,
+	verdictEvent, key string,
+) error {
+	return t.c.CompleteIssue(ctx, issue, review, revision, verdictEvent, t.actor, key)
+}
+
 // sutraFeed adapts sutra's event feed to the verdict router's seam.
 //
 // It reads only review verdicts. The feed carries every event sutra emits, and

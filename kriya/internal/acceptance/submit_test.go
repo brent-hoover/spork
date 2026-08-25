@@ -791,6 +791,17 @@ func (c *feedCursor) Advance(_ context.Context, name, cursor string) error {
 // sessionIndex finds a run by the session its review was stamped with.
 type sessionIndex struct{ runs *runStore }
 
+func (s sessionIndex) ByReview(
+	_ context.Context, review string,
+) (orchestrator.BuildRun, bool, error) {
+	for _, run := range s.runs.rows {
+		if run.ReviewID == review {
+			return run, true, nil
+		}
+	}
+	return orchestrator.BuildRun{}, false, nil
+}
+
 func (s sessionIndex) BySession(
 	_ context.Context, session string,
 ) (orchestrator.BuildRun, bool, error) {

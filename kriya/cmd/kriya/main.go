@@ -282,6 +282,76 @@ func recoverInFlight(
 	}
 }
 
+// reconcileTargets replays everything a crash left in flight around a target.
+//
+// The ORDER is the point: work events first, because a close that cached a
+// conflict after a reopen would otherwise be replayed with its epoch still
+// unchanged — the conflict comes back, recovery fails, and the advance that
+// would have made the claim stale never runs.
+func reconcileTargets(
+	in planner.Intaker, claimer planner.Claimer,
+	targets func(planner.CompletionClaim) (string, string, error),
+	work func(context.Context) error, target string,
+	researcher orchestrator.Researcher,
+	findingProject func(orchestrator.BuildRun) (string, error),
+) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if _, err := in.RecoverTargets(ctx); err != nil {
+			return err
+		}
+		// A completion submission a crash left in flight, replayed under
+		// its PERSISTED keys. The claim is epoch-scoped, so a replay after
+		// an advance still presents the old key — which is what keeps it
+		// from adopting a spent review — and the stamp's CAS refuses it
+		// later.
+		// Work returning FIRST. A close that cached a conflict after a
+		// reopen would otherwise be replayed here with its epoch still
+		// unchanged: the conflict comes back, recovery fails, and the
+		// advance that would have made the claim stale never runs.
+		if err := work(ctx); err != nil {
+			return err
+		}
+		if _, err := claimer.Recover(ctx, targets); err != nil {
+			return err
+		}
+		// A finding submission a crash left in flight, replayed under
+		// its persisted document key: sutra returns the original version
+		// rather than appending a second finding beside it.
+		if _, err := researcher.RecoverFindings(ctx, findingProject); err != nil {
+			return err
+		}
+		// And a spike close a crash left mid-flight, replayed under its
+		// persisted key: the original success rather than a close-used
+		// conflict.
+		if _, err := researcher.RecoverRetirements(ctx); err != nil {
+			return err
+		}
+		// And a close a crash left mid-flight, replayed under its
+		// PERSISTED key: a close that landed returns its original
+		// success, never a close-used conflict, because that very key is
+		// what stamped it.
+		_, err := claimer.RecoverCloses(ctx, target, func(c planner.CompletionClaim) (string, error) {
+			_, epic, err := targets(c)
+			return epic, err
+		})
+		if errors.Is(err, planner.ErrStaleClaim) {
+			// Recovered, and stale. Reported rather than fatal: the close
+			// landed and every other target's was replayed too, and this
+			// one needs a fresh review rather than a halted startup.
+			fmt.Fprintln(os.Stderr, "kriya:", err)
+			return nil
+		}
+		if err != nil {
+			// A close that cannot be replayed — a cached conflict from a
+			// reversed approval, say — must not halt startup either. The
+			// claim rests in closing, and the driver re-polls it: a
+			// reapproval rotates the key and the retry escapes the cache.
+			fmt.Fprintln(os.Stderr, "kriya: completion close deferred:", err)
+		}
+		return nil
+	}
+}
+
 // repositoryIndependent keeps only the recovery steps that need no worktree.
 //
 // The target stage reconciles the tracker and this database. Every other stage
@@ -544,8 +614,21 @@ func actOnVerdicts(
 	// enqueued.
 	for i, r := range mine {
 		if r.Reworked {
-			// Back in the pair loop. There is nothing to merge, and enqueuing
-			// one would try to land work the human rejected.
+			// Back in its loop — the pair loop for code, the research loop
+			// for a spike. There is nothing to merge, and enqueuing one would
+			// try to land work the human rejected.
+			continue
+		}
+		if r.Spike {
+			// An approved FINDING closes its spike and retires the risk.
+			// There is nothing to merge: the deliverable is a document, and
+			// the merge queue would try to land it on a branch.
+			retired, err := researcherFor(db, tiers, target, actor).
+				Retire(ctx, r.Run, r.Verdict.ID)
+			if err != nil {
+				return err
+			}
+			mine[i].Run = retired
 			continue
 		}
 		// The revision the ROUTER read from the review. An initial submission
@@ -888,55 +971,8 @@ func recoverySteps(
 	findingProject func(orchestrator.BuildRun) (string, error),
 ) []recovery.Step {
 	return []recovery.Step{
-		{Stage: recovery.StageTargets, Owner: "planner", Run: func(ctx context.Context) error {
-			if _, err := in.RecoverTargets(ctx); err != nil {
-				return err
-			}
-			// A completion submission a crash left in flight, replayed under
-			// its PERSISTED keys. The claim is epoch-scoped, so a replay after
-			// an advance still presents the old key — which is what keeps it
-			// from adopting a spent review — and the stamp's CAS refuses it
-			// later.
-			// Work returning FIRST. A close that cached a conflict after a
-			// reopen would otherwise be replayed here with its epoch still
-			// unchanged: the conflict comes back, recovery fails, and the
-			// advance that would have made the claim stale never runs.
-			if err := work(ctx); err != nil {
-				return err
-			}
-			if _, err := claimer.Recover(ctx, targets); err != nil {
-				return err
-			}
-			// A finding submission a crash left in flight, replayed under
-			// its persisted document key: sutra returns the original version
-			// rather than appending a second finding beside it.
-			if _, err := researcher.RecoverFindings(ctx, findingProject); err != nil {
-				return err
-			}
-			// And a close a crash left mid-flight, replayed under its
-			// PERSISTED key: a close that landed returns its original
-			// success, never a close-used conflict, because that very key is
-			// what stamped it.
-			_, err := claimer.RecoverCloses(ctx, target, func(c planner.CompletionClaim) (string, error) {
-				_, epic, err := targets(c)
-				return epic, err
-			})
-			if errors.Is(err, planner.ErrStaleClaim) {
-				// Recovered, and stale. Reported rather than fatal: the close
-				// landed and every other target's was replayed too, and this
-				// one needs a fresh review rather than a halted startup.
-				fmt.Fprintln(os.Stderr, "kriya:", err)
-				return nil
-			}
-			if err != nil {
-				// A close that cannot be replayed — a cached conflict from a
-				// reversed approval, say — must not halt startup either. The
-				// claim rests in closing, and the driver re-polls it: a
-				// reapproval rotates the key and the retry escapes the cache.
-				fmt.Fprintln(os.Stderr, "kriya: completion close deferred:", err)
-			}
-			return nil
-		}},
+		{Stage: recovery.StageTargets, Owner: "planner",
+			Run: reconcileTargets(in, claimer, targets, work, target, researcher, findingProject)},
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
 			_, err := ws.Recover(ctx)
 			return err
@@ -1020,6 +1056,7 @@ func researcherFor(
 		},
 		Docs:    sutraDocs{c: c, actor: actor},
 		Reviews: sutraFindingReviews{c: c, actor: actor},
+		Tickets: sutraSpikeTickets{c: c, actor: actor},
 	}
 }
 
