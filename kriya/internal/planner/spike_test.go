@@ -23,10 +23,10 @@ requirements:
 const spikePlan = `{"tickets":[
   {"title":"spike: can the review tool run headless","body":"",
    "kind":"spike","criteria":["AC-headless"],"blocks":["AC-verdict","AC-headless"]},
-  {"title":"drive the review tool","body":"",
-   "kind":"implementation","criteria":["AC-verdict"]},
+  {"title":"drive the review tool","body":"","skeleton":true,
+   "kind":"implementation","criteria":["AC-verdict"],"layers":["http","store"]},
   {"title":"create a short link","body":"",
-   "kind":"implementation","criteria":["AC-valid-url"]}]}`
+   "kind":"implementation","criteria":["AC-valid-url"],"layers":["http","store"]}]}`
 
 func TestARiskBecomesASpikeThatBlocksItsDependents(t *testing.T) {
 	// "a spike ticket exists for the risk ... and the spike blocks every
@@ -158,7 +158,7 @@ func TestAnImplementationTicketCannotBlock(t *testing.T) {
 	// Blocking is what a RISK does. An implementation ticket declaring
 	// blocks would serialize the plan on work that answers no question.
 	in, _, _ := decomposer(t, `{"tickets":[
-		{"title":"impl","body":"","kind":"implementation","criteria":["AC-valid-url"],
+		{"title":"impl","body":"","kind":"implementation","criteria":["AC-valid-url"],"layers":["http","store"],
 		 "blocks":["AC-headless"]}]}`)
 	if _, err := in.Decompose(context.Background(), target(),
 		snapshotWith(riskCriteria), "actor"); err == nil {

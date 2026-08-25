@@ -41,8 +41,8 @@ func target() planner.BuildTarget {
 
 func TestTicketsAreCreatedAndParentedUnderTheEpic(t *testing.T) {
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"thin slice","kind":"implementation","criteria":["AC-valid-url"]},
-		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"]}]}`)
+		{"title":"walking skeleton","body":"thin slice","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]},
+		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
 	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
@@ -63,7 +63,7 @@ func TestACitationOutsideTheSnapshotIsRejected(t *testing.T) {
 	// snapshot". An invented id produces a ticket whose completion can never
 	// be verified against anything, so it must not reach the tracker.
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"invented","body":"","kind":"implementation","criteria":["AC-does-not-exist"]}]}`)
+		{"title":"invented","body":"","kind":"implementation","criteria":["AC-does-not-exist"],"layers":["http","store"]}]}`)
 	_, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
 	if err == nil {
 		t.Fatal("a citation absent from the snapshot must be rejected")
@@ -79,7 +79,7 @@ func TestACitationOutsideTheSnapshotIsRejected(t *testing.T) {
 func TestTheAgentIsAskedForStructuredOutput(t *testing.T) {
 	// Parsing an agent's prose is guessing, and a guess about which criteria a
 	// ticket covers is a build that verifies the wrong thing.
-	in, _, ag := decomposer(t, `{"tickets":[{"title":"t","body":"","kind":"implementation","criteria":["AC-bad-url"]}]}`)
+	in, _, ag := decomposer(t, `{"tickets":[{"title":"t","body":"","kind":"implementation","skeleton":true,"criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
 	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -111,8 +111,8 @@ func TestEveryTicketIsAssignedToTheActorThatWillPopIt(t *testing.T) {
 	// An unassigned ticket is one nothing ever claims: the build decomposes,
 	// reports its tickets, and idles forever.
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]},
-		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"]}]}`)
+		{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]},
+		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
 	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
@@ -131,7 +131,7 @@ func TestATicketThatCannotBeAssignedFailsDecomposition(t *testing.T) {
 	// Reporting success would leave a ticket nothing can ever pop, which looks
 	// exactly like a plan whose work is blocked.
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]}]}`)
+		{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]}]}`)
 	tr.assignErr = errors.New("tracker unavailable")
 	if _, err := in.Decompose(context.Background(), target(),
 		snapshotWith(twoCriteria), "actor"); err == nil {

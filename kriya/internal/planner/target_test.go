@@ -44,6 +44,7 @@ type countingTracker struct {
 	// is FIFO and no tracker-side priority is assumed, so the order IS the
 	// risk-first guarantee.
 	assignOrder []string
+	titles      map[string]string
 }
 
 func (c *countingTracker) CreateProject(_ context.Context, _, _, _, idem string) (string, error) {
@@ -74,7 +75,7 @@ func (c *countingTracker) blocks(from, to string) bool {
 	return false
 }
 
-func (c *countingTracker) CreateIssue(_ context.Context, _, _, _, _, idem string) (string, error) {
+func (c *countingTracker) CreateIssue(_ context.Context, _, title, _, _, idem string) (string, error) {
 	c.issues++
 	c.keys = append(c.keys, idem)
 	if c.failIssue != nil {
@@ -82,11 +83,23 @@ func (c *countingTracker) CreateIssue(_ context.Context, _, _, _, _, idem string
 	}
 	// Distinct ids, because two tickets are two issues: a fake handing back
 	// one id would hide anything that keys work by issue.
+	id := fmt.Sprintf("issue-%d", c.issues)
 	if c.issues == 1 {
-		return "epic-1", nil
+		id = "epic-1"
 	}
-	return fmt.Sprintf("issue-%d", c.issues), nil
+	// Every issue's title, including the first. Recording only later ones
+	// made titleOf answer "" for the first ticket a decomposition files, so
+	// an ordering assertion could not tell the wrong ticket from no ticket.
+	if c.titles == nil {
+		c.titles = map[string]string{}
+	}
+	c.titles[id] = title
+	return id, nil
 }
+
+// titleOf names the ticket behind an issue id, so an ordering assertion can
+// read as the order of TICKETS rather than of opaque ids.
+func (c *countingTracker) titleOf(issue string) string { return c.titles[issue] }
 
 func epicIntaker(store *memTargets, tr planner.Tracker) planner.Intaker {
 	return planner.Intaker{Targets: store, Tracker: tr}

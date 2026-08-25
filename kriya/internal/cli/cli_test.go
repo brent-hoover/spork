@@ -113,7 +113,7 @@ func run(t *testing.T, r specverify.Report) (string, error) {
 		Attempts:  newAttempts(),
 		Targets:   newTargets(),
 		Tracker:   stubTracker{},
-		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","kind":"implementation","criteria":["AC-x"]}]}`),
+		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","kind":"implementation","skeleton":true,"criteria":["AC-x"],"layers":["http","store"]}]}`),
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
 	err := cli.Build(context.Background(), &out, in, dir, "actor-1", "token-1", nil)
@@ -169,7 +169,7 @@ func runWith(t *testing.T, r specverify.Report, drive cli.Drive, out *bytes.Buff
 		Attempts:  newAttempts(),
 		Targets:   newTargets(),
 		Tracker:   stubTracker{},
-		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","kind":"implementation","criteria":["AC-x"]}]}`),
+		Agent:     fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"b","kind":"implementation","skeleton":true,"criteria":["AC-x"],"layers":["http","store"]}]}`),
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
 	return cli.Build(context.Background(), out, in, dir, "actor-1", "token-1", drive)

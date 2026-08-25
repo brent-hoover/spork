@@ -41,6 +41,11 @@ const ticketSchema = `{
           "title": {"type": "string", "minLength": 1},
           "body": {"type": "string"},
           "kind": {"enum": ["spike", "implementation"]},
+          "skeleton": {"type": "boolean"},
+          "layers": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          },
           "blocks": {
             "type": "array",
             "items": {
@@ -79,6 +84,15 @@ type Ticket struct {
 	// Criteria are the AC ids this ticket satisfies. They are validated
 	// against the snapshot, not trusted.
 	Criteria []string `json:"criteria"`
+	// Layers are the horizontal strata this ticket cuts through — "http",
+	// "store", "cli". A slice is named by what it crosses, so this is how a
+	// thin END-TO-END slice is told apart from a stripe of one layer.
+	Layers []string `json:"layers,omitempty"`
+	// Skeleton marks the walking skeleton: the one implementation ticket
+	// that touches every layer the plan touches. It is assigned first among
+	// implementation work, so it is the first thing workable once the
+	// blocking risks retire.
+	Skeleton bool `json:"skeleton,omitempty"`
 	// IssueID is the sutra issue this ticket became. Not from the agent —
 	// stamped after creation, so a review can hang off the right issue
 	// without anything having to look it up by title.
@@ -119,6 +133,9 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 		return nil, err
 	}
 	if err := validateKinds(reply.Tickets, known); err != nil {
+		return nil, err
+	}
+	if err := validateSlices(reply.Tickets); err != nil {
 		return nil, err
 	}
 
@@ -218,10 +235,8 @@ func dependsOn(ticket Ticket, blocked map[string]bool) bool {
 func (i Intaker) assign(
 	ctx context.Context, target BuildTarget, tickets []Ticket, kind, actor string,
 ) error {
-	for n, ticket := range tickets {
-		if ticket.Kind != kind {
-			continue
-		}
+	for _, n := range assignmentOrder(tickets, kind) {
+		ticket := tickets[n]
 		// Assigned to the actor that will pop it. The tracker's work stack
 		// offers only issues assigned to the popping identity, so an
 		// unassigned ticket is one nothing ever claims — the build would
@@ -315,4 +330,99 @@ func validateCitations(tickets []Ticket, known map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// validateSlices holds the PM to the tracer-bullet shape.
+//
+// What "a thin end-to-end slice" means is only half mechanically checkable,
+// and this says which half. END-TO-END is structural: a ticket names the
+// layers it cuts through, and one that names fewer than two is a horizontal
+// stripe — "add the column", "add the handler" — which is exactly the
+// decomposition tracer bullets exist to prevent. THIN is not: no count of
+// layers or criteria distinguishes a thin slice from a fat one, so that half
+// stays an instruction in the prompt rather than a rule pretending to be
+// enforced here.
+//
+// Spikes are exempt by the spec: a spike's deliverable is a documented
+// finding, so it cuts through no layers and declaring some would be a lie.
+func validateSlices(tickets []Ticket) error {
+	layers := map[string]bool{}
+	skeleton := -1
+	implementations := 0
+
+	for n, t := range tickets {
+		if t.Kind != KindImplementation {
+			if t.Skeleton {
+				return fmt.Errorf("ticket %q is a %s and cannot be the walking skeleton", t.Title, t.Kind)
+			}
+			continue
+		}
+		implementations++
+		if len(t.Layers) < 2 {
+			return fmt.Errorf(
+				"implementation ticket %q names %d layers: a slice that touches one layer is a layer",
+				t.Title, len(t.Layers))
+		}
+		for _, l := range t.Layers {
+			layers[l] = true
+		}
+		if !t.Skeleton {
+			continue
+		}
+		if skeleton >= 0 {
+			return fmt.Errorf("tickets %q and %q are both the walking skeleton",
+				tickets[skeleton].Title, t.Title)
+		}
+		skeleton = n
+	}
+
+	if implementations == 0 {
+		return nil
+	}
+	if skeleton < 0 {
+		return fmt.Errorf("no ticket is the walking skeleton: %d implementation tickets and no skeleton among them",
+			implementations)
+	}
+	// Every layer the PLAN touches, not every layer it can imagine. The
+	// skeleton is the thinnest slice that proves the whole stack connects,
+	// so a layer some later ticket reaches and the skeleton does not is a
+	// layer whose wiring nothing has demonstrated.
+	for l := range layers {
+		if !contains(tickets[skeleton].Layers, l) {
+			return fmt.Errorf("the walking skeleton %q does not touch layer %q, which the plan does",
+				tickets[skeleton].Title, l)
+		}
+	}
+	return nil
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// assignmentOrder lists the tickets of one kind in the order they go out.
+//
+// FIFO is the whole mechanism: sutra offers assigned work in the order it was
+// assigned, so this order IS which ticket an agent gets first. The walking
+// skeleton leads the implementation phase for that reason — "the first
+// implementation ticket workable once blocking risks retire" is a claim about
+// pop order, and pop order is decided here, not by anything the tracker knows.
+func assignmentOrder(tickets []Ticket, kind string) []int {
+	order := make([]int, 0, len(tickets))
+	for n, t := range tickets {
+		if t.Kind == kind && t.Skeleton {
+			order = append(order, n)
+		}
+	}
+	for n, t := range tickets {
+		if t.Kind == kind && !t.Skeleton {
+			order = append(order, n)
+		}
+	}
+	return order
 }

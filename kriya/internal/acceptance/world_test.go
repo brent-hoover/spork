@@ -44,6 +44,13 @@ type world struct {
 	firstEpicID string
 	tracker     *recordingTracker
 	agent       *fakes.Agent
+	// plans and ticketRows are decomposition's own durable output. The world
+	// reads its ticket set from HERE rather than from the tracker: the
+	// tracker only ever sees a title and a body, so tickets recovered from it
+	// carry no kind, no layers and no criteria — and an assertion about
+	// those would pass against three empty structs.
+	plans      *memPlans
+	ticketRows *worldTickets
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
 	// finding is the spike-finding scenarios' state, nil until one starts.
@@ -86,13 +93,15 @@ type world struct {
 
 func newWorld() *world {
 	return &world{
-		store:    newMemSnapshots(),
-		targets:  newMemTargets(),
-		attempts: newMemAttempts(),
-		token:    "token-1",
-		tracker:  &recordingTracker{},
+		store:      newMemSnapshots(),
+		targets:    newMemTargets(),
+		attempts:   newMemAttempts(),
+		token:      "token-1",
+		tracker:    &recordingTracker{},
+		plans:      &memPlans{rows: map[string]planner.Plan{}},
+		ticketRows: newWorldTickets(),
 		agent: fakes.NewAgent(
-			`{"tickets":[{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]}]}`),
+			`{"tickets":[{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]}]}`),
 	}
 }
 
@@ -176,6 +185,8 @@ func (w *world) run() error {
 		Attempts:  w.attempts,
 		Tracker:   w.tracker,
 		Agent:     w.agent,
+		Plans:     w.plans,
+		Tickets:   w.ticketRows,
 		Now:       fakes.NewClock(time.Unix(0, 0)),
 	}
 	w.err = cli.Build(ctx, &w.out, in, w.dir, "01a02852-0000-7000-8000-000000000000", w.token, nil)
@@ -183,7 +194,7 @@ func (w *world) run() error {
 		if t, found, _ := w.targets.Find(ctx, w.dir); found && w.firstEpicID == "" {
 			w.firstEpicID = t.EpicID
 		}
-		w.tickets = w.tracker.tickets
+		w.tickets = w.ticketRows.forTarget(w.dir)
 	}
 	return nil
 }
@@ -264,7 +275,31 @@ type recordingTracker struct {
 	// is FIFO and no tracker-side priority is assumed, so the order IS the
 	// risk-first guarantee.
 	assignOrder []string
+	// calls is every mutation in the order it was made, tagged by phase.
+	// The barrier claims are claims about ORDER ACROSS KINDS — "every ticket
+	// created before any relation is wired" — which per-kind counters cannot
+	// answer: they record how many, never which came first.
+	calls []string
+	// titles names each issue, so an ordering assertion reads as an order of
+	// tickets rather than of opaque ids.
+	titles map[string]string
 }
+
+// phases returns the call log collapsed to the sequence of phases it visited.
+// "create, create, relation, assign" collapses to create → relation → assign,
+// and a plan that interleaved them shows the repeat.
+func (r *recordingTracker) phases() []string {
+	out := []string{}
+	for _, c := range r.calls {
+		if len(out) == 0 || out[len(out)-1] != c {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// titleOf names the ticket behind an issue id.
+func (r *recordingTracker) titleOf(issue string) string { return r.titles[issue] }
 
 // wiredRelation is one relation the tracker was asked for.
 type wiredRelation struct{ from, kind, to string }
@@ -293,17 +328,31 @@ func (r *recordingTracker) CreateProject(context.Context, string, string, string
 
 func (r *recordingTracker) CreateIssue(_ context.Context, _, title, _, _, _ string) (string, error) {
 	r.issues++
+	if r.titles == nil {
+		r.titles = map[string]string{}
+	}
 	if strings.HasPrefix(title, "Build ") {
 		r.epics++
+		r.titles["epic-1"] = title
 		return "epic-1", nil
 	}
+	r.calls = append(r.calls, "create")
 	r.tickets = append(r.tickets, planner.Ticket{Title: title})
-	return fmt.Sprintf("issue-%d", r.issues), nil
+	id := fmt.Sprintf("issue-%d", r.issues)
+	r.titles[id] = title
+	return id, nil
 }
 
 func (r *recordingTracker) AddRelation(
 	_ context.Context, from, kind, to, _, _ string,
 ) error {
+	// parent_of is part of CREATING a ticket, not the relation phase: the
+	// barrier the spec draws is around the BLOCKING wiring, which is what
+	// decides whether a ticket is workable. Counting parenting as a relation
+	// would make every correct plan look interleaved.
+	if kind == "blocks" {
+		r.calls = append(r.calls, "relation")
+	}
 	r.relations++
 	r.wired = append(r.wired, wiredRelation{from: from, kind: kind, to: to})
 	return nil
@@ -390,8 +439,8 @@ func (w *world) citeCriteria(ids ...string) {
 	for i, id := range ids {
 		quoted[i] = `"` + id + `"`
 	}
-	w.agent = fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"","kind":"implementation","criteria":[` +
-		strings.Join(quoted, ",") + `]}]}`)
+	w.agent = fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":[` +
+		strings.Join(quoted, ",") + `],"layers":["http","store"]}]}`)
 	// A supersession decomposes again, and the PM answering the same way is
 	// exactly what "carried-forward tickets" means.
 	w.agent.Repeat = true
@@ -451,6 +500,37 @@ func (m *memAttempts) Mapping(_ context.Context, targetKey string) (planner.Spec
 func (r *recordingTracker) AssignIssue(
 	_ context.Context, issue, _, _, _ string,
 ) error {
+	r.calls = append(r.calls, "assign")
 	r.assignOrder = append(r.assignOrder, issue)
 	return nil
 }
+
+// worldTickets is the acceptance world's TicketStore.
+//
+// It keeps INSERTION ORDER as well as the rows, because several claims are
+// about the order a decomposition filed its tickets in and a map would lose
+// exactly that.
+type worldTickets struct {
+	rows  map[string][]planner.Ticket
+	byKey map[string]planner.Ticket
+}
+
+func newWorldTickets() *worldTickets {
+	return &worldTickets{rows: map[string][]planner.Ticket{}, byKey: map[string]planner.Ticket{}}
+}
+
+func (t *worldTickets) Put(_ context.Context, targetKey string, ticket planner.Ticket) error {
+	key := targetKey + "\x00" + ticket.IssueID
+	if _, seen := t.byKey[key]; !seen {
+		t.rows[targetKey] = append(t.rows[targetKey], ticket)
+	}
+	t.byKey[key] = ticket
+	return nil
+}
+
+func (t *worldTickets) Find(_ context.Context, targetKey, issue string) (planner.Ticket, bool, error) {
+	ticket, ok := t.byKey[targetKey+"\x00"+issue]
+	return ticket, ok, nil
+}
+
+func (t *worldTickets) forTarget(targetKey string) []planner.Ticket { return t.rows[targetKey] }
