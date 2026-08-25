@@ -115,7 +115,7 @@ func intaker(db *sql.DB, tiers agent.Tiers, target string) planner.Intaker {
 		Tracker:   sutraTracker{c: trackerclient.New(sutraURL())},
 		Tickets:   planner.SQLTickets{DB: db},
 		Plans:     planner.SQLPlans{DB: db},
-		Heads:     planner.SQLHeads{DB: db},
+		Heads:     planner.SQLHeads{DB: db, Advances: planner.SQLAdvances{DB: db}},
 		Steps:     planner.SQLSteps{DB: db},
 		Agent: agent.Recording{
 			Inner:  agent.Claude{Tiers: tiers},

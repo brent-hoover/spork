@@ -22,7 +22,40 @@ CREATE TABLE plan_head (
 )`
 
 // SQLHeads holds plan heads in SQLite.
-type SQLHeads struct{ DB *sql.DB }
+type SQLHeads struct {
+	DB *sql.DB
+	// Advances binds a replacement to the completion epoch it must move. Nil
+	// runs the CAS on its own, which is what a test of the CAS itself wants;
+	// production wires it, because a supersession that did not advance the
+	// epoch leaves the OLD plan's completion claim current — free to stamp
+	// the target done, or to suppress a fresh review, over work the new head
+	// has not built.
+	Advances AdvanceStore
+}
+
+// errAlreadyHead rolls the advance transaction back for a candidate that
+// already owns the head.
+//
+// A sentinel rather than a verdict returned from inside the callback, because
+// the ROLLBACK is the point: a resumed plan re-enters the CAS, and inserting
+// an advance for a head that does not move would advance the epoch and kill a
+// perfectly good completion claim.
+var errAlreadyHead = errors.New("the candidate already owns the head")
+
+// errLostCAS rolls the advance back for a candidate that lost.
+//
+// A loser moves no head, so it must move no epoch either. Its landing is
+// written afterwards, in its own transaction: until that write, the candidate
+// is simply still pending, and a recovery re-enters the CAS and lands it then
+// — idempotent, and never a candidate durably lost with nothing saying so.
+type errLostCAS struct {
+	head    PlanHead
+	landing string
+}
+
+func (e *errLostCAS) Error() string {
+	return fmt.Sprintf("lost the replacement CAS to head plan %s", e.head.Current)
+}
 
 // Head reads a target's head row.
 func (s SQLHeads) Head(ctx context.Context, targetKey string) (PlanHead, bool, error) {
@@ -47,15 +80,102 @@ func (s SQLHeads) Head(ctx context.Context, targetKey string) (PlanHead, bool, e
 // would leave a head pointing at a plan that never superseded its predecessor
 // — and pops admitted against a plan whose predecessor was never retired.
 func (s SQLHeads) Replace(ctx context.Context, candidate Plan) (Replacement, error) {
+	if s.Advances == nil {
+		return s.replaceAlone(ctx, candidate)
+	}
+
+	var verdict Replacement
+	// The advance and the head move are ONE fact. Committed separately, a
+	// crash between them leaves either an unadvanced epoch over replaced
+	// work, or an advance for a replacement that never happened — and the
+	// second is worse, because the epoch cannot be walked back.
+	//
+	// Keyed on the CANDIDATE, so a resumed plan re-entering the CAS presents
+	// the same key and advances nothing a second time.
+	fresh, err := (Epochs{Store: s.Advances}).OnLocalWith(ctx,
+		candidate.TargetKey, CauseSupersession, candidate.Key,
+		func(tx Tx) error {
+			var err error
+			verdict, err = replaceWithin(ctx, tx, candidate)
+			return err
+		})
+
+	if errors.Is(err, errAlreadyHead) {
+		return verdict, nil
+	}
+	var lost *errLostCAS
+	if errors.As(err, &lost) {
+		return s.landLoser(ctx, candidate, lost)
+	}
+	if err != nil {
+		return Replacement{}, err
+	}
+	if !fresh {
+		// A REPLAY of this candidate's advance, so the mutation did not run —
+		// that is what the insert-once key is for. This candidate has already
+		// been through the CAS, and the durable state says how it went.
+		return s.settled(ctx, candidate)
+	}
+	return verdict, nil
+}
+
+// settled reports the verdict a candidate already reached.
+//
+// Read rather than re-run: re-running would need a fresh advance key, which
+// would move the epoch for a head that is not moving — killing a completion
+// claim on behalf of a plan that changed nothing.
+func (s SQLHeads) settled(ctx context.Context, candidate Plan) (Replacement, error) {
+	head, found, err := s.Head(ctx, candidate.TargetKey)
+	if err != nil {
+		return Replacement{}, err
+	}
+	if found && head.Current == candidate.Key {
+		return Replacement{Won: true, Head: head}, nil
+	}
+	// It lost the first time. The landing it took then is the answer now;
+	// re-deriving one could park a candidate the head has since outrun.
+	plan, found, err := (SQLPlans{DB: s.DB}).ByKey(ctx, candidate.Key)
+	if err != nil {
+		return Replacement{}, err
+	}
+	if !found {
+		return Replacement{}, fmt.Errorf(
+			"plan %s advanced the epoch but has no row", candidate.Key[:12])
+	}
+	return Replacement{Head: head, Landing: plan.State}, nil
+}
+
+// replaceAlone runs the CAS with no epoch to move.
+func (s SQLHeads) replaceAlone(ctx context.Context, candidate Plan) (Replacement, error) {
+	verdict, err := s.attempt(ctx, candidate)
+
+	// The transaction is CLOSED before anything else touches the database.
+	// Landing a loser while it was still open deadlocked against it —
+	// SQLITE_BUSY on the connection the caller was already holding.
+	if errors.Is(err, errAlreadyHead) {
+		return verdict, nil
+	}
+	var lost *errLostCAS
+	if errors.As(err, &lost) {
+		return s.landLoser(ctx, candidate, lost)
+	}
+	if err != nil {
+		return Replacement{}, err
+	}
+	return verdict, nil
+}
+
+// attempt runs one CAS in its own transaction and closes it either way.
+func (s SQLHeads) attempt(ctx context.Context, candidate Plan) (Replacement, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Replacement{}, fmt.Errorf("begin replacement: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	verdict, err := replaceWithin(ctx, tx, candidate)
+	verdict, err := replaceWithin(ctx, txExec{tx: tx}, candidate)
 	if err != nil {
-		return Replacement{}, err
+		return verdict, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Replacement{}, fmt.Errorf("commit replacement: %w", err)
@@ -63,8 +183,22 @@ func (s SQLHeads) Replace(ctx context.Context, candidate Plan) (Replacement, err
 	return verdict, nil
 }
 
+// landLoser records a losing candidate's terminal or parked state.
+func (s SQLHeads) landLoser(
+	ctx context.Context, candidate Plan, lost *errLostCAS,
+) (Replacement, error) {
+	if _, err := s.DB.ExecContext(ctx,
+		`UPDATE decomposition_plan SET state = ?, error = ?
+		   WHERE decomposition_key = ? AND state IN (?, ?)`,
+		lost.landing, lost.Error(), candidate.Key,
+		PlanPending, PlanAwaitingOperator); err != nil {
+		return Replacement{}, fmt.Errorf("land the losing candidate: %w", err)
+	}
+	return Replacement{Head: lost.head, Landing: lost.landing}, nil
+}
+
 // replaceWithin is the replacement's body, inside the caller's transaction.
-func replaceWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement, error) {
+func replaceWithin(ctx context.Context, tx Tx, candidate Plan) (Replacement, error) {
 	head, found, err := headWithin(ctx, tx, candidate.TargetKey)
 	if err != nil {
 		return Replacement{}, err
@@ -79,7 +213,7 @@ func replaceWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement
 	// with the head left pointing at a terminal plan. Owning the head is a
 	// win, idempotently.
 	if head.Current == candidate.Key {
-		return Replacement{Won: true, Head: head}, nil
+		return Replacement{Won: true, Head: head}, errAlreadyHead
 	}
 
 	// The head's PLAN's intake generation, not the head row's own counter.
@@ -101,21 +235,12 @@ func replaceWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement
 	// The head's plan must be ACTIVE. Replacing a head whose plan is itself
 	// mid-replacement would interleave two supersessions over one predecessor.
 	if headState != PlanActive || !Eligible(candidate.Generation, headGeneration) {
-		landing := LandingFor(candidate.Generation, headGeneration)
-		// The landing is written HERE, in the transaction that decided it.
-		// Written afterwards, another replacement or a crash in between could
-		// leave the candidate pending, or parked awaiting-operator after it
-		// had already become permanently ineligible — an operator offered a
-		// retry the CAS can only reject again.
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE decomposition_plan SET state = ?, error = ?
-			   WHERE decomposition_key = ? AND state IN (?, ?)`,
-			landing,
-			fmt.Sprintf("lost the replacement CAS to head plan %s", head.Current),
-			candidate.Key, PlanPending, PlanAwaitingOperator); err != nil {
-			return Replacement{}, fmt.Errorf("land the losing candidate: %w", err)
+		// The verdict travels as an error so the advance rolls back: a
+		// candidate that moved no head must move no epoch. Its landing is
+		// written afterwards, in its own transaction.
+		return Replacement{}, &errLostCAS{
+			head: head, landing: LandingFor(candidate.Generation, headGeneration),
 		}
-		return Replacement{Head: head, Landing: landing}, nil
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -142,7 +267,7 @@ func replaceWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement
 }
 
 // bootstrapWithin installs the first head, the insert itself being the CAS.
-func bootstrapWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replacement, error) {
+func bootstrapWithin(ctx context.Context, tx Tx, candidate Plan) (Replacement, error) {
 	// ON CONFLICT DO NOTHING, then read back: a concurrent first
 	// decomposition that beat us leaves its own row, and the read tells us
 	// whose it is. With no predecessor the retirement set is empty, so the
@@ -169,7 +294,7 @@ func bootstrapWithin(ctx context.Context, tx *sql.Tx, candidate Plan) (Replaceme
 }
 
 // headWithin reads the head row inside a transaction.
-func headWithin(ctx context.Context, tx *sql.Tx, targetKey string) (PlanHead, bool, error) {
+func headWithin(ctx context.Context, tx Tx, targetKey string) (PlanHead, bool, error) {
 	h := PlanHead{TargetKey: targetKey}
 	err := tx.QueryRowContext(ctx,
 		`SELECT current, generation, fence FROM plan_head WHERE target_key = ?`, targetKey).

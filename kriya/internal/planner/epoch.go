@@ -80,6 +80,16 @@ type AdvanceStore interface {
 // that, because the two are one fact.
 type Tx interface {
 	ExecContext(ctx context.Context, query string, args ...any) (Result, error)
+	// QueryRowContext lets a bound mutation READ inside the transaction. The
+	// replacement CAS needs it: its verdict depends on the head row and the
+	// head plan's generation, and reading those outside the transaction that
+	// acts on them is the read-then-write race the CAS exists to close.
+	QueryRowContext(ctx context.Context, query string, args ...any) Row
+}
+
+// Row is the part of a query result a bound mutation reads.
+type Row interface {
+	Scan(dest ...any) error
 }
 
 // Result is the part of a SQL result a bound mutation reads.

@@ -108,6 +108,10 @@ func (t txExec) ExecContext(ctx context.Context, query string, args ...any) (Res
 	return t.tx.ExecContext(ctx, query, args...)
 }
 
+func (t txExec) QueryRowContext(ctx context.Context, query string, args ...any) Row {
+	return t.tx.QueryRowContext(ctx, query, args...)
+}
+
 // Epoch reads a target's completion epoch.
 func (s SQLAdvances) Epoch(ctx context.Context, targetKey string) (int, error) {
 	var epoch int

@@ -333,3 +333,138 @@ func TestAHistoricalPlanIsNeverRevived(t *testing.T) {
 		t.Error("a terminal historical plan was revived")
 	}
 }
+
+// advanceCounting wraps a real AdvanceStore and counts fresh advances.
+type advanceCounting struct {
+	inner  planner.AdvanceStore
+	causes []string
+}
+
+func (a *advanceCounting) Insert(
+	ctx context.Context, adv planner.CompletionAdvance,
+) (bool, error) {
+	return a.inner.Insert(ctx, adv)
+}
+
+func (a *advanceCounting) InsertWith(
+	ctx context.Context, adv planner.CompletionAdvance, mutate func(planner.Tx) error,
+) (bool, error) {
+	fresh, err := a.inner.InsertWith(ctx, adv, mutate)
+	if fresh && err == nil {
+		a.causes = append(a.causes, adv.Cause)
+	}
+	return fresh, err
+}
+
+func (a *advanceCounting) Epoch(ctx context.Context, key string) (int, error) {
+	return a.inner.Epoch(ctx, key)
+}
+
+func (a *advanceCounting) Stamp(ctx context.Context, key string, epoch int) (bool, error) {
+	return a.inner.Stamp(ctx, key, epoch)
+}
+
+// epochHeads builds a head store bound to a real advance store.
+func epochHeads(t *testing.T) (planner.SQLHeads, planner.SQLPlans, *advanceCounting) {
+	t.Helper()
+	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration,
+		planner.HeadMigration, planner.EpochMigration)
+	advances := &advanceCounting{inner: planner.SQLAdvances{DB: db}}
+	return planner.SQLHeads{DB: db, Advances: advances}, planner.SQLPlans{DB: db}, advances
+}
+
+func TestASupersessionAdvancesTheCompletionEpoch(t *testing.T) {
+	// Without it the OLD plan's completion claim stays current across the
+	// replacement — free to stamp the target done, or to suppress a fresh
+	// review, over work the new head has not built.
+	heads, plans, advances := epochHeads(t)
+	ctx := context.Background()
+	first := candidate(1, planner.PlanPending)
+	install(t, heads, plans, first)
+	if err := heads.Activate(ctx, first.Key); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	epochBefore, err := (planner.Epochs{Store: advances}).Current(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("epoch: %v", err)
+	}
+
+	second := candidate(2, planner.PlanPending)
+	if err := plans.Upsert(ctx, second); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	if verdict, err := heads.Replace(ctx, second); err != nil || !verdict.Won {
+		t.Fatalf("replace: %v won=%v", err, verdict.Won)
+	}
+
+	epochAfter, err := (planner.Epochs{Store: advances}).Current(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("epoch: %v", err)
+	}
+	if epochAfter <= epochBefore {
+		t.Errorf("the epoch is %d after a supersession, was %d", epochAfter, epochBefore)
+	}
+	if len(advances.causes) == 0 || advances.causes[len(advances.causes)-1] != planner.CauseSupersession {
+		t.Errorf("the advance causes are %v, want one for a supersession", advances.causes)
+	}
+}
+
+func TestALostCASAdvancesNothing(t *testing.T) {
+	// A candidate that moved no head must move no epoch: advancing would
+	// kill the winning head's completion claim on behalf of a plan that
+	// never became the head.
+	heads, plans, advances := epochHeads(t)
+	ctx := context.Background()
+	install(t, heads, plans, candidate(2, planner.PlanPending))
+	before, err := (planner.Epochs{Store: advances}).Current(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("epoch: %v", err)
+	}
+
+	stale := candidate(1, planner.PlanPending)
+	if err := plans.Upsert(ctx, stale); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	if verdict, err := heads.Replace(ctx, stale); err != nil || verdict.Won {
+		t.Fatalf("the stale candidate won: %v won=%v", err, verdict.Won)
+	}
+	after, err := (planner.Epochs{Store: advances}).Current(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("epoch: %v", err)
+	}
+	if after != before {
+		t.Errorf("a losing candidate moved the epoch from %d to %d", before, after)
+	}
+	// And the loser still landed, in its own transaction.
+	got, _, err := plans.ByKey(ctx, stale.Key)
+	if err != nil {
+		t.Fatalf("read loser: %v", err)
+	}
+	if got.State != planner.PlanHistorical {
+		t.Errorf("the loser is %q", got.State)
+	}
+}
+
+func TestAResumedPlanReenteringTheCASAdvancesNothing(t *testing.T) {
+	// A resumed plan re-enters the CAS. Advancing there would clear a
+	// completion claim for a head that did not move.
+	heads, plans, advances := epochHeads(t)
+	ctx := context.Background()
+	plan := candidate(1, planner.PlanPending)
+	install(t, heads, plans, plan)
+	before, err := (planner.Epochs{Store: advances}).Current(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("epoch: %v", err)
+	}
+
+	if verdict, err := heads.Replace(ctx, plan); err != nil || !verdict.Won {
+		t.Fatalf("re-entering the CAS: %v won=%v", err, verdict.Won)
+	}
+	after, err := (planner.Epochs{Store: advances}).Current(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("epoch: %v", err)
+	}
+	if after != before {
+		t.Errorf("re-entering the CAS moved the epoch from %d to %d", before, after)
+	}
+}
