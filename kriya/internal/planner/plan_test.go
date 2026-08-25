@@ -38,8 +38,8 @@ func TestAPlanIsWholeOnlyOnceDecompositionStampsIt(t *testing.T) {
 	// ticket so far is complete" says nothing about a build that is done.
 	plans := newMemPlans()
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]},
-		{"title":"reject bad urls","body":"","criteria":["AC-bad-url"]}]}`)
+		{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]},
+		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"]}]}`)
 	in.Plans = plans
 
 	if _, found, _ := plans.Find(context.Background(), "/spec"); found {
@@ -65,8 +65,8 @@ func TestAFailedDecompositionLeavesNoCompletedStamp(t *testing.T) {
 	// that did not finish would let a build report done against half a plan.
 	plans := newMemPlans()
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]},
-		{"title":"reject bad urls","body":"","criteria":["AC-bad-url"]}]}`)
+		{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]},
+		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"]}]}`)
 	in.Plans = plans
 	tr.assignErr = errors.New("tracker unavailable")
 
@@ -84,7 +84,7 @@ func TestAPlanIsRecordedBeforeItsTicketsSoACrashIsVisible(t *testing.T) {
 	// must leave a row saying a plan was being built, not nothing at all.
 	plans := newMemPlans()
 	in, tr, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]}]}`)
+		{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]}]}`)
 	in.Plans = plans
 	tr.failIssue = errors.New("sutra unreachable")
 
@@ -104,7 +104,7 @@ func TestADecompositionWithNoPlanStoreStillWorks(t *testing.T) {
 	// The store is optional in the same way the ticket store is: a
 	// module-level test of decomposition itself does not need one.
 	in, _, _ := decomposer(t, `{"tickets":[
-		{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]}]}`)
+		{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]}]}`)
 	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err != nil {
 		t.Fatalf("decompose: %v", err)
 	}

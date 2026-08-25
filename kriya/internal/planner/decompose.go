@@ -8,6 +8,16 @@ import (
 	"kriya/internal/agent"
 )
 
+// Ticket kinds.
+//
+// A SPIKE answers a risk: its deliverable is a documented finding, it blocks
+// what depends on the answer, and it never enters the gate chain. An
+// IMPLEMENTATION ticket is a thin end-to-end slice and does.
+const (
+	KindSpike          = "spike"
+	KindImplementation = "implementation"
+)
+
 // ticketSchema constrains the PM agent's reply.
 //
 // A schema rather than prose: a build engine that parses an agent's paragraphs
@@ -26,10 +36,18 @@ const ticketSchema = `{
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "body", "criteria"],
+        "required": ["title", "body", "kind", "criteria"],
         "properties": {
           "title": {"type": "string", "minLength": 1},
           "body": {"type": "string"},
+          "kind": {"enum": ["spike", "implementation"]},
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(REQ|AC)-[A-Za-z0-9-]+$"
+            }
+          },
           "criteria": {
             "type": "array",
             "minItems": 1,
@@ -48,6 +66,16 @@ const ticketSchema = `{
 type Ticket struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	// Kind decides which path the ticket takes. A spike carries a DOCUMENT
+	// deliverable and skips the gate chain entirely — there is no code to
+	// gate — so guessing would send research work through the gates and fail
+	// it for having none.
+	Kind string `json:"kind"`
+	// Blocks are the criteria whose work must wait for this spike's answer.
+	// Criteria rather than ticket references: kriya already validates ids
+	// against the snapshot, and an agent naming its own tickets would be
+	// trusted about something it can get wrong.
+	Blocks []string `json:"blocks,omitempty"`
 	// Criteria are the AC ids this ticket satisfies. They are validated
 	// against the snapshot, not trusted.
 	Criteria []string `json:"criteria"`
@@ -90,6 +118,9 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 	if err := validateCitations(reply.Tickets, known); err != nil {
 		return nil, err
 	}
+	if err := validateKinds(reply.Tickets, known); err != nil {
+		return nil, err
+	}
 
 	// Write-ahead, before the first ticket exists. A crash mid-decomposition
 	// must leave a row saying a plan was being built: completion detection
@@ -99,18 +130,133 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 		return nil, err
 	}
 
-	for n := range reply.Tickets {
-		if err := i.createTicket(ctx, target, reply.Tickets, n, actor); err != nil {
-			return nil, err
-		}
+	if err := i.filePlan(ctx, target, reply.Tickets, actor); err != nil {
+		return nil, err
 	}
 	// The final assignment barrier is passed: every ticket exists, is
-	// recorded, is parented under the epic and is assigned. Only now is the
-	// ticket set whole, and only now may completion detection arm.
+	// recorded, is parented under the epic, is wired and is assigned. Only
+	// now is the ticket set whole, and only now may completion detection arm.
 	if err := i.recordPlan(ctx, target, PlanCompleted, len(reply.Tickets)); err != nil {
 		return nil, err
 	}
 	return reply.Tickets, nil
+}
+
+// filePlan creates every ticket, wires the plan, then assigns it in phases.
+//
+// The ORDER between the phases is the point. Relations come before assignment,
+// because assignment is what makes a ticket poppable and one popped before its
+// blocking relation exists is one started ahead of the risk it depends on. And
+// spikes are assigned before implementation work, because sutra offers work
+// FIFO and no tracker-side priority is assumed — the order IS the guarantee.
+func (i Intaker) filePlan(
+	ctx context.Context, target BuildTarget, tickets []Ticket, actor string,
+) error {
+	for n := range tickets {
+		if err := i.createTicket(ctx, target, tickets, n, actor); err != nil {
+			return err
+		}
+	}
+	if err := i.wireBlocks(ctx, target, tickets, actor); err != nil {
+		return err
+	}
+	if err := i.assign(ctx, target, tickets, KindSpike, actor); err != nil {
+		return err
+	}
+	return i.assign(ctx, target, tickets, KindImplementation, actor)
+}
+
+// wireBlocks relates each spike to the tickets waiting on its answer.
+//
+// By CRITERION, never by a ticket reference the agent supplied: kriya already
+// validates ids against the snapshot, and trusting an agent about which of its
+// own tickets to block is trusting it about something it can get wrong.
+func (i Intaker) wireBlocks(
+	ctx context.Context, target BuildTarget, tickets []Ticket, actor string,
+) error {
+	for n, spike := range tickets {
+		if spike.Kind != KindSpike {
+			continue
+		}
+		blocked := make(map[string]bool, len(spike.Blocks))
+		for _, id := range spike.Blocks {
+			blocked[id] = true
+		}
+		for m, other := range tickets {
+			if n == m || !dependsOn(other, blocked) {
+				continue
+			}
+			// A spike's own criterion appears in its blocks list — the risk's
+			// answer is what it produces — and a self-block is a ticket
+			// nothing can ever pop. The n == m guard above is what prevents
+			// it; another spike sharing the criterion is genuinely blocked.
+			if err := i.Tracker.AddRelation(ctx, spike.IssueID, "blocks", other.IssueID, actor,
+				idempotencyKey(fmt.Sprintf("blocks-%d-%d", n, m),
+					target.TargetKey, target.SpecHash)); err != nil {
+				return fmt.Errorf("block ticket %d behind spike %d: %w", m, n, err)
+			}
+		}
+	}
+	return nil
+}
+
+// dependsOn reports whether a ticket covers any criterion a spike blocks.
+func dependsOn(ticket Ticket, blocked map[string]bool) bool {
+	for _, id := range ticket.Criteria {
+		if blocked[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// assign puts one kind of ticket on the popping identity's work stack.
+//
+// A PHASE per kind, because the ordering guarantee is what makes risk-first
+// real: sutra offers work FIFO, so a spike assigned after an implementation
+// ticket pops after it.
+func (i Intaker) assign(
+	ctx context.Context, target BuildTarget, tickets []Ticket, kind, actor string,
+) error {
+	for n, ticket := range tickets {
+		if ticket.Kind != kind {
+			continue
+		}
+		// Assigned to the actor that will pop it. The tracker's work stack
+		// offers only issues assigned to the popping identity, so an
+		// unassigned ticket is one nothing ever claims — the build would
+		// decompose, report its tickets, and idle forever.
+		if err := i.Tracker.AssignIssue(ctx, ticket.IssueID, actor, actor,
+			idempotencyKey(fmt.Sprintf("assign-%d", n),
+				target.TargetKey, target.SpecHash)); err != nil {
+			return fmt.Errorf("assign ticket %d: %w", n, err)
+		}
+	}
+	return nil
+}
+
+// validateKinds rejects a reply whose kinds or blocks make no sense.
+func validateKinds(tickets []Ticket, known map[string]bool) error {
+	for _, t := range tickets {
+		switch t.Kind {
+		case KindSpike, KindImplementation:
+		default:
+			return fmt.Errorf("ticket %q has no kind: it must be %q or %q",
+				t.Title, KindSpike, KindImplementation)
+		}
+		if t.Kind != KindSpike && len(t.Blocks) > 0 {
+			// Blocking is what a RISK does. An implementation ticket
+			// declaring it would serialize the plan behind work that answers
+			// no question.
+			return fmt.Errorf("ticket %q is an implementation ticket and cannot block", t.Title)
+		}
+		for _, id := range t.Blocks {
+			if !known[id] {
+				return fmt.Errorf("spike %q blocks %q, which is not in the snapshot", t.Title, id)
+			}
+		}
+	}
+	return nil
 }
 
 // recordPlan writes the plan row, when there is a store to write it to.
@@ -127,11 +273,12 @@ func (i Intaker) recordPlan(ctx context.Context, target BuildTarget, state strin
 	return nil
 }
 
-// createTicket creates one ticket, records it, parents it and assigns it.
+// createTicket creates one ticket, records it and parents it.
 //
-// All four, in that order, before the next ticket starts: a ticket that exists
-// in the tracker but was never recorded reaches the product owner with nothing
-// to validate against, and one never assigned is one nothing ever pops.
+// Assignment is a LATER phase: the whole plan must exist and be wired before
+// anything is assigned, because assignment is what makes a ticket poppable and
+// a ticket popped before its blocking relation exists is one started ahead of
+// the risk it depends on.
 func (i Intaker) createTicket(
 	ctx context.Context, target BuildTarget, tickets []Ticket, n int, actor string,
 ) error {
@@ -154,14 +301,6 @@ func (i Intaker) createTicket(
 	if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
 		idempotencyKey(fmt.Sprintf("parent-%d", n), target.TargetKey, target.SpecHash)); err != nil {
 		return fmt.Errorf("parent ticket %d under the epic: %w", n, err)
-	}
-	// Assigned to the actor that will pop it. The tracker's work stack offers
-	// only issues assigned to the popping identity, so an unassigned ticket is
-	// one nothing ever claims — the build would decompose, report its tickets,
-	// and idle forever.
-	if err := i.Tracker.AssignIssue(ctx, issueID, actor, actor,
-		idempotencyKey(fmt.Sprintf("assign-%d", n), target.TargetKey, target.SpecHash)); err != nil {
-		return fmt.Errorf("assign ticket %d: %w", n, err)
 	}
 	return nil
 }

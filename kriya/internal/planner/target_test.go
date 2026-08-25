@@ -37,6 +37,13 @@ type countingTracker struct {
 	// only issues assigned to the popping identity.
 	assigned  map[string]string
 	assignErr error
+	// wired records every relation, so a blocking edge that was or was not
+	// created is a fact rather than a count.
+	wired []relation
+	// assignOrder is the sequence assignments went out in. sutra's work stack
+	// is FIFO and no tracker-side priority is assumed, so the order IS the
+	// risk-first guarantee.
+	assignOrder []string
 }
 
 func (c *countingTracker) CreateProject(_ context.Context, _, _, _, idem string) (string, error) {
@@ -45,10 +52,26 @@ func (c *countingTracker) CreateProject(_ context.Context, _, _, _, idem string)
 	return "project-1", nil
 }
 
-func (c *countingTracker) AddRelation(_ context.Context, _, _, _, _, idem string) error {
+func (c *countingTracker) AddRelation(
+	_ context.Context, from, kind, to, _, idem string,
+) error {
 	c.relations++
 	c.keys = append(c.keys, idem)
+	c.wired = append(c.wired, relation{from: from, kind: kind, to: to})
 	return nil
+}
+
+// relation is one wiring the tracker was asked for.
+type relation struct{ from, kind, to string }
+
+// blocks reports whether a blocking relation was wired between two issues.
+func (c *countingTracker) blocks(from, to string) bool {
+	for _, r := range c.wired {
+		if r.kind == "blocks" && r.from == from && r.to == to {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *countingTracker) CreateIssue(_ context.Context, _, _, _, _, idem string) (string, error) {
@@ -300,5 +323,6 @@ func (c *countingTracker) AssignIssue(_ context.Context, issue, assignee, _, _ s
 		c.assigned = map[string]string{}
 	}
 	c.assigned[issue] = assignee
+	c.assignOrder = append(c.assignOrder, issue)
 	return nil
 }

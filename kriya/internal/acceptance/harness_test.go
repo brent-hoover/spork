@@ -111,6 +111,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerClaim(sc, w)
 	registerClose(sc, w)
 	registerStatus(sc, w)
+	registerSpikes(sc, w)
 }
 
 // featureFiles lists the .feature files on disk.

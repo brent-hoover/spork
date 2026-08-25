@@ -33,7 +33,15 @@ func registerDecompose(sc *godog.ScenarioContext, w *world) {
 	})
 
 	sc.When(`^the first decomposition runs$`, func() error { return w.runOnce() })
-	sc.When(`^the PM agent decomposes it$`, func() error { return w.runOnce() })
+	// Shared with the risk-first feature, which says the same sentence about a
+	// snapshot carrying a risk. It dispatches on whichever world the
+	// scenario's Given built: registering it twice would be ambiguous.
+	sc.When(`^the PM agent decomposes it$`, func() error {
+		if w.spike != nil {
+			return w.spike.decompose()
+		}
+		return w.runOnce()
+	})
 	sc.When(`^a later decomposition supersedes the plan$`, func() error {
 		// A second run under a NEW token: a deliberate re-intake, which is
 		// what supersession is. The epic must not be recreated.

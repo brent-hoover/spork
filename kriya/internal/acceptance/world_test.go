@@ -45,6 +45,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// spike is the risk-first scenarios' state, nil until one starts.
+	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
 	status *statusWorld
 	// close is the epic-close scenarios' state, nil until one starts.
@@ -87,7 +89,7 @@ func newWorld() *world {
 		token:    "token-1",
 		tracker:  &recordingTracker{},
 		agent: fakes.NewAgent(
-			`{"tickets":[{"title":"walking skeleton","body":"","criteria":["AC-valid-url"]}]}`),
+			`{"tickets":[{"title":"walking skeleton","body":"","kind":"implementation","criteria":["AC-valid-url"]}]}`),
 	}
 }
 
@@ -248,6 +250,28 @@ type recordingTracker struct {
 	// tickets records what decomposition asked for, so a scenario can assert
 	// against what kriya actually filed rather than what the fake replied.
 	tickets []planner.Ticket
+	// wired records every relation, so a blocking edge that was or was not
+	// created is a fact rather than a count.
+	wired []wiredRelation
+	// assignOrder is the sequence assignments went out in. sutra's work stack
+	// is FIFO and no tracker-side priority is assumed, so the order IS the
+	// risk-first guarantee.
+	assignOrder []string
+}
+
+// wiredRelation is one relation the tracker was asked for.
+type wiredRelation struct{ from, kind, to string }
+
+func newRecordingTracker() *recordingTracker { return &recordingTracker{} }
+
+// blocks reports whether a blocking relation was wired between two issues.
+func (r *recordingTracker) blocks(from, to string) bool {
+	for _, rel := range r.wired {
+		if rel.kind == "blocks" && rel.from == from && rel.to == to {
+			return true
+		}
+	}
+	return false
 }
 
 // reset clears the counters so a later run can be measured on its own.
@@ -270,8 +294,11 @@ func (r *recordingTracker) CreateIssue(_ context.Context, _, title, _, _, _ stri
 	return fmt.Sprintf("issue-%d", r.issues), nil
 }
 
-func (r *recordingTracker) AddRelation(context.Context, string, string, string, string, string) error {
+func (r *recordingTracker) AddRelation(
+	_ context.Context, from, kind, to, _, _ string,
+) error {
 	r.relations++
+	r.wired = append(r.wired, wiredRelation{from: from, kind: kind, to: to})
 	return nil
 }
 
@@ -356,7 +383,7 @@ func (w *world) citeCriteria(ids ...string) {
 	for i, id := range ids {
 		quoted[i] = `"` + id + `"`
 	}
-	w.agent = fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"","criteria":[` +
+	w.agent = fakes.NewAgent(`{"tickets":[{"title":"walking skeleton","body":"","kind":"implementation","criteria":[` +
 		strings.Join(quoted, ",") + `]}]}`)
 	// A supersession decomposes again, and the PM answering the same way is
 	// exactly what "carried-forward tickets" means.
@@ -414,6 +441,9 @@ func (m *memAttempts) Mapping(_ context.Context, targetKey string) (planner.Spec
 
 // AssignIssue puts a ticket on the popping identity's work stack. Without it
 // the tracker's pop never offers it to anyone.
-func (r *recordingTracker) AssignIssue(context.Context, string, string, string, string) error {
+func (r *recordingTracker) AssignIssue(
+	_ context.Context, issue, _, _, _ string,
+) error {
+	r.assignOrder = append(r.assignOrder, issue)
 	return nil
 }
