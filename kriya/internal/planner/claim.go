@@ -20,6 +20,11 @@ const (
 	CompletionResubmitting = "review-resubmitting"
 	CompletionClosing      = "closing"
 	CompletionComplete     = "complete"
+	// CompletionStale is where a claim rests once its epoch has moved past
+	// it. Terminal for THIS attempt: it can never stamp, and leaving it in
+	// closing would have recovery retry it on every startup for the life of
+	// the database.
+	CompletionStale = "stale"
 )
 
 // CompletionClaim is one attempt to declare a target's build complete.
@@ -152,12 +157,13 @@ type Claimer struct {
 // step names a key persisted in the step before it, so recovery from any point
 // replays exactly what was promised.
 func (c Claimer) Submit(
-	ctx context.Context, targetKey, projectID, epicID string, subtreeRevision int64,
+	ctx context.Context, targetKey, projectID, epicID string,
+	epoch int, subtreeRevision int64,
 ) (CompletionClaim, error) {
-	epoch, err := c.Epochs.Current(ctx, targetKey)
-	if err != nil {
-		return CompletionClaim{}, err
-	}
+	// The epoch is the CALLER'S, captured with the detection that armed this
+	// attempt. Re-reading it here would bind the claim to an epoch nothing
+	// checked for completion: work that advanced it between the detection and
+	// this call would be covered by a review nobody looked at it for.
 	report, err := c.Reports.Render(ctx, targetKey)
 	if err != nil {
 		return CompletionClaim{}, fmt.Errorf("render completion report for %s: %w", targetKey, err)
@@ -263,16 +269,31 @@ func (c Claimer) RecoverCloses(
 	}
 	var stale error
 	for _, claim := range pending {
+		// The epoch FIRST, before sutra. A subtree or reversed-approval
+		// conflict is cached under the persisted key, so replaying the call
+		// would return that conflict on every startup — and since only a
+		// stale claim is tolerated, recovery would fail forever.
+		current, err := c.Epochs.Current(ctx, claim.TargetKey)
+		if err != nil {
+			return 0, err
+		}
+		if current != claim.Epoch {
+			if err := c.settleStale(ctx, claim); err != nil {
+				return 0, err
+			}
+			stale = fmt.Errorf("%s: %w", claim.TargetKey, ErrStaleClaim)
+			continue
+		}
 		epicID, err := epic(claim)
 		if err != nil {
 			return 0, err
 		}
 		if _, err := c.finishClose(ctx, claim, epicID); err != nil {
 			if errors.Is(err, ErrStaleClaim) {
-				// The close landed for a claim the world moved past. Recovery
-				// finishes the rest and reports it: a compensating reopen is
-				// what returns the target to work, and stopping here would
-				// leave every other target's close unrecovered.
+				// The epoch moved between the check and the stamp. The close
+				// landed; a compensating reopen is what returns the target to
+				// work, and stopping here would leave every other target's
+				// close unrecovered.
 				stale = err
 				continue
 			}
@@ -280,6 +301,19 @@ func (c Claimer) RecoverCloses(
 		}
 	}
 	return len(pending), stale
+}
+
+// settleStale parks a claim whose epoch has moved past it.
+//
+// Terminal for THIS attempt. A fresh attempt at the new epoch is what comes
+// next, under a key that names it — and leaving this one in closing would have
+// every startup retry a close that can never stamp.
+func (c Claimer) settleStale(ctx context.Context, claim CompletionClaim) error {
+	claim.State = CompletionStale
+	if err := c.Claims.Upsert(ctx, claim); err != nil {
+		return fmt.Errorf("record stale claim for %s: %w", claim.TargetKey, err)
+	}
+	return nil
 }
 
 // ErrNotArmed reports a completion attempt on a target that may not have one.
@@ -350,7 +384,11 @@ func (c Claimer) finishClose(
 		// The epoch advanced while the approval was in flight. The close
 		// landed — sutra's gate was satisfied at the time — and a
 		// compensating reopen is what returns the target to work. The
-		// operator hears about it; nothing is stamped.
+		// operator hears about it; nothing is stamped, and the claim parks
+		// terminally so recovery does not retry it forever.
+		if err := c.settleStale(ctx, claim); err != nil {
+			return CompletionClaim{}, err
+		}
 		return claim, fmt.Errorf("%s: %w", claim.TargetKey, ErrStaleClaim)
 	}
 	claim.State = CompletionComplete

@@ -155,7 +155,7 @@ func TestASubmissionRecordsItsWholeClaimBeforeAnyCall(t *testing.T) {
 	docs.err = errors.New("sutra unreachable")
 	c := claimer(claims, docs, newReviewDesk(), &staticReport{body: "# Done"}, newMemAdvances())
 
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the document creation to fail")
 	}
 	got, found := claims.rows["/spec"]
@@ -187,7 +187,7 @@ func TestACrashBeforeTheDocumentRecoversExactlyOnce(t *testing.T) {
 	broken := newDocCatalog()
 	broken.err = errors.New("crash")
 	if _, err := claimer(claims, broken, reviews, report, newMemAdvances()).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the crash")
 	}
 
@@ -232,7 +232,7 @@ func TestACrashBetweenDocumentAndReviewAppendsNoSecondVersion(t *testing.T) {
 	report := &staticReport{body: "# Done"}
 	reviews.err = errors.New("crash after the document existed")
 	if _, err := claimer(claims, docs, reviews, report, newMemAdvances()).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the crash")
 	}
 	if docs.versions != 1 {
@@ -270,7 +270,7 @@ func TestTheReportIsReplayedNeverRerendered(t *testing.T) {
 	report := &staticReport{body: "# Done"}
 	docs.err = errors.New("crash")
 	if _, err := claimer(claims, docs, reviews, report, newMemAdvances()).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the crash")
 	}
 	rendered := report.asked
@@ -307,7 +307,7 @@ func TestAnEmptyReportIsRefused(t *testing.T) {
 	// A review with nothing to read is a human asked to approve a blank page.
 	c := claimer(newMemClaims(), newDocCatalog(), newReviewDesk(),
 		&staticReport{body: ""}, newMemAdvances())
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("an empty completion report was submitted")
 	}
 }
@@ -317,7 +317,7 @@ func TestADocumentWithNoVersionIsRefused(t *testing.T) {
 	// open a review over nothing.
 	c := claimer(newMemClaims(), emptyVersionDocs{}, newReviewDesk(),
 		&staticReport{body: "# Done"}, newMemAdvances())
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("a review was opened over a document with no version")
 	}
 }
@@ -336,7 +336,7 @@ func TestAnUnwritableClaimIsAFailure(t *testing.T) {
 	claims.err = errors.New("disk full")
 	c := claimer(claims, newDocCatalog(), newReviewDesk(),
 		&staticReport{body: "# Done"}, newMemAdvances())
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("a claim that was never written read as recorded")
 	}
 }
@@ -351,7 +351,7 @@ func TestRecoveryReplaysThePersistedKeyNotAFreshlyDerivedOne(t *testing.T) {
 	advances := newMemAdvances()
 	reviews.err = errors.New("crash before the review landed")
 	if _, err := claimer(claims, docs, reviews, report, advances).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the crash")
 	}
 	persisted := claims.rows["/spec"].SubmissionKey
@@ -400,7 +400,7 @@ func TestARecoveredClaimKeepsItsCapturedSubtreeRevision(t *testing.T) {
 	report := &staticReport{body: "# Done"}
 	reviews.err = errors.New("crash")
 	if _, err := claimer(claims, docs, reviews, report, newMemAdvances()).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the crash")
 	}
 	reviews.err = nil

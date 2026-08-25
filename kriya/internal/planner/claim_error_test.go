@@ -8,23 +8,53 @@ import (
 	"kriya/internal/planner"
 )
 
-func TestAnUnreadableEpochStopsASubmission(t *testing.T) {
-	// The epoch scopes the submission key. Submitting without knowing it
-	// would present a key derived from zero and collide with a first attempt
-	// that may be long spent.
+func TestAnUnreadableEpochStopsDetection(t *testing.T) {
+	// The epoch scopes the submission key, and detection is where it is read
+	// — bound to the same answer that armed the attempt. Arming without
+	// knowing it would bind the claim to zero and collide with a first
+	// attempt that may be long spent.
+	plans, tickets := newMemPlans(), newMemTickets()
+	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
 	advances := newMemAdvances()
 	advances.err = errors.New("disk full")
-	c := claimer(newMemClaims(), newDocCatalog(), newReviewDesk(),
+	d := detector(plans, tickets, &liveIssues{})
+	d.Epochs = &planner.Epochs{Store: advances}
+	if _, err := d.Detect(context.Background(), "/spec", "project-1"); err == nil {
+		t.Fatal("detection armed without knowing its epoch")
+	}
+}
+
+func TestASubmissionBindsToTheEpochItWasGiven(t *testing.T) {
+	// The CALLER'S epoch, from the detection that armed the attempt.
+	// Re-reading it here would bind the claim to an epoch nothing checked for
+	// completion — work that advanced it in between would be covered by a
+	// review nobody looked at it for.
+	claims, advances := newMemClaims(), newMemAdvances()
+	// The world has moved to epoch 2 since the detection saw 1.
+	for _, e := range []string{"E1", "E2"} {
+		if _, err := (planner.Epochs{Store: advances}).
+			OnEvent(context.Background(), "/spec", planner.CauseTicketReopen, e); err != nil {
+			t.Fatalf("advance: %v", err)
+		}
+	}
+	c := claimer(claims, newDocCatalog(), newReviewDesk(),
 		&staticReport{body: "# Done"}, advances)
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
-		t.Fatal("a submission proceeded without knowing its epoch")
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 1, 7); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	got := claims.rows["/spec"]
+	if got.Epoch != 1 {
+		t.Errorf("the claim bound to epoch %d, not the one detection saw", got.Epoch)
+	}
+	if got.SubmissionKey != planner.SubmissionKey("/spec", 1) {
+		t.Error("the submission key does not name the detected epoch")
 	}
 }
 
 func TestAnUnrenderableReportStopsASubmission(t *testing.T) {
 	report := &staticReport{err: errors.New("no plan to report on")}
 	c := claimer(newMemClaims(), newDocCatalog(), newReviewDesk(), report, newMemAdvances())
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("a submission proceeded with no report")
 	}
 }
@@ -52,7 +82,7 @@ func TestARecoveryThatCannotResolveItsTargetStops(t *testing.T) {
 	report := &staticReport{body: "# Done"}
 	docs.err = errors.New("crash")
 	if _, err := claimer(claims, docs, reviews, report, newMemAdvances()).
-		Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+		Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("expected the crash")
 	}
 	docs.err = nil
@@ -86,7 +116,7 @@ func TestAnUnwritableClaimStopsTheReviewRecord(t *testing.T) {
 	c := claimer(claims, docs, reviews, &staticReport{body: "# Done"}, newMemAdvances())
 	// The first two writes succeed; the third — recording the review — fails.
 	claims.failAfter = 2
-	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 7); err == nil {
+	if _, err := c.Submit(context.Background(), "/spec", "p-1", "epic-1", 0, 7); err == nil {
 		t.Fatal("a review whose id was never recorded read as submitted")
 	}
 }

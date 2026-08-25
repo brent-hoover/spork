@@ -370,8 +370,8 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 	if current {
 		return nil
 	}
-	armed, _, err := completionDetector(db).Detect(ctx, target)
-	if err != nil || !armed {
+	got, err := completionDetector(db).Detection(ctx, target)
+	if err != nil || !got.Armed {
 		return err
 	}
 	row, found, err := (planner.SQLTargets{DB: db}).Find(ctx, target)
@@ -384,8 +384,10 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 	if err != nil {
 		return fmt.Errorf("read epic %s: %w", row.EpicID, err)
 	}
+	// The epoch the DETECTION was about. Re-reading it here would bind the
+	// claim to one nothing checked for completion.
 	_, err = completionClaimer(db, actor).Submit(
-		ctx, target, row.ProjectID, row.EpicID, epic.SubtreeRevision)
+		ctx, target, row.ProjectID, row.EpicID, got.Epoch, epic.SubtreeRevision)
 	return err
 }
 
@@ -395,8 +397,15 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 // or one sent back for rework, leaves the target exactly where it is.
 func observeCompletionApproval(ctx context.Context, db *sql.DB, target, actor string) error {
 	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
-	if err != nil || !found || claim.State != planner.CompletionSubmitted {
+	if err != nil || !found {
 		return err
+	}
+	// SUBMITTED or CLOSING. Close persists closing before calling sutra, so a
+	// close that errored rests there — and polling only submitted claims left
+	// it stranded: nothing retried the persisted key, and nothing observed a
+	// reapproval under a new verdict event.
+	if claim.State != planner.CompletionSubmitted && claim.State != planner.CompletionClosing {
+		return nil
 	}
 	rv, err := trackerclient.New(sutraURL()).GetReview(ctx, claim.ReviewID)
 	if err != nil {
@@ -421,6 +430,20 @@ func observeCompletionApproval(ctx context.Context, db *sql.DB, target, actor st
 		return nil
 	}
 	return err
+}
+
+// awaitsClose reports whether a target's claim is waiting on a human.
+//
+// Submitted claims are polled for their first approval; CLOSING ones are too,
+// because Close persists that state before calling sutra — a close that
+// errored rests there and needs either its key replayed or a reapproval
+// observed under a new verdict event.
+func awaitsClose(ctx context.Context, db *sql.DB, target string) bool {
+	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
+	if err != nil || !found {
+		return false
+	}
+	return claim.State == planner.CompletionSubmitted || claim.State == planner.CompletionClosing
 }
 
 // claimIsCurrent reports whether a completion attempt for THIS epoch stands.
@@ -557,6 +580,7 @@ func completionDetector(db *sql.DB) buildFinish {
 			Plans:   planner.SQLPlans{DB: db},
 			Tickets: planner.SQLTickets{DB: db},
 			Issues:  sutraIssues{c: trackerclient.New(sutraURL())},
+			Epochs:  &planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 		},
 	}
 }
@@ -568,25 +592,32 @@ type buildFinish struct {
 }
 
 func (f buildFinish) Detect(ctx context.Context, targetKey string) (bool, string, error) {
-	target, found, err := f.targets.Find(ctx, targetKey)
+	got, err := f.Detection(ctx, targetKey)
 	if err != nil {
 		return false, "", err
+	}
+	return got.Armed, got.Reason, nil
+}
+
+// Detection is the whole answer, including the epoch a claim must bind to.
+func (f buildFinish) Detection(
+	ctx context.Context, targetKey string,
+) (planner.Detection, error) {
+	target, found, err := f.targets.Find(ctx, targetKey)
+	if err != nil {
+		return planner.Detection{}, err
 	}
 	if !found {
 		// Nothing has been planned for it. Not armed, and not a stall either
 		// — the operator has not started this build.
-		return false, "", nil
+		return planner.Detection{}, nil
 	}
 	// The target's own epic, excused from its own completion check: it is
 	// open for exactly as long as the build runs, so counting it as
 	// outstanding work would make completion unable to arm at all.
 	detect := f.detect
 	detect.Epic = target.EpicID
-	got, err := detect.Detect(ctx, targetKey, target.ProjectID)
-	if err != nil {
-		return false, "", err
-	}
-	return got.Armed, got.Reason, nil
+	return detect.Detect(ctx, targetKey, target.ProjectID)
 }
 
 // stallRecorder records a build that can neither proceed nor finish.

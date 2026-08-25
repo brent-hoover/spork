@@ -47,6 +47,10 @@ type Detection struct {
 	// Blocking is every issue that must settle first, so an operator sees the
 	// whole list rather than the first one found.
 	Blocking []string
+	// Epoch is the completion epoch this answer is about. A claim binds to
+	// it: re-reading the epoch after detection would bind the attempt to one
+	// nothing checked for completion.
+	Epoch int
 }
 
 // Detector answers whether a target's build may attempt completion.
@@ -54,6 +58,9 @@ type Detector struct {
 	Plans   PlanStore
 	Tickets TargetTickets
 	Issues  Issues
+	// Epochs binds an answer to the epoch it is about. Nil answers about
+	// epoch zero, which is what a module-level test of the rules wants.
+	Epochs *Epochs
 	// Epic is the target's umbrella issue, excused from its own completion
 	// check. It is OPEN for exactly as long as the build runs — closing it is
 	// what completion means — so counting it as outstanding work would make
@@ -102,11 +109,28 @@ func (d Detector) Detect(ctx context.Context, targetKey, projectID string) (Dete
 	if err != nil {
 		return Detection{}, err
 	}
+	// Read AFTER the queue, so an advance racing the read leaves the answer
+	// bound to the OLDER epoch — which then fails the stamp's CAS rather than
+	// claiming an epoch nobody checked.
+	epoch, err := d.epoch(ctx, targetKey)
+	if err != nil {
+		return Detection{}, err
+	}
 	blocking, reason := blockers(active, planned, d.Epic)
 	if len(blocking) > 0 {
-		return Detection{Reason: reason, Watermark: watermark, Blocking: blocking}, nil
+		return Detection{
+			Reason: reason, Watermark: watermark, Blocking: blocking, Epoch: epoch,
+		}, nil
 	}
-	return Detection{Armed: true, Watermark: watermark}, nil
+	return Detection{Armed: true, Watermark: watermark, Epoch: epoch}, nil
+}
+
+// epoch reads the completion epoch this answer is about.
+func (d Detector) epoch(ctx context.Context, targetKey string) (int, error) {
+	if d.Epochs == nil {
+		return 0, nil
+	}
+	return d.Epochs.Current(ctx, targetKey)
 }
 
 // plannedIDs is the target's planned ticket set, by issue.
