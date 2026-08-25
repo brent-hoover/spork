@@ -138,11 +138,14 @@ func runStatus(
 	}
 	store := gates.SQLStore{DB: db}
 	for _, gate := range gates.Chain {
-		passed, err := store.Passed(ctx, run.ID, run.Ticket, gate, run.Head, run.Attempt)
+		// Outcome, not Passed: the chain treats absence and failure alike —
+		// neither is a pass — but a report that showed six FAILED rows for a
+		// chain stopped at its second gate would misstate where the run is.
+		passed, ran, err := store.Outcome(ctx, run.ID, run.Ticket, gate, run.Head, run.Attempt)
 		if err != nil {
 			return cli.RunStatus{}, fmt.Errorf("read %s result for %s: %w", gate, run.ID, err)
 		}
-		out.Gates = append(out.Gates, cli.GateStatus{Gate: gate, Passed: passed})
+		out.Gates = append(out.Gates, cli.GateStatus{Gate: gate, Ran: ran, Passed: passed})
 	}
 	return out, nil
 }

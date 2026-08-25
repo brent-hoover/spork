@@ -44,8 +44,13 @@ type RunStatus struct {
 }
 
 // GateStatus is one gate's outcome for a run's current attempt.
+//
+// Ran is separate from Passed because they are different facts: a gate that
+// has not run yet is not a gate that failed, and a chain stopped at its second
+// gate must not read as one where four more lost.
 type GateStatus struct {
 	Gate   string `json:"gate"`
+	Ran    bool   `json:"ran"`
 	Passed bool   `json:"passed"`
 }
 
@@ -135,7 +140,7 @@ func writeRun(w *errWriter, run RunStatus) {
 		w.printf("    review: %s\n", run.Review)
 	}
 	for _, gate := range run.Gates {
-		w.printf("    gate %-15s %s\n", gate.Gate, passedOf(gate.Passed))
+		w.printf("    gate %-15s %s\n", gate.Gate, passedOf(gate))
 	}
 }
 
@@ -172,9 +177,13 @@ func startedAt(run RunStatus) string {
 	return ", started " + run.Started.UTC().Format(time.RFC3339)
 }
 
-func passedOf(passed bool) string {
-	if passed {
+func passedOf(gate GateStatus) string {
+	switch {
+	case !gate.Ran:
+		return "not run"
+	case gate.Passed:
 		return "passed"
+	default:
+		return "FAILED"
 	}
-	return "FAILED"
 }
