@@ -32,6 +32,19 @@ func (m *memPlans) Find(_ context.Context, targetKey string) (planner.Plan, bool
 	return p, ok, nil
 }
 
+// ByKey resolves a decomposition key, which is a plan's real identity.
+func (m *memPlans) ByKey(_ context.Context, key string) (planner.Plan, bool, error) {
+	if m.err != nil {
+		return planner.Plan{}, false, m.err
+	}
+	for _, p := range m.rows {
+		if p.Key == key {
+			return p, true, nil
+		}
+	}
+	return planner.Plan{}, false, nil
+}
+
 func TestAPlanIsWholeOnlyOnceDecompositionStampsIt(t *testing.T) {
 	// Completion detection reads this stamp before anything else. A plan
 	// mid-decomposition has a ticket set that is still growing, and "every
@@ -45,15 +58,15 @@ func TestAPlanIsWholeOnlyOnceDecompositionStampsIt(t *testing.T) {
 	if _, found, _ := plans.Find(context.Background(), "/spec"); found {
 		t.Fatal("a plan row existed before decomposition ran")
 	}
-	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err != nil {
+	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
 	got, found, err := plans.Find(context.Background(), "/spec")
 	if err != nil || !found {
 		t.Fatalf("no plan row after decomposition: %v found=%v", err, found)
 	}
-	if got.State != planner.PlanCompleted {
-		t.Errorf("the plan is in state %q after decomposition finished", got.State)
+	if got.State != planner.PlanActive || !got.Completed {
+		t.Errorf("the plan is %q completed=%v after decomposition finished", got.State, got.Completed)
 	}
 	if got.Tickets != tr.issues {
 		t.Errorf("the plan claims %d tickets; decomposition created %d", got.Tickets, tr.issues-1)
@@ -70,11 +83,11 @@ func TestAFailedDecompositionLeavesNoCompletedStamp(t *testing.T) {
 	in.Plans = plans
 	tr.assignErr = errors.New("tracker unavailable")
 
-	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err == nil {
+	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor"); err == nil {
 		t.Fatal("expected the decomposition to fail")
 	}
 	got, found, _ := plans.Find(context.Background(), "/spec")
-	if found && got.State == planner.PlanCompleted {
+	if found && got.Completed {
 		t.Error("a decomposition that did not finish stamped its plan whole")
 	}
 }
@@ -88,15 +101,18 @@ func TestAPlanIsRecordedBeforeItsTicketsSoACrashIsVisible(t *testing.T) {
 	in.Plans = plans
 	tr.failIssue = errors.New("sutra unreachable")
 
-	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err == nil {
+	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor"); err == nil {
 		t.Fatal("expected the decomposition to fail")
 	}
 	got, found, _ := plans.Find(context.Background(), "/spec")
 	if !found {
 		t.Fatal("no plan row survived the failure; there is nothing to recover from")
 	}
-	if got.State != planner.PlanDecomposing {
-		t.Errorf("the plan is in state %q, want the step it is stuck at", got.State)
+	// ACTIVE without the stamp: activation precedes the creation, wiring and
+	// assignment phases, so this is exactly the state a crash mid-phase
+	// leaves — and the state a resumed retry must recognise.
+	if got.State != planner.PlanActive || got.Completed {
+		t.Errorf("the plan is %q completed=%v, want active mid-decomposition", got.State, got.Completed)
 	}
 }
 
@@ -105,7 +121,7 @@ func TestADecompositionWithNoPlanStoreStillWorks(t *testing.T) {
 	// module-level test of decomposition itself does not need one.
 	in, _, _ := decomposer(t, `{"tickets":[
 		{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]}]}`)
-	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err != nil {
+	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
 }

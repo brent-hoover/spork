@@ -110,32 +110,34 @@ type ticketReply struct {
 // criteria cite REQ and AC ids present in the snapshot". Citations are checked
 // rather than trusted: an agent that invents an AC id produces a ticket whose
 // completion can never be verified against anything.
-func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapshot, actor string) ([]Ticket, error) {
-	known := knownCriteria(snap)
-	if len(known) == 0 {
-		return nil, fmt.Errorf("snapshot %s cites no acceptance criteria to decompose", target.SpecHash[:12])
+func (i Intaker) Decompose(
+	ctx context.Context, target BuildTarget, snap Snapshot, generation int, actor string,
+) ([]Ticket, error) {
+	key := DecompositionKey(target.ProjectKey, target.TargetKey, target.SpecHash, generation)
+
+	// FIRST — before the agent, before the tracker, before anything. A
+	// request that decomposed before resolving its own key would compete
+	// with the plan it is retrying: two decompositions for one request, one
+	// superseding the other. The key is unique, so resolving here makes a
+	// retry find its own plan and leaves competition possible only between
+	// DIFFERENT keys.
+	//
+	// Ahead of the AGENT specifically, not merely ahead of the tracker. The
+	// PM call is the expensive half of a decomposition, and asking it again
+	// to then discard its answer is a bill for nothing — and a second,
+	// possibly different, plan for a key that already has one.
+	if i.Plans != nil {
+		resolution, err := Resolve(ctx, i.Plans, key)
+		if err != nil {
+			return nil, err
+		}
+		if !resolution.Fresh && !resolution.Resume {
+			return i.plannedSet(ctx, resolution.Plan)
+		}
 	}
 
-	res, err := i.Agent.Run(ctx, agent.Request{
-		Role:   agent.RolePM,
-		Prompt: decomposePrompt(snap, known),
-		Schema: json.RawMessage(ticketSchema),
-	})
+	tickets, err := i.proposeTickets(ctx, target, snap)
 	if err != nil {
-		return nil, fmt.Errorf("pm decomposition: %w", err)
-	}
-
-	var reply ticketReply
-	if err := json.Unmarshal(res.Structured, &reply); err != nil {
-		return nil, fmt.Errorf("pm decomposition: parse tickets: %w", err)
-	}
-	if err := validateCitations(reply.Tickets, known); err != nil {
-		return nil, err
-	}
-	if err := validateKinds(reply.Tickets, known); err != nil {
-		return nil, err
-	}
-	if err := validateSlices(reply.Tickets); err != nil {
 		return nil, err
 	}
 
@@ -143,20 +145,33 @@ func (i Intaker) Decompose(ctx context.Context, target BuildTarget, snap Snapsho
 	// must leave a row saying a plan was being built: completion detection
 	// reads this stamp, and no row at all is indistinguishable from a target
 	// nobody has planned.
-	if err := i.recordPlan(ctx, target, PlanDecomposing, 0); err != nil {
+	plan := Plan{
+		Key: key, TargetKey: target.TargetKey, SpecHash: target.SpecHash,
+		Generation: generation, State: PlanPending,
+	}
+	if err := i.recordPlan(ctx, plan); err != nil {
 		return nil, err
 	}
 
-	if err := i.filePlan(ctx, target, reply.Tickets, actor); err != nil {
+	// ACTIVE before the phases, not after. The spec is explicit that
+	// activation precedes creation, wiring and assignment — which is what
+	// makes "active without completed" a real state that a crash can leave
+	// behind, and what a resumed retry recognises.
+	plan.State = PlanActive
+	if err := i.recordPlan(ctx, plan); err != nil {
+		return nil, err
+	}
+	if err := i.filePlan(ctx, target, tickets, actor); err != nil {
 		return nil, err
 	}
 	// The final assignment barrier is passed: every ticket exists, is
 	// recorded, is parented under the epic, is wired and is assigned. Only
 	// now is the ticket set whole, and only now may completion detection arm.
-	if err := i.recordPlan(ctx, target, PlanCompleted, len(reply.Tickets)); err != nil {
+	plan.Completed, plan.Tickets = true, len(tickets)
+	if err := i.recordPlan(ctx, plan); err != nil {
 		return nil, err
 	}
-	return reply.Tickets, nil
+	return tickets, nil
 }
 
 // filePlan creates every ticket, wires the plan, then assigns it in phases.
@@ -275,15 +290,12 @@ func validateKinds(tickets []Ticket, known map[string]bool) error {
 }
 
 // recordPlan writes the plan row, when there is a store to write it to.
-func (i Intaker) recordPlan(ctx context.Context, target BuildTarget, state string, tickets int) error {
+func (i Intaker) recordPlan(ctx context.Context, plan Plan) error {
 	if i.Plans == nil {
 		return nil
 	}
-	if err := i.Plans.Upsert(ctx, Plan{
-		TargetKey: target.TargetKey, SpecHash: target.SpecHash,
-		State: state, Tickets: tickets,
-	}); err != nil {
-		return fmt.Errorf("record %s plan for %s: %w", state, target.TargetKey, err)
+	if err := i.Plans.Upsert(ctx, plan); err != nil {
+		return fmt.Errorf("record %s plan for %s: %w", plan.State, plan.TargetKey, err)
 	}
 	return nil
 }
@@ -486,4 +498,61 @@ func assignmentOrder(tickets []Ticket, kind string) []int {
 		}
 	}
 	return order
+}
+
+// plannedSet returns an existing plan's tickets without mutating anything.
+//
+// The idempotent answer to a same-key retry that must not re-decompose: an
+// already-complete plan, a superseded one, a parked one and a terminal one all
+// land here. The recorded ticket set is what the caller asked for — the agent
+// is never invoked again, and no tracker call is made.
+func (i Intaker) plannedSet(ctx context.Context, plan Plan) ([]Ticket, error) {
+	if i.Tickets == nil {
+		return nil, nil
+	}
+	tickets, err := i.Tickets.ForTarget(ctx, plan.TargetKey)
+	if err != nil {
+		return nil, fmt.Errorf("read the planned tickets of %s: %w", plan.TargetKey, err)
+	}
+	return tickets, nil
+}
+
+// proposeTickets asks the PM for a plan and holds it to the rules.
+//
+// Every check here rejects rather than repairs. A ticket citing an invented
+// criterion, blocking work it does not gate, or naming one layer is a plan
+// kriya cannot verify anything against — and silently fixing an agent's reply
+// would mean building something nobody proposed.
+func (i Intaker) proposeTickets(
+	ctx context.Context, target BuildTarget, snap Snapshot,
+) ([]Ticket, error) {
+	known := knownCriteria(snap)
+	if len(known) == 0 {
+		return nil, fmt.Errorf("snapshot %s cites no acceptance criteria to decompose", target.SpecHash[:12])
+	}
+
+	res, err := i.Agent.Run(ctx, agent.Request{
+		Role:   agent.RolePM,
+		Prompt: decomposePrompt(snap, known),
+		Schema: json.RawMessage(ticketSchema),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pm decomposition: %w", err)
+	}
+
+	var reply ticketReply
+	if err := json.Unmarshal(res.Structured, &reply); err != nil {
+		return nil, fmt.Errorf("pm decomposition: parse tickets: %w", err)
+	}
+	for _, check := range []func([]Ticket, map[string]bool) error{
+		validateCitations, validateKinds,
+	} {
+		if err := check(reply.Tickets, known); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateSlices(reply.Tickets); err != nil {
+		return nil, err
+	}
+	return reply.Tickets, nil
 }

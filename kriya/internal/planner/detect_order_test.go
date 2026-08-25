@@ -29,7 +29,7 @@ func TestAnAdvanceRacingTheQueueLeavesTheAnswerOnTheOlderEpoch(t *testing.T) {
 	// CAS and nothing is stamped; one bound to the newer epoch would PASS the
 	// CAS having checked a queue state that epoch never had.
 	plans, tickets := newMemPlans(), newMemTickets()
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 	advances := newMemAdvances()
 	epochs := planner.Epochs{Store: advances}
 

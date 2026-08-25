@@ -10,7 +10,7 @@ import (
 func decomposeReply(t *testing.T, reply string) (*countingTracker, error) {
 	t.Helper()
 	in, tr, _ := decomposer(t, reply)
-	_, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
+	_, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor")
 	return tr, err
 }
 

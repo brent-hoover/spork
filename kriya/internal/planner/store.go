@@ -232,6 +232,41 @@ CREATE TABLE plan (
     tickets    INTEGER NOT NULL DEFAULT 0
 )`
 
+// PlanKeyMigration re-keys plans on their decomposition key.
+//
+// A new TABLE rather than columns on the old one: `plan` is keyed on
+// target_key, and the spec makes the DECOMPOSITION KEY the identity — a
+// target accumulates plans as decompositions supersede each other, so one row
+// per target cannot hold the set that supersession and retirement walk.
+// SQLite cannot re-key a table in place, so this creates the right shape and
+// carries the existing rows across.
+//
+// Legacy rows get key 'legacy:<target>': unique, so the carry-over cannot
+// collide, and structurally distinguishable from a derived key, which is 64
+// hex characters. Such a row therefore resolves to nothing and the next
+// decomposition creates a proper plan rather than replaying a keyless one.
+// The two old states map onto the new model: decomposing was active without
+// the completed stamp, and completed was active with it.
+const PlanKeyMigration = `
+CREATE TABLE decomposition_plan (
+    decomposition_key TEXT PRIMARY KEY,
+    target_key        TEXT NOT NULL,
+    spec_hash         TEXT NOT NULL,
+    generation        INTEGER NOT NULL DEFAULT 0,
+    state             TEXT NOT NULL,
+    completed         INTEGER NOT NULL DEFAULT 0,
+    tickets           INTEGER NOT NULL DEFAULT 0,
+    superseded_by     TEXT NOT NULL DEFAULT '',
+    error             TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_decomposition_plan_target ON decomposition_plan(target_key);
+INSERT INTO decomposition_plan
+    (decomposition_key, target_key, spec_hash, state, completed, tickets)
+  SELECT 'legacy:' || target_key, target_key, spec_hash, 'active',
+         CASE WHEN state = 'completed' THEN 1 ELSE 0 END, tickets
+    FROM plan;
+DROP TABLE plan`
+
 // TicketKindMigration records what kind of ticket the plan produced.
 //
 // Its own migration: planned_ticket has shipped. Without the kind a popped
@@ -259,29 +294,62 @@ type SQLPlans struct{ DB *sql.DB }
 // Upsert writes a plan row.
 func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO plan (target_key, spec_hash, state, tickets)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(target_key) DO UPDATE SET
-		   spec_hash = excluded.spec_hash, state = excluded.state,
-		   tickets = excluded.tickets`,
-		p.TargetKey, p.SpecHash, p.State, p.Tickets)
+		`INSERT INTO decomposition_plan
+		   (decomposition_key, target_key, spec_hash, generation, state,
+		    completed, tickets, superseded_by, error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(decomposition_key) DO UPDATE SET
+		   target_key = excluded.target_key, spec_hash = excluded.spec_hash,
+		   generation = excluded.generation, state = excluded.state,
+		   completed = excluded.completed, tickets = excluded.tickets,
+		   superseded_by = excluded.superseded_by, error = excluded.error`,
+		p.Key, p.TargetKey, p.SpecHash, p.Generation, p.State,
+		p.Completed, p.Tickets, p.SupersededBy, p.Error)
 	if err != nil {
 		return fmt.Errorf("upsert plan: %w", err)
 	}
 	return nil
 }
 
-// Find reads a target's plan.
+// planColumns is the read list both queries share, so a column added to one
+// read path cannot be missed by the other.
+const planColumns = `decomposition_key, target_key, spec_hash, generation,
+	state, completed, tickets, superseded_by, error`
+
+func scanPlan(row interface{ Scan(...any) error }) (Plan, error) {
+	var p Plan
+	err := row.Scan(&p.Key, &p.TargetKey, &p.SpecHash, &p.Generation,
+		&p.State, &p.Completed, &p.Tickets, &p.SupersededBy, &p.Error)
+	return p, err
+}
+
+// Find reads a target's current plan.
+//
+// The ACTIVE one, and by state rather than by recency: a target accumulates
+// superseded plans, and the newest row is whichever was written last — which
+// during a supersession is the predecessor being stamped, not the head.
 func (s SQLPlans) Find(ctx context.Context, targetKey string) (Plan, bool, error) {
-	p := Plan{TargetKey: targetKey}
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT spec_hash, state, tickets FROM plan WHERE target_key = ?`, targetKey).
-		Scan(&p.SpecHash, &p.State, &p.Tickets)
+	p, err := scanPlan(s.DB.QueryRowContext(ctx,
+		`SELECT `+planColumns+` FROM decomposition_plan
+		   WHERE target_key = ? AND state = ? LIMIT 1`, targetKey, PlanActive))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, false, nil
 	}
 	if err != nil {
 		return Plan{}, false, fmt.Errorf("read plan: %w", err)
+	}
+	return p, true, nil
+}
+
+// ByKey resolves a decomposition key.
+func (s SQLPlans) ByKey(ctx context.Context, key string) (Plan, bool, error) {
+	p, err := scanPlan(s.DB.QueryRowContext(ctx,
+		`SELECT `+planColumns+` FROM decomposition_plan WHERE decomposition_key = ?`, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Plan{}, false, nil
+	}
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("read plan by key: %w", err)
 	}
 	return p, true, nil
 }

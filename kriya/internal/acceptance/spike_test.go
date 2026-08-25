@@ -66,7 +66,7 @@ func (s *spikeWorld) decompose() error {
 		Hash:    "hash1234567890abcdef",
 		Content: map[string]string{"avspec.yaml": spikeSnapshot},
 	}
-	s.tickets, s.err = in.Decompose(context.Background(), target, snap, "actor-1")
+	s.tickets, s.err = in.Decompose(context.Background(), target, snap, 1, "actor-1")
 	return s.err
 }
 

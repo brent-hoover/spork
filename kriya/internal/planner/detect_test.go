@@ -58,10 +58,16 @@ func (m *memTickets) ForTarget(_ context.Context, _ string) ([]planner.Ticket, e
 	return out, nil
 }
 
-func plannedTarget(t *testing.T, plans *memPlans, tickets *memTickets, state string, issues ...string) {
+// plannedTarget seeds an ACTIVE plan, whole or still mid-decomposition.
+//
+// completed rather than a state string: the ticket set being whole is a STAMP
+// on an active plan, not a state of its own, because activation precedes the
+// creation, wiring and assignment phases.
+func plannedTarget(t *testing.T, plans *memPlans, tickets *memTickets, completed bool, issues ...string) {
 	t.Helper()
 	if err := plans.Upsert(context.Background(), planner.Plan{
-		TargetKey: "/spec", SpecHash: "hash1", State: state, Tickets: len(issues),
+		Key: "plan-key", TargetKey: "/spec", SpecHash: "hash1",
+		State: planner.PlanActive, Completed: completed, Tickets: len(issues),
 	}); err != nil {
 		t.Fatalf("seed plan: %v", err)
 	}
@@ -78,7 +84,7 @@ func TestAPlanStillDecomposingNeverArms(t *testing.T) {
 	// so far being complete says nothing about a build whose ticket set is
 	// still growing.
 	plans, tickets, live := newMemPlans(), newMemTickets(), &liveIssues{}
-	plannedTarget(t, plans, tickets, planner.PlanDecomposing, "issue-1")
+	plannedTarget(t, plans, tickets, false, "issue-1")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {
@@ -87,14 +93,16 @@ func TestAPlanStillDecomposingNeverArms(t *testing.T) {
 	if got.Armed {
 		t.Error("detection armed against a plan that is still decomposing")
 	}
-	if !strings.Contains(got.Reason, "decomposing") {
-		t.Errorf("the reason is %q, want it to name the incomplete plan", got.Reason)
+	// The reason must say the set is not whole. "active" alone would not:
+	// a whole plan is active too, so the operator could not tell them apart.
+	if !strings.Contains(got.Reason, "completed=false") {
+		t.Errorf("the reason is %q, want it to name the missing completed stamp", got.Reason)
 	}
 }
 
 func TestACompletedPlanWithNoActiveWorkArms(t *testing.T) {
 	plans, tickets, live := newMemPlans(), newMemTickets(), &liveIssues{watermark: "w-7"}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1", "issue-2")
+	plannedTarget(t, plans, tickets, true, "issue-1", "issue-2")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {
@@ -115,7 +123,7 @@ func TestAPlanTicketStillActiveBlocksArming(t *testing.T) {
 	live := &liveIssues{rows: []planner.LiveIssue{
 		{ID: "issue-2", Status: "in-progress"},
 	}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1", "issue-2")
+	plannedTarget(t, plans, tickets, true, "issue-1", "issue-2")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {
@@ -135,7 +143,7 @@ func TestAnOpenUnplannedTicketBlocksArming(t *testing.T) {
 	// so arming would submit a completion review that can never close.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{rows: []planner.LiveIssue{{ID: "issue-99", Status: "open"}}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {
@@ -154,7 +162,7 @@ func TestABlockedUnplannedTicketBlocksArming(t *testing.T) {
 	// that has gone away.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{rows: []planner.LiveIssue{{ID: "issue-99", Status: "blocked"}}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {
@@ -187,7 +195,7 @@ func TestAnUnreadableTrackerNeverArms(t *testing.T) {
 	// looked at.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{err: errors.New("sutra unavailable")}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 
 	if _, err := detector(plans, tickets, live).
 		Detect(context.Background(), "/spec", "project-1"); err == nil {
@@ -209,7 +217,7 @@ func TestACompletePlanTicketDoesNotBlockItself(t *testing.T) {
 	// reports as complete is not active work, and must not block forever.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{rows: []planner.LiveIssue{}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1", "issue-2")
+	plannedTarget(t, plans, tickets, true, "issue-1", "issue-2")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {

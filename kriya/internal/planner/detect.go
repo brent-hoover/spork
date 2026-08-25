@@ -92,10 +92,14 @@ func (d Detector) Detect(ctx context.Context, targetKey, projectID string) (Dete
 	if !found {
 		return Detection{Reason: fmt.Sprintf("%s has no plan yet", targetKey)}, nil
 	}
-	if plan.State != PlanCompleted {
+	// ACTIVE and bearing the stamp. Either half alone is not enough: a
+	// superseded plan can still carry a completed stamp from when it was the
+	// head, and an active plan without one is mid-phase with a ticket set
+	// that is still growing.
+	if plan.State != PlanActive || !plan.Completed {
 		return Detection{Reason: fmt.Sprintf(
-			"the plan for %s is still %s — its ticket set is not yet whole",
-			targetKey, plan.State)}, nil
+			"the plan for %s is %s (completed=%v) — its ticket set is not yet whole",
+			targetKey, plan.State, plan.Completed)}, nil
 	}
 
 	// The epoch BEFORE the queue. An advance landing between them then leaves

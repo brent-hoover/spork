@@ -14,7 +14,7 @@ func TestAnUnreadableEpochStopsDetection(t *testing.T) {
 	// knowing it would bind the claim to zero and collide with a first
 	// attempt that may be long spent.
 	plans, tickets := newMemPlans(), newMemTickets()
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 	advances := newMemAdvances()
 	advances.err = errors.New("disk full")
 	d := detector(plans, tickets, &liveIssues{})
@@ -129,7 +129,7 @@ func TestADetectorReasonNamesEveryBlocker(t *testing.T) {
 		{ID: "issue-a", Status: "open"},
 		{ID: "issue-b", Status: "blocked"},
 	}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-a")
+	plannedTarget(t, plans, tickets, true, "issue-a")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {

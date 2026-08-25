@@ -87,6 +87,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerTierRouting(sc)
 	registerGenerations(sc, w)
 	registerDecompose(sc, w)
+	registerResolve(sc, w)
 	registerPairLoop(sc, w)
 	registerGates(sc, w)
 	registerCoverageAndMutationGates(sc, w)

@@ -26,7 +26,7 @@ func TestTheStatusReportGathersEveryStore(t *testing.T) {
 		t.Fatalf("seed target: %v", err)
 	}
 	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
-		TargetKey: "/linkshort", SpecHash: "h", State: planner.PlanCompleted, Tickets: 2,
+		TargetKey: "/linkshort", SpecHash: "h", State: planner.PlanActive, Completed: true, Tickets: 2,
 	}); err != nil {
 		t.Fatalf("seed plan: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestTheStatusReportGathersEveryStore(t *testing.T) {
 		t.Fatalf("gathered %d targets", len(got.Targets))
 	}
 	target := got.Targets[0]
-	if target.Plan != planner.PlanCompleted || target.Tickets != 2 {
+	if target.Plan != planner.PlanActive || target.Tickets != 2 {
 		t.Errorf("the plan came back %q with %d tickets", target.Plan, target.Tickets)
 	}
 	if len(target.Runs) != 1 {

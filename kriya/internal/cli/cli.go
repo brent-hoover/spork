@@ -82,12 +82,13 @@ type Drive func(ctx context.Context) (orchestrator.Result, error)
 
 func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, token string, drive Drive) error {
 	w := &errWriter{w: out}
-	snapshot, err := in.AdmitAndPin(ctx, dir, token)
+	intake, err := in.AdmitAndPin(ctx, dir, token)
 
 	var refusal *planner.Refusal
 	switch {
 	case err == nil:
 		w.printf("%s: ready\n", dir)
+		snapshot := intake.Snapshot
 		w.printf("  snapshot %s (%d artifacts, %d modules)\n",
 			snapshot.Hash[:12], len(snapshot.Content), len(snapshot.ResolvedCommands))
 		target, epicErr := in.EnsureEpic(ctx, dir, snapshot.Hash, projectKey(dir), filepath.Base(dir), actor)
@@ -95,7 +96,7 @@ func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, t
 			return epicErr
 		}
 		w.printf("  epic %s in project %s\n", target.EpicID, target.ProjectID)
-		tickets, decErr := in.Decompose(ctx, target, snapshot, actor)
+		tickets, decErr := in.Decompose(ctx, target, snapshot, intake.Generation, actor)
 		if decErr != nil {
 			return decErr
 		}

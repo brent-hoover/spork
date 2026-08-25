@@ -42,6 +42,15 @@ func (m *memPlans) Find(_ context.Context, key string) (planner.Plan, bool, erro
 	return p, ok, nil
 }
 
+func (m *memPlans) ByKey(_ context.Context, key string) (planner.Plan, bool, error) {
+	for _, p := range m.rows {
+		if p.Key == key {
+			return p, true, nil
+		}
+	}
+	return planner.Plan{}, false, nil
+}
+
 // memPlanTickets holds a target's planned ticket set.
 type memPlanTickets struct{ rows []planner.Ticket }
 
@@ -106,13 +115,14 @@ func (w *world) newDetect() *detectWorld {
 }
 
 // plan seeds a target's plan in a given state with a ticket set.
-func (d *detectWorld) plan(state string, issues ...string) error {
+func (d *detectWorld) plan(completed bool, issues ...string) error {
 	d.tickets.rows = nil
 	for _, id := range issues {
 		d.tickets.rows = append(d.tickets.rows, planner.Ticket{Title: id, IssueID: id})
 	}
 	return d.plans.Upsert(context.Background(), planner.Plan{
-		TargetKey: "/spec", SpecHash: "hash1", State: state, Tickets: len(issues),
+		Key: "plan-key", TargetKey: "/spec", SpecHash: "hash1",
+		State: planner.PlanActive, Completed: completed, Tickets: len(issues),
 	})
 }
 
@@ -140,7 +150,7 @@ func (d *detectWorld) refused(naming ...string) error {
 func registerCompletionDetection(sc *godog.ScenarioContext, w *world) {
 	sc.Step(`^an activated head plan still mid-phase, without its completed stamp$`, func() error {
 		d := w.newDetect()
-		return d.plan(planner.PlanDecomposing, "issue-1")
+		return d.plan(false, "issue-1")
 	})
 
 	sc.Step(`^every ticket created so far is complete$`, func() error {
@@ -156,11 +166,13 @@ func registerCompletionDetection(sc *godog.ScenarioContext, w *world) {
 	})
 
 	sc.Step(`^no completion attempt starts — the ticket set is not yet whole$`, func() error {
-		return w.detect.refused("decomposing")
+		// The missing STAMP, not the state: a whole plan is active too, so
+		// naming the state alone would not tell the operator them apart.
+		return w.detect.refused("completed=false")
 	})
 
 	sc.Step(`^decomposition passes its final assignment barrier and stamps completed$`, func() error {
-		return w.detect.plan(planner.PlanCompleted, "issue-1")
+		return w.detect.plan(true, "issue-1")
 	})
 
 	sc.Step(`^completion detection arms$`, func() error {
@@ -181,7 +193,7 @@ func registerCompletionDetection(sc *godog.ScenarioContext, w *world) {
 
 	sc.Step(`^the activated head plan's every ticket is complete$`, func() error {
 		d := w.newDetect()
-		if err := d.plan(planner.PlanCompleted, "issue-1", "issue-2"); err != nil {
+		if err := d.plan(true, "issue-1", "issue-2"); err != nil {
 			return err
 		}
 		d.live.rows = nil
@@ -228,7 +240,7 @@ func registerStall(sc *godog.ScenarioContext, w *world) {
 		d := w.newDetect()
 		// A whole plan, and an unplanned ticket nothing can move: nothing to
 		// pop, nothing running, and an epic sutra would refuse to close.
-		if err := d.plan(planner.PlanCompleted, "issue-1"); err != nil {
+		if err := d.plan(true, "issue-1"); err != nil {
 			return err
 		}
 		d.live.rows = []planner.LiveIssue{{ID: "issue-99", Status: "blocked"}}

@@ -16,7 +16,7 @@ func TestTheCompletionReportNamesTheWorkAndItsCriteria(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
-		TargetKey: "/spec", SpecHash: "hash1", State: planner.PlanCompleted, Tickets: 2,
+		TargetKey: "/spec", SpecHash: "hash1", State: planner.PlanActive, Completed: true, Tickets: 2,
 	}); err != nil {
 		t.Fatalf("seed plan: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestAPlanWithNoTicketsHasNoReport(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
-		TargetKey: "/spec", SpecHash: "hash1", State: planner.PlanCompleted,
+		TargetKey: "/spec", SpecHash: "hash1", State: planner.PlanActive, Completed: true,
 	}); err != nil {
 		t.Fatalf("seed plan: %v", err)
 	}

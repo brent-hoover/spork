@@ -32,7 +32,7 @@ func TestARiskBecomesASpikeThatBlocksItsDependents(t *testing.T) {
 	// "a spike ticket exists for the risk ... and the spike blocks every
 	// ticket depending on the risk's answer."
 	in, tr, _ := decomposer(t, spikePlan)
-	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), "actor")
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), 1, "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestATicketNotDependingOnTheRiskIsNotBlocked(t *testing.T) {
 	// "tickets not depending on the risk are not blocked by it." Blocking
 	// everything would serialize a plan that has parallel work in it.
 	in, tr, _ := decomposer(t, spikePlan)
-	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), "actor")
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), 1, "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestASpikeDoesNotBlockItself(t *testing.T) {
 	// Its own criterion appears in its blocks list — the risk's answer is
 	// what it produces — and a self-block is a ticket nothing can ever pop.
 	in, tr, _ := decomposer(t, spikePlan)
-	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), "actor")
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), 1, "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestEverySpikeIsAssignedBeforeAnyImplementation(t *testing.T) {
 	// begins." sutra's work stack is FIFO and no tracker-side priority is
 	// assumed, so assignment ORDER is the whole mechanism.
 	in, tr, _ := decomposer(t, spikePlan)
-	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), "actor")
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), 1, "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestATicketWithNoKindIsRefused(t *testing.T) {
 	// research work through the gates and fail it for having no code.
 	in, _, _ := decomposer(t, `{"tickets":[
 		{"title":"whatever","body":"","criteria":["AC-valid-url"]}]}`)
-	_, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), "actor")
+	_, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), 1, "actor")
 	if err == nil {
 		t.Fatal("a ticket with no kind was accepted")
 	}
@@ -145,7 +145,7 @@ func TestASpikeBlockingAnUnknownCriterionIsRefused(t *testing.T) {
 	in, tr, _ := decomposer(t, `{"tickets":[
 		{"title":"spike","body":"","kind":"spike","criteria":["AC-headless"],
 		 "blocks":["AC-invented"]}]}`)
-	_, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), "actor")
+	_, err := in.Decompose(context.Background(), target(), snapshotWith(riskCriteria), 1, "actor")
 	if err == nil {
 		t.Fatal("a spike blocking an id the snapshot does not carry was accepted")
 	}
@@ -161,7 +161,7 @@ func TestAnImplementationTicketCannotBlock(t *testing.T) {
 		{"title":"impl","body":"","kind":"implementation","criteria":["AC-valid-url"],"layers":["http","store"],
 		 "blocks":["AC-headless"]}]}`)
 	if _, err := in.Decompose(context.Background(), target(),
-		snapshotWith(riskCriteria), "actor"); err == nil {
+		snapshotWith(riskCriteria), 1, "actor"); err == nil {
 		t.Fatal("an implementation ticket declared a blocking relation")
 	}
 }

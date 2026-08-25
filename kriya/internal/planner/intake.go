@@ -47,6 +47,9 @@ type Intaker struct {
 type TicketStore interface {
 	Put(ctx context.Context, targetKey string, t Ticket) error
 	Find(ctx context.Context, targetKey, issue string) (Ticket, bool, error)
+	// ForTarget lists the whole set. A same-key retry that must not
+	// re-decompose answers from here rather than by asking the agent again.
+	ForTarget(ctx context.Context, targetKey string) ([]Ticket, error)
 }
 
 // admitReport applies the three report-level checks.
@@ -87,13 +90,13 @@ func admitReport(dir string, report specverify.Report) error {
 //
 // Nothing is pinned unless every check passed: AC-intake-refuse requires a
 // refused intake to pin no snapshot and enqueue nothing.
-func (i Intaker) AdmitAndPin(ctx context.Context, dir, token string) (Snapshot, error) {
+func (i Intaker) AdmitAndPin(ctx context.Context, dir, token string) (Intake, error) {
 	report, err := i.Verify.Verify(ctx, dir)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("verify %s: %w", dir, err)
+		return Intake{}, fmt.Errorf("verify %s: %w", dir, err)
 	}
 	if err := admitReport(dir, report); err != nil {
-		return Snapshot{}, err
+		return Intake{}, err
 	}
 	// ONE resolve, and the model that is validated is the model that is
 	// pinned. An earlier version called Admit and then resolved again, so a
@@ -101,7 +104,7 @@ func (i Intaker) AdmitAndPin(ctx context.Context, dir, token string) (Snapshot, 
 	// and pinned another — including, in principle, an ok:false empty one.
 	model, err := i.admitCommands(ctx, dir, report.Status)
 	if err != nil {
-		return Snapshot{}, err
+		return Intake{}, err
 	}
 
 	// The attempt is reserved BEFORE the snapshot is pinned, so a crash in
@@ -110,23 +113,36 @@ func (i Intaker) AdmitAndPin(ctx context.Context, dir, token string) (Snapshot, 
 	// superseding itself.
 	attempt, err := i.Attempts.Reserve(ctx, token, dir)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("reserve intake generation: %w", err)
+		return Intake{}, fmt.Errorf("reserve intake generation: %w", err)
 	}
 
 	snap, err := i.pin(ctx, dir, model)
 	if err != nil {
-		return Snapshot{}, err
+		return Intake{}, err
 	}
 	if err := i.Attempts.Complete(ctx, token, snap.Hash); err != nil {
-		return Snapshot{}, err
+		return Intake{}, err
 	}
 	// Fenced on generation: a delayed seed carrying an older one loses.
 	if err := i.Attempts.MapSpec(ctx, SpecMapping{
 		TargetKey: dir, Generation: attempt.Generation, SnapshotHash: snap.Hash,
 	}); err != nil {
-		return Snapshot{}, err
+		return Intake{}, err
 	}
-	return snap, nil
+	return Intake{Snapshot: snap, Generation: attempt.Generation}, nil
+}
+
+// Intake is what one admitted request pinned.
+//
+// The generation travels WITH the snapshot rather than being looked up from
+// the target's mapping later. The mapping keeps the HIGHER generation, so a
+// stale intake recovering after a newer one would read the newer generation
+// back and derive a decomposition key that is not its own — and a stale
+// intake presenting itself as current is exactly what the replacement CAS
+// exists to reject.
+type Intake struct {
+	Snapshot   Snapshot
+	Generation int
 }
 
 // admitCommands enforces AC-intake-commands.

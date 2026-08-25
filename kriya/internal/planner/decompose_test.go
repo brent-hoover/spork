@@ -43,7 +43,7 @@ func TestTicketsAreCreatedAndParentedUnderTheEpic(t *testing.T) {
 	in, tr, _ := decomposer(t, `{"tickets":[
 		{"title":"walking skeleton","body":"thin slice","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]},
 		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
-	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestACitationOutsideTheSnapshotIsRejected(t *testing.T) {
 	// be verified against anything, so it must not reach the tracker.
 	in, tr, _ := decomposer(t, `{"tickets":[
 		{"title":"invented","body":"","kind":"implementation","criteria":["AC-does-not-exist"],"layers":["http","store"]}]}`)
-	_, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
+	_, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor")
 	if err == nil {
 		t.Fatal("a citation absent from the snapshot must be rejected")
 	}
@@ -80,7 +80,7 @@ func TestTheAgentIsAskedForStructuredOutput(t *testing.T) {
 	// Parsing an agent's prose is guessing, and a guess about which criteria a
 	// ticket covers is a build that verifies the wrong thing.
 	in, _, ag := decomposer(t, `{"tickets":[{"title":"t","body":"","kind":"implementation","skeleton":true,"criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
-	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor"); err != nil {
+	if _, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
 	req := ag.Requests[0]
@@ -100,7 +100,7 @@ func TestTheAgentIsAskedForStructuredOutput(t *testing.T) {
 
 func TestASnapshotWithNoCriteriaCannotBeDecomposed(t *testing.T) {
 	in, _, _ := decomposer(t, `{"tickets":[]}`)
-	_, err := in.Decompose(context.Background(), target(), snapshotWith("project: {}\n"), "actor")
+	_, err := in.Decompose(context.Background(), target(), snapshotWith("project: {}\n"), 1, "actor")
 	if err == nil {
 		t.Fatal("a snapshot citing no criteria has nothing to decompose against")
 	}
@@ -113,7 +113,7 @@ func TestEveryTicketIsAssignedToTheActorThatWillPopIt(t *testing.T) {
 	in, tr, _ := decomposer(t, `{"tickets":[
 		{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]},
 		{"title":"reject bad urls","body":"","kind":"implementation","criteria":["AC-bad-url"],"layers":["http","store"]}]}`)
-	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), "actor")
+	tickets, err := in.Decompose(context.Background(), target(), snapshotWith(twoCriteria), 1, "actor")
 	if err != nil {
 		t.Fatalf("decompose: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestATicketThatCannotBeAssignedFailsDecomposition(t *testing.T) {
 		{"title":"walking skeleton","body":"","kind":"implementation","skeleton":true,"criteria":["AC-valid-url"],"layers":["http","store"]}]}`)
 	tr.assignErr = errors.New("tracker unavailable")
 	if _, err := in.Decompose(context.Background(), target(),
-		snapshotWith(twoCriteria), "actor"); err == nil {
+		snapshotWith(twoCriteria), 1, "actor"); err == nil {
 		t.Fatal("a ticket nothing can pop read as decomposed")
 	}
 }

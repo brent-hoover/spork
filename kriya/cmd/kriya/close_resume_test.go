@@ -91,7 +91,7 @@ func TestDetectionCarriesTheEpochAClaimBindsTo(t *testing.T) {
 		t.Fatalf("seed target: %v", err)
 	}
 	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
-		TargetKey: "/spec", SpecHash: "h", State: planner.PlanCompleted, Tickets: 1,
+		TargetKey: "/spec", SpecHash: "h", State: planner.PlanActive, Completed: true, Tickets: 1,
 	}); err != nil {
 		t.Fatalf("seed plan: %v", err)
 	}

@@ -343,8 +343,9 @@ func (w *world) assertCompletedFollowsTheLastAssignment() error {
 	if !found {
 		return fmt.Errorf("no plan row for %s", w.dir)
 	}
-	if plan.State != planner.PlanCompleted {
-		return fmt.Errorf("the plan is %q, not %q", plan.State, planner.PlanCompleted)
+	if plan.State != planner.PlanActive || !plan.Completed {
+		return fmt.Errorf("the plan is %q completed=%v, want active and stamped whole",
+			plan.State, plan.Completed)
 	}
 	// The stamp is what arms completion detection, so it must count the whole
 	// ticket set — a stamp carrying fewer tickets than were assigned would

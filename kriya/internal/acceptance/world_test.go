@@ -59,6 +59,8 @@ type world struct {
 	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
 	status *statusWorld
+	// resolve is the same-key-retry scenarios' state, nil until one starts.
+	resolve *resolveWorld
 	// close is the epic-close scenarios' state, nil until one starts.
 	close *closeWorld
 	// claim is the completion-submission scenarios' state, nil until one starts.
@@ -194,7 +196,7 @@ func (w *world) run() error {
 		if t, found, _ := w.targets.Find(ctx, w.dir); found && w.firstEpicID == "" {
 			w.firstEpicID = t.EpicID
 		}
-		w.tickets = w.ticketRows.forTarget(w.dir)
+		w.tickets, _ = w.ticketRows.ForTarget(ctx, w.dir)
 	}
 	return nil
 }
@@ -533,4 +535,6 @@ func (t *worldTickets) Find(_ context.Context, targetKey, issue string) (planner
 	return ticket, ok, nil
 }
 
-func (t *worldTickets) forTarget(targetKey string) []planner.Ticket { return t.rows[targetKey] }
+func (t *worldTickets) ForTarget(_ context.Context, targetKey string) ([]planner.Ticket, error) {
+	return t.rows[targetKey], nil
+}

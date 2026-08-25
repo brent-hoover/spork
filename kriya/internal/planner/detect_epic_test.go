@@ -15,7 +15,7 @@ func TestTheEpicItselfNeverBlocksItsOwnCompletion(t *testing.T) {
 	// own completion.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{rows: []planner.LiveIssue{{ID: "epic-1", Status: "open"}}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 
 	d := detector(plans, tickets, live)
 	d.Epic = "epic-1"
@@ -34,7 +34,7 @@ func TestAnotherEpicStillBlocks(t *testing.T) {
 	// a subtree nobody finished.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{rows: []planner.LiveIssue{{ID: "epic-other", Status: "open"}}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 
 	d := detector(plans, tickets, live)
 	d.Epic = "epic-1"
@@ -55,7 +55,7 @@ func TestWithNoEpicNamedEverythingActiveStillBlocks(t *testing.T) {
 	// umbrella would be a way to excuse real work by accident.
 	plans, tickets := newMemPlans(), newMemTickets()
 	live := &liveIssues{rows: []planner.LiveIssue{{ID: "epic-1", Status: "open"}}}
-	plannedTarget(t, plans, tickets, planner.PlanCompleted, "issue-1")
+	plannedTarget(t, plans, tickets, true, "issue-1")
 
 	got, err := detector(plans, tickets, live).Detect(context.Background(), "/spec", "project-1")
 	if err != nil {
