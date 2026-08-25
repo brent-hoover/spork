@@ -58,6 +58,15 @@ func (r *resolveStore) Upsert(_ context.Context, p planner.Plan) error {
 	return nil
 }
 
+func (r *resolveStore) Claim(_ context.Context, p planner.Plan) (bool, error) {
+	if r.found {
+		return false, nil
+	}
+	r.writes++
+	r.plan, r.found = p, true
+	return true, nil
+}
+
 func (r *resolveStore) Find(context.Context, string) (planner.Plan, bool, error) {
 	return r.plan, r.found, nil
 }
@@ -117,7 +126,16 @@ func TestAnUnreadablePlanStoreIsNotAFreshKey(t *testing.T) {
 // planningTickets is a TicketStore that can list what it recorded.
 type planningTickets struct{ rows []planner.Ticket }
 
+// Put upserts on (plan, ordinal), like the real store. Appending instead
+// made the write-ahead row and the post-create row two tickets, so a plan of
+// one appeared to hold two.
 func (p *planningTickets) Put(_ context.Context, _ string, t planner.Ticket) error {
+	for n, existing := range p.rows {
+		if existing.Plan == t.Plan && existing.Ordinal == t.Ordinal {
+			p.rows[n] = t
+			return nil
+		}
+	}
 	p.rows = append(p.rows, t)
 	return nil
 }

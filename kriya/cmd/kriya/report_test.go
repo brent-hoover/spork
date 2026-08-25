@@ -21,8 +21,10 @@ func TestTheCompletionReportNamesTheWorkAndItsCriteria(t *testing.T) {
 		t.Fatalf("seed plan: %v", err)
 	}
 	for _, tk := range []planner.Ticket{
-		{Title: "Create a short link", IssueID: "issue-7", Criteria: []string{"AC-valid-url"}},
-		{Title: "Redirect", IssueID: "issue-8", Criteria: []string{"AC-redirect"}},
+		{Title: "Create a short link", IssueID: "issue-7", Criteria: []string{"AC-valid-url"},
+			Plan: "plan-1", Ordinal: 0},
+		{Title: "Redirect", IssueID: "issue-8", Criteria: []string{"AC-redirect"},
+			Plan: "plan-1", Ordinal: 1},
 	} {
 		if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/spec", tk); err != nil {
 			t.Fatalf("seed ticket: %v", err)

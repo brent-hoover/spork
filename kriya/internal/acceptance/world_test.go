@@ -523,12 +523,20 @@ func newWorldTickets() *worldTickets {
 	return &worldTickets{rows: map[string][]planner.Ticket{}, byKey: map[string]planner.Ticket{}}
 }
 
+// Put upserts on (plan, ordinal), which is the real store's key. Keying on
+// the issue id cannot work for a WRITE-AHEAD row: it is written before the
+// create call, so it has no issue id yet.
 func (t *worldTickets) Put(_ context.Context, targetKey string, ticket planner.Ticket) error {
-	key := targetKey + "\x00" + ticket.IssueID
-	if _, seen := t.byKey[key]; !seen {
-		t.rows[targetKey] = append(t.rows[targetKey], ticket)
+	set := t.rows[targetKey]
+	for n, existing := range set {
+		if existing.Plan == ticket.Plan && existing.Ordinal == ticket.Ordinal {
+			set[n] = ticket
+			t.byKey[targetKey+"\x00"+ticket.IssueID] = ticket
+			return nil
+		}
 	}
-	t.byKey[key] = ticket
+	t.rows[targetKey] = append(set, ticket)
+	t.byKey[targetKey+"\x00"+ticket.IssueID] = ticket
 	return nil
 }
 

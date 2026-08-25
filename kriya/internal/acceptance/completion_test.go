@@ -42,6 +42,16 @@ func (m *memPlans) Find(_ context.Context, key string) (planner.Plan, bool, erro
 	return p, ok, nil
 }
 
+func (m *memPlans) Claim(_ context.Context, p planner.Plan) (bool, error) {
+	for _, existing := range m.rows {
+		if existing.Key == p.Key {
+			return false, nil
+		}
+	}
+	m.rows[p.TargetKey] = p
+	return true, nil
+}
+
 func (m *memPlans) ByKey(_ context.Context, key string) (planner.Plan, bool, error) {
 	for _, p := range m.rows {
 		if p.Key == key {

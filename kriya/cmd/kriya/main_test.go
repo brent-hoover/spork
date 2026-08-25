@@ -374,8 +374,9 @@ func TestTheWholeTicketIsRecoveredFromThePlan(t *testing.T) {
 	full := planner.Ticket{
 		Title: "Create a short link", Body: "Accept a URL and return a code.",
 		Criteria: []string{"AC-valid-url"}, IssueID: "issue-7",
+		Plan: "plan-1", Ordinal: 7,
 	}
-	popped := planner.Ticket{Title: full.Title, IssueID: "issue-7"}
+	popped := planner.Ticket{Title: full.Title, IssueID: "issue-7", Plan: "plan-1", Ordinal: 7}
 
 	db := openTemp(t)
 	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
@@ -398,7 +399,7 @@ func TestTheWholeTicketIsRecoveredFromThePlan(t *testing.T) {
 	// A plan row that cannot be read still yields the ISSUE: submitting a
 	// review against nothing and closing no ticket is worse than reaching the
 	// dev agent with a thin ticket.
-	unrecorded := planner.Ticket{Title: "Redirect", IssueID: "issue-8"}
+	unrecorded := planner.Ticket{Title: "Redirect", IssueID: "issue-8", Plan: "plan-1", Ordinal: 8}
 	if got := ticketFromStore(db, "/target", unrecorded)("Redirect"); got.IssueID != "issue-8" {
 		t.Errorf("an unrecorded ticket lost its issue: %q", got.IssueID)
 	}
@@ -460,7 +461,7 @@ func TestAPoppedTicketResumesItsExistingRun(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	got, err := resumeOrStart(t.Context(), store,
-		planner.Ticket{Title: "Create a short link", IssueID: "issue-7"}, "/target")
+		planner.Ticket{Title: "Create a short link", IssueID: "issue-7", Plan: "plan-1", Ordinal: 7}, "/target")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -471,7 +472,7 @@ func TestAPoppedTicketResumesItsExistingRun(t *testing.T) {
 	// unique, and resuming on one makes the second claim drive the first
 	// issue's work while orphaning the issue it actually claimed.
 	other, err := resumeOrStart(t.Context(), store,
-		planner.Ticket{Title: "Create a short link", IssueID: "issue-8"}, "/target")
+		planner.Ticket{Title: "Create a short link", IssueID: "issue-8", Plan: "plan-1", Ordinal: 8}, "/target")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -487,7 +488,7 @@ func TestAFreshTicketStartsANewRun(t *testing.T) {
 	}
 	store := orchestrator.SQLStore{DB: db}
 	got, err := resumeOrStart(t.Context(), store,
-		planner.Ticket{Title: "Redirect a short code", IssueID: "issue-new"}, "/target")
+		planner.Ticket{Title: "Redirect a short code", IssueID: "issue-new", Plan: "plan-1", Ordinal: 0}, "/target")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -603,7 +604,7 @@ func TestAPoppedTicketFromAnotherTargetIsRefused(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/theirs",
-		planner.Ticket{Title: "Add billing", IssueID: "issue-9"}); err != nil {
+		planner.Ticket{Title: "Add billing", IssueID: "issue-9", Plan: "plan-1", Ordinal: 9}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	build := buildOne(db, workspace.Manager{}, agent.Tiers{},

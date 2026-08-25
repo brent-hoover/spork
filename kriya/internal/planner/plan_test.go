@@ -45,6 +45,21 @@ func (m *memPlans) ByKey(_ context.Context, key string) (planner.Plan, bool, err
 	return planner.Plan{}, false, nil
 }
 
+// Claim inserts only if the key is unclaimed, reporting whether this call
+// created the row — the atomic half that Resolve's read cannot provide.
+func (m *memPlans) Claim(_ context.Context, p planner.Plan) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	for _, existing := range m.rows {
+		if existing.Key == p.Key {
+			return false, nil
+		}
+	}
+	m.rows[p.TargetKey] = p
+	return true, nil
+}
+
 func TestAPlanIsWholeOnlyOnceDecompositionStampsIt(t *testing.T) {
 	// Completion detection reads this stamp before anything else. A plan
 	// mid-decomposition has a ticket set that is still growing, and "every

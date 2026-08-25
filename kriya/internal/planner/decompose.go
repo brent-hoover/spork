@@ -98,6 +98,10 @@ type Ticket struct {
 	// accumulates plans, so without it a ticket set cannot be told apart from
 	// the union of every generation's tickets.
 	Plan string `json:"-"`
+	// Ordinal is this ticket's position in its plan. The mutation sequence
+	// addresses tickets by it, so a resumed replay needs it to line the two
+	// up — a map keyed by title would break on two tickets sharing one.
+	Ordinal int `json:"-"`
 	// IssueID is the sutra issue this ticket became. Not from the agent —
 	// stamped after creation, so a review can hang off the right issue
 	// without anything having to look it up by title.
@@ -134,13 +138,14 @@ func (i Intaker) Decompose(
 	// retry find its own plan and leaves competition possible only between
 	// DIFFERENT keys.
 	//
-	// Ahead of the AGENT specifically, not merely ahead of the tracker. The
-	// PM call is the expensive half of a decomposition, and asking it again
-	// to then discard its answer is a bill for nothing — and a second,
-	// possibly different, plan for a key that already has one.
+	// Ahead of the AGENT specifically. The PM call is the expensive half of a
+	// decomposition, and asking it again to then discard its answer is a bill
+	// for nothing — and a second, possibly different, plan for a key that
+	// already has one.
+	resolution := Resolution{Fresh: true}
 	if i.Plans != nil {
-		resolution, err := Resolve(ctx, i.Plans, key)
-		if err != nil {
+		var err error
+		if resolution, err = Resolve(ctx, i.Plans, key); err != nil {
 			return nil, err
 		}
 		if !resolution.Fresh && !resolution.Resume {
@@ -148,6 +153,16 @@ func (i Intaker) Decompose(
 		}
 	}
 
+	if resolution.Resume {
+		return i.resume(ctx, target, resolution.Plan, actor)
+	}
+	return i.decomposeFresh(ctx, target, snap, key, generation, actor)
+}
+
+// decomposeFresh plans a key nothing has planned yet.
+func (i Intaker) decomposeFresh(
+	ctx context.Context, target BuildTarget, snap Snapshot, key string, generation int, actor string,
+) ([]Ticket, error) {
 	tickets, err := i.proposeTickets(ctx, target, snap)
 	if err != nil {
 		return nil, err
@@ -161,17 +176,78 @@ func (i Intaker) Decompose(
 		Key: key, TargetKey: target.TargetKey, SpecHash: snap.Hash,
 		Generation: generation, State: PlanPending,
 	}
-	if err := i.recordPlan(ctx, plan); err != nil {
+	// CLAIMED, not written. Resolve is a read, so a concurrent twin can have
+	// resolved fresh too; only one insert can win, and the loser becomes an
+	// ordinary same-key retry of the winner rather than a second
+	// decomposition overwriting the first.
+	if i.Plans != nil {
+		created, err := i.Plans.Claim(ctx, plan)
+		if err != nil {
+			return nil, err
+		}
+		if !created {
+			return i.afterLosingTheClaim(ctx, target, key, actor)
+		}
+	}
+	// The PAYLOAD, before any call: the full ordered mutation sequence with
+	// its derived keys. This is what makes a resume a replay rather than a
+	// second decomposition.
+	steps := buildSequence(plan, tickets)
+	if err := i.writeSequence(ctx, plan, tickets, steps); err != nil {
 		return nil, err
 	}
 
-	// The CAS, between the write-ahead row and activation. A candidate that
-	// filed tickets before winning the head would have decomposed against a
-	// target another plan already owns.
+	// The CAS, between the write-ahead payload and activation. A candidate
+	// that filed tickets before winning the head would have decomposed
+	// against a target another plan already owns.
 	if err := i.takeTheHead(ctx, plan); err != nil {
 		return nil, err
 	}
+	return i.runPlan(ctx, target, plan, tickets, steps, actor)
+}
 
+// resume carries a plan's remaining phases forward from durable state.
+//
+// The PM is NOT asked again. Its answer is already persisted — as the ticket
+// rows and the mutation sequence — and asking again risks a different plan
+// whose changed requests would be sent under keys the first answer already
+// settled, so sutra returns the originals and the plan becomes a mixture of
+// two decompositions.
+func (i Intaker) resume(
+	ctx context.Context, target BuildTarget, plan Plan, actor string,
+) ([]Ticket, error) {
+	if i.Steps == nil || i.Tickets == nil {
+		return nil, fmt.Errorf("plan %s must resume but nothing durable recorded it", plan.Key[:12])
+	}
+	steps, err := i.Steps.ForPlan(ctx, plan.Key)
+	if err != nil {
+		return nil, fmt.Errorf("read the sequence of plan %s: %w", plan.Key[:12], err)
+	}
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("plan %s has no recorded sequence to resume", plan.Key[:12])
+	}
+	tickets, err := i.plannedSet(ctx, plan)
+	if err != nil {
+		return nil, err
+	}
+	if len(tickets) == 0 {
+		return nil, fmt.Errorf("plan %s has a sequence but no tickets to replay it against", plan.Key[:12])
+	}
+	// A plan that had not yet taken the head still must. Winning is
+	// idempotent for the plan that already holds it: the CAS finds its own
+	// key as head and the request resolves to itself.
+	if plan.State == PlanPending {
+		if err := i.takeTheHead(ctx, plan); err != nil {
+			return nil, err
+		}
+	}
+	return i.runPlan(ctx, target, plan, tickets, steps, actor)
+}
+
+// runPlan activates a plan, replays its sequence and stamps it whole.
+func (i Intaker) runPlan(
+	ctx context.Context, target BuildTarget, plan Plan, tickets []Ticket, steps []Step, actor string,
+) ([]Ticket, error) {
 	// ACTIVE before the phases, not after. The spec is explicit that
 	// activation precedes creation, wiring and assignment — which is what
 	// makes "active without completed" a real state that a crash can leave
@@ -180,7 +256,7 @@ func (i Intaker) Decompose(
 	if err := i.recordPlan(ctx, plan); err != nil {
 		return nil, err
 	}
-	if err := i.filePlan(ctx, target, plan, tickets, actor); err != nil {
+	if err := i.executeSequence(ctx, target, plan, tickets, steps, actor); err != nil {
 		return nil, err
 	}
 	// The final assignment barrier is passed: every ticket exists, is
@@ -196,30 +272,6 @@ func (i Intaker) Decompose(
 	return tickets, nil
 }
 
-// filePlan creates every ticket, wires the plan, then assigns it in phases.
-//
-// The ORDER between the phases is the point. Relations come before assignment,
-// because assignment is what makes a ticket poppable and one popped before its
-// blocking relation exists is one started ahead of the risk it depends on. And
-// spikes are assigned before implementation work, because sutra offers work
-// FIFO and no tracker-side priority is assumed — the order IS the guarantee.
-func (i Intaker) filePlan(
-	ctx context.Context, target BuildTarget, plan Plan, tickets []Ticket, actor string,
-) error {
-	for n := range tickets {
-		if err := i.createTicket(ctx, target, plan, tickets, n, actor); err != nil {
-			return err
-		}
-	}
-	if err := i.wireBlocks(ctx, plan, tickets, actor); err != nil {
-		return err
-	}
-	if err := i.assign(ctx, plan, tickets, KindSpike, actor); err != nil {
-		return err
-	}
-	return i.assign(ctx, plan, tickets, KindImplementation, actor)
-}
-
 // planStepKey derives the idempotency key for one step of one plan.
 //
 // Scoped to the DECOMPOSITION KEY, which carries the intake generation.
@@ -231,39 +283,6 @@ func planStepKey(step, decompositionKey string) string {
 	return idempotencyKey(step, decompositionKey, "")
 }
 
-// wireBlocks relates each spike to the tickets waiting on its answer.
-//
-// By CRITERION, never by a ticket reference the agent supplied: kriya already
-// validates ids against the snapshot, and trusting an agent about which of its
-// own tickets to block is trusting it about something it can get wrong.
-func (i Intaker) wireBlocks(
-	ctx context.Context, plan Plan, tickets []Ticket, actor string,
-) error {
-	for n, spike := range tickets {
-		if spike.Kind != KindSpike {
-			continue
-		}
-		blocked := make(map[string]bool, len(spike.Blocks))
-		for _, id := range spike.Blocks {
-			blocked[id] = true
-		}
-		for m, other := range tickets {
-			if n == m || !dependsOn(other, blocked) {
-				continue
-			}
-			// A spike's own criterion appears in its blocks list — the risk's
-			// answer is what it produces — and a self-block is a ticket
-			// nothing can ever pop. The n == m guard above is what prevents
-			// it; another spike sharing the criterion is genuinely blocked.
-			if err := i.Tracker.AddRelation(ctx, spike.IssueID, "blocks", other.IssueID, actor,
-				planStepKey(fmt.Sprintf("blocks-%d-%d", n, m), plan.Key)); err != nil {
-				return fmt.Errorf("block ticket %d behind spike %d: %w", m, n, err)
-			}
-		}
-	}
-	return nil
-}
-
 // dependsOn reports whether a ticket covers any criterion a spike blocks.
 func dependsOn(ticket Ticket, blocked map[string]bool) bool {
 	for _, id := range ticket.Criteria {
@@ -272,28 +291,6 @@ func dependsOn(ticket Ticket, blocked map[string]bool) bool {
 		}
 	}
 	return false
-}
-
-// assign puts one kind of ticket on the popping identity's work stack.
-//
-// A PHASE per kind, because the ordering guarantee is what makes risk-first
-// real: sutra offers work FIFO, so a spike assigned after an implementation
-// ticket pops after it.
-func (i Intaker) assign(
-	ctx context.Context, plan Plan, tickets []Ticket, kind, actor string,
-) error {
-	for _, n := range assignmentOrder(tickets, kind) {
-		ticket := tickets[n]
-		// Assigned to the actor that will pop it. The tracker's work stack
-		// offers only issues assigned to the popping identity, so an
-		// unassigned ticket is one nothing ever claims — the build would
-		// decompose, report its tickets, and idle forever.
-		if err := i.Tracker.AssignIssue(ctx, ticket.IssueID, actor, actor,
-			planStepKey(fmt.Sprintf("assign-%d", n), plan.Key)); err != nil {
-			return fmt.Errorf("assign ticket %d: %w", n, err)
-		}
-	}
-	return nil
 }
 
 // validateKinds rejects a reply whose kinds or blocks make no sense.
@@ -327,42 +324,6 @@ func (i Intaker) recordPlan(ctx context.Context, plan Plan) error {
 	}
 	if err := i.Plans.Upsert(ctx, plan); err != nil {
 		return fmt.Errorf("record %s plan for %s: %w", plan.State, plan.TargetKey, err)
-	}
-	return nil
-}
-
-// createTicket creates one ticket, records it and parents it.
-//
-// Assignment is a LATER phase: the whole plan must exist and be wired before
-// anything is assigned, because assignment is what makes a ticket poppable and
-// a ticket popped before its blocking relation exists is one started ahead of
-// the risk it depends on.
-func (i Intaker) createTicket(
-	ctx context.Context, target BuildTarget, plan Plan, tickets []Ticket, n int, actor string,
-) error {
-	ticket := tickets[n]
-	issueID, err := i.Tracker.CreateIssue(ctx, target.ProjectID, ticket.Title, ticket.Body, actor,
-		planStepKey(fmt.Sprintf("ticket-%d", n), plan.Key))
-	if err != nil {
-		return fmt.Errorf("create ticket %d: %w", n, err)
-	}
-	tickets[n].IssueID = issueID
-	// Recorded HERE, because this is the only moment the ticket's criteria and
-	// the issue they became are both in hand. A pop later returns an id and a
-	// title, and a run built from those alone reaches the product owner with
-	// nothing to validate against.
-	if i.Tickets != nil {
-		// Recorded against the PLAN, not the target. A target accumulates
-		// plans, so a target-scoped set mixes every generation's tickets
-		// together and a retry of one plan answers with all of them.
-		tickets[n].Plan = plan.Key
-		if err := i.Tickets.Put(ctx, target.TargetKey, tickets[n]); err != nil {
-			return fmt.Errorf("record ticket %d: %w", n, err)
-		}
-	}
-	if err := i.Tracker.AddRelation(ctx, target.EpicID, "parent_of", issueID, actor,
-		planStepKey(fmt.Sprintf("parent-%d", n), plan.Key)); err != nil {
-		return fmt.Errorf("parent ticket %d under the epic: %w", n, err)
 	}
 	return nil
 }
@@ -639,4 +600,53 @@ func (i Intaker) activate(ctx context.Context, plan Plan) error {
 		return err
 	}
 	return nil
+}
+
+// writeSequence persists the payload before any tracker call is made.
+//
+// Tickets first, then steps. A step naming an ordinal no ticket row backs is
+// a step recovery cannot replay, and writing them the other way round leaves
+// exactly that after a crash between the two.
+func (i Intaker) writeSequence(ctx context.Context, plan Plan, tickets []Ticket, steps []Step) error {
+	if i.Tickets != nil {
+		for n := range tickets {
+			tickets[n].Plan = plan.Key
+			tickets[n].Ordinal = n
+			if err := i.Tickets.Put(ctx, plan.TargetKey, tickets[n]); err != nil {
+				return fmt.Errorf("record planned ticket %d: %w", n, err)
+			}
+		}
+	}
+	if i.Steps == nil {
+		return nil
+	}
+	if err := i.Steps.Write(ctx, steps); err != nil {
+		return fmt.Errorf("record the sequence of plan %s: %w", plan.Key[:12], err)
+	}
+	return nil
+}
+
+// afterLosingTheClaim re-resolves a key a twin claimed first.
+//
+// Re-resolution BEFORE any verdict, because finding a row for the SAME key
+// means a twin won and this request is a retry of it — never a competitor.
+// Treating the lost insert as a loss instead would park or bury a request
+// whose work is going ahead perfectly well under another goroutine.
+func (i Intaker) afterLosingTheClaim(
+	ctx context.Context, target BuildTarget, key, actor string,
+) ([]Ticket, error) {
+	resolution, err := Resolve(ctx, i.Plans, key)
+	if err != nil {
+		return nil, err
+	}
+	if resolution.Fresh {
+		// The row was there a moment ago. Gone now means something deleted a
+		// plan mid-decomposition, and decomposing again would race the twin
+		// that is already running.
+		return nil, fmt.Errorf("plan %s was claimed and then vanished", key[:12])
+	}
+	if resolution.Resume {
+		return i.resume(ctx, target, resolution.Plan, actor)
+	}
+	return i.plannedSet(ctx, resolution.Plan)
 }

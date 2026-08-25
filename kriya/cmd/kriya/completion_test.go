@@ -196,7 +196,7 @@ func TestTheDriverExcusesTheTargetsOwnEpic(t *testing.T) {
 		t.Fatalf("seed plan: %v", err)
 	}
 	if err := (planner.SQLTickets{DB: db}).Put(t.Context(), "/spec",
-		planner.Ticket{Title: "t", IssueID: "issue-1"}); err != nil {
+		planner.Ticket{Title: "t", IssueID: "issue-1", Plan: "plan-1", Ordinal: 1}); err != nil {
 		t.Fatalf("seed ticket: %v", err)
 	}
 

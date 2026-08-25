@@ -45,6 +45,11 @@ type Intaker struct {
 	// wants; production wires it, because without it two decompositions can
 	// both believe they are the head.
 	Heads HeadStore
+	// Steps is the plan's durable mutation sequence, persisted before any
+	// tracker call. Nil skips it, which is what a module-level test of the
+	// phases themselves wants; production wires it, because without it a
+	// recovery has nothing to replay and must ask the PM again.
+	Steps StepStore
 	Now   clock.Clock
 }
 

@@ -232,6 +232,64 @@ CREATE TABLE plan (
     tickets    INTEGER NOT NULL DEFAULT 0
 )`
 
+// TicketOrdinalMigration re-keys planned tickets on (plan, ordinal).
+//
+// The issue id cannot be the identity of a WRITE-AHEAD row: the whole point
+// is that the row exists before the create call, so there is no issue id yet.
+// Keyed on the issue, the write-ahead insert produced a row with an empty id
+// that the post-create write could never find again — one orphan row per
+// ticket, and a resume replaying against ticket definitions it could not
+// match to its sequence.
+//
+// The ordinal is the identity the sequence already uses to address tickets.
+// The issue keeps a unique index for pop lookups, partial so that the many
+// rows still awaiting their id do not collide on the empty string.
+//
+// A new table because SQLite cannot re-key one in place. Existing rows carry
+// across with ordinal 0 and their recorded plan, which is honest: they were
+// written when a ticket's identity WAS its issue, and every one of them has
+// an issue id.
+const TicketOrdinalMigration = `
+CREATE TABLE plan_ticket (
+    plan       TEXT NOT NULL,
+    ordinal    INTEGER NOT NULL,
+    issue      TEXT NOT NULL DEFAULT '',
+    target_key TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    criteria   TEXT NOT NULL DEFAULT '[]',
+    kind       TEXT NOT NULL DEFAULT 'implementation',
+    blocks     TEXT NOT NULL DEFAULT '[]',
+    layers     TEXT NOT NULL DEFAULT '[]',
+    skeleton   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (plan, ordinal)
+);
+CREATE UNIQUE INDEX idx_plan_ticket_issue ON plan_ticket(issue) WHERE issue <> '';
+CREATE INDEX idx_plan_ticket_target ON plan_ticket(target_key);
+INSERT INTO plan_ticket
+    (plan, ordinal, issue, target_key, title, body, criteria, kind, blocks, layers, skeleton)
+  SELECT plan, 0, issue, target_key, title, body, criteria, kind, blocks, layers, skeleton
+    FROM planned_ticket;
+DROP TABLE planned_ticket`
+
+// StepMigration is a plan's durable mutation sequence.
+//
+// Persisted BEFORE any tracker call, which is what makes a resume a replay
+// rather than a second decomposition. Keyed on (plan, seq): the sequence is
+// the plan, and replaying it in seq order reproduces the phase barriers.
+const StepMigration = `
+CREATE TABLE plan_step (
+    plan    TEXT NOT NULL,
+    seq     INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    other   INTEGER NOT NULL DEFAULT -1,
+    kind    TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    state   TEXT NOT NULL DEFAULT 'pending',
+    issue   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (plan, seq)
+)`
+
 // PlanKeyMigration re-keys plans on their decomposition key.
 //
 // A new TABLE rather than columns on the old one: `plan` is keyed on
@@ -320,6 +378,33 @@ func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
 	return nil
 }
 
+// Claim inserts a plan only if nothing has claimed its key.
+//
+// ON CONFLICT DO NOTHING, and the affected-row count is the verdict. Resolve
+// reads before this writes, so two concurrent first requests for one key can
+// both find no row and both believe they are fresh — and an upsert would let
+// both decompose, each overwriting the other's lifecycle row. Exactly one
+// insert can succeed, and the loser re-resolves into an ordinary same-key
+// retry of the winner.
+func (s SQLPlans) Claim(ctx context.Context, p Plan) (bool, error) {
+	res, err := s.DB.ExecContext(ctx,
+		`INSERT INTO decomposition_plan
+		   (decomposition_key, target_key, spec_hash, generation, state,
+		    completed, tickets, superseded_by, error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(decomposition_key) DO NOTHING`,
+		p.Key, p.TargetKey, p.SpecHash, p.Generation, p.State,
+		p.Completed, p.Tickets, p.SupersededBy, p.Error)
+	if err != nil {
+		return false, fmt.Errorf("claim plan key: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim plan key: %w", err)
+	}
+	return rows == 1, nil
+}
+
 // planColumns is the read list both queries share, so a column added to one
 // read path cannot be missed by the other.
 const planColumns = `decomposition_key, target_key, spec_hash, generation,
@@ -367,7 +452,15 @@ func (s SQLPlans) ByKey(ctx context.Context, key string) (Plan, bool, error) {
 type SQLTickets struct{ DB *sql.DB }
 
 // Put records a ticket a decomposition produced.
+//
+// A ticket with no plan is REFUSED rather than stored. Rows are keyed on
+// (plan, ordinal), so an unidentified ticket lands on (”, 0) — and the next
+// one overwrites it. Silently keeping one ticket out of a plan of six is
+// exactly the failure this refuses to have.
 func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
+	if t.Plan == "" {
+		return fmt.Errorf("ticket %q names no plan, so it has no identity to be stored under", t.Title)
+	}
 	blocks, err := json.Marshal(t.Blocks)
 	if err != nil {
 		return fmt.Errorf("marshal blocks: %w", err)
@@ -381,17 +474,17 @@ func (s SQLTickets) Put(ctx context.Context, targetKey string, t Ticket) error {
 		return fmt.Errorf("marshal layers: %w", err)
 	}
 	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO planned_ticket
-		   (issue, target_key, title, body, criteria, kind, blocks, layers, skeleton, plan)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(issue) DO UPDATE SET
-		   target_key = excluded.target_key, title = excluded.title,
-		   body = excluded.body, criteria = excluded.criteria,
-		   kind = excluded.kind, blocks = excluded.blocks,
-		   layers = excluded.layers, skeleton = excluded.skeleton,
-		   plan = excluded.plan`,
-		t.IssueID, targetKey, t.Title, t.Body, string(criteria), kindOf(t), string(blocks),
-		string(layers), t.Skeleton, t.Plan)
+		`INSERT INTO plan_ticket
+		   (plan, ordinal, issue, target_key, title, body, criteria, kind, blocks, layers, skeleton)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(plan, ordinal) DO UPDATE SET
+		   issue = excluded.issue, target_key = excluded.target_key,
+		   title = excluded.title, body = excluded.body,
+		   criteria = excluded.criteria, kind = excluded.kind,
+		   blocks = excluded.blocks, layers = excluded.layers,
+		   skeleton = excluded.skeleton`,
+		t.Plan, t.Ordinal, t.IssueID, targetKey, t.Title, t.Body, string(criteria),
+		kindOf(t), string(blocks), string(layers), t.Skeleton)
 	if err != nil {
 		return fmt.Errorf("record planned ticket: %w", err)
 	}
@@ -417,8 +510,8 @@ func kindOf(t Ticket) string {
 // way twice.
 func (s SQLTickets) ForTarget(ctx context.Context, targetKey string) ([]Ticket, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT `+ticketColumns+` FROM planned_ticket
-		   WHERE target_key = ? ORDER BY issue`, targetKey)
+		`SELECT `+ticketColumns+` FROM plan_ticket
+		   WHERE target_key = ? ORDER BY plan, ordinal`, targetKey)
 	if err != nil {
 		return nil, fmt.Errorf("query planned tickets: %w", err)
 	}
@@ -436,7 +529,7 @@ func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 		var t Ticket
 		var criteria, blocks, layers string
 		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria,
-			&t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan); err != nil {
+			&t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan, &t.Ordinal); err != nil {
 			return nil, fmt.Errorf("scan planned ticket: %w", err)
 		}
 		if err := decodeTicketLists(&t, criteria, blocks, layers); err != nil {
@@ -454,7 +547,7 @@ func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 }
 
 // ticketColumns is the read list every ticket query shares.
-const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skeleton, plan`
+const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skeleton, plan, ordinal`
 
 // ForPlan lists ONE decomposition's tickets.
 //
@@ -463,8 +556,8 @@ const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skele
 // generation's tickets is not any one decomposition's output.
 func (s SQLTickets) ForPlan(ctx context.Context, decompositionKey string) ([]Ticket, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT `+ticketColumns+` FROM planned_ticket
-		   WHERE plan = ? ORDER BY issue`, decompositionKey)
+		`SELECT `+ticketColumns+` FROM plan_ticket
+		   WHERE plan = ? ORDER BY ordinal`, decompositionKey)
 	if err != nil {
 		return nil, fmt.Errorf("query plan tickets: %w", err)
 	}
@@ -481,9 +574,10 @@ func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, 
 	t := Ticket{IssueID: issue}
 	var criteria, blocks, layers string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT title, body, criteria, kind, blocks, layers, skeleton, plan
-		   FROM planned_ticket WHERE issue = ? AND target_key = ?`, issue, targetKey).
-		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan)
+		`SELECT title, body, criteria, kind, blocks, layers, skeleton, plan, ordinal
+		   FROM plan_ticket WHERE issue = ? AND target_key = ?`, issue, targetKey).
+		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton,
+			&t.Plan, &t.Ordinal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil
 	}

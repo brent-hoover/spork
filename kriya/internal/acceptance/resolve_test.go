@@ -44,6 +44,15 @@ func (c *countingPlans) Find(_ context.Context, targetKey string) (planner.Plan,
 	return planner.Plan{}, false, nil
 }
 
+func (c *countingPlans) Claim(_ context.Context, p planner.Plan) (bool, error) {
+	if _, taken := c.rows[p.Key]; taken {
+		return false, nil
+	}
+	c.writes++
+	c.rows[p.Key] = p
+	return true, nil
+}
+
 func (c *countingPlans) ByKey(_ context.Context, key string) (planner.Plan, bool, error) {
 	p, ok := c.rows[key]
 	return p, ok, nil

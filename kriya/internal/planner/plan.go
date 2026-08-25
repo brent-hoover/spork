@@ -75,4 +75,9 @@ type PlanStore interface {
 	// before any PlanHead logic: a row already present makes the request a
 	// same-key retry, whose result is state-aware and mutates nothing.
 	ByKey(ctx context.Context, key string) (Plan, bool, error)
+	// Claim inserts a plan only if its key is unclaimed, reporting whether
+	// THIS call created it. Resolve is a read, so two concurrent first
+	// requests can both see no row; the claim is what makes exactly one of
+	// them the decomposition and the other a retry of it.
+	Claim(ctx context.Context, p Plan) (created bool, err error)
 }
