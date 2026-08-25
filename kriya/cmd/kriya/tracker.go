@@ -177,6 +177,46 @@ func (e sutraEpics) Close(
 		expectedSubtreeRevision, key)
 }
 
+// sutraWorkFeed adapts sutra's event feed to the work watcher's seam.
+//
+// UNFILTERED at the source, and filtered here, for the same reason the verdict
+// feed is: sutra's kind filter takes one value and the watcher cares about
+// more than one.
+type sutraWorkFeed struct{ c *trackerclient.Client }
+
+func (f sutraWorkFeed) Since(
+	ctx context.Context, cursor string,
+) ([]planner.WorkEvent, string, error) {
+	page, err := f.c.Events(ctx, cursor, "", 200)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]planner.WorkEvent, 0, len(page.Events))
+	for _, e := range page.Events {
+		switch e.Kind {
+		case planner.KindStatusChanged, planner.KindCreated:
+			out = append(out, planner.WorkEvent{
+				ID: e.ID, Kind: e.Kind, Subject: e.Subject,
+			})
+		}
+	}
+	return out, page.NextCursor, nil
+}
+
+// sutraIssueStates answers what an issue's status currently is.
+//
+// A status-changed event carries no payload, so what it MEANS is a question
+// about the issue's live state rather than about the event.
+type sutraIssueStates struct{ c *trackerclient.Client }
+
+func (s sutraIssueStates) Status(ctx context.Context, id string) (string, error) {
+	issue, err := s.c.GetIssue(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return issue.Status, nil
+}
+
 // sutraFeed adapts sutra's event feed to the verdict router's seam.
 //
 // It reads only review verdicts. The feed carries every event sutra emits, and

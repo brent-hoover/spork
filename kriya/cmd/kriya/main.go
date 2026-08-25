@@ -306,6 +306,12 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		// Verdicts first. A changes-requested review returns its run to the
 		// pair loop, and a pass that popped new work before reading them would
 		// leave a rejected run waiting behind tickets it does not need.
+		// Work returning FIRST. A ticket that reopened invalidates any
+		// completion claim, and a pass that popped or claimed before reading
+		// them would act on a target it believes is finished.
+		if err := consumeWork(ctx, db, target, actor); err != nil {
+			return orchestrator.Result{}, err
+		}
 		router := verdictRouter(db, actor, target)
 		routed, next, err := router.Consume(ctx)
 		if err != nil {
@@ -634,6 +640,41 @@ type stallWriter struct{ s orchestrator.Stalls }
 func (w stallWriter) Record(ctx context.Context, targetKey string, epoch int, cause string) error {
 	_, err := w.s.Record(ctx, targetKey, epoch, cause)
 	return err
+}
+
+// consumeWork advances a target's completion epoch when its work returns.
+//
+// Nothing else moves the epoch, and without it a stamped target stays complete
+// forever: a stale approval is never fenced and recompletion never happens.
+func consumeWork(ctx context.Context, db *sql.DB, target, actor string) error {
+	row, found, err := (planner.SQLTargets{DB: db}).Find(ctx, target)
+	if err != nil || !found {
+		return err
+	}
+	w := workWatcher(db, row, target, actor)
+	_, next, err := w.Consume(ctx)
+	if err != nil {
+		return err
+	}
+	// The cursor moves only after every advance in the page landed. Losing an
+	// event here is losing the fact that work came back.
+	return w.Advance(ctx, next)
+}
+
+// workWatcher wires the epoch's feed consumer.
+func workWatcher(
+	db *sql.DB, row planner.BuildTarget, target, actor string,
+) planner.Work {
+	c := trackerclient.New(sutraURL())
+	return planner.Work{
+		Feed:      sutraWorkFeed{c: c},
+		Issues:    sutraIssueStates{c: c},
+		Epochs:    planner.Epochs{Store: planner.SQLAdvances{DB: db}},
+		Tickets:   planner.SQLTickets{DB: db},
+		Claims:    planner.SQLClaims{DB: db},
+		Cursors:   orchestrator.SQLCursors{DB: db},
+		TargetKey: target, Epic: row.EpicID, Actor: actor,
+	}
 }
 
 // verdictRouter consumes review verdicts and routes each to its run.
