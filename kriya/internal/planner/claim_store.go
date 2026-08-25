@@ -28,10 +28,19 @@ CREATE TABLE completion_claim (
     subtree_revision INTEGER NOT NULL DEFAULT 0
 )`
 
+// CloseMigration records what an epic close is spent on.
+//
+// A separate migration, because ClaimMigration has already shipped: a database
+// that ran it never runs it again, so an edit would leave existing databases
+// without these columns and every claim query against one would fail.
+const CloseMigration = `
+ALTER TABLE completion_claim ADD COLUMN approval_event TEXT NOT NULL DEFAULT '';
+ALTER TABLE completion_claim ADD COLUMN close_key TEXT NOT NULL DEFAULT ''`
+
 // claimColumns is every column a CompletionClaim reads back, in scan order.
 const claimColumns = `state, completion_epoch, submission_key, report_key,
 	pending_report, report_doc, report_version, review_id, review_revision,
-	subtree_revision`
+	subtree_revision, approval_event, close_key`
 
 // SQLClaims persists completion claims in SQLite.
 type SQLClaims struct{ DB *sql.DB }
@@ -41,17 +50,19 @@ func (s SQLClaims) Upsert(ctx context.Context, c CompletionClaim) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO completion_claim (target_key, state, completion_epoch,
 		   submission_key, report_key, pending_report, report_doc, report_version,
-		   review_id, review_revision, subtree_revision)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   review_id, review_revision, subtree_revision, approval_event, close_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(target_key) DO UPDATE SET
 		   state = excluded.state, completion_epoch = excluded.completion_epoch,
 		   submission_key = excluded.submission_key, report_key = excluded.report_key,
 		   pending_report = excluded.pending_report, report_doc = excluded.report_doc,
 		   report_version = excluded.report_version, review_id = excluded.review_id,
 		   review_revision = excluded.review_revision,
-		   subtree_revision = excluded.subtree_revision`,
+		   subtree_revision = excluded.subtree_revision,
+		   approval_event = excluded.approval_event, close_key = excluded.close_key`,
 		c.TargetKey, c.State, c.Epoch, c.SubmissionKey, c.ReportKey, c.PendingReport,
-		c.ReportDoc, c.ReportVersion, c.ReviewID, c.ReviewRevision, c.SubtreeRevision)
+		c.ReportDoc, c.ReportVersion, c.ReviewID, c.ReviewRevision, c.SubtreeRevision,
+		c.ApprovalEvent, c.CloseKey)
 	if err != nil {
 		return fmt.Errorf("upsert completion claim: %w", err)
 	}
@@ -64,7 +75,8 @@ func (s SQLClaims) Find(ctx context.Context, targetKey string) (CompletionClaim,
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+claimColumns+` FROM completion_claim WHERE target_key = ?`, targetKey).
 		Scan(&c.State, &c.Epoch, &c.SubmissionKey, &c.ReportKey, &c.PendingReport,
-			&c.ReportDoc, &c.ReportVersion, &c.ReviewID, &c.ReviewRevision, &c.SubtreeRevision)
+			&c.ReportDoc, &c.ReportVersion, &c.ReviewID, &c.ReviewRevision,
+			&c.SubtreeRevision, &c.ApprovalEvent, &c.CloseKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CompletionClaim{}, false, nil
 	}
@@ -74,13 +86,27 @@ func (s SQLClaims) Find(ctx context.Context, targetKey string) (CompletionClaim,
 	return c, true, nil
 }
 
+// Closing lists claims a crash left mid-close.
+//
+// Replayed under the PERSISTED close key: a close that landed returns its
+// original success, never a close-used conflict, because that very key
+// stamped it.
+func (s SQLClaims) Closing(ctx context.Context) ([]CompletionClaim, error) {
+	return s.inState(ctx, CompletionClosing)
+}
+
 // Submitting lists claims a crash left mid-submission.
 func (s SQLClaims) Submitting(ctx context.Context) ([]CompletionClaim, error) {
+	return s.inState(ctx, CompletionSubmitting)
+}
+
+// inState lists claims resting at one lifecycle state.
+func (s SQLClaims) inState(ctx context.Context, state string) ([]CompletionClaim, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT target_key, `+claimColumns+` FROM completion_claim
-		   WHERE state = ? ORDER BY target_key`, CompletionSubmitting)
+		   WHERE state = ? ORDER BY target_key`, state)
 	if err != nil {
-		return nil, fmt.Errorf("query submitting claims: %w", err)
+		return nil, fmt.Errorf("query %s claims: %w", state, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -89,7 +115,8 @@ func (s SQLClaims) Submitting(ctx context.Context) ([]CompletionClaim, error) {
 		var c CompletionClaim
 		if err := rows.Scan(&c.TargetKey, &c.State, &c.Epoch, &c.SubmissionKey,
 			&c.ReportKey, &c.PendingReport, &c.ReportDoc, &c.ReportVersion,
-			&c.ReviewID, &c.ReviewRevision, &c.SubtreeRevision); err != nil {
+			&c.ReviewID, &c.ReviewRevision, &c.SubtreeRevision,
+			&c.ApprovalEvent, &c.CloseKey); err != nil {
 			return nil, fmt.Errorf("scan completion claim: %w", err)
 		}
 		out = append(out, c)

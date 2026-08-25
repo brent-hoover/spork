@@ -18,6 +18,8 @@ const (
 	CompletionSubmitting   = "review-submitting"
 	CompletionSubmitted    = "review-submitted"
 	CompletionResubmitting = "review-resubmitting"
+	CompletionClosing      = "closing"
+	CompletionComplete     = "complete"
 )
 
 // CompletionClaim is one attempt to declare a target's build complete.
@@ -57,6 +59,15 @@ type CompletionClaim struct {
 	// on it: history that moved invalidates the claim even when current state
 	// still matches.
 	SubtreeRevision int64
+	// ApprovalEvent is the verdict event the close is spending. It is IN the
+	// close key, so a reapproval after a reversal-induced conflict issues
+	// under a fresh one rather than replaying the cached conflict.
+	ApprovalEvent string
+	// CloseKey is the epic close's Idempotency-Key, persisted with the
+	// closing state before the call. A close that landed replays to its
+	// original success under it — never a close-used conflict, since this
+	// very key stamped it.
+	CloseKey string
 }
 
 // ClaimStore persists completion claims.
@@ -65,6 +76,8 @@ type ClaimStore interface {
 	Find(ctx context.Context, targetKey string) (CompletionClaim, bool, error)
 	// Submitting lists claims a crash left mid-submission.
 	Submitting(ctx context.Context) ([]CompletionClaim, error)
+	// Closing lists claims a crash left mid-close.
+	Closing(ctx context.Context) ([]CompletionClaim, error)
 }
 
 // Reports renders a build's completion report.
@@ -103,12 +116,31 @@ func claimKey(material string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// CloseKey is deterministic per (target, epoch, approval event).
+//
+// The APPROVAL EVENT is in it because a reapproval after a reversal-induced
+// conflict must issue under a fresh key: replaying the old one would return
+// the cached conflict forever, and the build could never finish.
+func CloseKey(targetKey string, epoch int, approvalEvent string) string {
+	return claimKey("kriya-completion-close:" + targetKey + ":" +
+		strconv.Itoa(epoch) + ":" + approvalEvent)
+}
+
+// Epics closes a build's umbrella issue.
+type Epics interface {
+	// Close completes the epic, fenced on the subtree revision the claim
+	// captured. sutra's no-open-children gate is the authoritative check.
+	Close(ctx context.Context, epic, review string, revision int,
+		verdictEvent string, expectedSubtreeRevision int64, key string) error
+}
+
 // Claimer submits the review a human approves to finish a build.
 type Claimer struct {
 	Claims    ClaimStore
 	Reports   Reports
 	Documents Documents
 	Reviews   CompletionReviews
+	Epics     Epics
 	Epochs    Epochs
 }
 
@@ -217,5 +249,113 @@ func (c Claimer) Recover(
 	return len(pending), nil
 }
 
+// RecoverCloses replays epic closes a crash left in flight.
+//
+// Under the PERSISTED close key, so a close that landed replays to its
+// original success. A claim whose epoch has since moved surfaces as
+// ErrStaleClaim rather than stamping — the close is real, the stamp is not.
+func (c Claimer) RecoverCloses(
+	ctx context.Context, epic func(CompletionClaim) (string, error),
+) (int, error) {
+	pending, err := c.Claims.Closing(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list closing claims: %w", err)
+	}
+	var stale error
+	for _, claim := range pending {
+		epicID, err := epic(claim)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := c.finishClose(ctx, claim, epicID); err != nil {
+			if errors.Is(err, ErrStaleClaim) {
+				// The close landed for a claim the world moved past. Recovery
+				// finishes the rest and reports it: a compensating reopen is
+				// what returns the target to work, and stopping here would
+				// leave every other target's close unrecovered.
+				stale = err
+				continue
+			}
+			return 0, err
+		}
+	}
+	return len(pending), stale
+}
+
 // ErrNotArmed reports a completion attempt on a target that may not have one.
 var ErrNotArmed = errors.New("completion is not armed for this target")
+
+// ErrStaleClaim reports an approval spent against a claim the world moved past.
+//
+// A distinct error because the operator acts on it: the approval was real, the
+// human meant it, and it covered a build that is no longer this one. Nothing is
+// stamped, and a fresh attempt with fresh approval is required.
+var ErrStaleClaim = errors.New("the completion claim's epoch has moved")
+
+// Close completes a target's epic on its approval, then stamps the target.
+//
+// Write-ahead: the closing state, the approval event and the close key are
+// persisted BEFORE the call, so a crash after the close landed replays under
+// the same key — sutra returns the original success rather than a close-used
+// conflict, since this very key stamped it.
+//
+// The stamp that follows is a compare-and-swap on the epoch. sutra's gate
+// proves the EPIC was closable; the CAS proves the claim is still the current
+// one. Both are needed: a reopen between them is refused by sutra, and an
+// advance between them is refused by the CAS.
+func (c Claimer) Close(
+	ctx context.Context, targetKey, epicID, approvalEvent string,
+) (CompletionClaim, error) {
+	claim, found, err := c.Claims.Find(ctx, targetKey)
+	if err != nil {
+		return CompletionClaim{}, fmt.Errorf("read completion claim for %s: %w", targetKey, err)
+	}
+	if !found || claim.ReviewID == "" {
+		return CompletionClaim{}, fmt.Errorf("%s has no completion review to close against", targetKey)
+	}
+	if approvalEvent == "" {
+		// The close key embeds it. Without one, a reapproval after a conflict
+		// would replay the cached conflict forever.
+		return CompletionClaim{}, fmt.Errorf("the approval for %s names no verdict event", targetKey)
+	}
+
+	if claim.State != CompletionClosing || claim.ApprovalEvent != approvalEvent {
+		claim.ApprovalEvent = approvalEvent
+		claim.CloseKey = CloseKey(targetKey, claim.Epoch, approvalEvent)
+		claim.State = CompletionClosing
+		if err := c.Claims.Upsert(ctx, claim); err != nil {
+			return CompletionClaim{}, fmt.Errorf("record closing claim: %w", err)
+		}
+	}
+	return c.finishClose(ctx, claim, epicID)
+}
+
+// finishClose performs the close the write-ahead row promised, and stamps.
+//
+// Shared with recovery, so a replay takes the same path as a first attempt.
+func (c Claimer) finishClose(
+	ctx context.Context, claim CompletionClaim, epicID string,
+) (CompletionClaim, error) {
+	if err := c.Epics.Close(ctx, epicID, claim.ReviewID, claim.ReviewRevision,
+		claim.ApprovalEvent, claim.SubtreeRevision, claim.CloseKey); err != nil {
+		return CompletionClaim{}, fmt.Errorf("close epic %s: %w", epicID, err)
+	}
+	// The epic is closed. The stamp is a SEPARATE fence: sutra proved the epic
+	// was closable, and this proves the claim is still the current one.
+	stamped, err := c.Epochs.Stamp(ctx, claim.TargetKey, claim.Epoch)
+	if err != nil {
+		return CompletionClaim{}, err
+	}
+	if !stamped {
+		// The epoch advanced while the approval was in flight. The close
+		// landed — sutra's gate was satisfied at the time — and a
+		// compensating reopen is what returns the target to work. The
+		// operator hears about it; nothing is stamped.
+		return claim, fmt.Errorf("%s: %w", claim.TargetKey, ErrStaleClaim)
+	}
+	claim.State = CompletionComplete
+	if err := c.Claims.Upsert(ctx, claim); err != nil {
+		return CompletionClaim{}, fmt.Errorf("record completed claim: %w", err)
+	}
+	return claim, nil
+}

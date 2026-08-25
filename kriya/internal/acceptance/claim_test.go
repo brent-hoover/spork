@@ -40,13 +40,21 @@ func (m *memCompletionClaims) Find(
 }
 
 func (m *memCompletionClaims) Submitting(context.Context) ([]planner.CompletionClaim, error) {
+	return m.inState(planner.CompletionSubmitting), nil
+}
+
+func (m *memCompletionClaims) Closing(context.Context) ([]planner.CompletionClaim, error) {
+	return m.inState(planner.CompletionClosing), nil
+}
+
+func (m *memCompletionClaims) inState(state string) []planner.CompletionClaim {
 	var out []planner.CompletionClaim
 	for _, c := range m.rows {
-		if c.State == planner.CompletionSubmitting {
+		if c.State == state {
 			out = append(out, c)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // docShelf stands in for sutra's documents, honouring idempotency keys the way

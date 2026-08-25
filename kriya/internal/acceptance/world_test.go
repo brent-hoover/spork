@@ -45,6 +45,8 @@ type world struct {
 	agent       *fakes.Agent
 	// pair is the pair-loop scenarios' state, nil until one starts.
 	pair *pairWorld
+	// close is the epic-close scenarios' state, nil until one starts.
+	close *closeWorld
 	// claim is the completion-submission scenarios' state, nil until one starts.
 	claim *claimWorld
 	// epoch is the completion-epoch scenarios' state, nil until one starts.

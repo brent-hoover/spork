@@ -39,13 +39,21 @@ func (m *memClaims) Find(_ context.Context, key string) (planner.CompletionClaim
 	return c, ok, m.err
 }
 
-func (m *memClaims) Submitting(context.Context) ([]planner.CompletionClaim, error) {
+func (m *memClaims) Submitting(ctx context.Context) ([]planner.CompletionClaim, error) {
+	return m.inState(ctx, planner.CompletionSubmitting)
+}
+
+func (m *memClaims) Closing(ctx context.Context) ([]planner.CompletionClaim, error) {
+	return m.inState(ctx, planner.CompletionClosing)
+}
+
+func (m *memClaims) inState(_ context.Context, state string) ([]planner.CompletionClaim, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
 	var out []planner.CompletionClaim
 	for _, c := range m.rows {
-		if c.State == planner.CompletionSubmitting {
+		if c.State == state {
 			out = append(out, c)
 		}
 	}

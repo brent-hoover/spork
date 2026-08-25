@@ -381,6 +381,30 @@ func (c *Client) CompleteIssue(
 		}, nil)
 }
 
+// CloseEpic completes a build's umbrella epic, fenced on its subtree.
+//
+// expectedSubtreeRevision is the fence that makes a completion claim provable
+// rather than hopeful: sutra refuses when the epic's subtree has moved since
+// the claim captured it, so history that changed invalidates the claim EVEN IF
+// current state still matches. A child that reopened and recompleted before
+// kriya consumed either event leaves current state identical and the revision
+// advanced — exactly the case a human's approval did not cover.
+//
+// sutra's no-open-children gate is the authoritative check on top of it: a
+// reopen landing between kriya's read and this call is refused
+// server-atomically, so kriya never has to win that race itself.
+func (c *Client) CloseEpic(
+	ctx context.Context, epic, review string, revision int,
+	verdictEvent, actor string, expectedSubtreeRevision int64, key string,
+) error {
+	return c.do(ctx, "completeIssue", http.MethodPost, "/issues/"+epic+"/status", key,
+		map[string]any{
+			"status": "complete", "review": review, "review_revision": revision,
+			"review_verdict_event": verdictEvent, "actor": actor,
+			"expected_subtree_revision": expectedSubtreeRevision,
+		}, nil)
+}
+
 // Popped is what a work-stack pop returns.
 //
 // Issue is empty when nothing is workable. That is NOT an error: idling is the

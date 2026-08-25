@@ -163,6 +163,20 @@ func (r sutraCompletionReviews) Create(
 	return rv.ID, rv.Revision, nil
 }
 
+// sutraEpics adapts sutra's issue-status API to the completion close's seam.
+type sutraEpics struct {
+	c     *trackerclient.Client
+	actor string
+}
+
+func (e sutraEpics) Close(
+	ctx context.Context, epic, review string, revision int,
+	verdictEvent string, expectedSubtreeRevision int64, key string,
+) error {
+	return e.c.CloseEpic(ctx, epic, review, revision, verdictEvent, e.actor,
+		expectedSubtreeRevision, key)
+}
+
 // sutraFeed adapts sutra's event feed to the verdict router's seam.
 //
 // It reads only review verdicts. The feed carries every event sutra emits, and

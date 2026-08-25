@@ -342,7 +342,14 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		// submitted here rather than inside the loop because the loop's job is
 		// to pop and build: whether the build is DONE is a different question,
 		// and it is asked once, when there is nothing left to pop.
-		return result, claimCompletion(ctx, db, target, actor)
+		if err := claimCompletion(ctx, db, target, actor); err != nil {
+			return result, err
+		}
+		// The review is open. Look once: if the human has already approved
+		// it, the epic closes and the target stamps. POLLING, and only here —
+		// the event-driven consumption is the feed's, and a poll that observes
+		// the same approval issues the same close under the same key.
+		return result, observeCompletionApproval(ctx, db, target, actor)
 	}
 }
 
@@ -379,6 +386,40 @@ func claimCompletion(ctx context.Context, db *sql.DB, target, actor string) erro
 	}
 	_, err = completionClaimer(db, actor).Submit(
 		ctx, target, row.ProjectID, row.EpicID, epic.SubtreeRevision)
+	return err
+}
+
+// observeCompletionApproval closes the epic when its review is approved.
+//
+// Nothing happens on any other verdict: a completion review awaiting a human,
+// or one sent back for rework, leaves the target exactly where it is.
+func observeCompletionApproval(ctx context.Context, db *sql.DB, target, actor string) error {
+	claim, found, err := (planner.SQLClaims{DB: db}).Find(ctx, target)
+	if err != nil || !found || claim.State != planner.CompletionSubmitted {
+		return err
+	}
+	rv, err := trackerclient.New(sutraURL()).GetReview(ctx, claim.ReviewID)
+	if err != nil {
+		return fmt.Errorf("read completion review %s: %w", claim.ReviewID, err)
+	}
+	if rv.State != "approved" {
+		return nil
+	}
+	row, found, err := (planner.SQLTargets{DB: db}).Find(ctx, target)
+	if err != nil || !found {
+		return err
+	}
+	_, err = completionClaimer(db, actor).Close(ctx, target, row.EpicID, rv.LatestVerdictEvent)
+	if errors.Is(err, planner.ErrStaleClaim) {
+		// The approval was real and it covered a build that is no longer this
+		// one. The operator hears about it rather than the build silently
+		// declaring itself done or silently stopping.
+		fmt.Fprintf(os.Stderr,
+			"kriya: %s was approved at completion epoch %d, which has since moved; "+
+				"the epic closed but nothing is stamped — a fresh completion review is required\n",
+			target, claim.Epoch)
+		return nil
+	}
 	return err
 }
 
@@ -431,6 +472,7 @@ func completionClaimer(db *sql.DB, actor string) planner.Claimer {
 		Reports:   reportFor(db),
 		Documents: sutraDocs{c: c, actor: actor},
 		Reviews:   sutraCompletionReviews{c: c, actor: actor},
+		Epics:     sutraEpics{c: c, actor: actor},
 		Epochs:    planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 	}
 }
@@ -774,7 +816,24 @@ func recoverySteps(
 			// an advance still presents the old key — which is what keeps it
 			// from adopting a spent review — and the stamp's CAS refuses it
 			// later.
-			_, err := claimer.Recover(ctx, targets)
+			if _, err := claimer.Recover(ctx, targets); err != nil {
+				return err
+			}
+			// And a close a crash left mid-flight, replayed under its
+			// PERSISTED key: a close that landed returns its original
+			// success, never a close-used conflict, because that very key is
+			// what stamped it.
+			_, err := claimer.RecoverCloses(ctx, func(c planner.CompletionClaim) (string, error) {
+				_, epic, err := targets(c)
+				return epic, err
+			})
+			if errors.Is(err, planner.ErrStaleClaim) {
+				// Recovered, and stale. Reported rather than fatal: the close
+				// landed and every other target's was replayed too, and this
+				// one needs a fresh review rather than a halted startup.
+				fmt.Fprintln(os.Stderr, "kriya:", err)
+				return nil
+			}
 			return err
 		}},
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
