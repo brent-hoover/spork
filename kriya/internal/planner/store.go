@@ -232,6 +232,17 @@ CREATE TABLE plan (
     tickets    INTEGER NOT NULL DEFAULT 0
 )`
 
+// TicketDeferAttemptMigration counts the deferral keys a row has spent.
+//
+// Its own migration because TicketConsumedMigration has shipped. sutra settles
+// a REJECTED request under its idempotency key, so a conflicted deferral
+// poisons that key permanently. Without a durable counter the attempt number
+// restarted at zero on every retirement pass, re-presenting the same poisoned
+// keys forever — and the ticket could never be deferred once its status
+// stabilised, leaving the successor fenced indefinitely.
+const TicketDeferAttemptMigration = `
+ALTER TABLE plan_ticket ADD COLUMN defer_attempt INTEGER NOT NULL DEFAULT 0`
+
 // TicketConsumedMigration records a retirement's verdict on a row.
 //
 // Its own migration because TicketOrdinalMigration has shipped. A consumed
@@ -575,7 +586,7 @@ func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 		var criteria, blocks, layers string
 		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria,
 			&t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan, &t.Ordinal,
-			&t.Consumed, &t.Disposition); err != nil {
+			&t.Consumed, &t.Disposition, &t.DeferAttempt); err != nil {
 			return nil, fmt.Errorf("scan planned ticket: %w", err)
 		}
 		if err := decodeTicketLists(&t, criteria, blocks, layers); err != nil {
@@ -594,7 +605,7 @@ func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 
 // ticketColumns is the read list every ticket query shares.
 const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skeleton,
-	plan, ordinal, consumed, disposition`
+	plan, ordinal, consumed, disposition, defer_attempt`
 
 // Consume stamps a predecessor row settled by a successor's retirement.
 //
@@ -611,6 +622,26 @@ func (s SQLTickets) Consume(
 		return fmt.Errorf("consume ticket %d: %w", ordinal, err)
 	}
 	return nil
+}
+
+// BumpDeferAttempt spends another deferral key for a row.
+//
+// Incremented BEFORE the call it is for, and returned, so the number handed
+// back has never been presented to sutra. Incrementing afterwards would leave
+// a crash between the call and the write re-presenting the key that call
+// already settled.
+func (s SQLTickets) BumpDeferAttempt(
+	ctx context.Context, decompositionKey string, ordinal int,
+) (int, error) {
+	var attempt int
+	err := s.DB.QueryRowContext(ctx,
+		`UPDATE plan_ticket SET defer_attempt = defer_attempt + 1
+		   WHERE plan = ? AND ordinal = ?
+		 RETURNING defer_attempt`, decompositionKey, ordinal).Scan(&attempt)
+	if err != nil {
+		return 0, fmt.Errorf("spend a defer key for ticket %d: %w", ordinal, err)
+	}
+	return attempt, nil
 }
 
 // ForPlan lists ONE decomposition's tickets.
@@ -639,10 +670,10 @@ func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, 
 	var criteria, blocks, layers string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT title, body, criteria, kind, blocks, layers, skeleton, plan, ordinal,
-		        consumed, disposition
+		        consumed, disposition, defer_attempt
 		   FROM plan_ticket WHERE issue = ? AND target_key = ?`, issue, targetKey).
 		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton,
-			&t.Plan, &t.Ordinal, &t.Consumed, &t.Disposition)
+			&t.Plan, &t.Ordinal, &t.Consumed, &t.Disposition, &t.DeferAttempt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil
 	}

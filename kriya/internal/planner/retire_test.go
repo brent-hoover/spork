@@ -3,6 +3,7 @@ package planner_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"kriya/internal/planner"
@@ -480,5 +481,68 @@ func TestAConflictRevealingAFreshBuildLeavesItBound(t *testing.T) {
 func TestTheDeferKeyVariesWithTheAttempt(t *testing.T) {
 	if planner.DeferKey("plan-a", 0, 0) == planner.DeferKey("plan-a", 0, 1) {
 		t.Error("two attempts share a defer key, so the second replays the first's rejection")
+	}
+}
+
+func TestDeferAttemptsNeverRepeatAcrossPasses(t *testing.T) {
+	// sutra settles a REJECTED request under its key, so a conflicted
+	// deferral poisons that key permanently. An attempt counter living only
+	// inside one pass restarted at zero on the next — re-presenting keys
+	// sutra had already refused, forever, so the ticket could never be
+	// deferred once its status stabilised and the successor stayed fenced.
+	store := &planningTickets{}
+	plan := planner.Plan{Key: "plan-old", TargetKey: "/spec", State: planner.PlanSuperseded}
+	if err := store.Put(context.Background(), "/spec", planner.Ticket{
+		Title: "moving", IssueID: "issue-1", Plan: plan.Key, Ordinal: 0,
+	}); err != nil {
+		t.Fatalf("seed ticket: %v", err)
+	}
+	defers := &alwaysConflicts{fakeDeferrer: newFakeDeferrer()}
+	r := planner.Retirement{
+		Tickets: store, Defer: defers, Live: &fakeLive{held: map[string]bool{}},
+	}
+	ctx := context.Background()
+
+	// Two passes, each exhausting its attempts.
+	for pass := range 2 {
+		if err := r.Run(ctx, plan, "project-1", nil, "actor"); err == nil {
+			t.Fatalf("pass %d: expected the deferral to fail", pass)
+		}
+	}
+	if len(defers.keys) != 4 {
+		t.Fatalf("two passes made %d attempts, want 4", len(defers.keys))
+	}
+	seen := map[string]bool{}
+	for _, key := range defers.keys {
+		if seen[key] {
+			t.Errorf("key %s was presented twice, replaying a settled rejection", planner.Short(key))
+		}
+		seen[key] = true
+	}
+}
+
+// alwaysConflicts refuses every deferral, as a ticket whose status keeps
+// moving would.
+type alwaysConflicts struct{ *fakeDeferrer }
+
+func (a *alwaysConflicts) Defer(_ context.Context, _, expect, _, key string) error {
+	a.keys = append(a.keys, key)
+	return errors.New("conflict: expected status " + expect)
+}
+
+func TestAnIssuedCreateWithNoTrackerIsRefusedNotAssumedAbsent(t *testing.T) {
+	// A missing tracker is NOT proof the issue does not exist. Treated as
+	// one, the row is consumed and its real, open sutra issue holds the epic
+	// forever — silently, which is the worst version.
+	r, _, _, _, plan := retiringWithSteps(t,
+		planner.StepIssued, planner.Ticket{Title: "orphaned", IssueID: ""})
+	r.Tracker = nil
+
+	err := r.Run(context.Background(), plan, "project-1", nil, "actor")
+	if err == nil {
+		t.Fatal("an issued create was consumed with no tracker to replay it")
+	}
+	if !strings.Contains(err.Error(), "no tracker") {
+		t.Errorf("the error %q does not name the missing tracker", err)
 	}
 }

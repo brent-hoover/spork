@@ -149,6 +149,7 @@ planner/0018_plan_step 785b71c4d2b7cce5
 planner/0019_ticket_consumed 8f86e68897785b72
 planner/0020_plan_predecessor 0ea9865556e823bb
 planner/0021_pop_fence 8a4e83bf2b6b432b
+planner/0022_defer_attempt 249cef1ad0558510
 planner/0011_claim_watermark 62fd5c44cd3f21aa
 planner/0010_reopen_owed f91d423e923a3be6
 planner/0009_completion_close fcb2b598766b4952

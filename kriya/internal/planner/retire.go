@@ -159,8 +159,9 @@ func (r Retirement) deferTicket(
 ) (string, error) {
 	// Bounded: one re-read after a conflict. A ticket whose status keeps
 	// moving is one something else is actively working, and looping here
-	// would fight it.
-	for attempt := range 2 {
+	// would fight it. A later retirement pass picks it up with a fresh
+	// attempt number, so nothing is lost by stopping.
+	for range 2 {
 		status, err := r.Defer.Status(ctx, ticket.IssueID)
 		if err != nil {
 			return "", fmt.Errorf("read the status of %s: %w", ticket.IssueID, err)
@@ -180,19 +181,23 @@ func (r Retirement) deferTicket(
 			return DispositionBound, nil
 		}
 
+		// The key is spent DURABLY before the call it is for. sutra settles a
+		// rejected request under its key, so an attempt counter living only
+		// in this loop restarted at zero on the next retirement pass and
+		// re-presented keys sutra had already refused — forever.
+		attempt, err := r.Tickets.BumpDeferAttempt(ctx, predecessor.Key, ticket.Ordinal)
+		if err != nil {
+			return "", err
+		}
 		// The expectation is the status just OBSERVED, whatever it is.
 		// Expecting "open" unconditionally made a blocked ticket conflict on
 		// every attempt, against a state it would never return to.
-		err = r.Defer.Defer(ctx, ticket.IssueID, status, actor,
-			DeferKey(predecessor.Key, ticket.Ordinal, attempt))
-		if err == nil {
+		if err := r.Defer.Defer(ctx, ticket.IssueID, status, actor,
+			DeferKey(predecessor.Key, ticket.Ordinal, attempt)); err == nil {
 			return DispositionRetired, nil
 		}
-		if attempt == 1 {
-			return "", fmt.Errorf("defer %s: %w", ticket.IssueID, err)
-		}
 	}
-	return "", fmt.Errorf("defer %s: exhausted its attempts", ticket.IssueID)
+	return "", fmt.Errorf("defer %s: its status kept moving under the transition", ticket.IssueID)
 }
 
 // settleCreate replays a creation step whose outcome was never recorded.
@@ -204,7 +209,9 @@ func (r Retirement) deferTicket(
 func (r Retirement) settleCreate(
 	ctx context.Context, predecessor Plan, ticket Ticket, projectID, actor string,
 ) (string, error) {
-	if r.Steps == nil || r.Tracker == nil {
+	if r.Steps == nil {
+		// No durable sequence to consult. Nothing can be said about whether
+		// the create landed, so nothing is claimed.
 		return "", nil
 	}
 	steps, err := r.Steps.ForPlan(ctx, predecessor.Key)
@@ -223,6 +230,14 @@ func (r Retirement) settleCreate(
 			return "", nil
 		}
 		// ISSUED, with no recorded result. Replay it to its terminal answer.
+		if r.Tracker == nil {
+			// A missing tracker is NOT proof the issue does not exist. Treated
+			// as one, the row is consumed and its real, open sutra issue holds
+			// the epic forever. Refusing names the misconfiguration instead.
+			return "", fmt.Errorf(
+				"ticket %d of plan %s has an issued creation step and no tracker to replay it",
+				ticket.Ordinal, Short(predecessor.Key))
+		}
 		issue, err := r.Tracker.CreateIssue(ctx, projectID, ticket.Title, ticket.Body, actor, step.Key)
 		if err != nil {
 			return "", fmt.Errorf("replay the creation of ticket %d: %w", ticket.Ordinal, err)

@@ -569,6 +569,20 @@ func (t *worldTickets) Consume(
 	return nil
 }
 
+func (t *worldTickets) BumpDeferAttempt(
+	_ context.Context, key string, ordinal int,
+) (int, error) {
+	for _, set := range t.rows {
+		for n, ticket := range set {
+			if ticket.Plan == key && ticket.Ordinal == ordinal {
+				set[n].DeferAttempt++
+				return set[n].DeferAttempt, nil
+			}
+		}
+	}
+	return 0, nil
+}
+
 func (t *worldTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
 	var out []planner.Ticket
 	for _, set := range t.rows {

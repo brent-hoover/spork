@@ -125,6 +125,10 @@ func intaker(db *sql.DB, tiers agent.Tiers, target string) planner.Intaker {
 			Steps:   planner.SQLSteps{DB: db},
 			Defer:   sutraDeferrer{c: trackerclient.New(sutraURL())},
 			Live:    liveRuns{db: db},
+			// Without it, a creation step that was issued but never recorded
+			// cannot be replayed — and its real, open sutra issue is
+			// consumed as though it had never existed.
+			Tracker: sutraTracker{c: trackerclient.New(sutraURL())},
 		},
 		Agent: agent.Recording{
 			Inner:  agent.Claude{Tiers: tiers},

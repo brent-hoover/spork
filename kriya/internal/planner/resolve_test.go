@@ -157,6 +157,19 @@ func (p *planningTickets) Consume(
 	return nil
 }
 
+// BumpDeferAttempt spends a key durably, as the real store does.
+func (p *planningTickets) BumpDeferAttempt(
+	_ context.Context, key string, ordinal int,
+) (int, error) {
+	for n, t := range p.rows {
+		if t.Plan == key && t.Ordinal == ordinal {
+			p.rows[n].DeferAttempt++
+			return p.rows[n].DeferAttempt, nil
+		}
+	}
+	return 0, nil
+}
+
 func (p *planningTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
 	var out []planner.Ticket
 	for _, t := range p.rows {

@@ -36,6 +36,25 @@ func TestTheIntakerIsWiredWithEveryDurableStore(t *testing.T) {
 		t.Error("the production head store advances no completion epoch")
 	}
 
+	// Retirement's OWN collaborators, for the same reason: every one is
+	// optional, and a forgotten Tracker made an issued-but-unrecorded create
+	// look like a ticket that never existed — consumed, while its real sutra
+	// issue held the epic open forever.
+	if in.Retire == nil {
+		t.Fatal("the production intaker retires nothing")
+	}
+	for name, wired := range map[string]bool{
+		"retirement tickets":   in.Retire.Tickets != nil,
+		"retirement steps":     in.Retire.Steps != nil,
+		"retirement deferrer":  in.Retire.Defer != nil,
+		"retirement live work": in.Retire.Live != nil,
+		"retirement tracker":   in.Retire.Tracker != nil,
+	} {
+		if !wired {
+			t.Errorf("the production retirement has no %s", name)
+		}
+	}
+
 	for name, wired := range map[string]bool{
 		"snapshots": in.Snapshots != nil,
 		"targets":   in.Targets != nil,

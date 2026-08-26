@@ -70,6 +70,9 @@ type TicketStore interface {
 	// Consume stamps a predecessor row settled by a successor's retirement,
 	// with the disposition that settled it.
 	Consume(ctx context.Context, decompositionKey string, ordinal int, disposition string) error
+	// BumpDeferAttempt durably records that another deferral key has been
+	// spent, returning the attempt number to use next.
+	BumpDeferAttempt(ctx context.Context, decompositionKey string, ordinal int) (int, error)
 }
 
 // admitReport applies the three report-level checks.

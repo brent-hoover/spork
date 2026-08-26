@@ -187,8 +187,14 @@ func registerRetire(sc *godog.ScenarioContext, w *world) {
 			// key, which carries the intake generation. A key from the ticket
 			// alone would be replayed by a later plan's retirement of the same
 			// ticket, and sutra would return the earlier result instead.
-			mine := planner.DeferKey(r.previous.Key, 0, 0)
-			other := planner.DeferKey("plan-p0", 0, 0)
+			// The attempt comes from the ROW, because the counter is durable —
+			// hard-coding zero asserts against a key production never presents.
+			row, err := r.ticketOf(0)
+			if err != nil {
+				return err
+			}
+			mine := planner.DeferKey(r.previous.Key, 0, row.DeferAttempt)
+			other := planner.DeferKey("plan-p0", 0, row.DeferAttempt)
 			if mine == other {
 				return fmt.Errorf("two plans retiring one ticket share a defer key")
 			}

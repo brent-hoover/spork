@@ -104,6 +104,13 @@ type Ticket struct {
 	// acceptance criteria, not a head that never planned it.
 	Consumed    bool   `json:"-"`
 	Disposition string `json:"-"`
+	// DeferAttempt is how many deferrals of this row sutra has already
+	// settled — successfully or as a conflict. It is DURABLE because sutra
+	// settles a rejected request under its key: an attempt counter that
+	// restarted at zero on every retirement pass would present the same
+	// poisoned keys forever, and the ticket could never be deferred once its
+	// status stabilised.
+	DeferAttempt int `json:"-"`
 	// Ordinal is this ticket's position in its plan. The mutation sequence
 	// addresses tickets by it, so a resumed replay needs it to line the two
 	// up — a map keyed by title would break on two tickets sharing one.
