@@ -852,6 +852,15 @@ func popLoop(
 	}
 }
 
+// binderFor wires the state-aware pop binding.
+func binderFor(db *sql.DB) planner.Binder {
+	return planner.Binder{
+		Plans:   planner.SQLPlans{DB: db},
+		Heads:   planner.SQLHeads{DB: db, Advances: planner.SQLAdvances{DB: db}},
+		Tickets: planner.SQLTickets{DB: db},
+	}
+}
+
 // snapshotFor reads the target's pinned snapshot.
 func snapshotFor(ctx context.Context, db *sql.DB, target string) (planner.Snapshot, error) {
 	return planner.SQLSnapshots{DB: db}.Get(ctx, latestSnapshotHash(ctx, db, target))
@@ -864,22 +873,23 @@ func buildOne(
 ) orchestrator.Builder {
 	return func(ctx context.Context, issue, title string) (orchestrator.BuildRun, error) {
 		// A pop is IDENTITY-WIDE: sutra offers whatever is assigned to the
-		// popping identity, from any plan. A ticket this target's
-		// decomposition did not produce belongs to another repository, and
-		// building it here would run this target's gate commands over the
-		// wrong codebase. Refused loudly rather than skipped: the claim is
+		// popping identity, from any plan. The binder answers which plan of
+		// THIS target owns the ticket, by the state-aware precedence — and
+		// refuses a ticket no plan of it holds, which is one belonging to
+		// another repository. Refused loudly rather than skipped: the claim is
 		// already made, and silently dropping it would strand the ticket.
-		ticket, planned, err := (planner.SQLTickets{DB: db}).Find(ctx, target, issue)
+		bound, err := binderFor(db).Bind(ctx, target, issue)
 		if err != nil {
-			return orchestrator.BuildRun{}, err
-		}
-		if !planned {
 			return orchestrator.BuildRun{}, fmt.Errorf(
-				"issue %s (%s) is not in %s's plan; it was popped for this identity "+
-					"but belongs to another target", issue, title, target)
+				"bind issue %s (%s) for %s: %w", issue, title, target, err)
 		}
+		ticket := bound.Ticket
 		ticket.IssueID = issue
-		snap, err := snapshotFor(ctx, db, target)
+		// The BOUND PLAN's snapshot, not the target's latest. The binding
+		// exists to say which decomposition produced this ticket's acceptance
+		// criteria, and building it against a newer spec would validate it
+		// against criteria that never described it.
+		snap, err := planner.SQLSnapshots{DB: db}.Get(ctx, bound.Plan.SpecHash)
 		if err != nil {
 			return orchestrator.BuildRun{}, err
 		}

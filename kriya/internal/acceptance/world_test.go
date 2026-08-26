@@ -59,6 +59,8 @@ type world struct {
 	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
 	status *statusWorld
+	// bind is the binding-precedence scenarios' state, nil until one starts.
+	bind *bindWorld
 	// writeAhead is the write-ahead-pop scenarios' state, nil until one starts.
 	writeAhead *writeAheadWorld
 	// fence is the pop-fence scenarios' state, nil until one starts.

@@ -209,3 +209,71 @@ func TestReconciliationOnAnUnreachableStoreFails(t *testing.T) {
 		t.Error("reconciliation against a closed database succeeded")
 	}
 }
+
+func TestAPoppedTicketBuildsAgainstItsOwnPlansSnapshot(t *testing.T) {
+	// The binding exists to say which decomposition produced a ticket's
+	// acceptance criteria. Building it against the target's LATEST snapshot
+	// would validate it against criteria that never described it — which is
+	// exactly what a superseded plan's carried work would hit.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	plans, tickets := planner.SQLPlans{DB: db}, planner.SQLTickets{DB: db}
+	for _, p := range []planner.Plan{
+		{Key: "plan-old", TargetKey: "/spec", SpecHash: "hash-old",
+			Generation: 1, State: planner.PlanSuperseded},
+		{Key: "plan-head", TargetKey: "/spec", SpecHash: "hash-new",
+			Generation: 2, State: planner.PlanActive, Predecessor: "plan-old"},
+	} {
+		if err := plans.Upsert(t.Context(), p); err != nil {
+			t.Fatalf("seed %s: %v", p.Key, err)
+		}
+	}
+	// The ticket lives ONLY in the superseded plan: the amended spec dropped
+	// it, but a live build still holds it.
+	if err := tickets.Put(t.Context(), "/spec", planner.Ticket{
+		Title: "dropped work", IssueID: "issue-1", Plan: "plan-old", Ordinal: 0,
+	}); err != nil {
+		t.Fatalf("seed ticket: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(),
+		`INSERT INTO plan_head (target_key, current, generation, fence) VALUES (?, ?, 2, 0)`,
+		"/spec", "plan-head"); err != nil {
+		t.Fatalf("install head: %v", err)
+	}
+
+	bound, err := binderFor(db).Bind(t.Context(), "/spec", "issue-1")
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if bound.Plan.SpecHash != "hash-old" {
+		t.Errorf("the pop bound snapshot %q, not the one that described the ticket",
+			bound.Plan.SpecHash)
+	}
+}
+
+func TestATicketFromAnotherTargetIsRefusedAtBinding(t *testing.T) {
+	// A pop is identity-wide, so another repository's ticket can arrive.
+	// Building it here would run this target's gate commands over the wrong
+	// codebase.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := (planner.SQLPlans{DB: db}).Upsert(t.Context(), planner.Plan{
+		Key: "plan-head", TargetKey: "/spec", SpecHash: "h",
+		Generation: 1, State: planner.PlanActive,
+	}); err != nil {
+		t.Fatalf("seed plan: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(),
+		`INSERT INTO plan_head (target_key, current, generation, fence) VALUES (?, ?, 1, 0)`,
+		"/spec", "plan-head"); err != nil {
+		t.Fatalf("install head: %v", err)
+	}
+
+	if _, err := binderFor(db).Bind(t.Context(), "/spec", "issue-from-elsewhere"); err == nil {
+		t.Error("another target's ticket bound to this one")
+	}
+}

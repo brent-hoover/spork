@@ -40,6 +40,10 @@ type scriptedPops struct {
 	keys   []string
 	// empty makes every claim return an explicitly empty result.
 	empty bool
+	// blocked is a ticket sutra never offers, because a blocker holds it
+	// shut. It is here so "a blocked ticket is never handed out" has
+	// something to be about.
+	blocked string
 }
 
 func (p *scriptedPops) Pop(_ context.Context, key string) (string, string, error) {
@@ -364,4 +368,104 @@ func (p *writeAheadWorld) reconcile() error {
 		}
 	}
 	return nil
+}
+
+// registerParallel wires the concurrency scenario.
+func registerParallel(sc *godog.ScenarioContext, w *world) {
+	sc.Given(`^two unblocked tickets with no relation between them$`, func() error {
+		p, err := w.newWriteAhead("issue-1", "issue-2")
+		if err != nil {
+			return err
+		}
+		// A THIRD ticket that a blocker holds shut. sutra never offers it, so
+		// it must never reach an agent — and its absence is what makes "a
+		// blocked ticket is never handed out" a claim about something.
+		p.stack.blocked = "issue-3"
+		return nil
+	})
+
+	sc.When(`^two agents pop work concurrently$`, func() error {
+		p := w.writeAhead
+		ctx := context.Background()
+		// Two passes of one ticket each, which is what concurrent agents look
+		// like from the tracker: two claims under two different keys.
+		p.loop.MaxTickets = 1
+		for range 2 {
+			if _, err := p.loop.Run(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	sc.Then(`^each agent receives a different ticket in its own BuildRun$`, func() error {
+		p := w.writeAhead
+		runs, err := p.store.ForPlan(context.Background(), "/spec")
+		if err != nil {
+			return err
+		}
+		if len(runs) != 2 {
+			return fmt.Errorf("two pops produced %d runs", len(runs))
+		}
+		if runs[0].Issue == runs[1].Issue {
+			return fmt.Errorf("both runs bound %q", runs[0].Issue)
+		}
+		// Each has its OWN run and its own pop key: two agents sharing a run
+		// would share a workspace, a branch and a review.
+		if runs[0].ID == runs[1].ID || runs[0].PopKey == runs[1].PopKey {
+			return fmt.Errorf("the two pops share a run or a key")
+		}
+		for _, r := range runs {
+			if r.Issue == "" {
+				return fmt.Errorf("a run bound no ticket")
+			}
+		}
+		return nil
+	})
+
+	sc.Then(`^a blocked ticket is never handed out$`, func() error {
+		p := w.writeAhead
+		runs, err := p.store.ForPlan(context.Background(), "/spec")
+		if err != nil {
+			return err
+		}
+		for _, r := range runs {
+			if r.Issue == p.stack.blocked {
+				return fmt.Errorf("the blocked ticket %s was handed out", r.Issue)
+			}
+		}
+		if p.stack.blocked == "" {
+			return fmt.Errorf("no ticket was blocked, so nothing was under test")
+		}
+		return nil
+	})
+
+	sc.Then(`^sutra's conditional claim rejects a second claim on an already-claimed ticket$`,
+		func() error {
+			p := w.writeAhead
+			ctx := context.Background()
+			// A replayed key returns the SAME ticket rather than taking a
+			// second — that is what makes a recovered pop safe. And no key
+			// ever hands out a ticket another key already holds.
+			claimed := map[string]string{}
+			for _, key := range p.stack.keys {
+				issue, _, err := p.stack.Pop(ctx, key)
+				if err != nil {
+					return err
+				}
+				if issue == "" {
+					continue
+				}
+				if owner, taken := claimed[issue]; taken && owner != key {
+					return fmt.Errorf("ticket %s was claimed by both %s and %s",
+						issue, planner.Short(owner), planner.Short(key))
+				}
+				claimed[issue] = key
+			}
+			if len(claimed) < 2 {
+				return fmt.Errorf("only %d tickets were claimed, so no conflict was possible",
+					len(claimed))
+			}
+			return nil
+		})
 }
