@@ -129,7 +129,7 @@ func (s SQLStore) Reserve(
 		`INSERT INTO build_run (id, ticket, issue, branch, plan, state, pop_key, round_limit)
 		 VALUES (?, '', '', '', ?, ?, ?, ?)
 		 ON CONFLICT(id) DO NOTHING`,
-		r.ID, r.Plan, string(StateQueued), r.PopKey, r.RoundLimit); err != nil {
+		r.ID, r.Plan, string(StateReserved), r.PopKey, r.RoundLimit); err != nil {
 		return fmt.Errorf("reserve build run: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -147,7 +147,7 @@ func (s SQLStore) Bind(ctx context.Context, runID, issue, title string) error {
 	if _, err := s.DB.ExecContext(ctx,
 		`UPDATE build_run SET issue = ?, ticket = ?
 		   WHERE id = ? AND state = ? AND issue = ''`,
-		issue, title, runID, string(StateQueued)); err != nil {
+		issue, title, runID, string(StateReserved)); err != nil {
 		return fmt.Errorf("bind run %s: %w", runID, err)
 	}
 	return nil
@@ -162,7 +162,7 @@ func (s SQLStore) SettleEmpty(ctx context.Context, runID string) error {
 	if _, err := s.DB.ExecContext(ctx,
 		`UPDATE build_run SET state = ?
 		   WHERE id = ? AND state = ? AND issue = ''`,
-		string(StateNoWork), runID, string(StateQueued)); err != nil {
+		string(StateNoWork), runID, string(StateReserved)); err != nil {
 		return fmt.Errorf("settle run %s as no-work: %w", runID, err)
 	}
 	return nil
@@ -170,14 +170,14 @@ func (s SQLStore) SettleEmpty(ctx context.Context, runID string) error {
 
 // Unbound lists runs that were reserved but never bound to a ticket.
 //
-// A queued run with a pop key and no issue is a claim whose outcome is
-// unknown. Recovery replays the pop under the persisted key: sutra returns the
-// same ticket if one was claimed, and an explicitly empty result if none was.
+// A RESERVED run with no issue is a claim whose outcome is unknown. Recovery
+// replays the pop under the persisted key: sutra returns the same ticket if one
+// was claimed, and an explicitly empty result if none was.
 func (s SQLStore) Unbound(ctx context.Context) ([]BuildRun, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT id, `+runColumns+` FROM build_run
 		   WHERE state = ? AND issue = '' AND pop_key <> '' ORDER BY rowid`,
-		string(StateQueued))
+		string(StateReserved))
 	if err != nil {
 		return nil, fmt.Errorf("query unbound runs: %w", err)
 	}

@@ -22,6 +22,13 @@ type State string
 // The sixteen BuildRun states. M3 delivers the code traversal; the research
 // path and the completion states land with M4.
 const (
+	// StateReserved is a write-ahead pop: the run exists, its claim may or
+	// may not have landed, and nothing about the WORK is known yet. An
+	// explicit state rather than a queued run with empty fields, because
+	// every "is this initialised" test on a field is a test a column default
+	// can answer wrongly — kind defaults to implementation, so a reservation
+	// looked fully built and spikes went down the implementation pipeline.
+	StateReserved         State = "reserved"
 	StateQueued           State = "queued"
 	StateNoWork           State = "no-work"
 	StateDevLoop          State = "dev-loop"

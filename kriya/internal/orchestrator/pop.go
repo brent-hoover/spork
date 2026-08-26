@@ -159,9 +159,6 @@ type Loop struct {
 	// leaves a crash between the claim and the binding unrecoverable — the
 	// claim exists in the tracker and nothing here owns it.
 	Reserve Reserver
-	// NewID names each reserved run. Nil uses the pop key, which is unique
-	// per attempt and is what a module-level test wants.
-	NewID func() string
 	// Finish and Stalls turn an idle into a diagnosis. Nil asks nothing and
 	// records nothing, which is what a module-level test of the pop loop
 	// itself wants.
@@ -291,7 +288,7 @@ func (l Loop) reserve(ctx context.Context, key string) (BuildRun, bool, error) {
 			"the admitter %T cannot join a reservation transaction", l.Admit)
 	}
 
-	run := BuildRun{ID: l.runID(key), Plan: l.TargetKey, PopKey: key, State: StateQueued}
+	run := BuildRun{ID: key, Plan: l.TargetKey, PopKey: key, State: StateReserved}
 	for range 2 {
 		fence, err := l.Admit.Read(ctx)
 		if err != nil {
@@ -348,17 +345,11 @@ func (l Loop) settleEmpty(ctx context.Context, reserved BuildRun) error {
 	return nil
 }
 
-// runID names a reserved run.
-//
-// Derived from the POP KEY when nothing else is supplied: the key is unique
-// per attempt, so a replayed reservation lands on the same row rather than
-// creating a second run for one claim.
-func (l Loop) runID(key string) string {
-	if l.NewID == nil {
-		return key
-	}
-	return l.NewID()
-}
+// The run's ID is the POP KEY, deliberately. The key is stable across
+// attempts — same target, same ordinal — so a retried reservation lands on the
+// same row. A fresh identifier per attempt inserted a SECOND run for one
+// idempotent pop, and ForTicket then picked the newest bare reservation,
+// abandoning the original run and everything it had done.
 
 // admit takes an admission slot, retrying once on a lost race.
 //

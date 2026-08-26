@@ -48,9 +48,11 @@ type nilGuard struct{ refuse error }
 
 func (g nilGuard) AdmitWithin(context.Context, planner.Tx, int) error { return g.refuse }
 
-func TestAReservationWritesAQueuedRunWithItsPopKey(t *testing.T) {
-	// The shape is the signal: queued, with a pop key and no issue, is
+func TestAReservationWritesAReservedRunWithItsPopKey(t *testing.T) {
+	// The STATE is the signal: reserved, with a pop key and no issue, is
 	// precisely "a claim may have been made and we do not know what it got".
+	// An explicit state rather than a queued run with empty fields, because
+	// every field test can be answered wrongly by a column default.
 	s := runStore(t)
 	ctx := context.Background()
 	if err := s.Reserve(ctx, orchestrator.BuildRun{
@@ -69,7 +71,7 @@ func TestAReservationWritesAQueuedRunWithItsPopKey(t *testing.T) {
 	if unbound[0].PopKey != "pop-key-1" {
 		t.Errorf("the reservation recorded pop key %q", unbound[0].PopKey)
 	}
-	if unbound[0].State != orchestrator.StateQueued {
+	if unbound[0].State != orchestrator.StateReserved {
 		t.Errorf("the reservation is %q", unbound[0].State)
 	}
 	if unbound[0].RoundLimit != 4 {

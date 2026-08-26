@@ -676,8 +676,16 @@ func TestAPopReservesItsRunBeforeClaiming(t *testing.T) {
 	if len(stack.keys) == 0 || stack.keys[0] != reserved.PopKey {
 		t.Errorf("the claim used %v, not the reserved key", stack.keys)
 	}
-	if reserved.State != orchestrator.StateQueued {
-		t.Errorf("the reservation is %q, want queued", reserved.State)
+	if reserved.State != orchestrator.StateReserved {
+		t.Errorf("the reservation is %q, want reserved", reserved.State)
+	}
+	// The run's IDENTITY is the pop key. The key is stable across attempts,
+	// so a retried reservation lands on the same row; a fresh identifier per
+	// attempt inserts a SECOND run for one idempotent pop, and the newest
+	// bare reservation then wins the lookup, abandoning the original run.
+	if reserved.ID != reserved.PopKey {
+		t.Errorf("the reservation is identified by %q, not its pop key %q",
+			reserved.ID, reserved.PopKey)
 	}
 	if reserver.bound[reserved.ID] != "issue-1" {
 		t.Errorf("the reservation bound %q", reserver.bound[reserved.ID])

@@ -841,7 +841,6 @@ func popLoop(
 		Ordinals:  orchestrator.SQLOrdinals{DB: db},
 		Admit:     planner.SQLFence{DB: db},
 		Reserve:   orchestrator.SQLStore{DB: db},
-		NewID:     uuid.NewString,
 		TargetKey: target,
 		// Asked at the idle: nothing workable is either a build about to
 		// finish or one that is stuck, and they look identical from the
@@ -1235,7 +1234,16 @@ func resumeOrStart(
 	if err != nil {
 		return orchestrator.BuildRun{}, err
 	}
-	if found && existing.Kind != "" {
+	// A RESERVED run is a write-ahead pop and nothing more: it knows its
+	// claim, not what kind of work the claim got. Anything else is a run
+	// already under way, and returning it is what stops a rework or a
+	// recovered build from being restarted from scratch.
+	//
+	// Tested on the STATE, not on a field. Every field test here can be
+	// answered wrongly by a column default — kind defaults to implementation,
+	// so a reservation looked fully built and spikes went down the
+	// implementation pipeline with no research path and no findings.
+	if found && existing.State != orchestrator.StateReserved {
 		return existing, nil
 	}
 	// A SPIKE starts on the research path, not queued. Its deliverable is a

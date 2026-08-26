@@ -152,9 +152,11 @@ func registerPops(sc *godog.ScenarioContext, w *world) {
 	sc.When(`^the process crashes between the claim and the binding$`, func() error {
 		p := w.writeAhead
 		// Reproduced in durable state: the claim landed, the binding did not.
+		// RESERVED is the state a reservation is written in, so that is what
+		// a crash before the binding leaves behind.
 		if _, err := p.db.ExecContext(context.Background(),
 			`UPDATE build_run SET issue = '', ticket = '', state = ?`,
-			string(orchestrator.StateQueued)); err != nil {
+			string(orchestrator.StateReserved)); err != nil {
 			return err
 		}
 		return nil
@@ -236,7 +238,7 @@ func registerQueuedPops(sc *godog.ScenarioContext, w *world) {
 			}
 			if _, err := p.db.ExecContext(ctx,
 				`UPDATE build_run SET issue = '', ticket = '', state = ?`,
-				string(orchestrator.StateQueued)); err != nil {
+				string(orchestrator.StateReserved)); err != nil {
 				return err
 			}
 			return nil
@@ -256,7 +258,7 @@ func registerQueuedPops(sc *godog.ScenarioContext, w *world) {
 				return err
 			}
 			if _, err := p.db.ExecContext(context.Background(),
-				`UPDATE build_run SET state = ?`, string(orchestrator.StateQueued)); err != nil {
+				`UPDATE build_run SET state = ?`, string(orchestrator.StateReserved)); err != nil {
 				return err
 			}
 			return nil
@@ -297,8 +299,8 @@ func registerQueuedPops(sc *godog.ScenarioContext, w *world) {
 		if err != nil {
 			return err
 		}
-		if len(runs) == 0 || runs[0].State != orchestrator.StateQueued {
-			return fmt.Errorf("the reconciled run is not queued for work: %+v", runs)
+		if len(runs) == 0 || runs[0].State != orchestrator.StateReserved {
+			return fmt.Errorf("the reconciled run is not held for work: %+v", runs)
 		}
 		return nil
 	})

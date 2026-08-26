@@ -277,3 +277,105 @@ func TestATicketFromAnotherTargetIsRefusedAtBinding(t *testing.T) {
 		t.Error("another target's ticket bound to this one")
 	}
 }
+
+func TestAReservedSpikeIsFullyInitialisedOnAdoption(t *testing.T) {
+	// A reservation knows its claim, not what kind of work the claim got.
+	// Testing "is this initialised" on a FIELD can be answered wrongly by a
+	// column default — kind defaults to implementation — so a reservation
+	// looked fully built, resumeOrStart returned it untouched, and spikes went
+	// down the implementation pipeline with no research path and no findings.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := orchestrator.SQLStore{DB: db}
+	if err := store.Reserve(t.Context(), orchestrator.BuildRun{
+		ID: "pop-key-1", Plan: "/spec", PopKey: "pop-key-1",
+	}, planFence(db), 0); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if err := store.Bind(t.Context(), "pop-key-1", "issue-1", "spike: is it headless"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	got, err := resumeOrStart(t.Context(), store, planner.Ticket{
+		Title: "spike: is it headless", IssueID: "issue-1", Kind: planner.KindSpike,
+	}, "/spec")
+	if err != nil {
+		t.Fatalf("resume or start: %v", err)
+	}
+	if got.Kind != planner.KindSpike {
+		t.Errorf("the adopted reservation is kind %q", got.Kind)
+	}
+	if got.State != orchestrator.StateResearchLoop {
+		t.Errorf("the adopted spike is %q, not on the research path", got.State)
+	}
+	// And it keeps the reservation's identity, so the claim it owns is the
+	// one this run finishes.
+	if got.ID != "pop-key-1" {
+		t.Errorf("adoption created a new run %q", got.ID)
+	}
+	if got.PopKey != "pop-key-1" {
+		t.Error("the adopted run lost its pop key and could not replay its claim")
+	}
+}
+
+func TestARunAlreadyUnderWayIsNotReinitialised(t *testing.T) {
+	// The other half: a rework or a recovered build must be resumed, not
+	// restarted from scratch.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := orchestrator.SQLStore{DB: db}
+	if err := store.Upsert(t.Context(), orchestrator.BuildRun{
+		ID: "run-1", Ticket: "T", Issue: "issue-1", Plan: "/spec",
+		State: orchestrator.StateDevLoop, Head: "abc123", Attempt: 3,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	got, err := resumeOrStart(t.Context(), store, planner.Ticket{
+		Title: "T", IssueID: "issue-1", Kind: planner.KindImplementation,
+	}, "/spec")
+	if err != nil {
+		t.Fatalf("resume or start: %v", err)
+	}
+	if got.State != orchestrator.StateDevLoop || got.Head != "abc123" || got.Attempt != 3 {
+		t.Errorf("a run under way was reinitialised: %+v", got)
+	}
+}
+
+func TestARetriedPopReservesTheSameRun(t *testing.T) {
+	// The pop key is stable across attempts — same target, same ordinal — so
+	// a retried reservation must land on the same row. A fresh identifier per
+	// attempt inserted a SECOND run for one idempotent pop, and ForTicket
+	// then picked the newest bare reservation, abandoning the original run
+	// and everything it had done.
+	db := openTemp(t)
+	if err := applyMigrations(t.Context(), db, migrations()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := orchestrator.SQLStore{DB: db}
+	for attempt := range 2 {
+		// The fence version is read afresh each time, as the loop does: the
+		// first admission bumped it, so a stale version would lose the CAS
+		// rather than showing what a retried reservation does.
+		fence, err := planFence(db).Read(t.Context())
+		if err != nil {
+			t.Fatalf("read fence: %v", err)
+		}
+		if err := store.Reserve(t.Context(), orchestrator.BuildRun{
+			ID: "pop-key-1", Plan: "/spec", PopKey: "pop-key-1",
+		}, planFence(db), fence.Version); err != nil {
+			t.Fatalf("reserve %d: %v", attempt, err)
+		}
+	}
+	runs, err := store.ForPlan(t.Context(), "/spec")
+	if err != nil {
+		t.Fatalf("for plan: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Errorf("a retried pop produced %d runs", len(runs))
+	}
+}
