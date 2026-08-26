@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"kriya/internal/orchestrator"
 	"kriya/internal/planner"
@@ -286,4 +289,81 @@ func (r sutraRevisions) Revision(ctx context.Context, review string) (int, error
 
 func (t sutraTracker) AssignIssue(ctx context.Context, issueID, assignee, actor, idem string) error {
 	return t.c.AssignIssue(ctx, issueID, assignee, actor, idem)
+}
+
+// sutraDeferrer is planner's retirement port onto sutra.
+type sutraDeferrer struct{ c *trackerclient.Client }
+
+func (d sutraDeferrer) Status(ctx context.Context, issue string) (string, error) {
+	got, err := d.c.GetIssue(ctx, issue)
+	if err != nil {
+		return "", err
+	}
+	return got.Status, nil
+}
+
+func (d sutraDeferrer) Defer(ctx context.Context, issue, expect, actor, key string) error {
+	return d.c.DeferIssue(ctx, issue, expect, actor, key)
+}
+
+// liveRuns answers which tickets a LIVE build currently holds.
+//
+// A live build is one in a non-terminal state. The distinction is the whole
+// point of the "bound" disposition: a popped build finishes under its pinned
+// snapshot, so deferring its ticket would cancel work in progress — while a
+// run that has already merged, failed or been CANCELLED holds nothing, and
+// treating its ticket as bound would leave dropped work open forever, holding
+// the epic with it.
+type liveRuns struct{ db *sql.DB }
+
+// terminalRunStates are the states in which a run holds nothing.
+//
+// Cancelled is here deliberately: a ticket whose only matching run is
+// terminally cancelled is RELEASED work, already deferred by the cancellation
+// protocol, and its row must retire rather than be assumed still in flight.
+var terminalRunStates = []orchestrator.State{
+	orchestrator.StateMerged, orchestrator.StateFailed,
+	orchestrator.StateCancelled, orchestrator.StateClosed,
+	orchestrator.StateNoWork,
+}
+
+func (l liveRuns) Claimed(ctx context.Context, issues []string) (map[string]bool, error) {
+	if len(issues) == 0 {
+		return map[string]bool{}, nil
+	}
+	args := make([]any, 0, len(issues)+len(terminalRunStates))
+	placeholders := make([]string, len(issues))
+	for n, issue := range issues {
+		placeholders[n] = "?"
+		args = append(args, issue)
+	}
+	terminal := make([]string, len(terminalRunStates))
+	for n, state := range terminalRunStates {
+		terminal[n] = "?"
+		args = append(args, string(state))
+	}
+
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT DISTINCT ticket FROM build_run
+		   WHERE ticket IN (`+strings.Join(placeholders, ",")+`)
+		     AND state NOT IN (`+strings.Join(terminal, ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read live runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	claimed := map[string]bool{}
+	for rows.Next() {
+		var ticket string
+		if err := rows.Scan(&ticket); err != nil {
+			return nil, fmt.Errorf("scan live run: %w", err)
+		}
+		claimed[ticket] = true
+	}
+	// Checked: a short list here reads as "nothing is live", and retirement
+	// would defer a ticket a build is working.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate live runs: %w", err)
+	}
+	return claimed, nil
 }

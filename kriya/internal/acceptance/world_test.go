@@ -59,6 +59,10 @@ type world struct {
 	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
 	status *statusWorld
+	// restore is the parked-plan scenarios' state, nil until one starts.
+	restore *restoreWorld
+	// retire is the retirement scenarios' state, nil until one starts.
+	retire *retireWorld
 	// head is the plan-head scenarios' state, nil until one starts.
 	head *headWorld
 	// resolve is the same-key-retry scenarios' state, nil until one starts.
@@ -547,6 +551,20 @@ func (t *worldTickets) Find(_ context.Context, targetKey, issue string) (planner
 
 func (t *worldTickets) ForTarget(_ context.Context, targetKey string) ([]planner.Ticket, error) {
 	return t.rows[targetKey], nil
+}
+
+func (t *worldTickets) Consume(
+	_ context.Context, key string, ordinal int, disposition string,
+) error {
+	for _, set := range t.rows {
+		for n, ticket := range set {
+			if ticket.Plan == key && ticket.Ordinal == ordinal {
+				set[n].Consumed, set[n].Disposition = true, disposition
+				return nil
+			}
+		}
+	}
+	return nil
 }
 
 func (t *worldTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {

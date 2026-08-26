@@ -140,7 +140,7 @@ func (s SQLHeads) settled(ctx context.Context, candidate Plan) (Replacement, err
 	}
 	if !found {
 		return Replacement{}, fmt.Errorf(
-			"plan %s advanced the epoch but has no row", candidate.Key[:12])
+			"plan %s advanced the epoch but has no row", Short(candidate.Key))
 	}
 	return Replacement{Head: head, Landing: plan.State}, nil
 }
@@ -279,12 +279,32 @@ func replaceWithin(ctx context.Context, tx Tx, candidate Plan) (Replacement, err
 			head: head, landing: LandingFor(candidate.Generation, headGeneration),
 		}
 	}
+	return moveHeadWithin(ctx, tx, candidate, head)
+}
 
+// moveHeadWithin performs the winning replacement's writes.
+//
+// Every one of them in the caller's transaction: the predecessor's
+// supersession, the successor's predecessor pointer, the head move, the
+// generation bump and the fence. A crash between any two would leave a head
+// pointing at a plan that never superseded its predecessor.
+func moveHeadWithin(
+	ctx context.Context, tx Tx, candidate Plan, head PlanHead,
+) (Replacement, error) {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE decomposition_plan SET state = ?, superseded_by = ?
 		   WHERE decomposition_key = ? AND state = ?`,
 		PlanSuperseded, candidate.Key, head.Current, PlanActive); err != nil {
 		return Replacement{}, fmt.Errorf("supersede the predecessor: %w", err)
+	}
+	// The successor's predecessor pointer, in the SAME transaction. Written
+	// afterwards, a crash in between leaves a successor that cannot find the
+	// plan it replaced — and a superseded plan whose tickets nothing will
+	// ever retire, holding the epic open forever.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE decomposition_plan SET predecessor = ? WHERE decomposition_key = ?`,
+		head.Current, candidate.Key); err != nil {
+		return Replacement{}, fmt.Errorf("point the successor at its predecessor: %w", err)
 	}
 	// The fence rises HERE, with the head move, and is lowered by a separate
 	// activation once retirement has finished.
@@ -314,6 +334,7 @@ func replaceWithin(ctx context.Context, tx Tx, candidate Plan) (Replacement, err
 			TargetKey: candidate.TargetKey, Current: candidate.Key,
 			Generation: head.Generation + 1, Fence: fence,
 		},
+		Predecessor: head.Current,
 	}, nil
 }
 

@@ -232,6 +232,15 @@ CREATE TABLE plan (
     tickets    INTEGER NOT NULL DEFAULT 0
 )`
 
+// TicketConsumedMigration records a retirement's verdict on a row.
+//
+// Its own migration because TicketOrdinalMigration has shipped. A consumed
+// row no longer participates in binding, so the absence of these columns is
+// not merely missing information — it is a row that looks live forever.
+const TicketConsumedMigration = `
+ALTER TABLE plan_ticket ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plan_ticket ADD COLUMN disposition TEXT NOT NULL DEFAULT ''`
+
 // TicketOrdinalMigration re-keys planned tickets on (plan, ordinal).
 //
 // The issue id cannot be the identity of a WRITE-AHEAD row: the whole point
@@ -290,8 +299,6 @@ CREATE TABLE plan_step (
     PRIMARY KEY (plan, seq)
 )`
 
-// PlanKeyMigration re-keys plans on their decomposition key.
-//
 // A new TABLE rather than columns on the old one: `plan` is keyed on
 // target_key, and the spec makes the DECOMPOSITION KEY the identity — a
 // target accumulates plans as decompositions supersede each other, so one row
@@ -305,6 +312,15 @@ CREATE TABLE plan_step (
 // decomposition creates a proper plan rather than replaying a keyless one.
 // The two old states map onto the new model: decomposing was active without
 // the completed stamp, and completed was active with it.
+// PlanPredecessorMigration records which plan a successor beat.
+//
+// Its own migration because PlanKeyMigration has shipped. Without it a
+// successor cannot find the plan it replaced, so retirement has nothing to
+// walk and a superseded plan's tickets hold the epic open forever.
+const PlanPredecessorMigration = `
+ALTER TABLE decomposition_plan ADD COLUMN predecessor TEXT NOT NULL DEFAULT ''`
+
+// PlanKeyMigration re-keys plans on their decomposition key.
 const PlanKeyMigration = `
 CREATE TABLE decomposition_plan (
     decomposition_key TEXT PRIMARY KEY,
@@ -363,16 +379,17 @@ func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
 	res, err := s.DB.ExecContext(ctx,
 		`INSERT INTO decomposition_plan
 		   (decomposition_key, target_key, spec_hash, generation, state,
-		    completed, tickets, superseded_by, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    completed, tickets, superseded_by, error, predecessor)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(decomposition_key) DO UPDATE SET
 		   target_key = excluded.target_key, spec_hash = excluded.spec_hash,
 		   generation = excluded.generation, state = excluded.state,
 		   completed = excluded.completed, tickets = excluded.tickets,
-		   superseded_by = excluded.superseded_by, error = excluded.error
+		   superseded_by = excluded.superseded_by, error = excluded.error,
+		   predecessor = excluded.predecessor
 		 WHERE decomposition_plan.state NOT IN (?, ?)`,
 		p.Key, p.TargetKey, p.SpecHash, p.Generation, p.State,
-		p.Completed, p.Tickets, p.SupersededBy, p.Error,
+		p.Completed, p.Tickets, p.SupersededBy, p.Error, p.Predecessor,
 		PlanSuperseded, PlanHistorical)
 	if err != nil {
 		return fmt.Errorf("upsert plan: %w", err)
@@ -403,7 +420,7 @@ func (s SQLPlans) Upsert(ctx context.Context, p Plan) error {
 type TerminalPlanError struct{ Key string }
 
 func (e *TerminalPlanError) Error() string {
-	return fmt.Sprintf("plan %s has ended and cannot be written to", e.Key[:12])
+	return fmt.Sprintf("plan %s has ended and cannot be written to", Short(e.Key))
 }
 
 // Claim inserts a plan only if nothing has claimed its key.
@@ -418,11 +435,11 @@ func (s SQLPlans) Claim(ctx context.Context, p Plan) (bool, error) {
 	res, err := s.DB.ExecContext(ctx,
 		`INSERT INTO decomposition_plan
 		   (decomposition_key, target_key, spec_hash, generation, state,
-		    completed, tickets, superseded_by, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    completed, tickets, superseded_by, error, predecessor)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(decomposition_key) DO NOTHING`,
 		p.Key, p.TargetKey, p.SpecHash, p.Generation, p.State,
-		p.Completed, p.Tickets, p.SupersededBy, p.Error)
+		p.Completed, p.Tickets, p.SupersededBy, p.Error, p.Predecessor)
 	if err != nil {
 		return false, fmt.Errorf("claim plan key: %w", err)
 	}
@@ -436,12 +453,12 @@ func (s SQLPlans) Claim(ctx context.Context, p Plan) (bool, error) {
 // planColumns is the read list both queries share, so a column added to one
 // read path cannot be missed by the other.
 const planColumns = `decomposition_key, target_key, spec_hash, generation,
-	state, completed, tickets, superseded_by, error`
+	state, completed, tickets, superseded_by, error, predecessor`
 
 func scanPlan(row interface{ Scan(...any) error }) (Plan, error) {
 	var p Plan
 	err := row.Scan(&p.Key, &p.TargetKey, &p.SpecHash, &p.Generation,
-		&p.State, &p.Completed, &p.Tickets, &p.SupersededBy, &p.Error)
+		&p.State, &p.Completed, &p.Tickets, &p.SupersededBy, &p.Error, &p.Predecessor)
 	return p, err
 }
 
@@ -557,7 +574,8 @@ func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 		var t Ticket
 		var criteria, blocks, layers string
 		if err := rows.Scan(&t.IssueID, &t.Title, &t.Body, &criteria,
-			&t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan, &t.Ordinal); err != nil {
+			&t.Kind, &blocks, &layers, &t.Skeleton, &t.Plan, &t.Ordinal,
+			&t.Consumed, &t.Disposition); err != nil {
 			return nil, fmt.Errorf("scan planned ticket: %w", err)
 		}
 		if err := decodeTicketLists(&t, criteria, blocks, layers); err != nil {
@@ -575,7 +593,25 @@ func scanTickets(rows *sql.Rows) ([]Ticket, error) {
 }
 
 // ticketColumns is the read list every ticket query shares.
-const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skeleton, plan, ordinal`
+const ticketColumns = `issue, title, body, criteria, kind, blocks, layers, skeleton,
+	plan, ordinal, consumed, disposition`
+
+// Consume stamps a predecessor row settled by a successor's retirement.
+//
+// The stamp is written even when the disposition needed no tracker call —
+// "the row whose ticket was never created retires with no sutra call" is
+// still a retirement, and an unstamped row is one a later pass walks again.
+func (s SQLTickets) Consume(
+	ctx context.Context, decompositionKey string, ordinal int, disposition string,
+) error {
+	if _, err := s.DB.ExecContext(ctx,
+		`UPDATE plan_ticket SET consumed = 1, disposition = ?
+		   WHERE plan = ? AND ordinal = ?`,
+		disposition, decompositionKey, ordinal); err != nil {
+		return fmt.Errorf("consume ticket %d: %w", ordinal, err)
+	}
+	return nil
+}
 
 // ForPlan lists ONE decomposition's tickets.
 //
@@ -602,10 +638,11 @@ func (s SQLTickets) Find(ctx context.Context, targetKey, issue string) (Ticket, 
 	t := Ticket{IssueID: issue}
 	var criteria, blocks, layers string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT title, body, criteria, kind, blocks, layers, skeleton, plan, ordinal
+		`SELECT title, body, criteria, kind, blocks, layers, skeleton, plan, ordinal,
+		        consumed, disposition
 		   FROM plan_ticket WHERE issue = ? AND target_key = ?`, issue, targetKey).
 		Scan(&t.Title, &t.Body, &criteria, &t.Kind, &blocks, &layers, &t.Skeleton,
-			&t.Plan, &t.Ordinal)
+			&t.Plan, &t.Ordinal, &t.Consumed, &t.Disposition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Ticket{}, false, nil
 	}

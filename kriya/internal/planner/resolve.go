@@ -52,7 +52,7 @@ type Resolution struct {
 func Resolve(ctx context.Context, plans PlanStore, key string) (Resolution, error) {
 	plan, found, err := plans.ByKey(ctx, key)
 	if err != nil {
-		return Resolution{}, fmt.Errorf("resolve decomposition key %s: %w", key[:12], err)
+		return Resolution{}, fmt.Errorf("resolve decomposition key %s: %w", Short(key), err)
 	}
 	if !found {
 		return Resolution{Fresh: true}, nil
@@ -78,5 +78,18 @@ func Resolve(ctx context.Context, plans PlanStore, key string) (Resolution, erro
 	}
 	// A state kriya does not know is a store it cannot reason about. Resuming
 	// would issue tracker mutations against a plan of unknown shape.
-	return Resolution{}, fmt.Errorf("plan %s is in unknown state %q", key[:12], plan.State)
+	return Resolution{}, fmt.Errorf("plan %s is in unknown state %q", Short(key), plan.State)
+}
+
+// short truncates an identifier for an error message, safely.
+//
+// A bare key[:12] panics on anything shorter, which turns a diagnostic into a
+// crash — and it fires exactly where things are already going wrong, so the
+// message that would have explained the failure is lost with it.
+func Short(id string) string {
+	const width = 12
+	if len(id) <= width {
+		return id
+	}
+	return id[:width]
 }

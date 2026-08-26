@@ -130,7 +130,7 @@ func (i Intaker) EnsureEpic(ctx context.Context, targetKey, specHash, projectKey
 	}
 
 	epicID, err := i.Tracker.CreateIssue(ctx, target.ProjectID,
-		"Build "+target.Name, "Umbrella epic for spec "+target.SpecHash[:12], target.Actor,
+		"Build "+target.Name, "Umbrella epic for spec "+Short(target.SpecHash), target.Actor,
 		idempotencyKey("epic", target.TargetKey, target.SpecHash))
 	if err != nil {
 		return BuildTarget{}, fmt.Errorf("create epic: %w", err)

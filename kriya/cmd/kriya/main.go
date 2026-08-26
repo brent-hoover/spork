@@ -58,7 +58,8 @@ func run(ctx context.Context, args []string) error {
 
 	if len(args) == 0 {
 		return errors.New(
-			"usage: kriya build <project> | kriya status [--json] | kriya learn add [flags]")
+			"usage: kriya build <project> | kriya status [--json] | " +
+				"kriya plan restore|retry <key> | kriya learn add [flags]")
 	}
 	switch args[0] {
 	case "build":
@@ -68,6 +69,8 @@ func run(ctx context.Context, args []string) error {
 		return build(ctx, db, args[1])
 	case "status":
 		return status(ctx, db, args[1:])
+	case "plan":
+		return planCommand(ctx, os.Stdout, db, args[1:])
 	case "learn":
 		return learn(ctx, db, args[1:])
 	default:
@@ -117,6 +120,12 @@ func intaker(db *sql.DB, tiers agent.Tiers, target string) planner.Intaker {
 		Plans:     planner.SQLPlans{DB: db},
 		Heads:     planner.SQLHeads{DB: db, Advances: planner.SQLAdvances{DB: db}},
 		Steps:     planner.SQLSteps{DB: db},
+		Retire: &planner.Retirement{
+			Tickets: planner.SQLTickets{DB: db},
+			Steps:   planner.SQLSteps{DB: db},
+			Defer:   sutraDeferrer{c: trackerclient.New(sutraURL())},
+			Live:    liveRuns{db: db},
+		},
 		Agent: agent.Recording{
 			Inner:  agent.Claude{Tiers: tiers},
 			Ledger: agent.Ledger{DB: db, Now: clock.System{}},

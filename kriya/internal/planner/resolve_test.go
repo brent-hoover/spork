@@ -144,6 +144,19 @@ func (p *planningTickets) Find(context.Context, string, string) (planner.Ticket,
 	return planner.Ticket{}, false, nil
 }
 
+// Consume stamps a row settled, as the real store does.
+func (p *planningTickets) Consume(
+	_ context.Context, key string, ordinal int, disposition string,
+) error {
+	for n, t := range p.rows {
+		if t.Plan == key && t.Ordinal == ordinal {
+			p.rows[n].Consumed, p.rows[n].Disposition = true, disposition
+			return nil
+		}
+	}
+	return nil
+}
+
 func (p *planningTickets) ForPlan(_ context.Context, key string) ([]planner.Ticket, error) {
 	var out []planner.Ticket
 	for _, t := range p.rows {
@@ -215,5 +228,20 @@ func TestADifferentGenerationDecomposesAgain(t *testing.T) {
 	}
 	if tr.issues == issuesAfterFirst {
 		t.Error("a new intake generation resolved to the old plan instead of decomposing")
+	}
+}
+
+func TestAShortIdentifierIsNotTruncatedIntoAPanic(t *testing.T) {
+	// Every error path in the planner names a key, and a bare key[:12] panics
+	// on anything shorter — turning a diagnostic into a crash, exactly where
+	// something has already gone wrong, so the message that would have
+	// explained it is lost with it. Found by a test key of 11 characters.
+	for _, id := range []string{"", "plan-outrun", "0123456789ab"} {
+		if got := planner.Short(id); got != id {
+			t.Errorf("Short(%q) = %q, want it whole", id, got)
+		}
+	}
+	if got := planner.Short("0123456789abcdef"); got != "0123456789ab" {
+		t.Errorf("Short truncated a long id to %q", got)
 	}
 }

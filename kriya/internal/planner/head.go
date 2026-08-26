@@ -32,6 +32,9 @@ type PlanHead struct {
 type Replacement struct {
 	Won  bool
 	Head PlanHead
+	// Predecessor is the plan a winning candidate replaced, empty for a
+	// bootstrap. Retirement walks it before the successor activates.
+	Predecessor string
 	// Landing is the state a losing candidate durably moves to:
 	// PlanAwaitingOperator while it is still generation-eligible, and
 	// PlanHistorical once the head has outrun it.

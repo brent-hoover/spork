@@ -40,7 +40,7 @@ func (w *world) newHead(tempDir func() (string, error)) (*headWorld, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, schema := range []string{planner.PlanMigration, planner.PlanKeyMigration, planner.HeadMigration} {
+	for _, schema := range []string{planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
 				continue
@@ -53,6 +53,19 @@ func (w *world) newHead(tempDir func() (string, error)) (*headWorld, error) {
 	h := &headWorld{db: db, heads: planner.SQLHeads{DB: db}, plans: planner.SQLPlans{DB: db}}
 	w.head = h
 	return h, nil
+}
+
+// migrateSteps adds the step table to a head world's database.
+func migrateSteps(h *headWorld) error {
+	for _, stmt := range strings.Split(planner.StepMigration, ";") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := h.db.Exec(stmt); err != nil {
+			return fmt.Errorf("migrate %q: %w", stmt, err)
+		}
+	}
+	return nil
 }
 
 // plan builds a candidate for a snapshot pinned under a generation.

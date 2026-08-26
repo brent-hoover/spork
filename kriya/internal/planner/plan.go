@@ -59,6 +59,11 @@ type Plan struct {
 	// Tickets is how many the decomposition produced. Recorded with the stamp
 	// so a detector can tell a whole plan from one that lost rows.
 	Tickets int
+	// Predecessor is the plan this one superseded. Pointed at the head it
+	// beat in the same transaction that moved the head, so retirement can
+	// find its work after a crash — a successor that had to search for its
+	// predecessor could not tell one it beat from one it never raced.
+	Predecessor string
 	// SupersededBy names the plan that replaced this one. It is how a
 	// same-key retry on a superseded plan learns where the head went.
 	SupersededBy string

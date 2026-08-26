@@ -90,7 +90,7 @@ func Build(ctx context.Context, out io.Writer, in planner.Intaker, dir, actor, t
 		w.printf("%s: ready\n", dir)
 		snapshot := intake.Snapshot
 		w.printf("  snapshot %s (%d artifacts, %d modules)\n",
-			snapshot.Hash[:12], len(snapshot.Content), len(snapshot.ResolvedCommands))
+			planner.Short(snapshot.Hash), len(snapshot.Content), len(snapshot.ResolvedCommands))
 		target, epicErr := in.EnsureEpic(ctx, dir, snapshot.Hash, projectKey(dir), filepath.Base(dir), actor)
 		if epicErr != nil {
 			return epicErr

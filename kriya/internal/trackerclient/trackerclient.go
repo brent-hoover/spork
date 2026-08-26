@@ -556,3 +556,21 @@ func (c *Client) AssignIssue(ctx context.Context, issue, assignee, actor, key st
 	return c.do(ctx, "assignIssue", http.MethodPost, "/issues/"+issue+"/assign", key,
 		map[string]any{"assignee": assignee, "actor": actor}, nil)
 }
+
+// DeferIssue moves an issue to deferred, conditionally.
+//
+// expectedStatus is sutra's optimistic-concurrency precondition
+// (AC-status-conditional): the transition is rejected with a conflict when the
+// issue's current status differs. Retirement sends the status it FRESHLY read,
+// whatever it is — an unconditional "open" expectation against a ticket that
+// has since become blocked conflicts on every attempt, retrying forever
+// against a state the issue will never return to.
+func (c *Client) DeferIssue(
+	ctx context.Context, issue, expectedStatus, actor, key string,
+) error {
+	body := map[string]any{"status": "deferred", "actor": actor}
+	if expectedStatus != "" {
+		body["expected_status"] = expectedStatus
+	}
+	return c.do(ctx, "deferIssue", http.MethodPost, "/issues/"+issue+"/status", key, body, nil)
+}

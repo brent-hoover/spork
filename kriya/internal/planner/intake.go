@@ -50,7 +50,12 @@ type Intaker struct {
 	// phases themselves wants; production wires it, because without it a
 	// recovery has nothing to replay and must ask the PM again.
 	Steps StepStore
-	Now   clock.Clock
+	// Retire consumes a superseded predecessor's rows before the successor
+	// activates. Nil skips retirement, which is what a module-level test of
+	// the phases wants; production wires it, because a predecessor nothing
+	// retired leaves tickets holding the epic open forever.
+	Retire *Retirement
+	Now    clock.Clock
 }
 
 // TicketStore persists the tickets a decomposition produced.
@@ -62,6 +67,9 @@ type TicketStore interface {
 	// again — and by plan rather than by target, because a target
 	// accumulates plans as decompositions supersede each other.
 	ForPlan(ctx context.Context, decompositionKey string) ([]Ticket, error)
+	// Consume stamps a predecessor row settled by a successor's retirement,
+	// with the disposition that settled it.
+	Consume(ctx context.Context, decompositionKey string, ordinal int, disposition string) error
 }
 
 // admitReport applies the three report-level checks.

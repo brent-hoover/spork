@@ -35,7 +35,7 @@ func (i Intaker) executeSequence(
 		}
 		issue, err := i.runStep(ctx, target, tickets, issues, step, actor)
 		if err != nil {
-			return fmt.Errorf("%s step %d of plan %s: %w", step.Kind, step.Seq, plan.Key[:12], err)
+			return fmt.Errorf("%s step %d of plan %s: %w", step.Kind, step.Seq, Short(plan.Key), err)
 		}
 		if step.Kind == StepCreate {
 			issues[step.Ordinal] = issue
@@ -81,7 +81,7 @@ func (i Intaker) markStep(ctx context.Context, plan Plan, seq int, state, issue 
 		return nil
 	}
 	if err := i.Steps.Mark(ctx, plan.Key, seq, state, issue); err != nil {
-		return fmt.Errorf("mark step %d of plan %s %s: %w", seq, plan.Key[:12], state, err)
+		return fmt.Errorf("mark step %d of plan %s %s: %w", seq, Short(plan.Key), state, err)
 	}
 	return nil
 }

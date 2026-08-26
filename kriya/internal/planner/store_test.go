@@ -171,7 +171,7 @@ func TestATargetStoreThatCannotBeReadIsNotEmpty(t *testing.T) {
 func TestAPlannedTicketKeepsItsCriteria(t *testing.T) {
 	// A pop returns an id and a title. The criteria are what the product owner
 	// validates against, and they exist nowhere else kriya can read.
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration, planner.TicketConsumedMigration)}
 	want := planner.Ticket{
 		Title: "Create a short link", Body: "the walking skeleton",
 		Criteria: []string{"AC-valid-url", "AC-redirect"}, IssueID: "issue-7",
@@ -193,7 +193,7 @@ func TestAPlannedTicketKeepsItsCriteria(t *testing.T) {
 }
 
 func TestReDecomposingATicketReplacesIt(t *testing.T) {
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration, planner.TicketConsumedMigration)}
 	ticket := planner.Ticket{Title: "first", IssueID: "issue-7", Criteria: []string{"AC-a"}, Plan: "plan-1"}
 	if err := s.Put(context.Background(), "/target", ticket); err != nil {
 		t.Fatalf("put: %v", err)
@@ -212,7 +212,7 @@ func TestReDecomposingATicketReplacesIt(t *testing.T) {
 }
 
 func TestAnIssueNothingPlannedIsNotFound(t *testing.T) {
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration, planner.TicketConsumedMigration)}
 	_, found, err := s.Find(context.Background(), "/target", "issue-absent")
 	if err != nil {
 		t.Fatalf("find: %v", err)
@@ -238,7 +238,7 @@ func TestATicketFromAnotherTargetIsNotFound(t *testing.T) {
 	// did not produce is one whose code lives in another repository, and
 	// building it here would work the wrong codebase against the wrong
 	// snapshot.
-	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration)}
+	s := planner.SQLTickets{DB: sqlDB(t, planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration, planner.TicketConsumedMigration)}
 	mine := planner.Ticket{Title: "Create a short link", IssueID: "issue-7", Plan: "plan-mine"}
 	theirs := planner.Ticket{Title: "Add billing", IssueID: "issue-9", Plan: "plan-theirs"}
 	if err := s.Put(context.Background(), "/mine", mine); err != nil {
@@ -268,7 +268,7 @@ func TestAPlannedTicketKeepsItsPlanShape(t *testing.T) {
 	// plan shape from the store, so it would have recovered a different plan
 	// than the one decomposition filed.
 	s := planner.SQLTickets{DB: sqlDB(t,
-		planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration)}
+		planner.TicketMigration, planner.TicketKindMigration, planner.TicketSliceMigration, planner.TicketPlanMigration, planner.TicketOrdinalMigration, planner.TicketConsumedMigration)}
 	want := planner.Ticket{
 		Title: "Create a short link", IssueID: "issue-7", Kind: planner.KindImplementation,
 		Criteria: []string{"AC-valid-url"}, Layers: []string{"http", "store", "cli"},
@@ -310,7 +310,7 @@ func TestOnlyOneClaimOfAKeyCanWin(t *testing.T) {
 	// The atomic half Resolve's read cannot provide. An upsert here would let
 	// two concurrent first requests both decompose, each overwriting the
 	// other's lifecycle row.
-	s := planner.SQLPlans{DB: sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration)}
+	s := planner.SQLPlans{DB: sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration)}
 	plan := planner.Plan{
 		Key: "key-1", TargetKey: "/spec", SpecHash: "h", Generation: 1,
 		State: planner.PlanPending,
@@ -343,7 +343,7 @@ func TestOnlyOneClaimOfAKeyCanWin(t *testing.T) {
 }
 
 func TestClaimingAgainstAnUnreachableStoreFails(t *testing.T) {
-	s := planner.SQLPlans{DB: sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration)}
+	s := planner.SQLPlans{DB: sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration)}
 	if err := s.DB.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}

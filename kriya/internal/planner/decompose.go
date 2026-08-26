@@ -98,6 +98,12 @@ type Ticket struct {
 	// accumulates plans, so without it a ticket set cannot be told apart from
 	// the union of every generation's tickets.
 	Plan string `json:"-"`
+	// Consumed marks a row a successor plan's retirement has settled, and
+	// Disposition says how. A consumed row no longer participates in binding:
+	// a pop landing on it must reach the decomposition that produced its
+	// acceptance criteria, not a head that never planned it.
+	Consumed    bool   `json:"-"`
+	Disposition string `json:"-"`
 	// Ordinal is this ticket's position in its plan. The mutation sequence
 	// addresses tickets by it, so a resumed replay needs it to line the two
 	// up — a map keyed by title would break on two tickets sharing one.
@@ -200,7 +206,7 @@ func (i Intaker) decomposeFresh(
 	// The CAS, between the write-ahead payload and activation. A candidate
 	// that filed tickets before winning the head would have decomposed
 	// against a target another plan already owns.
-	if err := i.takeTheHead(ctx, plan); err != nil {
+	if err := i.takeTheHead(ctx, plan, actor); err != nil {
 		return nil, err
 	}
 	return i.runPlan(ctx, target, plan, tickets, steps, actor)
@@ -217,27 +223,27 @@ func (i Intaker) resume(
 	ctx context.Context, target BuildTarget, plan Plan, actor string,
 ) ([]Ticket, error) {
 	if i.Steps == nil || i.Tickets == nil {
-		return nil, fmt.Errorf("plan %s must resume but nothing durable recorded it", plan.Key[:12])
+		return nil, fmt.Errorf("plan %s must resume but nothing durable recorded it", Short(plan.Key))
 	}
 	steps, err := i.Steps.ForPlan(ctx, plan.Key)
 	if err != nil {
-		return nil, fmt.Errorf("read the sequence of plan %s: %w", plan.Key[:12], err)
+		return nil, fmt.Errorf("read the sequence of plan %s: %w", Short(plan.Key), err)
 	}
 	if len(steps) == 0 {
-		return nil, fmt.Errorf("plan %s has no recorded sequence to resume", plan.Key[:12])
+		return nil, fmt.Errorf("plan %s has no recorded sequence to resume", Short(plan.Key))
 	}
 	tickets, err := i.plannedSet(ctx, plan)
 	if err != nil {
 		return nil, err
 	}
 	if len(tickets) == 0 {
-		return nil, fmt.Errorf("plan %s has a sequence but no tickets to replay it against", plan.Key[:12])
+		return nil, fmt.Errorf("plan %s has a sequence but no tickets to replay it against", Short(plan.Key))
 	}
 	// A plan that had not yet taken the head still must. Winning is
 	// idempotent for the plan that already holds it: the CAS finds its own
 	// key as head and the request resolves to itself.
 	if plan.State == PlanPending {
-		if err := i.takeTheHead(ctx, plan); err != nil {
+		if err := i.takeTheHead(ctx, plan, actor); err != nil {
 			return nil, err
 		}
 	}
@@ -520,7 +526,7 @@ func (i Intaker) plannedSet(ctx context.Context, plan Plan) ([]Ticket, error) {
 	// every generation's work as though one decomposition had produced it.
 	tickets, err := i.Tickets.ForPlan(ctx, plan.Key)
 	if err != nil {
-		return nil, fmt.Errorf("read the planned tickets of plan %s: %w", plan.Key[:12], err)
+		return nil, fmt.Errorf("read the planned tickets of plan %s: %w", Short(plan.Key), err)
 	}
 	return tickets, nil
 }
@@ -536,7 +542,7 @@ func (i Intaker) proposeTickets(
 ) ([]Ticket, error) {
 	known := knownCriteria(snap)
 	if len(known) == 0 {
-		return nil, fmt.Errorf("snapshot %s cites no acceptance criteria to decompose", target.SpecHash[:12])
+		return nil, fmt.Errorf("snapshot %s cites no acceptance criteria to decompose", Short(target.SpecHash))
 	}
 
 	res, err := i.Agent.Run(ctx, agent.Request{
@@ -571,7 +577,7 @@ func (i Intaker) proposeTickets(
 // landed. Returning the head plan's tickets instead would be a lie: they
 // belong to a different decomposition of a different snapshot, and the caller
 // asked what THIS request produced.
-func (i Intaker) takeTheHead(ctx context.Context, plan Plan) error {
+func (i Intaker) takeTheHead(ctx context.Context, plan Plan, actor string) error {
 	if i.Heads == nil || i.Plans == nil {
 		return nil
 	}
@@ -585,7 +591,35 @@ func (i Intaker) takeTheHead(ctx context.Context, plan Plan) error {
 	if !verdict.Won {
 		return fmt.Errorf(
 			"the decomposition of %s lost the head to plan %s and is now %s",
-			plan.TargetKey, verdict.Head.Current[:12], verdict.Landing)
+			plan.TargetKey, Short(verdict.Head.Current), verdict.Landing)
+	}
+	// RETIREMENT, before the plan activates and before the fence comes down.
+	// A successor that activated first would admit pops while its
+	// predecessor's tickets were still open — work from a plan nobody is
+	// building any more.
+	return i.retire(ctx, verdict.Predecessor, actor)
+}
+
+// retire consumes the predecessor's rows, when there is one.
+//
+// A bootstrap has none, and its retirement set is empty — the same path, not
+// a special case that skips the fence.
+func (i Intaker) retire(ctx context.Context, predecessorKey, actor string) error {
+	if i.Retire == nil || predecessorKey == "" {
+		return nil
+	}
+	predecessor, found, err := i.Plans.ByKey(ctx, predecessorKey)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("the head named predecessor %s, which has no row", Short(predecessorKey))
+	}
+	// Nothing carried: a successor currently creates all of its own tickets.
+	// The disposition exists and is stamped only for a selection that
+	// genuinely happened.
+	if err := i.Retire.Run(ctx, predecessor, nil, actor); err != nil {
+		return fmt.Errorf("retire plan %s: %w", Short(predecessorKey), err)
 	}
 	return nil
 }
@@ -624,7 +658,7 @@ func (i Intaker) writeSequence(ctx context.Context, plan Plan, tickets []Ticket,
 		return nil
 	}
 	if err := i.Steps.Write(ctx, steps); err != nil {
-		return fmt.Errorf("record the sequence of plan %s: %w", plan.Key[:12], err)
+		return fmt.Errorf("record the sequence of plan %s: %w", Short(plan.Key), err)
 	}
 	return nil
 }
@@ -646,7 +680,7 @@ func (i Intaker) afterLosingTheClaim(
 		// The row was there a moment ago. Gone now means something deleted a
 		// plan mid-decomposition, and decomposing again would race the twin
 		// that is already running.
-		return nil, fmt.Errorf("plan %s was claimed and then vanished", key[:12])
+		return nil, fmt.Errorf("plan %s was claimed and then vanished", Short(key))
 	}
 	if resolution.Resume {
 		return i.resume(ctx, target, resolution.Plan, actor)
