@@ -149,16 +149,7 @@ func (i Intaker) Decompose(
 			return nil, err
 		}
 		if !resolution.Fresh && !resolution.Resume {
-			// Activation is a SEPARATE write from the completed stamp, so a
-			// crash between them leaves a whole plan behind a raised fence
-			// and every later retry returning "already complete" without
-			// ever lowering it — pops refused forever. Activation is
-			// idempotent, so replaying it here costs nothing and closes that
-			// window.
-			if err := i.activate(ctx, resolution.Plan); err != nil {
-				return nil, err
-			}
-			return i.plannedSet(ctx, resolution.Plan)
+			return i.report(ctx, resolution.Plan)
 		}
 	}
 
@@ -660,5 +651,22 @@ func (i Intaker) afterLosingTheClaim(
 	if resolution.Resume {
 		return i.resume(ctx, target, resolution.Plan, actor)
 	}
-	return i.plannedSet(ctx, resolution.Plan)
+	return i.report(ctx, resolution.Plan)
+}
+
+// report answers a request whose plan is already settled.
+//
+// ONE place, reached by every path that resolves to an existing plan — the
+// ordinary same-key retry and the one that lost the claim race to a twin.
+// Activation lives here because it is a SEPARATE write from the completed
+// stamp: a crash between them leaves a whole plan behind a raised fence, and
+// every later retry returning "already complete" without lowering it refuses
+// pops forever. Replaying it is idempotent, and SQLHeads.Activate enforces
+// for itself that the plan is active and whole — so a parked, superseded or
+// mid-phase plan reaching here lowers nothing.
+func (i Intaker) report(ctx context.Context, plan Plan) ([]Ticket, error) {
+	if err := i.activate(ctx, plan); err != nil {
+		return nil, err
+	}
+	return i.plannedSet(ctx, plan)
 }

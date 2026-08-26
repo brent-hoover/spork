@@ -343,3 +343,85 @@ func TestACompletedPlanBehindARaisedFenceStillActivates(t *testing.T) {
 		t.Errorf("the fence is still %d after a retry of a completed plan", head.Fence)
 	}
 }
+
+// racingPlans answers the FIRST ByKey as if the twin's row did not exist yet.
+//
+// That is the actual race: this request read before the twin inserted, so it
+// resolves fresh and only discovers the truth when its own claim loses.
+// Without the wrapper a second Decompose simply resolves to the existing plan
+// and never reaches the claim-loser path at all.
+type racingPlans struct {
+	planner.PlanStore
+	blind bool
+}
+
+func (r *racingPlans) ByKey(ctx context.Context, key string) (planner.Plan, bool, error) {
+	if r.blind {
+		r.blind = false
+		return planner.Plan{}, false, nil
+	}
+	return r.PlanStore.ByKey(ctx, key)
+}
+
+func TestATwinLosingTheClaimAlsoReplaysActivation(t *testing.T) {
+	// Two requests can both resolve fresh. The winner stamps its plan
+	// complete and crashes before activation; the loser then loses the claim
+	// and takes the OTHER report path. That path skipped activation, so the
+	// fence stayed raised and pops were refused forever — a whole plan behind
+	// a fence nobody would ever lower.
+	in, _, _, _ := resuming(t, threeTicketPlan)
+	ctx := context.Background()
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("the twin's decomposition: %v", err)
+	}
+	heads := in.Heads.(planner.SQLHeads)
+	if _, err := heads.DB.ExecContext(ctx,
+		`UPDATE plan_head SET fence = 1 WHERE target_key = ?`, "/spec"); err != nil {
+		t.Fatalf("reproduce the crash window: %v", err)
+	}
+
+	// This request resolved fresh a moment before the twin's insert landed.
+	in.Plans = &racingPlans{PlanStore: in.Plans, blind: true}
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("the loser: %v", err)
+	}
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 0 {
+		t.Errorf("the fence is %d after the losing twin reported", head.Fence)
+	}
+}
+
+func TestAParkedHeadPlanNeverLowersTheFence(t *testing.T) {
+	// A parked plan resolves as a report, and every report path replays
+	// activation. Lowering the fence there would admit pops against a head
+	// waiting on a human.
+	in, _, _, _ := resuming(t, threeTicketPlan)
+	ctx := context.Background()
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("decompose: %v", err)
+	}
+	heads := in.Heads.(planner.SQLHeads)
+	if _, err := heads.DB.ExecContext(ctx,
+		`UPDATE plan_head SET fence = 1 WHERE target_key = ?`, "/spec"); err != nil {
+		t.Fatalf("raise the fence: %v", err)
+	}
+	if _, err := heads.DB.ExecContext(ctx,
+		`UPDATE decomposition_plan SET state = ? WHERE decomposition_key = ?`,
+		planner.PlanAwaitingOperator, planKeyFor(1)); err != nil {
+		t.Fatalf("park the plan: %v", err)
+	}
+
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("retry a parked plan: %v", err)
+	}
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 1 {
+		t.Errorf("retrying a parked head plan lowered the fence to %d", head.Fence)
+	}
+}

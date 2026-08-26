@@ -187,14 +187,51 @@ func (s SQLHeads) attempt(ctx context.Context, candidate Plan) (Replacement, err
 func (s SQLHeads) landLoser(
 	ctx context.Context, candidate Plan, lost *errLostCAS,
 ) (Replacement, error) {
-	if _, err := s.DB.ExecContext(ctx,
+	// REVALIDATED, because the deciding transaction has already rolled back
+	// and the head can have moved since. Landing the stale verdict could park
+	// a candidate awaiting-operator that the head has by now outrun — an
+	// operator offered a retry the CAS can only reject — or, worse, park one
+	// that concurrently BECAME the head.
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return Replacement{}, fmt.Errorf("begin landing: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	head, found, err := headWithin(ctx, txExec{tx: tx}, candidate.TargetKey)
+	if err != nil {
+		return Replacement{}, err
+	}
+	if found && head.Current == candidate.Key {
+		// It became the head while the verdict was in flight. Landing it now
+		// would bury the current head as a loser.
+		return Replacement{Won: true, Head: head}, nil
+	}
+
+	landing := lost.landing
+	if found {
+		var headGeneration int
+		err := tx.QueryRowContext(ctx,
+			`SELECT generation FROM decomposition_plan WHERE decomposition_key = ?`,
+			head.Current).Scan(&headGeneration)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Replacement{}, fmt.Errorf("read the current head plan: %w", err)
+		}
+		if err == nil {
+			landing = LandingFor(candidate.Generation, headGeneration)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE decomposition_plan SET state = ?, error = ?
 		   WHERE decomposition_key = ? AND state IN (?, ?)`,
-		lost.landing, lost.Error(), candidate.Key,
+		landing, lost.Error(), candidate.Key,
 		PlanPending, PlanAwaitingOperator); err != nil {
 		return Replacement{}, fmt.Errorf("land the losing candidate: %w", err)
 	}
-	return Replacement{Head: lost.head, Landing: lost.landing}, nil
+	if err := tx.Commit(); err != nil {
+		return Replacement{}, fmt.Errorf("commit landing: %w", err)
+	}
+	return Replacement{Head: head, Landing: landing}, nil
 }
 
 // replaceWithin is the replacement's body, inside the caller's transaction.
@@ -251,17 +288,31 @@ func replaceWithin(ctx context.Context, tx Tx, candidate Plan) (Replacement, err
 	}
 	// The fence rises HERE, with the head move, and is lowered by a separate
 	// activation once retirement has finished.
+	//
+	// TRANSFERRED from the predecessor, not stacked on top of it. A plain
+	// increment leaks: an active-but-incomplete head still holds its own
+	// outstanding contribution, so replacing it made the fence 2 — and the
+	// predecessor can never lower it again, because Activate only matches the
+	// CURRENT head. The successor's activation takes it to 1 and pops are
+	// refused forever. There is one head, so there is at most one outstanding
+	// contribution, and the new head inherits it rather than adding a second.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE plan_head SET current = ?, generation = generation + 1, fence = fence + 1
+		`UPDATE plan_head
+		    SET current = ?, generation = generation + 1,
+		        fence = CASE WHEN fence > 0 THEN fence ELSE fence + 1 END
 		   WHERE target_key = ? AND current = ?`,
 		candidate.Key, candidate.TargetKey, head.Current); err != nil {
 		return Replacement{}, fmt.Errorf("move the head: %w", err)
+	}
+	fence := head.Fence
+	if fence == 0 {
+		fence = 1
 	}
 	return Replacement{
 		Won: true,
 		Head: PlanHead{
 			TargetKey: candidate.TargetKey, Current: candidate.Key,
-			Generation: head.Generation + 1, Fence: head.Fence + 1,
+			Generation: head.Generation + 1, Fence: fence,
 		},
 	}, nil
 }
@@ -314,8 +365,16 @@ func headWithin(ctx context.Context, tx Tx, targetKey string) (PlanHead, bool, e
 // would admit pops in the window before retirement ran — against a plan whose
 // predecessor still holds live tickets.
 func (s SQLHeads) Activate(ctx context.Context, key string) error {
+	// The plan's state is checked HERE, in the same statement, not by the
+	// caller. Every retry path reaches activation, and one that replayed it
+	// for a parked, superseded or mid-phase plan would admit pops against a
+	// head that is not ready — which is the whole thing the fence prevents.
 	if _, err := s.DB.ExecContext(ctx,
-		`UPDATE plan_head SET fence = fence - 1 WHERE current = ? AND fence > 0`, key); err != nil {
+		`UPDATE plan_head SET fence = fence - 1
+		   WHERE current = ? AND fence > 0
+		     AND EXISTS (SELECT 1 FROM decomposition_plan
+		                  WHERE decomposition_key = ? AND state = ? AND completed = 1)`,
+		key, key, PlanActive); err != nil {
 		return fmt.Errorf("activate plan %s: %w", key, err)
 	}
 	return nil

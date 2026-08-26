@@ -181,11 +181,22 @@ func TestAHeadWhosePlanIsNotActiveRefusesReplacement(t *testing.T) {
 	}
 }
 
+// whole stamps a plan active and completed, as decomposition's final barrier
+// does. Activation requires it, so a test that activates must reach it.
+func whole(t *testing.T, plans planner.SQLPlans, p planner.Plan) {
+	t.Helper()
+	p.State, p.Completed = planner.PlanActive, true
+	if err := plans.Upsert(context.Background(), p); err != nil {
+		t.Fatalf("stamp plan whole: %v", err)
+	}
+}
+
 func TestActivationLowersTheFenceOnce(t *testing.T) {
 	heads, plans := headStore(t)
 	ctx := context.Background()
 	first := candidate(1, planner.PlanPending)
 	install(t, heads, plans, first)
+	whole(t, plans, first)
 
 	for range 2 {
 		if err := heads.Activate(ctx, first.Key); err != nil {
@@ -201,6 +212,77 @@ func TestActivationLowersTheFenceOnce(t *testing.T) {
 	// pops against an unactivated head.
 	if head.Fence != 0 {
 		t.Errorf("the fence is %d after two activations", head.Fence)
+	}
+}
+
+func TestAMidPhasePlanCannotLowerTheFence(t *testing.T) {
+	// Every retry path reaches activation. One that replayed it for a parked,
+	// superseded or still-decomposing plan would admit pops against a head
+	// that is not ready — which is the whole thing the fence prevents.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	first := candidate(1, planner.PlanPending)
+	install(t, heads, plans, first)
+
+	// ACTIVE but not yet stamped whole: decomposition is still running.
+	first.State = planner.PlanActive
+	if err := plans.Upsert(ctx, first); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	if err := heads.Activate(ctx, first.Key); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 1 {
+		t.Errorf("a plan still mid-decomposition lowered the fence to %d", head.Fence)
+	}
+}
+
+func TestReplacingAnIncompleteHeadDoesNotStackTheFence(t *testing.T) {
+	// An active-but-incomplete head still holds its own outstanding fence
+	// contribution. A plain increment made the fence 2, and the predecessor
+	// could never lower it again because Activate matches only the CURRENT
+	// head — so the successor's activation left it at 1 and pops were refused
+	// forever.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	first := candidate(1, planner.PlanPending)
+	install(t, heads, plans, first)
+	// Active, mid-phase, never activated: its fence contribution stands.
+	first.State = planner.PlanActive
+	if err := plans.Upsert(ctx, first); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	second := candidate(2, planner.PlanPending)
+	if err := plans.Upsert(ctx, second); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	if verdict, err := heads.Replace(ctx, second); err != nil || !verdict.Won {
+		t.Fatalf("replace: %v won=%v", err, verdict.Won)
+	}
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 1 {
+		t.Fatalf("the fence is %d after replacing an unactivated head", head.Fence)
+	}
+
+	// The successor finishes and activates: the fence must reach zero.
+	whole(t, plans, second)
+	if err := heads.Activate(ctx, second.Key); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	head, _, err = heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 0 {
+		t.Errorf("the fence is %d after the successor activated: pops are refused forever", head.Fence)
 	}
 }
 
@@ -466,5 +548,75 @@ func TestAResumedPlanReenteringTheCASAdvancesNothing(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("re-entering the CAS moved the epoch from %d to %d", before, after)
+	}
+}
+
+func TestALandingIsRevalidatedAgainstTheCurrentHead(t *testing.T) {
+	// The deciding transaction rolls back before the landing is written, so
+	// the head can move in between. Landing the stale verdict would park a
+	// candidate awaiting-operator that the head has since outrun — an
+	// operator offered a retry the CAS can only ever reject again.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	install(t, heads, plans, candidate(5, planner.PlanPending))
+	whole(t, plans, candidate(5, planner.PlanPending))
+
+	// A candidate that is still eligible against generation 5 — it would park.
+	loser := candidate(7, planner.PlanPending)
+	if err := plans.Upsert(ctx, loser); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	// But the head plan is mid-replacement, so the CAS refuses it.
+	if _, err := heads.DB.ExecContext(ctx,
+		`UPDATE decomposition_plan SET state = ? WHERE decomposition_key = ?`,
+		planner.PlanPending, candidate(5, planner.PlanPending).Key); err != nil {
+		t.Fatalf("unsettle the head plan: %v", err)
+	}
+	verdict, err := heads.Replace(ctx, loser)
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if verdict.Won {
+		t.Fatal("a candidate replaced a head whose plan had not activated")
+	}
+	// Still eligible against generation 5, so it parks for the operator.
+	if verdict.Landing != planner.PlanAwaitingOperator {
+		t.Errorf("the landing is %q, want %q", verdict.Landing, planner.PlanAwaitingOperator)
+	}
+}
+
+func TestACandidateThatBecameTheHeadIsNotLandedAsALoser(t *testing.T) {
+	// The worst version of the same window: the candidate loses, and before
+	// the landing is written it BECOMES the head. Landing the stale verdict
+	// would bury the current head as a loser.
+	heads, plans := headStore(t)
+	ctx := context.Background()
+	install(t, heads, plans, candidate(2, planner.PlanPending))
+	whole(t, plans, candidate(2, planner.PlanPending))
+
+	winner := candidate(3, planner.PlanPending)
+	if err := plans.Upsert(ctx, winner); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	// It already holds the head when the stale landing arrives.
+	if verdict, err := heads.Replace(ctx, winner); err != nil || !verdict.Won {
+		t.Fatalf("replace: %v won=%v", err, verdict.Won)
+	}
+
+	// Replaying the CAS is the same shape as a stale landing arriving late:
+	// the candidate is now the head, and must be reported as the winner.
+	verdict, err := heads.Replace(ctx, winner)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !verdict.Won {
+		t.Errorf("the current head was reported as a loser, landing %q", verdict.Landing)
+	}
+	got, _, err := plans.ByKey(ctx, winner.Key)
+	if err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	if got.State == planner.PlanHistorical || got.State == planner.PlanAwaitingOperator {
+		t.Errorf("the current head plan was landed as %q", got.State)
 	}
 }
