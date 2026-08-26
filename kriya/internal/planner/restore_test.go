@@ -273,3 +273,65 @@ func TestAParkedCandidateWithNoHeadAtAllBootstraps(t *testing.T) {
 		t.Errorf("the bootstrapped retry is %q, want pending", got.State)
 	}
 }
+
+// racingHeads reports a foreign head, then returns an already-head win.
+//
+// That is the actual window: the restore reads the head, sees someone else
+// holds it, and enters the CAS — and between those two moments a concurrent
+// restore of the SAME candidate wins. Replace then reports an idempotent win,
+// which moves no head and so names no predecessor.
+type racingHeads struct {
+	inner planner.HeadStore
+	other string
+}
+
+func (h *racingHeads) Head(ctx context.Context, key string) (planner.PlanHead, bool, error) {
+	got, found, err := h.inner.Head(ctx, key)
+	if found {
+		got.Current = h.other
+	}
+	return got, found, err
+}
+
+func (h *racingHeads) Replace(context.Context, planner.Plan) (planner.Replacement, error) {
+	// Won, with no predecessor: the concurrent restore already moved the head.
+	return planner.Replacement{Won: true}, nil
+}
+
+func (h *racingHeads) Activate(ctx context.Context, key string) error {
+	return h.inner.Activate(ctx, key)
+}
+
+func TestAConcurrentRestoreDoesNotEraseThePredecessor(t *testing.T) {
+	// The concurrent restore that won recorded the predecessor. This one gets
+	// an idempotent win naming none, and must not write that emptiness back —
+	// retirement would then have nothing to walk, and the superseded plan's
+	// tickets would hold the epic open forever.
+	r, plans, heads, steps := restorer(t)
+	ctx := context.Background()
+	installedHead(t, plans, heads, "plan-head", 2)
+	p := parked(t, plans, steps, "plan-candidate", 4, planner.StepPending)
+
+	// The winner's write: the plan is parked but already carries its
+	// predecessor from the restore that beat this one.
+	p.Predecessor = "plan-head"
+	if err := plans.Upsert(ctx, p); err != nil {
+		t.Fatalf("record the winner's predecessor: %v", err)
+	}
+	r.Heads = &racingHeads{inner: heads, other: "plan-head"}
+
+	got, err := r.Restore(ctx, p.Key)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got.Predecessor != "plan-head" {
+		t.Errorf("the losing restore erased the predecessor, leaving %q", got.Predecessor)
+	}
+	stored, _, err := plans.ByKey(ctx, p.Key)
+	if err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	if stored.Predecessor != "plan-head" {
+		t.Errorf("the stored predecessor is %q", stored.Predecessor)
+	}
+}

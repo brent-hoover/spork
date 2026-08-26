@@ -169,7 +169,7 @@ func registerRetire(sc *godog.ScenarioContext, w *world) {
 		// The successor selected ONE predecessor ticket to carry. Passing an
 		// empty set would make "carried-forward is stamped only for tickets
 		// the successor selected" vacuously true.
-		r.err = r.retire.Run(context.Background(), r.previous,
+		r.err = r.retire.Run(context.Background(), r.previous, "project-1",
 			map[string]bool{"issue-carried": true}, "actor-1")
 		return r.err
 	})
@@ -187,8 +187,8 @@ func registerRetire(sc *godog.ScenarioContext, w *world) {
 			// key, which carries the intake generation. A key from the ticket
 			// alone would be replayed by a later plan's retirement of the same
 			// ticket, and sutra would return the earlier result instead.
-			mine := planner.DeferKey(r.previous.Key, 0)
-			other := planner.DeferKey("plan-p0", 0)
+			mine := planner.DeferKey(r.previous.Key, 0, 0)
+			other := planner.DeferKey("plan-p0", 0, 0)
 			if mine == other {
 				return fmt.Errorf("two plans retiring one ticket share a defer key")
 			}
@@ -221,7 +221,7 @@ func registerRetire(sc *godog.ScenarioContext, w *world) {
 			r.defers.status["issue-blocked"] = observed
 			before := r.defers.conflicts
 
-			if err := r.retire.Run(ctx, blocked, nil, "actor-1"); err != nil {
+			if err := r.retire.Run(ctx, blocked, "project-1", nil, "actor-1"); err != nil {
 				return fmt.Errorf("retiring a %s ticket failed: %w", observed, err)
 			}
 			if r.defers.conflicts != before {
@@ -254,7 +254,7 @@ func registerRetire(sc *godog.ScenarioContext, w *world) {
 			r.defers.status["issue-already"] = planner.StatusDeferred
 			before := len(r.defers.keys)
 
-			if err := r.retire.Run(ctx, already, nil, "actor-1"); err != nil {
+			if err := r.retire.Run(ctx, already, "project-1", nil, "actor-1"); err != nil {
 				return err
 			}
 			if len(r.defers.keys) != before {
@@ -477,7 +477,7 @@ func registerSupersede(sc *godog.ScenarioContext, w *world) {
 			if head.Fence != 1 {
 				return fmt.Errorf("the fence came down at %d before retirement ran", head.Fence)
 			}
-			if err := r.retire.Run(ctx, r.previous, nil, "actor-1"); err != nil {
+			if err := r.retire.Run(ctx, r.previous, "project-1", nil, "actor-1"); err != nil {
 				return err
 			}
 			set, err := r.tickets.ForPlan(ctx, r.previous.Key)

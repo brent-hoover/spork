@@ -343,9 +343,13 @@ func (l liveRuns) Claimed(ctx context.Context, issues []string) (map[string]bool
 		args = append(args, string(state))
 	}
 
+	// build_run.ISSUE, never .ticket. The ticket column holds the ticket's
+	// TITLE — IssueMigration exists because a previous version substituted
+	// one for the other, and querying titles with issue ids matches nothing,
+	// so every live build looks unclaimed and retirement defers its work.
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT DISTINCT ticket FROM build_run
-		   WHERE ticket IN (`+strings.Join(placeholders, ",")+`)
+		`SELECT DISTINCT issue FROM build_run
+		   WHERE issue IN (`+strings.Join(placeholders, ",")+`)
 		     AND state NOT IN (`+strings.Join(terminal, ",")+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read live runs: %w", err)
@@ -354,11 +358,11 @@ func (l liveRuns) Claimed(ctx context.Context, issues []string) (map[string]bool
 
 	claimed := map[string]bool{}
 	for rows.Next() {
-		var ticket string
-		if err := rows.Scan(&ticket); err != nil {
+		var issue string
+		if err := rows.Scan(&issue); err != nil {
 			return nil, fmt.Errorf("scan live run: %w", err)
 		}
-		claimed[ticket] = true
+		claimed[issue] = true
 	}
 	// Checked: a short list here reads as "nothing is live", and retirement
 	// would defer a ticket a build is working.

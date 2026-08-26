@@ -108,7 +108,23 @@ func (r Restorer) retryCandidate(
 		// It lost again, and Replace has already landed it.
 		return r.reread(ctx, plan.Key)
 	}
-	plan.State, plan.Error, plan.Predecessor = PlanPending, "", verdict.Predecessor
+	// The verdict's predecessor, or the DURABLE one already on the row. An
+	// idempotent win — the plan was already the head, because a concurrent
+	// restore got there first — moves no head and so names no predecessor,
+	// and writing that empty value back would erase what the real winner
+	// recorded. Retirement would then have nothing to walk.
+	plan.State, plan.Error = PlanPending, ""
+	if verdict.Predecessor != "" {
+		plan.Predecessor = verdict.Predecessor
+	} else {
+		current, found, err := r.Plans.ByKey(ctx, plan.Key)
+		if err != nil {
+			return Plan{}, err
+		}
+		if found {
+			plan.Predecessor = current.Predecessor
+		}
+	}
 	if err := r.Plans.Upsert(ctx, plan); err != nil {
 		return Plan{}, err
 	}

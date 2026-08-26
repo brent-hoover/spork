@@ -425,3 +425,77 @@ func TestAParkedHeadPlanNeverLowersTheFence(t *testing.T) {
 		t.Errorf("retrying a parked head plan lowered the fence to %d", head.Fence)
 	}
 }
+
+// retiringHeads returns an idempotent already-head win with no predecessor.
+type retiringHeads struct{ inner planner.HeadStore }
+
+func (h *retiringHeads) Head(ctx context.Context, key string) (planner.PlanHead, bool, error) {
+	return h.inner.Head(ctx, key)
+}
+
+func (h *retiringHeads) Replace(context.Context, planner.Plan) (planner.Replacement, error) {
+	return planner.Replacement{Won: true}, nil
+}
+
+func (h *retiringHeads) Activate(ctx context.Context, key string) error {
+	return h.inner.Activate(ctx, key)
+}
+
+func TestRetirementResumesFromTheDurablePredecessor(t *testing.T) {
+	// An idempotent replacement — a plan re-entering the CAS it already won —
+	// moves no head and so names no predecessor. A retry after PARTIAL
+	// retirement would then skip the remaining rows entirely and activate the
+	// successor over work still open in sutra.
+	in, _, _, _ := resuming(t, threeTicketPlan)
+	ctx := context.Background()
+
+	// Reached through the production path: a decomposition that failed at its
+	// first create has claimed its key, written its sequence and taken the
+	// head. Rewinding it to pending WITH a recorded predecessor reproduces a
+	// crash after the head move, part-way through retirement.
+	tr := in.Tracker.(*countingTracker)
+	tr.failIssue = errors.New("sutra unreachable")
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err == nil {
+		t.Fatal("expected the first create to fail")
+	}
+	tr.failIssue = nil
+	if err := in.Plans.Upsert(ctx, planner.Plan{
+		Key: "plan-old", TargetKey: "/spec", SpecHash: "old",
+		Generation: 0, State: planner.PlanSuperseded,
+	}); err != nil {
+		t.Fatalf("seed the predecessor: %v", err)
+	}
+	plan, found, err := in.Plans.ByKey(ctx, planKeyFor(1))
+	if err != nil || !found {
+		t.Fatalf("no plan row: %v found=%v", err, found)
+	}
+	plan.State, plan.Predecessor = planner.PlanPending, "plan-old"
+	if err := in.Plans.Upsert(ctx, plan); err != nil {
+		t.Fatalf("rewind the plan: %v", err)
+	}
+
+	walked := &walkRecorder{}
+	in.Heads = &retiringHeads{inner: in.Heads}
+	in.Retire = &planner.Retirement{Tickets: walked}
+
+	if _, err := in.Decompose(ctx, target(), snapshotWith(twoCriteria), 1, "actor"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(walked.plans) == 0 {
+		t.Fatal("retirement walked nothing; the empty verdict skipped the predecessor")
+	}
+	if walked.plans[0] != "plan-old" {
+		t.Errorf("retirement walked %q, want the durable predecessor", walked.plans[0])
+	}
+}
+
+// walkRecorder is a TicketStore that records which plans were walked.
+type walkRecorder struct {
+	planningTickets
+	plans []string
+}
+
+func (w *walkRecorder) ForPlan(ctx context.Context, key string) ([]planner.Ticket, error) {
+	w.plans = append(w.plans, key)
+	return w.planningTickets.ForPlan(ctx, key)
+}

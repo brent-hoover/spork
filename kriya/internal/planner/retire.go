@@ -32,9 +32,10 @@ const (
 // tracker returns and sent back as a conditional transition's expectation, so
 // a private spelling would silently never match.
 const (
-	StatusOpen     = "open"
-	StatusComplete = "complete"
-	StatusDeferred = "deferred"
+	StatusOpen       = "open"
+	StatusComplete   = "complete"
+	StatusDeferred   = "deferred"
+	StatusInProgress = "in-progress"
 )
 
 // Deferrer is the slice of the tracker retirement needs.
@@ -59,6 +60,11 @@ type Retirement struct {
 	Steps   StepStore
 	Defer   Deferrer
 	Live    LiveWork
+	// Tracker replays a creation step whose outcome was never recorded. The
+	// call goes out under the step's PERSISTED key, so sutra returns the
+	// original issue if the first attempt landed and creates it if not —
+	// either way retirement learns the id it must defer.
+	Tracker Tracker
 }
 
 // Run stamps every predecessor row consumed with its disposition.
@@ -71,7 +77,8 @@ type Retirement struct {
 // creates all of its own tickets and carries nothing — the disposition exists
 // and is stamped only for a selection that genuinely happened.
 func (r Retirement) Run(
-	ctx context.Context, predecessor Plan, carried map[string]bool, actor string,
+	ctx context.Context, predecessor Plan, projectID string,
+	carried map[string]bool, actor string,
 ) error {
 	tickets, err := r.Tickets.ForPlan(ctx, predecessor.Key)
 	if err != nil {
@@ -89,7 +96,7 @@ func (r Retirement) Run(
 			// every replay.
 			continue
 		}
-		disposition, err := r.retireOne(ctx, predecessor, ticket, carried, live, actor)
+		disposition, err := r.retireOne(ctx, predecessor, ticket, projectID, carried, live, actor)
 		if err != nil {
 			return err
 		}
@@ -103,14 +110,25 @@ func (r Retirement) Run(
 
 // retireOne classifies one row and acts on it, returning its disposition.
 func (r Retirement) retireOne(
-	ctx context.Context, predecessor Plan, ticket Ticket,
+	ctx context.Context, predecessor Plan, ticket Ticket, projectID string,
 	carried map[string]bool, live map[string]bool, actor string,
 ) (string, error) {
 	if ticket.IssueID == "" {
-		// Its creation step never landed. There is nothing in sutra to
-		// defer, and calling anything here would be a request for an issue
-		// that does not exist.
-		return DispositionRetired, nil
+		// An empty id is NOT proof the ticket does not exist. The create may
+		// have landed and crashed before its returned id was recorded — the
+		// step is marked issued precisely to say "this may have happened".
+		// Assuming it never did leaves a real, open sutra issue holding the
+		// epic forever while its row is stamped retired.
+		issue, err := r.settleCreate(ctx, predecessor, ticket, projectID, actor)
+		if err != nil {
+			return "", err
+		}
+		if issue == "" {
+			// Its creation step is still pending: nothing was ever sent, so
+			// there is nothing in sutra to defer.
+			return DispositionRetired, nil
+		}
+		ticket.IssueID = issue
 	}
 	if live[ticket.IssueID] {
 		// A popped build finishes under its pinned snapshot. Deferring it
@@ -121,28 +139,101 @@ func (r Retirement) retireOne(
 		return DispositionCarriedForward, nil
 	}
 
-	status, err := r.Defer.Status(ctx, ticket.IssueID)
-	if err != nil {
-		return "", fmt.Errorf("read the status of %s: %w", ticket.IssueID, err)
-	}
-	switch status {
-	case StatusComplete:
-		// Already shipped. Nothing to defer.
-		return DispositionCompleted, nil
-	case StatusDeferred:
-		// The fence is already established. A retry here would present a
-		// conditional transition expecting "deferred" and move nothing.
-		return DispositionRetired, nil
-	}
+	return r.deferTicket(ctx, predecessor, ticket, actor)
+}
 
-	// The expectation is the status just OBSERVED, whatever it is. Expecting
-	// "open" unconditionally made a blocked ticket conflict on every attempt,
-	// against a state it would never return to.
-	if err := r.Defer.Defer(ctx, ticket.IssueID, status, actor,
-		DeferKey(predecessor.Key, ticket.Ordinal)); err != nil {
-		return "", fmt.Errorf("defer %s: %w", ticket.IssueID, err)
+// deferTicket reads a ticket's status and defers it, re-reading on conflict.
+//
+// The read and the transition cannot be atomic, so the status can change
+// between them. Two things follow, and both are handled by RE-READING rather
+// than by assuming:
+//
+//   - A conflict means the status moved. The fresh read may now say
+//     in-progress, which is a build that started while this was in flight —
+//     deferring it would cancel that build.
+//   - sutra settles a REJECTED request under its idempotency key, so the
+//     retry must present a NEW one. Retrying under the key that conflicted
+//     replays the cached 409 forever, whatever the ticket's status by then.
+func (r Retirement) deferTicket(
+	ctx context.Context, predecessor Plan, ticket Ticket, actor string,
+) (string, error) {
+	// Bounded: one re-read after a conflict. A ticket whose status keeps
+	// moving is one something else is actively working, and looping here
+	// would fight it.
+	for attempt := range 2 {
+		status, err := r.Defer.Status(ctx, ticket.IssueID)
+		if err != nil {
+			return "", fmt.Errorf("read the status of %s: %w", ticket.IssueID, err)
+		}
+		switch status {
+		case StatusComplete:
+			// Already shipped. Nothing to defer.
+			return DispositionCompleted, nil
+		case StatusDeferred:
+			// The fence is already established. A retry here would present a
+			// conditional transition expecting "deferred" and move nothing.
+			return DispositionRetired, nil
+		case StatusInProgress:
+			// A build is working it, whatever the run table said a moment
+			// ago. sutra's own status is the authority on that, and it is
+			// fresher than any read kriya made first.
+			return DispositionBound, nil
+		}
+
+		// The expectation is the status just OBSERVED, whatever it is.
+		// Expecting "open" unconditionally made a blocked ticket conflict on
+		// every attempt, against a state it would never return to.
+		err = r.Defer.Defer(ctx, ticket.IssueID, status, actor,
+			DeferKey(predecessor.Key, ticket.Ordinal, attempt))
+		if err == nil {
+			return DispositionRetired, nil
+		}
+		if attempt == 1 {
+			return "", fmt.Errorf("defer %s: %w", ticket.IssueID, err)
+		}
 	}
-	return DispositionRetired, nil
+	return "", fmt.Errorf("defer %s: exhausted its attempts", ticket.IssueID)
+}
+
+// settleCreate replays a creation step whose outcome was never recorded.
+//
+// It returns the issue the step produced, or empty when the step was never
+// sent. The call goes out under the step's PERSISTED key, so sutra returns the
+// original issue if the first attempt landed — which is exactly the case that
+// makes an empty recorded id a lie rather than a fact.
+func (r Retirement) settleCreate(
+	ctx context.Context, predecessor Plan, ticket Ticket, projectID, actor string,
+) (string, error) {
+	if r.Steps == nil || r.Tracker == nil {
+		return "", nil
+	}
+	steps, err := r.Steps.ForPlan(ctx, predecessor.Key)
+	if err != nil {
+		return "", fmt.Errorf("read the sequence of plan %s: %w", Short(predecessor.Key), err)
+	}
+	for _, step := range steps {
+		if step.Kind != StepCreate || step.Ordinal != ticket.Ordinal {
+			continue
+		}
+		if step.Issue != "" {
+			return step.Issue, nil
+		}
+		if step.State == StepPending {
+			// Never sent. There is genuinely nothing in sutra.
+			return "", nil
+		}
+		// ISSUED, with no recorded result. Replay it to its terminal answer.
+		issue, err := r.Tracker.CreateIssue(ctx, projectID, ticket.Title, ticket.Body, actor, step.Key)
+		if err != nil {
+			return "", fmt.Errorf("replay the creation of ticket %d: %w", ticket.Ordinal, err)
+		}
+		// Recorded, so a later pass does not replay it again.
+		if err := r.Steps.Mark(ctx, predecessor.Key, step.Seq, StepComplete, issue); err != nil {
+			return "", err
+		}
+		return issue, nil
+	}
+	return "", nil
 }
 
 // claimed asks which of a plan's tickets a live build holds.
@@ -169,6 +260,9 @@ func (r Retirement) claimed(ctx context.Context, tickets []Ticket) (map[string]b
 // the intake generation. A key derived from the ticket alone would be replayed
 // by a later retirement of the same ticket under a different plan, and sutra
 // would return the earlier result instead of performing the new transition.
-func DeferKey(predecessorKey string, ordinal int) string {
-	return idempotencyKey(fmt.Sprintf("defer-%d", ordinal), predecessorKey, "")
+// The ATTEMPT is in it for a second reason: sutra settles a rejected request
+// under its key, so a conditional transition that conflicted would replay that
+// cached 409 on every retry — forever, whatever the ticket's status by then.
+func DeferKey(predecessorKey string, ordinal, attempt int) string {
+	return idempotencyKey(fmt.Sprintf("defer-%d-%d", ordinal, attempt), predecessorKey, "")
 }

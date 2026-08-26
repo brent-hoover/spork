@@ -206,7 +206,7 @@ func (i Intaker) decomposeFresh(
 	// The CAS, between the write-ahead payload and activation. A candidate
 	// that filed tickets before winning the head would have decomposed
 	// against a target another plan already owns.
-	if err := i.takeTheHead(ctx, plan, actor); err != nil {
+	if err := i.takeTheHead(ctx, target, plan, actor); err != nil {
 		return nil, err
 	}
 	return i.runPlan(ctx, target, plan, tickets, steps, actor)
@@ -243,7 +243,7 @@ func (i Intaker) resume(
 	// idempotent for the plan that already holds it: the CAS finds its own
 	// key as head and the request resolves to itself.
 	if plan.State == PlanPending {
-		if err := i.takeTheHead(ctx, plan, actor); err != nil {
+		if err := i.takeTheHead(ctx, target, plan, actor); err != nil {
 			return nil, err
 		}
 	}
@@ -577,7 +577,7 @@ func (i Intaker) proposeTickets(
 // landed. Returning the head plan's tickets instead would be a lie: they
 // belong to a different decomposition of a different snapshot, and the caller
 // asked what THIS request produced.
-func (i Intaker) takeTheHead(ctx context.Context, plan Plan, actor string) error {
+func (i Intaker) takeTheHead(ctx context.Context, target BuildTarget, plan Plan, actor string) error {
 	if i.Heads == nil || i.Plans == nil {
 		return nil
 	}
@@ -597,14 +597,29 @@ func (i Intaker) takeTheHead(ctx context.Context, plan Plan, actor string) error
 	// A successor that activated first would admit pops while its
 	// predecessor's tickets were still open — work from a plan nobody is
 	// building any more.
-	return i.retire(ctx, verdict.Predecessor, actor)
+	//
+	// The verdict's predecessor, or the plan's DURABLE one. An idempotent
+	// replacement — a plan re-entering the CAS it already won — moves no head
+	// and so names no predecessor, and a retry after partial retirement would
+	// then skip the remaining rows entirely and activate over them.
+	predecessor := verdict.Predecessor
+	if predecessor == "" {
+		current, found, err := i.Plans.ByKey(ctx, plan.Key)
+		if err != nil {
+			return err
+		}
+		if found {
+			predecessor = current.Predecessor
+		}
+	}
+	return i.retire(ctx, target, predecessor, actor)
 }
 
 // retire consumes the predecessor's rows, when there is one.
 //
 // A bootstrap has none, and its retirement set is empty — the same path, not
 // a special case that skips the fence.
-func (i Intaker) retire(ctx context.Context, predecessorKey, actor string) error {
+func (i Intaker) retire(ctx context.Context, target BuildTarget, predecessorKey, actor string) error {
 	if i.Retire == nil || predecessorKey == "" {
 		return nil
 	}
@@ -618,7 +633,7 @@ func (i Intaker) retire(ctx context.Context, predecessorKey, actor string) error
 	// Nothing carried: a successor currently creates all of its own tickets.
 	// The disposition exists and is stamped only for a selection that
 	// genuinely happened.
-	if err := i.Retire.Run(ctx, predecessor, nil, actor); err != nil {
+	if err := i.Retire.Run(ctx, predecessor, target.ProjectID, nil, actor); err != nil {
 		return fmt.Errorf("retire plan %s: %w", Short(predecessorKey), err)
 	}
 	return nil
