@@ -585,3 +585,185 @@ func TestAnUnreadableFenceStopsTheLoop(t *testing.T) {
 		t.Error("the loop claimed a ticket it could not admit")
 	}
 }
+
+// recordingReserver captures reservations and can refuse them.
+type recordingReserver struct {
+	runs    []orchestrator.BuildRun
+	bound   map[string]string
+	settled []string
+	refuse  error
+}
+
+func newRecordingReserver() *recordingReserver {
+	return &recordingReserver{bound: map[string]string{}}
+}
+
+func (r *recordingReserver) Reserve(
+	_ context.Context, run orchestrator.BuildRun, _ orchestrator.Admission, _ int,
+) error {
+	if r.refuse != nil {
+		return r.refuse
+	}
+	r.runs = append(r.runs, run)
+	return nil
+}
+
+func (r *recordingReserver) Bind(_ context.Context, runID, issue, _ string) error {
+	r.bound[runID] = issue
+	return nil
+}
+
+func (r *recordingReserver) SettleEmpty(_ context.Context, runID string) error {
+	r.settled = append(r.settled, runID)
+	return nil
+}
+
+// fenceGuard is an Admitter that can also join a transaction.
+type fenceGuard struct {
+	fence  planner.Fence
+	reads  int
+	refuse *planner.ErrFenced
+}
+
+func (g *fenceGuard) Read(context.Context) (planner.Fence, error) {
+	g.reads++
+	return g.fence, nil
+}
+
+func (g *fenceGuard) Admit(context.Context, int) error {
+	if g.refuse != nil {
+		return g.refuse
+	}
+	return nil
+}
+
+func (g *fenceGuard) AdmitWithin(context.Context, planner.Tx, int) error {
+	if g.refuse != nil {
+		return g.refuse
+	}
+	return nil
+}
+
+// reservingLoop builds a loop that reserves before claiming.
+func reservingLoop(
+	pops orchestrator.Popper, reserver *recordingReserver, guard *fenceGuard,
+) orchestrator.Loop {
+	return orchestrator.Loop{
+		Pops: pops, Ordinals: newMemOrdinals(), Admit: guard, Reserve: reserver,
+		TargetKey: "/spec", MaxTickets: 1,
+		Build: func(_ context.Context, issue, title string) (orchestrator.BuildRun, error) {
+			return orchestrator.BuildRun{Ticket: title, Issue: issue}, nil
+		},
+	}
+}
+
+func TestAPopReservesItsRunBeforeClaiming(t *testing.T) {
+	// The run exists BEFORE the claim, which is what makes a crash in that
+	// window recoverable rather than an orphaned claim. The reservation
+	// carries the pop key so the recovered run can replay its own claim.
+	stack := newWorkStack("issue-1")
+	reserver, guard := newRecordingReserver(), &fenceGuard{}
+	if _, err := reservingLoop(stack, reserver, guard).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(reserver.runs) != 1 {
+		t.Fatalf("the pop made %d reservations", len(reserver.runs))
+	}
+	reserved := reserver.runs[0]
+	if reserved.PopKey == "" {
+		t.Error("the reservation carries no pop key")
+	}
+	if len(stack.keys) == 0 || stack.keys[0] != reserved.PopKey {
+		t.Errorf("the claim used %v, not the reserved key", stack.keys)
+	}
+	if reserved.State != orchestrator.StateQueued {
+		t.Errorf("the reservation is %q, want queued", reserved.State)
+	}
+	if reserver.bound[reserved.ID] != "issue-1" {
+		t.Errorf("the reservation bound %q", reserver.bound[reserved.ID])
+	}
+}
+
+func TestAnEmptyClaimSettlesItsReservation(t *testing.T) {
+	// Nothing was claimed, so the reservation owns nothing. Left queued it
+	// would look to recovery like a claim whose outcome is unknown, and to
+	// retirement like pending work.
+	stack := newWorkStack()
+	reserver, guard := newRecordingReserver(), &fenceGuard{}
+	got, err := reservingLoop(stack, reserver, guard).Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !got.Idle {
+		t.Error("an empty claim did not idle")
+	}
+	if len(reserver.settled) != 1 {
+		t.Errorf("%d reservations settled as no-work, want 1", len(reserver.settled))
+	}
+	if len(reserver.bound) != 0 {
+		t.Errorf("an empty claim bound %v", reserver.bound)
+	}
+}
+
+func TestAFencedReservationClaimsNothing(t *testing.T) {
+	// Refused inside the reservation transaction, so no run is written and
+	// the tracker is never asked.
+	stack := newWorkStack("issue-1")
+	reserver := newRecordingReserver()
+	reserver.refuse = &planner.ErrFenced{UnactivatedHeads: 1}
+	guard := &fenceGuard{}
+	got, err := reservingLoop(stack, reserver, guard).Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !got.Idle {
+		t.Error("a fenced reservation did not idle")
+	}
+	if len(stack.keys) != 0 {
+		t.Errorf("a fenced reservation still claimed work: %v", stack.keys)
+	}
+	if len(reserver.runs) != 0 {
+		t.Errorf("a fenced reservation wrote %d runs", len(reserver.runs))
+	}
+}
+
+func TestALostReservationRaceIsRetriedOnce(t *testing.T) {
+	stack := newWorkStack("issue-1")
+	reserver := newRecordingReserver()
+	reserver.refuse = &planner.ErrFenced{StaleVersion: true}
+	guard := &fenceGuard{}
+	if _, err := reservingLoop(stack, reserver, guard).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if guard.reads != 2 {
+		t.Errorf("a lost reservation race read the fence %d time(s), want 2", guard.reads)
+	}
+}
+
+func TestAReservationErrorThatIsNotAFenceStopsTheLoop(t *testing.T) {
+	// "I could not write the reservation" is not "the fence is closed".
+	// Claiming anyway would make a claim nothing owns.
+	stack := newWorkStack("issue-1")
+	reserver := newRecordingReserver()
+	reserver.refuse = errors.New("the database is unreachable")
+	if _, err := reservingLoop(stack, reserver, &fenceGuard{}).Run(context.Background()); err == nil {
+		t.Fatal("the loop claimed past an unwritable reservation")
+	}
+	if len(stack.keys) != 0 {
+		t.Error("the loop claimed work it could not reserve")
+	}
+}
+
+func TestAnAdmitterThatCannotJoinATransactionIsRefused(t *testing.T) {
+	// The whole point of reserving is that the run and the admission commit
+	// together. An admitter that cannot join the transaction cannot give that,
+	// and proceeding would silently return to the split-commit behaviour.
+	stack := newWorkStack("issue-1")
+	loop := orchestrator.Loop{
+		Pops: stack, Ordinals: newMemOrdinals(), TargetKey: "/spec",
+		Admit: &countingAdmitter{}, Reserve: newRecordingReserver(),
+	}
+	if _, err := loop.Run(context.Background()); err == nil {
+		t.Fatal("a non-transactional admitter was accepted for a reservation")
+	}
+}

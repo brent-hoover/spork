@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"kriya/internal/planner"
 )
 
 // Migration is orchestrator's schema.
@@ -71,6 +73,16 @@ ALTER TABLE build_run ADD COLUMN finding_version TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN finding_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE build_run ADD COLUMN pending_finding TEXT NOT NULL DEFAULT ''`
 
+// PopKeyMigration records the key a run's claim was made under.
+//
+// Its own migration because IssueMigration has shipped. The key is written
+// before the claim, so a crash in that window leaves a run that can replay its
+// own pop — sutra settles a claim under its key, so the replay returns the same
+// ticket rather than taking a second, and an explicitly empty replay says no
+// work was ever claimed.
+const PopKeyMigration = `
+ALTER TABLE build_run ADD COLUMN pop_key TEXT NOT NULL DEFAULT ''`
+
 // IssueMigration records the tracker issue and branch the run works on.
 //
 // Recovery replays a submission or a close from the run's PERSISTED fields.
@@ -83,6 +95,7 @@ ALTER TABLE build_run ADD COLUMN branch TEXT NOT NULL DEFAULT ''`
 
 // runColumns is every column a BuildRun reads back, in scan order.
 const runColumns = `ticket, issue, branch, plan, state, head, gated_base, error, attempt, round_limit,
+	pop_key,
 	started, kind, finding_doc, finding_version, finding_key, pending_finding,
 	review_key, review_commit, review_session, review_state, review_id,
 	review_revision, review_verdict_event, close_key, completed_head, completion_state`
@@ -90,20 +103,115 @@ const runColumns = `ticket, issue, branch, plan, state, head, gated_base, error,
 // SQLStore stores build runs in SQLite.
 type SQLStore struct{ DB *sql.DB }
 
+// Reserve writes the run and takes an admission slot in ONE transaction.
+//
+// The two are one fact. Admitted separately, a replacement can raise the fence
+// between the admission and the claim — and the claim then lands inside the
+// unactivated window with no durable run for retirement to reconcile. Written
+// separately, a crash between them leaves a claim nothing owns.
+//
+// The run is written QUEUED with its pop key and no issue: that shape is
+// precisely "a claim may have been made and we do not yet know what it got",
+// which is what recovery looks for.
+func (s SQLStore) Reserve(
+	ctx context.Context, r BuildRun, guard Admission, readVersion int,
+) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin reservation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := guard.AdmitWithin(ctx, planTx{tx: tx}, readVersion); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO build_run (id, ticket, issue, branch, plan, state, pop_key, round_limit)
+		 VALUES (?, '', '', '', ?, ?, ?, ?)
+		 ON CONFLICT(id) DO NOTHING`,
+		r.ID, r.Plan, string(StateQueued), r.PopKey, r.RoundLimit); err != nil {
+		return fmt.Errorf("reserve build run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reservation: %w", err)
+	}
+	return nil
+}
+
+// Bind attaches a claim's result to a reservation.
+//
+// Conditional on the run still being an UNBOUND queued reservation. A replayed
+// bind against a run that has since moved on would drag it back to the ticket
+// it started with, discarding whatever progress it made.
+func (s SQLStore) Bind(ctx context.Context, runID, issue, title string) error {
+	if _, err := s.DB.ExecContext(ctx,
+		`UPDATE build_run SET issue = ?, ticket = ?
+		   WHERE id = ? AND state = ? AND issue = ''`,
+		issue, title, runID, string(StateQueued)); err != nil {
+		return fmt.Errorf("bind run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// SettleEmpty moves a reservation whose claim returned nothing to no-work.
+//
+// Conditional for the same reason: only an unbound queued reservation can
+// settle this way. No work is invented for it, and nothing about it is
+// classified as issued.
+func (s SQLStore) SettleEmpty(ctx context.Context, runID string) error {
+	if _, err := s.DB.ExecContext(ctx,
+		`UPDATE build_run SET state = ?
+		   WHERE id = ? AND state = ? AND issue = ''`,
+		string(StateNoWork), runID, string(StateQueued)); err != nil {
+		return fmt.Errorf("settle run %s as no-work: %w", runID, err)
+	}
+	return nil
+}
+
+// Unbound lists runs that were reserved but never bound to a ticket.
+//
+// A queued run with a pop key and no issue is a claim whose outcome is
+// unknown. Recovery replays the pop under the persisted key: sutra returns the
+// same ticket if one was claimed, and an explicitly empty result if none was.
+func (s SQLStore) Unbound(ctx context.Context) ([]BuildRun, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, `+runColumns+` FROM build_run
+		   WHERE state = ? AND issue = '' AND pop_key <> '' ORDER BY rowid`,
+		string(StateQueued))
+	if err != nil {
+		return nil, fmt.Errorf("query unbound runs: %w", err)
+	}
+	return scanRuns(rows, "unbound")
+}
+
+// planTx adapts a *sql.Tx to the planner's narrow handle.
+type planTx struct{ tx *sql.Tx }
+
+func (p planTx) ExecContext(
+	ctx context.Context, query string, args ...any,
+) (planner.Result, error) {
+	return p.tx.ExecContext(ctx, query, args...)
+}
+
+func (p planTx) QueryRowContext(ctx context.Context, query string, args ...any) planner.Row {
+	return p.tx.QueryRowContext(ctx, query, args...)
+}
+
 // Upsert writes a run.
 func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO build_run (id, ticket, issue, branch, plan, state, head, gated_base, error, attempt,
-		   round_limit, started, kind, finding_doc, finding_version, finding_key,
+		   round_limit, pop_key, started, kind, finding_doc, finding_version, finding_key,
 		   pending_finding,
 		   review_key, review_commit, review_session, review_state, review_id,
 		   review_revision, review_verdict_event, close_key, completed_head, completion_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   ticket = excluded.ticket, issue = excluded.issue, branch = excluded.branch,
 		   plan = excluded.plan, state = excluded.state,
 		   head = excluded.head, gated_base = excluded.gated_base, error = excluded.error,
 		   attempt = excluded.attempt, round_limit = excluded.round_limit,
+		   pop_key = excluded.pop_key,
 		   started = excluded.started, kind = excluded.kind,
 		   finding_doc = excluded.finding_doc,
 		   finding_version = excluded.finding_version,
@@ -118,7 +226,7 @@ func (s SQLStore) Upsert(ctx context.Context, r BuildRun) error {
 		   completed_head = excluded.completed_head,
 		   completion_state = excluded.completion_state`,
 		r.ID, r.Ticket, r.Issue, r.Branch, r.Plan, string(r.State), r.Head, r.GatedBase, r.Error, r.Attempt,
-		r.RoundLimit, startedOf(r), kindOf(r), r.FindingDoc, r.FindingVersion,
+		r.RoundLimit, r.PopKey, startedOf(r), kindOf(r), r.FindingDoc, r.FindingVersion,
 		r.FindingKey, r.PendingFinding,
 		r.ReviewKey, r.ReviewCommit, r.ReviewSession,
 		reviewStateOf(r), r.ReviewID, r.ReviewRevision, r.ReviewVerdictEvent,
@@ -136,7 +244,7 @@ func (s SQLStore) Find(ctx context.Context, id string) (BuildRun, bool, error) {
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM build_run WHERE id = ?`, id).
 		Scan(&r.Ticket, &r.Issue, &r.Branch, &r.Plan, &state, &r.Head, &r.GatedBase, &r.Error, &r.Attempt, &r.RoundLimit,
-			&started, &r.Kind, &r.FindingDoc, &r.FindingVersion, &r.FindingKey,
+			&r.PopKey, &started, &r.Kind, &r.FindingDoc, &r.FindingVersion, &r.FindingKey,
 			&r.PendingFinding,
 			&r.ReviewKey, &r.ReviewCommit, &r.ReviewSession, &r.ReviewState, &r.ReviewID,
 			&r.ReviewRevision, &r.ReviewVerdictEvent,
@@ -255,7 +363,7 @@ func scanRuns(rows *sql.Rows, what string) ([]BuildRun, error) {
 		var runState string
 		var started string
 		if err := rows.Scan(&r.ID, &r.Ticket, &r.Issue, &r.Branch, &r.Plan, &runState, &r.Head, &r.GatedBase, &r.Error,
-			&r.Attempt, &r.RoundLimit, &started, &r.Kind, &r.FindingDoc,
+			&r.Attempt, &r.RoundLimit, &r.PopKey, &started, &r.Kind, &r.FindingDoc,
 			&r.FindingVersion, &r.FindingKey, &r.PendingFinding,
 			&r.ReviewKey, &r.ReviewCommit,
 			&r.ReviewSession, &r.ReviewState, &r.ReviewID,

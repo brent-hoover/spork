@@ -207,7 +207,7 @@ func TestRecoveryStepsRunInDeclaredOrder(t *testing.T) {
 	if err := applyMigrations(context.Background(), db, migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), submitterForTest(db), queueForTest(t, db), completerForTest(t, db), "actor-1", planner.Claimer{}, noTargets, noWork, "/target",
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeForTest(t), loopForTest(db), submitterForTest(db), queueForTest(t, db), completerForTest(t, db), "actor-1", planner.Claimer{}, noTargets, noWork, noWork, "/target",
 		orchestrator.Researcher{}, noFindingProject)
 	var stages []string
 	for _, s := range steps {
@@ -231,7 +231,7 @@ func TestReviewRecoverySurfacesRatherThanBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), queueForTest(t, db), completerForTest(t, db), "actor-1", planner.Claimer{}, noTargets, noWork, "/target",
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), queueForTest(t, db), completerForTest(t, db), "actor-1", planner.Claimer{}, noTargets, noWork, noWork, "/target",
 		orchestrator.Researcher{}, noFindingProject)
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
@@ -249,7 +249,7 @@ func TestReviewRecoveryPropagatesAStoreFailure(t *testing.T) {
 	// Errors should never pass silently: a store kriya cannot read is not the
 	// same as a store with nothing in it.
 	db := openTemp(t)
-	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), queueForTest(t, db), completerForTest(t, db), "actor-1", planner.Claimer{}, noTargets, noWork, "/target",
+	steps := recoverySteps(intakerForTest(db), workspaceManagerForTest(t), bridgeWithStore(db), loopForTest(db), submitterForTest(db), queueForTest(t, db), completerForTest(t, db), "actor-1", planner.Claimer{}, noTargets, noWork, noWork, "/target",
 		orchestrator.Researcher{}, noFindingProject)
 	for _, s := range steps {
 		if s.Owner != "reviewbridge" {
@@ -514,7 +514,7 @@ func TestWithoutARepositoryOnlyTheTrackerStageRecovers(t *testing.T) {
 	// happened to be launched from.
 	all := recoverySteps(planner.Intaker{}, workspace.Manager{}, reviewbridge.Bridge{},
 		devloop.Loop{}, orchestrator.Submitter{}, orchestrator.Queue{},
-		orchestrator.Completer{}, "actor-1", planner.Claimer{}, noTargets, noWork, "/target",
+		orchestrator.Completer{}, "actor-1", planner.Claimer{}, noTargets, noWork, noWork, "/target",
 		orchestrator.Researcher{}, noFindingProject)
 	if len(all) < 2 {
 		t.Fatalf("only %d recovery steps exist, so nothing is being skipped", len(all))

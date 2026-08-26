@@ -102,7 +102,22 @@ func (f SQLFence) Read(ctx context.Context) (Fence, error) {
 // conditional write makes them write-write conflicts on the same row, of
 // which exactly one commits.
 func (f SQLFence) Admit(ctx context.Context, readVersion int) error {
-	res, err := f.DB.ExecContext(ctx,
+	return f.AdmitWithin(ctx, sqlExec{db: f.DB}, readVersion)
+}
+
+// AdmitWithin takes an admission slot inside the CALLER'S transaction.
+//
+// This is the form the spec asks for: the orchestrator invokes the guard
+// inside its BuildRun-creating transaction, so the write-ahead run and the
+// admission commit together. Admitted in a transaction of its own, a
+// replacement can raise the fence between the admission and the claim — and
+// the claim then happens inside the unactivated window with no durable run
+// for retirement to reconcile.
+//
+// Ownership is still respected: this is planner code, so every fence write
+// happens in the planner. The orchestrator supplies only the transaction.
+func (f SQLFence) AdmitWithin(ctx context.Context, tx Tx, readVersion int) error {
+	res, err := tx.ExecContext(ctx,
 		`UPDATE pop_fence SET version = version + 1
 		   WHERE singleton_key = ? AND unactivated_heads = 0 AND version = ?`,
 		fenceKey, readVersion)
@@ -119,15 +134,31 @@ func (f SQLFence) Admit(ctx context.Context, readVersion int) error {
 
 	// Refused. WHICH refusal matters to the caller: a stale version is a lost
 	// race worth retrying at once, while a nonzero counter is a wait for a
-	// head to activate.
-	current, err := f.Read(ctx)
-	if err != nil {
-		return err
+	// head to activate. Read through the same handle, so the answer is the one
+	// this transaction sees.
+	var current Fence
+	err = tx.QueryRowContext(ctx,
+		`SELECT unactivated_heads, version FROM pop_fence WHERE singleton_key = ?`,
+		fenceKey).Scan(&current.UnactivatedHeads, &current.Version)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read the pop fence: %w", err)
 	}
 	if current.UnactivatedHeads > 0 {
 		return &ErrFenced{UnactivatedHeads: current.UnactivatedHeads}
 	}
 	return &ErrFenced{StaleVersion: true}
+}
+
+// sqlExec adapts a *sql.DB to the narrow transaction handle, so Admit and
+// AdmitWithin are one implementation rather than two that must agree.
+type sqlExec struct{ db *sql.DB }
+
+func (e sqlExec) ExecContext(ctx context.Context, query string, args ...any) (Result, error) {
+	return e.db.ExecContext(ctx, query, args...)
+}
+
+func (e sqlExec) QueryRowContext(ctx context.Context, query string, args ...any) Row {
+	return e.db.QueryRowContext(ctx, query, args...)
 }
 
 // raiseWithin adds an unactivated head, inside the caller's transaction.

@@ -232,6 +232,7 @@ func build(ctx context.Context, db *sql.DB, arg string) error {
 		mergeQueue(db, ws, actor), completerOn(db, ws, actor), actor,
 		completionClaimer(db, actor, target), targetsFor(db),
 		func(ctx context.Context) error { return consumeWork(ctx, db, target, actor) },
+		reconcilePops(db, actor),
 		target, researcherFor(db, tiers, target, actor),
 		func(orchestrator.BuildRun) (string, error) { return target2Project(db, target), nil })
 	if repo == "" {
@@ -306,12 +307,18 @@ func recoverInFlight(
 func reconcileTargets(
 	in planner.Intaker, claimer planner.Claimer,
 	targets func(planner.CompletionClaim) (string, string, error),
-	work func(context.Context) error, target string,
+	work func(context.Context) error, pops func(context.Context) error, target string,
 	researcher orchestrator.Researcher,
 	findingProject func(orchestrator.BuildRun) (string, error),
 ) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if _, err := in.RecoverTargets(ctx); err != nil {
+			return err
+		}
+		// Claimed-but-unbound pops FIRST, before anything classifies
+		// ownership. Retirement reads a queued run with no issue as pending
+		// work and would defer the ticket a live build is about to pick up.
+		if err := pops(ctx); err != nil {
 			return err
 		}
 		// A completion submission a crash left in flight, replayed under
@@ -833,6 +840,8 @@ func popLoop(
 		Build:     buildOne(db, ws, tiers, reviews, target, actor),
 		Ordinals:  orchestrator.SQLOrdinals{DB: db},
 		Admit:     planner.SQLFence{DB: db},
+		Reserve:   orchestrator.SQLStore{DB: db},
+		NewID:     uuid.NewString,
 		TargetKey: target,
 		// Asked at the idle: nothing workable is either a build about to
 		// finish or one that is stuck, and they look identical from the
@@ -995,13 +1004,13 @@ func recoverySteps(
 	loop devloop.Loop, submitter orchestrator.Submitter,
 	queue orchestrator.Queue, completer orchestrator.Completer, actor string,
 	claimer planner.Claimer, targets func(planner.CompletionClaim) (string, string, error),
-	work func(context.Context) error, target string,
+	work func(context.Context) error, pops func(context.Context) error, target string,
 	researcher orchestrator.Researcher,
 	findingProject func(orchestrator.BuildRun) (string, error),
 ) []recovery.Step {
 	return []recovery.Step{
 		{Stage: recovery.StageTargets, Owner: "planner",
-			Run: reconcileTargets(in, claimer, targets, work, target, researcher, findingProject)},
+			Run: reconcileTargets(in, claimer, targets, work, pops, target, researcher, findingProject)},
 		{Stage: recovery.StageWorkspaces, Owner: "workspace", Run: func(ctx context.Context) error {
 			_, err := ws.Recover(ctx)
 			return err
@@ -1216,7 +1225,7 @@ func resumeOrStart(
 	if err != nil {
 		return orchestrator.BuildRun{}, err
 	}
-	if found {
+	if found && existing.Kind != "" {
 		return existing, nil
 	}
 	// A SPIKE starts on the research path, not queued. Its deliverable is a
@@ -1227,13 +1236,24 @@ func resumeOrStart(
 	if ticket.Kind == planner.KindSpike {
 		state = orchestrator.StateResearchLoop
 	}
+	// ADOPTED when the pop already reserved a run for this claim: the
+	// reservation was written before the claim and owns it, so starting a
+	// second run here would leave the first orphaned in the very state
+	// recovery looks for.
+	id := uuid.NewString()
+	if found {
+		id = existing.ID
+	}
 	run := orchestrator.BuildRun{
-		ID: uuid.NewString(), Ticket: ticket.Title, Kind: ticket.Kind,
+		ID: id, Ticket: ticket.Title, Kind: ticket.Kind,
 		// Recorded at creation, because recovery replays a submission and a
 		// close from what the RUN holds: a replay that looked the issue up
 		// again could act on a different one.
 		Issue: ticket.IssueID,
 		Plan:  target, State: state,
+		// Carried from the reservation, because it is the key the claim was
+		// made under: a run that lost it could not replay its own pop.
+		PopKey: existing.PopKey,
 		// Snapshotted here, at creation. Changing KRIYA_ROUND_LIMIT later
 		// affects only runs created after the change.
 		RoundLimit: roundLimit(),

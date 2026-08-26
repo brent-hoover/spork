@@ -161,6 +161,7 @@ func migrations() []migration {
 		{module: "orchestrator", name: "0011_stall", stmts: splitSQL(orchestrator.StallMigration)},
 		{module: "orchestrator", name: "0012_run_started", stmts: splitSQL(orchestrator.StartedMigration)},
 		{module: "orchestrator", name: "0013_finding", stmts: splitSQL(orchestrator.FindingMigration)},
+		{module: "orchestrator", name: "0014_pop_key", stmts: splitSQL(orchestrator.PopKeyMigration)},
 		{module: "architect", name: "0001_intervention", stmts: splitSQL(architect.Migration)},
 		{module: "owner", name: "0001_validation", stmts: splitSQL(owner.Migration)},
 		{module: "gates", name: "0001_gate_result", stmts: []string{gates.Migration}},

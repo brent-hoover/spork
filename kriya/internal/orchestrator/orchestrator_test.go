@@ -266,7 +266,7 @@ func sqlOrchDB(t *testing.T) *sql.DB {
 		orchestrator.HeadMigration,
 		orchestrator.IssueMigration, orchestrator.StallMigration,
 		orchestrator.StartedMigration,
-		orchestrator.FindingMigration,
+		orchestrator.FindingMigration, orchestrator.PopKeyMigration,
 	} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {

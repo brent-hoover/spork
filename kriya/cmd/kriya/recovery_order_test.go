@@ -30,7 +30,7 @@ func TestWorkEventsAreConsumedBeforeClaimsAreReplayed(t *testing.T) {
 		func(context.Context) error {
 			order = append(order, "work")
 			return nil
-		}, "/target",
+		}, noWork, "/target",
 		orchestrator.Researcher{}, noFindingProject)
 	for _, step := range steps {
 		if step.Stage != recovery.StageTargets {
@@ -80,7 +80,7 @@ func TestAnUnreplayableCloseDoesNotHaltStartup(t *testing.T) {
 	steps := recoverySteps(intakerForTest(db), workspace.Manager{}, reviewbridge.Bridge{},
 		devloop.Loop{}, orchestrator.Submitter{}, orchestrator.Queue{},
 		orchestrator.Completer{}, "actor-1",
-		planner.Claimer{Claims: refusingClaims{}}, noTargets, noWork, "/target",
+		planner.Claimer{Claims: refusingClaims{}}, noTargets, noWork, noWork, "/target",
 		orchestrator.Researcher{}, noFindingProject)
 	for _, step := range steps {
 		if step.Stage != recovery.StageTargets {

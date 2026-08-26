@@ -93,6 +93,8 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerSupersede(sc, w)
 	registerRestore(sc, w)
 	registerFence(sc, w)
+	registerPops(sc, w)
+	registerQueuedPops(sc, w)
 	registerPairLoop(sc, w)
 	registerGates(sc, w)
 	registerCoverageAndMutationGates(sc, w)

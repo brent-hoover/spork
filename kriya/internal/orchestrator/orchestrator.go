@@ -75,6 +75,12 @@ type BuildRun struct {
 	Branch string
 	Plan   string
 	State  State
+	// PopKey is the idempotency key the tracker claim was made under, and it
+	// is persisted BEFORE the claim goes out. Without it a crash between the
+	// admission and the claim leaves a run that cannot ask the tracker what it
+	// got: replaying under a freshly derived key would take a SECOND ticket,
+	// while abandoning the run strands whatever the first call claimed.
+	PopKey string
 	// Head is the branch's head commit — the DEVELOPED WORK. It is what the
 	// gate chain runs against, what the review names, and what merges.
 	//

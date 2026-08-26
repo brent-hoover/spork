@@ -121,6 +121,29 @@ type Admitter interface {
 	Admit(ctx context.Context, readVersion int) error
 }
 
+// Reserver writes a run and admits it in one transaction.
+type Reserver interface {
+	Reserve(ctx context.Context, run BuildRun, guard Admission, readVersion int) error
+}
+
+// Binder attaches a claim's result to a reservation.
+type Binder interface {
+	Bind(ctx context.Context, runID, issue, title string) error
+}
+
+// Settler settles a reservation whose claim returned nothing.
+type Settler interface {
+	SettleEmpty(ctx context.Context, runID string) error
+}
+
+// Admission is the planner's fence guard, invoked inside a transaction.
+//
+// The planner owns the fence and writes it; the orchestrator supplies only the
+// transaction the write joins.
+type Admission interface {
+	AdmitWithin(ctx context.Context, tx planner.Tx, readVersion int) error
+}
+
 // Loop pops and builds until nothing is workable.
 type Loop struct {
 	Pops     Popper
@@ -131,6 +154,14 @@ type Loop struct {
 	// wants; production wires it, because a pop admitted while any head is
 	// unactivated is work started before its predecessor retired.
 	Admit Admitter
+	// Reserve writes the pop's BuildRun in the SAME transaction as the
+	// admission, before the claim goes out. Nil skips the write-ahead, which
+	// leaves a crash between the claim and the binding unrecoverable — the
+	// claim exists in the tracker and nothing here owns it.
+	Reserve Reserver
+	// NewID names each reserved run. Nil uses the pop key, which is unique
+	// per attempt and is what a module-level test wants.
+	NewID func() string
 	// Finish and Stalls turn an idle into a diagnosis. Nil asks nothing and
 	// records nothing, which is what a module-level test of the pop loop
 	// itself wants.
@@ -172,10 +203,12 @@ func (l Loop) Run(ctx context.Context) (Result, error) {
 
 	var out Result
 	for range limit {
-		// BEFORE the claim. Admitted after, the ticket is already claimed and
-		// refusing then strands it — the fence would have to be undone rather
-		// than merely observed.
-		admitted, err := l.admit(ctx)
+		// BEFORE the claim: the run is written and the fence taken in one
+		// transaction, and only then is the tracker asked. Admitted after,
+		// the ticket is already claimed and refusing then strands it; written
+		// after, a crash in the window leaves a claim nothing owns.
+		key := popKey(l.TargetKey, ordinal)
+		reserved, admitted, err := l.reserve(ctx, key)
 		if err != nil {
 			return out, err
 		}
@@ -185,12 +218,22 @@ func (l Loop) Run(ctx context.Context) (Result, error) {
 			out.Idle = true
 			return out, nil
 		}
-		issue, title, err := l.Pops.Pop(ctx, popKey(l.TargetKey, ordinal))
+		issue, title, err := l.Pops.Pop(ctx, key)
 		if err != nil {
 			return out, fmt.Errorf("pop: %w", err)
 		}
 		if issue == "" {
+			// The claim returned an explicitly empty result: nothing was
+			// claimed, so the reservation owns nothing. It settles as no-work
+			// rather than lingering as a queued run recovery would try to
+			// bind — and no work is invented for it.
+			if err := l.settleEmpty(ctx, reserved); err != nil {
+				return out, err
+			}
 			return l.idle(ctx, out, ordinal)
+		}
+		if err := l.bind(ctx, reserved, issue, title); err != nil {
+			return out, err
 		}
 		run, buildErr := l.Build(ctx, issue, title)
 		out.Built = append(out.Built, run)
@@ -231,6 +274,92 @@ func (l Loop) idle(ctx context.Context, out Result, ordinal int) (Result, error)
 	return out, nil
 }
 
+// reserve writes the pop's run and takes an admission slot together.
+//
+// One transaction, because they are one fact. It returns the reserved run so
+// the caller can bind it to whatever the claim returns — the run exists
+// BEFORE the claim, which is what makes a crash in that window recoverable
+// rather than an orphaned claim.
+func (l Loop) reserve(ctx context.Context, key string) (BuildRun, bool, error) {
+	if l.Reserve == nil || l.Admit == nil {
+		admitted, err := l.admit(ctx)
+		return BuildRun{}, admitted, err
+	}
+	guard, ok := l.Admit.(Admission)
+	if !ok {
+		return BuildRun{}, false, fmt.Errorf(
+			"the admitter %T cannot join a reservation transaction", l.Admit)
+	}
+
+	run := BuildRun{ID: l.runID(key), Plan: l.TargetKey, PopKey: key, State: StateQueued}
+	for range 2 {
+		fence, err := l.Admit.Read(ctx)
+		if err != nil {
+			return BuildRun{}, false, fmt.Errorf("read the pop fence: %w", err)
+		}
+		err = l.Reserve.Reserve(ctx, run, guard, fence.Version)
+		if err == nil {
+			return run, true, nil
+		}
+		var fenced *planner.ErrFenced
+		if !errors.As(err, &fenced) {
+			return BuildRun{}, false, fmt.Errorf("reserve the pop: %w", err)
+		}
+		if !fenced.StaleVersion {
+			return BuildRun{}, false, nil
+		}
+	}
+	// Two lost races in a row is contention, not a closed fence.
+	return BuildRun{}, false, nil
+}
+
+// bind attaches the claim's result to the reservation.
+//
+// The run existed BEFORE the claim, so this is the write that turns "a claim
+// may have happened" into "this run owns that ticket". State is left QUEUED:
+// what kind of work it is, and therefore which path it takes, is the builder's
+// to decide from the plan.
+func (l Loop) bind(ctx context.Context, reserved BuildRun, issue, title string) error {
+	if l.Reserve == nil || reserved.ID == "" {
+		return nil
+	}
+	binder, ok := l.Reserve.(Binder)
+	if !ok {
+		return nil
+	}
+	if err := binder.Bind(ctx, reserved.ID, issue, title); err != nil {
+		return fmt.Errorf("bind the reserved pop to %s: %w", issue, err)
+	}
+	return nil
+}
+
+// settleEmpty moves a reservation that claimed nothing to no-work.
+func (l Loop) settleEmpty(ctx context.Context, reserved BuildRun) error {
+	if l.Reserve == nil || reserved.ID == "" {
+		return nil
+	}
+	settler, ok := l.Reserve.(Settler)
+	if !ok {
+		return nil
+	}
+	if err := settler.SettleEmpty(ctx, reserved.ID); err != nil {
+		return fmt.Errorf("settle the empty pop %s: %w", Short(reserved.ID), err)
+	}
+	return nil
+}
+
+// runID names a reserved run.
+//
+// Derived from the POP KEY when nothing else is supplied: the key is unique
+// per attempt, so a replayed reservation lands on the same row rather than
+// creating a second run for one claim.
+func (l Loop) runID(key string) string {
+	if l.NewID == nil {
+		return key
+	}
+	return l.NewID()
+}
+
 // admit takes an admission slot, retrying once on a lost race.
 //
 // A stale version means another writer moved the fence between the read and
@@ -262,3 +391,6 @@ func (l Loop) admit(ctx context.Context) (bool, error) {
 	// the caller come back rather than spinning here.
 	return false, nil
 }
+
+// Short truncates an identifier for a message, safely.
+func Short(id string) string { return planner.Short(id) }
