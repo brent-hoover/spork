@@ -10,16 +10,27 @@ import (
 // FenceMigration is the singleton row that serializes admission with head
 // transitions.
 //
-// ONE row, and singleton_key's uniqueness is what makes the bootstrap insert
-// its own CAS: a concurrent first writer either inserts it or reads the row
-// the winner inserted. It starts at zero on both counts — no plan exists yet,
-// so nothing is unactivated and admissions flow immediately.
+// The row is INSERTED BY THE MIGRATION, not lazily on first write. Created
+// empty, Read answers zero — correctly — but every admission UPDATE matches no
+// row, which the guard can only read as a lost race: the loop retries, idles,
+// and never pops again until some unrelated head transition happens to create
+// the row. A brand-new database deadlocked on that, not merely an upgraded one.
+//
+// It seeds ZEROES rather than counting existing unactivated heads. A fresh
+// database has none, which is the case that matters; backfilling one that is
+// mid-supersession would couple this migration to plan_head, and kriya has
+// never been released, so no such database exists to protect.
+//
+// singleton_key's uniqueness still makes any later insert its own CAS: a
+// concurrent writer either inserts it or reads the row the winner inserted.
 const FenceMigration = `
 CREATE TABLE pop_fence (
     singleton_key     TEXT PRIMARY KEY,
     unactivated_heads INTEGER NOT NULL DEFAULT 0,
     version           INTEGER NOT NULL DEFAULT 0
-)`
+);
+INSERT INTO pop_fence (singleton_key, unactivated_heads, version)
+  VALUES ('pop-fence', 0, 0)`
 
 // fenceKey is the constant that makes the row a singleton.
 const fenceKey = "pop-fence"

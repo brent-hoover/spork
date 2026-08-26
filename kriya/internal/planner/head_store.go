@@ -317,9 +317,7 @@ func moveHeadWithin(
 	// refused forever. There is one head, so there is at most one outstanding
 	// contribution, and the new head inherits it rather than adding a second.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE plan_head
-		    SET current = ?, generation = generation + 1,
-		        fence = CASE WHEN fence > 0 THEN fence ELSE fence + 1 END
+		`UPDATE plan_head SET current = ?, generation = generation + 1, fence = 1
 		   WHERE target_key = ? AND current = ?`,
 		candidate.Key, candidate.TargetKey, head.Current); err != nil {
 		return Replacement{}, fmt.Errorf("move the head: %w", err)
@@ -328,13 +326,13 @@ func moveHeadWithin(
 	// contribution — the same transfer, expressed across targets. Raising it
 	// unconditionally would count one unactivated head twice, and the
 	// activation that follows would leave admissions refused everywhere.
-	fence := head.Fence
+	// The GLOBAL counter rises only when this target did not already hold a
+	// contribution. Raising it unconditionally would count one unactivated
+	// head twice, and the activation that follows would leave admissions
+	// refused everywhere.
 	raise := 1
-	if fence > 0 {
+	if head.Fence > 0 {
 		raise = 0
-	}
-	if fence == 0 {
-		fence = 1
 	}
 	if err := raiseWithin(ctx, tx, raise); err != nil {
 		return Replacement{}, err
@@ -343,7 +341,7 @@ func moveHeadWithin(
 		Won: true,
 		Head: PlanHead{
 			TargetKey: candidate.TargetKey, Current: candidate.Key,
-			Generation: head.Generation + 1, Fence: fence,
+			Generation: head.Generation + 1, Fence: 1,
 		},
 		Predecessor: head.Current,
 	}, nil
@@ -410,8 +408,11 @@ func (s SQLHeads) Activate(ctx context.Context, key string) error {
 	// caller. Every retry path reaches activation, and one that replayed it
 	// for a parked, superseded or mid-phase plan would admit pops against a
 	// head that is not ready — which is the whole thing the fence prevents.
+	// CLEARED, not decremented, for the same reason the raise sets rather
+	// than adds: the marker is a yes/no, and a legacy value above one would
+	// otherwise survive its own activation.
 	res, err := tx.ExecContext(ctx,
-		`UPDATE plan_head SET fence = fence - 1
+		`UPDATE plan_head SET fence = 0
 		   WHERE current = ? AND fence > 0
 		     AND EXISTS (SELECT 1 FROM decomposition_plan
 		                  WHERE decomposition_key = ? AND state = ? AND completed = 1)`,

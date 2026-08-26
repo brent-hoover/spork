@@ -3,6 +3,7 @@ package planner_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"kriya/internal/planner"
@@ -13,26 +14,38 @@ func fenceStore(t *testing.T) planner.SQLFence {
 	return planner.SQLFence{DB: sqlDB(t, planner.FenceMigration)}
 }
 
-// bootstrap writes the singleton so a test can move it.
+// bootstrap moves the singleton the migration already inserted.
+//
+// An INSERT here would collide: the migration seeds the row, precisely so a
+// fresh database's first admission matches something rather than reading as a
+// lost race forever.
 func bootstrap(t *testing.T, f planner.SQLFence, unactivated, version int) {
 	t.Helper()
 	if _, err := f.DB.ExecContext(context.Background(),
-		`INSERT INTO pop_fence (singleton_key, unactivated_heads, version) VALUES (?, ?, ?)`,
-		"pop-fence", unactivated, version); err != nil {
+		`UPDATE pop_fence SET unactivated_heads = ?, version = ? WHERE singleton_key = ?`,
+		unactivated, version, "pop-fence"); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 }
 
-func TestAnUnwrittenFenceReadsAsClear(t *testing.T) {
+func TestAFreshDatabaseAdmitsImmediately(t *testing.T) {
 	// Bootstrap state: no plan exists, so nothing is unactivated and
-	// admissions flow immediately. Refusing here would deadlock the very
-	// first build of a target.
-	got, err := fenceStore(t).Read(context.Background())
+	// admissions flow. The migration INSERTS the singleton for exactly this
+	// reason — created empty, Read answers zero correctly but every admission
+	// UPDATE matches no row, which the guard can only read as a lost race. The
+	// loop then retries, idles, and never pops again until some unrelated head
+	// transition happens to create the row.
+	f := fenceStore(t)
+	ctx := context.Background()
+	got, err := f.Read(ctx)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if got.UnactivatedHeads != 0 || got.Version != 0 {
-		t.Errorf("an unwritten fence reads as %+v", got)
+	if got.UnactivatedHeads != 0 {
+		t.Errorf("a fresh fence reads %d unactivated heads", got.UnactivatedHeads)
+	}
+	if err := f.Admit(ctx, got.Version); err != nil {
+		t.Fatalf("the first admission on a fresh database was refused: %v", err)
 	}
 }
 
@@ -303,5 +316,120 @@ func TestAReplayedActivationLowersTheGlobalCounterOnce(t *testing.T) {
 	if got.UnactivatedHeads != 1 {
 		t.Errorf("three activations of one head left the counter at %d, want 1 for the other target",
 			got.UnactivatedHeads)
+	}
+}
+
+func TestAMarkerNeverSurvivesItsOwnActivation(t *testing.T) {
+	// The local marker gates the global raise, so a marker that survives its
+	// own activation makes the NEXT replacement skip the raise — and pops are
+	// admitted during that supersession.
+	//
+	// It takes an UNACTIVATED head in the chain to expose: arithmetic on the
+	// marker then reaches two, one activation leaves it at one, and the third
+	// replacement sees a contribution that is not really there. A chain where
+	// every head activates behaves identically either way, which is why the
+	// straightforward version of this test proved nothing.
+	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration,
+		planner.PlanPredecessorMigration, planner.HeadMigration, planner.FenceMigration)
+	heads, plans, f := planner.SQLHeads{DB: db}, planner.SQLPlans{DB: db}, planner.SQLFence{DB: db}
+	ctx := context.Background()
+
+	install := func(generation int) planner.Plan {
+		p := planner.Plan{
+			Key: fmt.Sprintf("plan-%d", generation), TargetKey: "/spec", SpecHash: "h",
+			Generation: generation, State: planner.PlanPending,
+		}
+		if err := plans.Upsert(ctx, p); err != nil {
+			t.Fatalf("seed %d: %v", generation, err)
+		}
+		if verdict, err := heads.Replace(ctx, p); err != nil || !verdict.Won {
+			t.Fatalf("replace %d: %v won=%v", generation, err, verdict.Won)
+		}
+		return p
+	}
+
+	// Generation 1 takes the head and is left ACTIVE but never activated.
+	first := install(1)
+	first.State = planner.PlanActive
+	if err := plans.Upsert(ctx, first); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	// Generation 2 replaces it and completes properly.
+	second := install(2)
+	whole(t, plans, second)
+	if err := heads.Activate(ctx, second.Key); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	head, _, err := heads.Head(ctx, "/spec")
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Fence != 0 {
+		t.Fatalf("the activated head's marker is still %d", head.Fence)
+	}
+
+	// Generation 3 must raise the global counter. With a marker left behind
+	// it would skip the raise and admit pops mid-supersession.
+	install(3)
+	got, err := f.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.UnactivatedHeads != 1 {
+		t.Fatalf("the third replacement left the counter at %d, want 1", got.UnactivatedHeads)
+	}
+	if err := f.Admit(ctx, got.Version); err == nil {
+		t.Error("a pop was admitted while the third head was unactivated")
+	}
+}
+
+func TestAnActivatedHeadLeavesNoMarkerBehind(t *testing.T) {
+	// The local marker gates the global raise, so a marker that survives its
+	// own activation makes the NEXT replacement skip the raise — and pops are
+	// admitted during that supersession. Arithmetic on the marker is what
+	// allowed it: a value of two survived one activation as one.
+	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration,
+		planner.PlanPredecessorMigration, planner.HeadMigration, planner.FenceMigration)
+	heads, plans, f := planner.SQLHeads{DB: db}, planner.SQLPlans{DB: db}, planner.SQLFence{DB: db}
+	ctx := context.Background()
+
+	// Three generations, each activated in turn. Every replacement must raise
+	// the global counter and every activation must clear it.
+	for generation := 1; generation <= 3; generation++ {
+		p := planner.Plan{
+			Key: fmt.Sprintf("plan-%d", generation), TargetKey: "/spec", SpecHash: "h",
+			Generation: generation, State: planner.PlanPending,
+		}
+		if err := plans.Upsert(ctx, p); err != nil {
+			t.Fatalf("seed %d: %v", generation, err)
+		}
+		if verdict, err := heads.Replace(ctx, p); err != nil || !verdict.Won {
+			t.Fatalf("replace %d: %v won=%v", generation, err, verdict.Won)
+		}
+		got, err := f.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if got.UnactivatedHeads != 1 {
+			t.Fatalf("generation %d raised the counter to %d, want 1 — "+
+				"a marker left behind by the previous activation skipped the raise",
+				generation, got.UnactivatedHeads)
+		}
+		if err := f.Admit(ctx, got.Version); err == nil {
+			t.Fatalf("generation %d admitted a pop mid-supersession", generation)
+		}
+
+		whole(t, plans, p)
+		if err := heads.Activate(ctx, p.Key); err != nil {
+			t.Fatalf("activate %d: %v", generation, err)
+		}
+		head, _, err := heads.Head(ctx, "/spec")
+		if err != nil {
+			t.Fatalf("head: %v", err)
+		}
+		if head.Fence != 0 {
+			t.Fatalf("generation %d activated with its marker still at %d",
+				generation, head.Fence)
+		}
 	}
 }
