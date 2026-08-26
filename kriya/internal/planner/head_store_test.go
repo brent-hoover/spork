@@ -10,7 +10,7 @@ import (
 
 func headStore(t *testing.T) (planner.SQLHeads, planner.SQLPlans) {
 	t.Helper()
-	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration)
+	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration, planner.FenceMigration)
 	return planner.SQLHeads{DB: db}, planner.SQLPlans{DB: db}
 }
 
@@ -450,7 +450,7 @@ func (a *advanceCounting) Stamp(ctx context.Context, key string, epoch int) (boo
 func epochHeads(t *testing.T) (planner.SQLHeads, planner.SQLPlans, *advanceCounting) {
 	t.Helper()
 	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration,
-		planner.HeadMigration, planner.EpochMigration)
+		planner.HeadMigration, planner.EpochMigration, planner.FenceMigration)
 	advances := &advanceCounting{inner: planner.SQLAdvances{DB: db}}
 	return planner.SQLHeads{DB: db, Advances: advances}, planner.SQLPlans{DB: db}, advances
 }

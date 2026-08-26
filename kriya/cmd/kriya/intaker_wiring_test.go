@@ -5,6 +5,8 @@ import (
 
 	"kriya/internal/agent"
 	"kriya/internal/planner"
+	"kriya/internal/reviewbridge"
+	"kriya/internal/workspace"
 )
 
 // TestTheIntakerIsWiredWithEveryDurableStore checks the COMPOSITION ROOT.
@@ -49,6 +51,32 @@ func TestTheIntakerIsWiredWithEveryDurableStore(t *testing.T) {
 	} {
 		if !wired {
 			t.Errorf("the production intaker has no %s store", name)
+		}
+	}
+}
+
+// TestThePopLoopIsWiredWithEveryCollaborator checks the other composition root.
+//
+// Same class of silent omission as the intaker's: every collaborator on Loop
+// is optional, and a forgotten one changes nothing visible. Without Admit the
+// loop pops straight past an unactivated head, and the only symptom is work
+// started before its predecessor retired.
+func TestThePopLoopIsWiredWithEveryCollaborator(t *testing.T) {
+	db := openTemp(t)
+	loop := popLoop(db, workspace.Manager{}, agent.Tiers{}, reviewbridge.Bridge{}, "/spec", "actor")
+
+	for name, wired := range map[string]bool{
+		"popper":    loop.Pops != nil,
+		"builder":   loop.Build != nil,
+		"ordinals":  loop.Ordinals != nil,
+		"admitter":  loop.Admit != nil,
+		"finisher":  loop.Finish != nil,
+		"stalls":    loop.Stalls != nil,
+		"epochs":    loop.Epochs != nil,
+		"targetKey": loop.TargetKey != "",
+	} {
+		if !wired {
+			t.Errorf("the production pop loop has no %s", name)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"kriya/internal/orchestrator"
+	"kriya/internal/planner"
 )
 
 // workStack hands out tickets in order, then nothing.
@@ -478,5 +479,109 @@ func TestALoopWithNoCompletionSeamStillIdles(t *testing.T) {
 	}
 	if !got.Idle {
 		t.Error("the loop did not idle")
+	}
+}
+
+// countingPopper counts pops so a fenced loop can be shown to make none.
+type countingPopper struct{ calls int }
+
+func (p *countingPopper) Pop(context.Context, string) (string, string, error) {
+	p.calls++
+	return "", "", nil
+}
+
+// countingAdmitter records admission attempts and can refuse them.
+type countingAdmitter struct {
+	fence    planner.Fence
+	attempts int
+	refuse   *planner.ErrFenced
+	err      error
+}
+
+func (a *countingAdmitter) Read(context.Context) (planner.Fence, error) {
+	return a.fence, a.err
+}
+
+func (a *countingAdmitter) Admit(_ context.Context, version int) error {
+	a.attempts++
+	if a.refuse != nil {
+		return a.refuse
+	}
+	a.fence.Version = version + 1
+	return nil
+}
+
+func TestAFencedLoopIdlesWithoutPopping(t *testing.T) {
+	// A pop admitted while any head is unactivated is work started before its
+	// predecessor retired. The loop idles instead — the work is not gone, it
+	// is waiting for retirement to finish.
+	pops := &countingPopper{}
+	loop := orchestrator.Loop{
+		Pops: pops, Ordinals: newMemOrdinals(), TargetKey: "/spec",
+		Admit: &countingAdmitter{refuse: &planner.ErrFenced{UnactivatedHeads: 1}},
+	}
+	got, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !got.Idle {
+		t.Error("a fenced loop did not idle")
+	}
+	if pops.calls != 0 {
+		t.Errorf("a fenced loop popped %d time(s), claiming tickets it may not build", pops.calls)
+	}
+}
+
+func TestAdmissionHappensBeforeTheClaim(t *testing.T) {
+	// Admitted after, the ticket is already claimed and refusing then strands
+	// it — the fence would have to be undone rather than merely observed.
+	pops := &countingPopper{}
+	admit := &countingAdmitter{}
+	loop := orchestrator.Loop{
+		Pops: pops, Ordinals: newMemOrdinals(), TargetKey: "/spec",
+		Admit: admit, MaxTickets: 1,
+	}
+	if _, err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if admit.attempts == 0 {
+		t.Error("the loop popped without asking the fence")
+	}
+}
+
+func TestALostFenceRaceIsRetriedOnce(t *testing.T) {
+	// A stale version means another writer moved the fence between the read
+	// and the CAS — a race worth retrying at once, since the fence may still
+	// be clear. Two lost races in a row is contention, and the loop idles.
+	pops := &countingPopper{}
+	admit := &countingAdmitter{refuse: &planner.ErrFenced{StaleVersion: true}}
+	loop := orchestrator.Loop{
+		Pops: pops, Ordinals: newMemOrdinals(), TargetKey: "/spec", Admit: admit,
+	}
+	got, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if admit.attempts != 2 {
+		t.Errorf("a lost race was attempted %d time(s), want 2", admit.attempts)
+	}
+	if !got.Idle {
+		t.Error("a loop that could not admit did not idle")
+	}
+}
+
+func TestAnUnreadableFenceStopsTheLoop(t *testing.T) {
+	// "I could not read the fence" is not "the fence is clear". Popping on a
+	// guess starts work against a head that may be mid-supersession.
+	pops := &countingPopper{}
+	loop := orchestrator.Loop{
+		Pops: pops, Ordinals: newMemOrdinals(), TargetKey: "/spec",
+		Admit: &countingAdmitter{err: errors.New("the fence is unreachable")},
+	}
+	if _, err := loop.Run(context.Background()); err == nil {
+		t.Fatal("the loop popped past an unreadable fence")
+	}
+	if pops.calls != 0 {
+		t.Error("the loop claimed a ticket it could not admit")
 	}
 }

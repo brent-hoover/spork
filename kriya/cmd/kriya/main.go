@@ -416,18 +416,7 @@ func driver(db *sql.DB, ws workspace.Manager, tiers agent.Tiers, reviews reviewb
 		if err := router.Advance(ctx, next); err != nil {
 			return orchestrator.Result{}, err
 		}
-		result, err := orchestrator.Loop{
-			Pops:      sutraPops{c: trackerclient.New(sutraURL()), identity: actor},
-			Build:     buildOne(db, ws, tiers, reviews, target, actor),
-			Ordinals:  orchestrator.SQLOrdinals{DB: db},
-			TargetKey: target,
-			// Asked at the idle: nothing workable is either a build about to
-			// finish or one that is stuck, and they look identical from the
-			// loop. The answer is durable either way.
-			Finish: completionDetector(db),
-			Stalls: stallRecorder(db),
-			Epochs: planner.Epochs{Store: planner.SQLAdvances{DB: db}},
-		}.Run(ctx)
+		result, err := popLoop(db, ws, tiers, reviews, target, actor).Run(ctx)
 		if err != nil || !result.Idle {
 			return result, err
 		}
@@ -822,6 +811,31 @@ func loopFor(
 		Commit: workspace.ShellGit{},
 		Review: reviews,
 		Now:    clock.System{},
+	}
+}
+
+// popLoop wires the pop loop for one target.
+//
+// Its own factory so the composition root is testable. Every collaborator on
+// Loop is optional — nil asks nothing — which makes a forgotten one silent:
+// without Admit the loop pops straight past an unactivated head, and the only
+// symptom is work started before its predecessor retired.
+func popLoop(
+	db *sql.DB, ws workspace.Manager, tiers agent.Tiers,
+	reviews reviewbridge.Bridge, target, actor string,
+) orchestrator.Loop {
+	return orchestrator.Loop{
+		Pops:      sutraPops{c: trackerclient.New(sutraURL()), identity: actor},
+		Build:     buildOne(db, ws, tiers, reviews, target, actor),
+		Ordinals:  orchestrator.SQLOrdinals{DB: db},
+		Admit:     planner.SQLFence{DB: db},
+		TargetKey: target,
+		// Asked at the idle: nothing workable is either a build about to
+		// finish or one that is stuck, and they look identical from the
+		// loop. The answer is durable either way.
+		Finish: completionDetector(db),
+		Stalls: stallRecorder(db),
+		Epochs: planner.Epochs{Store: planner.SQLAdvances{DB: db}},
 	}
 }
 

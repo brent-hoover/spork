@@ -324,9 +324,20 @@ func moveHeadWithin(
 		candidate.Key, candidate.TargetKey, head.Current); err != nil {
 		return Replacement{}, fmt.Errorf("move the head: %w", err)
 	}
+	// The GLOBAL fence rises only when this target did not already hold a
+	// contribution — the same transfer, expressed across targets. Raising it
+	// unconditionally would count one unactivated head twice, and the
+	// activation that follows would leave admissions refused everywhere.
 	fence := head.Fence
+	raise := 1
+	if fence > 0 {
+		raise = 0
+	}
 	if fence == 0 {
 		fence = 1
+	}
+	if err := raiseWithin(ctx, tx, raise); err != nil {
+		return Replacement{}, err
 	}
 	return Replacement{
 		Won: true,
@@ -357,6 +368,9 @@ func bootstrapWithin(ctx context.Context, tx Tx, candidate Plan) (Replacement, e
 		return Replacement{}, fmt.Errorf("install the first head: %w", err)
 	}
 	if rows == 1 {
+		if err := raiseWithin(ctx, tx, 1); err != nil {
+			return Replacement{}, err
+		}
 		return Replacement{Won: true, Head: PlanHead{
 			TargetKey: candidate.TargetKey, Current: candidate.Key, Generation: 1, Fence: 1,
 		}}, nil
@@ -386,17 +400,39 @@ func headWithin(ctx context.Context, tx Tx, targetKey string) (PlanHead, bool, e
 // would admit pops in the window before retirement ran — against a plan whose
 // predecessor still holds live tickets.
 func (s SQLHeads) Activate(ctx context.Context, key string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin activation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// The plan's state is checked HERE, in the same statement, not by the
 	// caller. Every retry path reaches activation, and one that replayed it
 	// for a parked, superseded or mid-phase plan would admit pops against a
 	// head that is not ready — which is the whole thing the fence prevents.
-	if _, err := s.DB.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`UPDATE plan_head SET fence = fence - 1
 		   WHERE current = ? AND fence > 0
 		     AND EXISTS (SELECT 1 FROM decomposition_plan
 		                  WHERE decomposition_key = ? AND state = ? AND completed = 1)`,
-		key, key, PlanActive); err != nil {
+		key, key, PlanActive)
+	if err != nil {
 		return fmt.Errorf("activate plan %s: %w", key, err)
+	}
+	moved, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("activate plan %s: %w", key, err)
+	}
+	// The global counter falls only when this head's own contribution did.
+	// A replayed activation moves neither, which is what keeps the counter
+	// from going negative and admitting pops against a later replacement.
+	if moved == 1 {
+		if err := lowerWithin(ctx, txExec{tx: tx}); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit activation: %w", err)
 	}
 	return nil
 }

@@ -59,6 +59,8 @@ type world struct {
 	spike *spikeWorld
 	// status is the CLI-status scenario's state, nil until it starts.
 	status *statusWorld
+	// fence is the pop-fence scenarios' state, nil until one starts.
+	fence *fenceWorld
 	// restore is the parked-plan scenarios' state, nil until one starts.
 	restore *restoreWorld
 	// retire is the retirement scenarios' state, nil until one starts.

@@ -11,7 +11,7 @@ import (
 func restorer(t *testing.T) (planner.Restorer, planner.SQLPlans, planner.SQLHeads, planner.SQLSteps) {
 	t.Helper()
 	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration,
-		planner.PlanPredecessorMigration, planner.HeadMigration, planner.StepMigration)
+		planner.PlanPredecessorMigration, planner.HeadMigration, planner.FenceMigration, planner.StepMigration)
 	plans, heads, steps := planner.SQLPlans{DB: db}, planner.SQLHeads{DB: db}, planner.SQLSteps{DB: db}
 	return planner.Restorer{Plans: plans, Heads: heads, Steps: steps}, plans, heads, steps
 }

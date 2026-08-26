@@ -65,7 +65,7 @@ func resuming(t *testing.T, reply string) (planner.Intaker, *countingTracker, *m
 	// A REAL head store, not nil. Leaving it out let the resume tests pass
 	// while resumption re-entered the CAS and buried the plan historical —
 	// the whole path they exist to cover was skipped.
-	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration)
+	db := sqlDB(t, planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration, planner.FenceMigration)
 	in.Plans, in.Steps, in.Tickets = planner.SQLPlans{DB: db}, steps, &planningTickets{}
 	in.Heads = planner.SQLHeads{DB: db}
 	ag.Repeat = true

@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
+
+	"kriya/internal/planner"
 )
 
 // Popper claims the next workable ticket.
@@ -106,11 +109,28 @@ type Epoch interface {
 	Current(ctx context.Context, targetKey string) (int, error)
 }
 
+// Admitter guards BuildRun admission against head transitions.
+//
+// The planner owns the fence and exposes this guard; the orchestrator invokes
+// it and never writes the row itself. Read returns the version a later Admit
+// must present — carrying it is the whole mechanism, because a read followed
+// by an unconditional write is exactly the read-assert the fence exists to
+// avoid.
+type Admitter interface {
+	Read(ctx context.Context) (planner.Fence, error)
+	Admit(ctx context.Context, readVersion int) error
+}
+
 // Loop pops and builds until nothing is workable.
 type Loop struct {
 	Pops     Popper
 	Build    Builder
 	Ordinals Ordinals
+	// Admit guards each pop against an unactivated head. Nil admits
+	// everything, which is what a module-level test of the loop itself
+	// wants; production wires it, because a pop admitted while any head is
+	// unactivated is work started before its predecessor retired.
+	Admit Admitter
 	// Finish and Stalls turn an idle into a diagnosis. Nil asks nothing and
 	// records nothing, which is what a module-level test of the pop loop
 	// itself wants.
@@ -152,33 +172,25 @@ func (l Loop) Run(ctx context.Context) (Result, error) {
 
 	var out Result
 	for range limit {
+		// BEFORE the claim. Admitted after, the ticket is already claimed and
+		// refusing then strands it — the fence would have to be undone rather
+		// than merely observed.
+		admitted, err := l.admit(ctx)
+		if err != nil {
+			return out, err
+		}
+		if !admitted {
+			// A head is mid-supersession. Idling is right: the work is not
+			// gone, it is waiting for retirement to finish.
+			out.Idle = true
+			return out, nil
+		}
 		issue, title, err := l.Pops.Pop(ctx, popKey(l.TargetKey, ordinal))
 		if err != nil {
 			return out, fmt.Errorf("pop: %w", err)
 		}
 		if issue == "" {
-			// Nothing workable. The plan is not finished — its remaining
-			// tickets are blocked or in flight — so the loop idles rather than
-			// reporting completion.
-			//
-			// The ordinal ADVANCES anyway. The tracker settles an empty pop
-			// under its key like any other response, so leaving the ordinal
-			// where it is would replay "nothing workable" forever, even after
-			// a ticket unblocks. Nothing was claimed, so nothing is lost by
-			// moving past it.
-			out.Idle = true
-			ordinal++
-			if err := l.Ordinals.Advance(ctx, l.TargetKey, ordinal); err != nil {
-				return out, fmt.Errorf("advance pop ordinal: %w", err)
-			}
-			// Nothing workable is either a build about to finish or a build
-			// that is STUCK, and the two look identical from here. Asking is
-			// what separates them, and the answer is durable: a stall the
-			// operator can act on rather than a process quietly spinning.
-			if err := l.diagnose(ctx); err != nil {
-				return out, err
-			}
-			return out, nil
+			return l.idle(ctx, out, ordinal)
 		}
 		run, buildErr := l.Build(ctx, issue, title)
 		out.Built = append(out.Built, run)
@@ -193,4 +205,60 @@ func (l Loop) Run(ctx context.Context) (Result, error) {
 		}
 	}
 	return out, nil
+}
+
+// idle ends a pass that found nothing workable.
+//
+// The plan is not finished — its remaining tickets are blocked or in flight —
+// so the loop idles rather than reporting completion.
+//
+// The ordinal ADVANCES anyway. The tracker settles an empty pop under its key
+// like any other response, so leaving the ordinal where it is would replay
+// "nothing workable" forever, even after a ticket unblocks. Nothing was
+// claimed, so nothing is lost by moving past it.
+func (l Loop) idle(ctx context.Context, out Result, ordinal int) (Result, error) {
+	out.Idle = true
+	if err := l.Ordinals.Advance(ctx, l.TargetKey, ordinal+1); err != nil {
+		return out, fmt.Errorf("advance pop ordinal: %w", err)
+	}
+	// Nothing workable is either a build about to finish or a build that is
+	// STUCK, and the two look identical from here. Asking is what separates
+	// them, and the answer is durable: a stall the operator can act on rather
+	// than a process quietly spinning.
+	if err := l.diagnose(ctx); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// admit takes an admission slot, retrying once on a lost race.
+//
+// A stale version means another writer moved the fence between the read and
+// the CAS — a race worth retrying at once, since the fence may well still be
+// clear. A nonzero counter is not: it means a head is unactivated, and the
+// answer will not change until one activates.
+func (l Loop) admit(ctx context.Context) (bool, error) {
+	if l.Admit == nil {
+		return true, nil
+	}
+	for range 2 {
+		fence, err := l.Admit.Read(ctx)
+		if err != nil {
+			return false, fmt.Errorf("read the pop fence: %w", err)
+		}
+		err = l.Admit.Admit(ctx, fence.Version)
+		if err == nil {
+			return true, nil
+		}
+		var fenced *planner.ErrFenced
+		if !errors.As(err, &fenced) {
+			return false, fmt.Errorf("pop admission: %w", err)
+		}
+		if !fenced.StaleVersion {
+			return false, nil
+		}
+	}
+	// Two lost races in a row is contention, not a closed fence. Idling lets
+	// the caller come back rather than spinning here.
+	return false, nil
 }

@@ -40,7 +40,7 @@ func (w *world) newHead(tempDir func() (string, error)) (*headWorld, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, schema := range []string{planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration} {
+	for _, schema := range []string{planner.PlanMigration, planner.PlanKeyMigration, planner.PlanPredecessorMigration, planner.HeadMigration, planner.FenceMigration} {
 		for _, stmt := range strings.Split(schema, ";") {
 			if strings.TrimSpace(stmt) == "" {
 				continue
